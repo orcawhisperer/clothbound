@@ -191,6 +191,12 @@ FocusScope {
             }
 
             IconButton {
+                glyph: Icons.sparkle
+                tip: ai.hasKey ? qsTr("Gemini (Ctrl+,)") : qsTr("Listen and ask with Gemini (Ctrl+,)")
+                active: ai.connected
+                onClicked: win.showAiSettings()
+            }
+            IconButton {
                 glyph: Icons.plus
                 tip: qsTr("Add a folder of books (A)")
                 onClicked: picker.chooseFolders()

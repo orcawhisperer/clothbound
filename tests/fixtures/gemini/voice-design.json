@@ -1,0 +1,37 @@
+{
+ "id": "voice_jtlkz7mcspcr",
+ "model": "models/gemini-3.8-flash-tts",
+ "type": "prompted",
+ "expire_time": "2027-11-22T23:05:49.589722627Z",
+ "display_name": "Dogear probe narrator",
+ "prompted": {
+  "input": "A measured, warm English gentleman in his sixties, a seasoned audiobook narrator with a quiet sense of wonder."
+ },
+ "language_code": "en-GB",
+ "gender": "male",
+ "usage": {
+  "total_tokens": 1366,
+  "total_input_tokens": 236,
+  "input_tokens_by_modality": [
+   {
+    "modality": "text",
+    "tokens": 86
+   }
+  ],
+  "total_cached_tokens": 0,
+  "total_output_tokens": 1130,
+  "output_tokens_by_modality": [
+   {
+    "modality": "audio",
+    "tokens": 1130
+   }
+  ],
+  "total_tool_use_tokens": 0,
+  "total_thought_tokens": 117,
+  "initial_input_tokens": 236
+ },
+ "sample_audio": {
+  "mime_type": "audio/wav",
+  "data": "UklGRiwAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQgAAAABAAIAAwAEAA=="
+ }
+}

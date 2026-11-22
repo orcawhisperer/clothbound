@@ -1,0 +1,41 @@
+{
+ "status": "completed",
+ "usage": {
+  "total_tokens": 100,
+  "total_input_tokens": 10,
+  "input_tokens_by_modality": [
+   {
+    "modality": "text",
+    "tokens": 10
+   }
+  ],
+  "total_cached_tokens": 0,
+  "total_output_tokens": 90,
+  "output_tokens_by_modality": [
+   {
+    "modality": "audio",
+    "tokens": 90
+   }
+  ],
+  "total_tool_use_tokens": 0,
+  "total_thought_tokens": 0,
+  "initial_input_tokens": 10
+ },
+ "created": "2026-11-22T23:04:27Z",
+ "updated": "2026-11-22T23:04:27Z",
+ "service_tier": "standard",
+ "steps": [
+  {
+   "content": [
+    {
+     "data": "UklGRiwAAABXQVZFZm10IBAAAAABAAEAwF0AAIC7AAACABAAZGF0YQgAAAABAAIAAwAEAA==",
+     "mime_type": "audio/wav",
+     "type": "audio"
+    }
+   ],
+   "type": "model_output"
+  }
+ ],
+ "object": "interaction",
+ "model": "gemini-3.8-flash-tts"
+}

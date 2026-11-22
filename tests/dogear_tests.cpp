@@ -2,10 +2,19 @@
 #include <QDir>
 #include <QFile>
 #include <QImage>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QNetworkReply>
 #include <QTemporaryDir>
 #include <QtTest>
 
+#include "aiservices.h"
+#include "aiusage.h"
 #include "bookinfo.h"
+#include "fakeserver.h"
+#include "gemini.h"
+#include "keystore.h"
+#include "sseparser.h"
 #include "bookname.h"
 #include "bookscheme.h"
 #include "library.h"
@@ -36,6 +45,13 @@ private:
         buffer.open(QIODevice::WriteOnly);
         image.save(&buffer, "PNG");
         return bytes;
+    }
+
+    static QByteArray fixture(const QString &name) {
+        QFile file(QFINDTESTDATA("fixtures/gemini/" + name));
+        if (!file.open(QIODevice::ReadOnly))
+            qFatal("missing fixture %s", qPrintable(name));
+        return file.readAll();
     }
 
     static QByteArray fontPayload() {
@@ -470,6 +486,210 @@ private slots:
         QCOMPARE(reader.chapterTitle(), QString("Notes"));
         reader.close();
         QCOMPARE(library.record(id).position, QString(R"({"chapter":1,"offset":3,"snippet":"note"})"));
+    }
+
+
+    // --- Intelligence ------------------------------------------------------
+
+    void sseParserHandlesChunkedStreams() {
+        const QByteArray stream = fixture("text-stream.sse");
+        SseParser whole;
+        const QList<SseParser::Event> all = whole.feed(stream) + whole.finish();
+        QCOMPARE(all.first().name, QByteArray("interaction.created"));
+        QCOMPARE(all.last().data, QByteArray("[DONE]"));
+        for (int size : {1, 7, 64}) {
+            SseParser pieces;
+            QList<SseParser::Event> got;
+            for (qsizetype i = 0; i < stream.size(); i += size)
+                got += pieces.feed(stream.mid(i, size));
+            got += pieces.finish();
+            QCOMPARE(got.size(), all.size());
+            for (int i = 0; i < all.size(); ++i) {
+                QCOMPARE(got[i].name, all[i].name);
+                QCOMPARE(got[i].data, all[i].data);
+            }
+        }
+        SseParser crlf;
+        const auto events = crlf.feed("event: a\r\ndata: one\r\ndata: two\r\n\r\n: comment\n\n");
+        QCOMPARE(events.size(), 1);
+        QCOMPARE(events[0].data, QByteArray("one\ntwo"));
+    }
+
+    void geminiBuildsTheDocumentedRequests() {
+        Ai::SpeechRequest speech;
+        speech.text = "Hello.";
+        speech.style = "warm";
+        speech.voice = "sulafat";
+        speech.background = true;
+        const QJsonObject body = GeminiProvider::speechBody(speech, "gemini-3.8-flash-tts");
+        QCOMPARE(body["model"].toString(), QString("gemini-3.8-flash-tts"));
+        QCOMPARE(body["store"].toBool(true), false);
+        QCOMPARE(body["stream"].toBool(), true);
+        QCOMPARE(body["service_tier"].toString(), QString("flex"));
+        QCOMPARE(body["response_format"].toObject()["type"].toString(), QString("audio"));
+        const QJsonObject step = body["input"].toArray()[0].toObject();
+        QCOMPARE(step["type"].toString(), QString("user_input"));
+        const QJsonObject text = step["content"].toArray()[0].toObject();
+        QCOMPARE(text["text"].toString(), QString("Hello."));
+        QCOMPARE(text["annotations"].toArray()[0].toObject()["type"].toString(), QString("speech_metadata"));
+        QCOMPARE(text["annotations"].toArray()[0].toObject()["style"].toString(), QString("warm"));
+        QCOMPARE(body["generation_config"].toObject()["speech_config"].toArray()[0].toObject()["voice"].toString(), QString("sulafat"));
+        speech.style.clear();
+        QVERIFY(!GeminiProvider::speechBody(speech, "m")["input"].toArray()[0].toObject()["content"].toArray()[0].toObject().contains("annotations"));
+
+        Ai::TextRequest ask;
+        ask.system = "Be brief.";
+        ask.messages = {{true, "Who?"}, {false, "Weena."}, {true, "And?"}};
+        ask.schema = QJsonObject{{"type", "object"}};
+        const QJsonObject request = GeminiProvider::textBody(ask, "gemini-4-hydrogen");
+        QCOMPARE(request["system_instruction"].toString(), QString("Be brief."));
+        QCOMPARE(request["input"].toArray().size(), 3);
+        QCOMPARE(request["input"].toArray()[1].toObject()["type"].toString(), QString("model_output"));
+        QCOMPARE(request["response_format"].toObject()["mime_type"].toString(), QString("application/json"));
+        QCOMPARE(request["generation_config"].toObject()["thinking_level"].toString(), QString("low"));
+
+        const QJsonObject design = GeminiProvider::voiceDesignBody({"Narrator", "A calm voice.", "male", "en-GB"}, "gemini-3.8-flash-tts");
+        QCOMPARE(design["store"].toBool(), true);
+        QCOMPARE(design["voice"].toObject()["type"].toString(), QString("prompted"));
+        QCOMPARE(design["voice"].toObject()["prompted"].toObject()["input"].toString(), QString("A calm voice."));
+        QCOMPARE(design["voice"].toObject()["language_code"].toString(), QString("en-GB"));
+    }
+
+    void geminiReadsRecordedResponses() {
+        const Ai::Usage usage = GeminiProvider::parseUsage(QJsonDocument::fromJson(fixture("tts-unary.json")).object()["usage"].toObject());
+        QCOMPARE(usage.audioTokens, 90);
+        QCOMPARE(usage.inputTokens, 10);
+        const QList<Ai::Voice> voices = GeminiProvider::parseVoices(QJsonDocument::fromJson(fixture("voices.json")).object()["voices"].toArray());
+        QCOMPARE(voices.size(), 5);
+        auto byId = [&voices](const QString &id) { return *std::find_if(voices.cbegin(), voices.cend(), [&](const Ai::Voice &v) { return v.id == id; }); };
+        QVERIFY(byId("voice_testnarrator1").designed);
+        QVERIFY(byId("voice_testnarrator1").prompt.startsWith("A calm harbor-master"));
+        QVERIFY(byId("voice_testnarrator1").expires.isValid());
+        QVERIFY(byId("en-gb-storyteller-4").persona.contains("Narrator"));
+        QCOMPARE(byId("en-gb-storyteller-4").language, QString("en-GB"));
+        QVERIFY(!byId("achernar").designed);
+
+        const QJsonObject unary = QJsonDocument::fromJson(fixture("tts-unary.json")).object();
+        const QByteArray wav = QByteArray::fromBase64(unary["steps"].toArray()[0].toObject()["content"].toArray()[0].toObject()["data"].toString().toLatin1());
+        int rate = 0;
+        QCOMPARE(GeminiProvider::pcmFromWav(wav, &rate).size(), 8);
+        QCOMPARE(rate, 24000);
+        QCOMPARE(GeminiProvider::pcmFromWav("raw bytes"), QByteArray("raw bytes"));
+
+        QCOMPARE(GeminiProvider::parseError(429, fixture("error-429.json"), 0).kind, Ai::Error::Limited);
+        QCOMPARE(GeminiProvider::parseError(400, fixture("error-badkey.json"), 0).kind, Ai::Error::BadKey);
+        QCOMPARE(GeminiProvider::parseError(0, {}, QNetworkReply::HostNotFoundError).kind, Ai::Error::Offline);
+        QCOMPARE(GeminiProvider::parseError(503, "{}", 0).kind, Ai::Error::Server);
+    }
+
+    void geminiStreamsTextAndSpeech() {
+        FakeServer server;
+        server.responses = {{200, "text/event-stream", fixture("text-stream.sse")},
+                            {200, "text/event-stream", fixture("tts-stream.sse")},
+                            {200, "application/json", fixture("tts-unary.json")},
+                            {429, "application/json", fixture("error-429.json")}};
+        GeminiProvider gemini(nullptr, server.endpoint());
+        gemini.setKey("test-key");
+
+        Ai::TextRequest request;
+        request.messages = {{true, "Count"}};
+        request.stream = true;
+        Ai::Reply *text = gemini.generate(request);
+        QStringList deltas;
+        connect(text, &Ai::Reply::textReceived, this, [&deltas](const QString &delta) { deltas.append(delta); });
+        QTRY_VERIFY(text->isFinished());
+        QVERIFY2(!text->error(), qPrintable(text->error().message));
+        QCOMPARE(text->text(), QString("One, two, three"));
+        QCOMPARE(deltas.size(), 2);
+        QCOMPARE(text->usage().outputTokens, qint64(5));
+        QCOMPARE(server.requests[0].path, QByteArray("/v1beta/interactions"));
+        QCOMPARE(server.requests[0].headers.value("x-goog-api-key"), QByteArray("test-key"));
+        QCOMPARE(server.requests[0].headers.value("api-revision"), QByteArray("2026-05-20"));
+        QCOMPARE(QJsonDocument::fromJson(server.requests[0].body).object()["model"].toString(), gemini.textModelName(false));
+
+        Ai::SpeechRequest speech;
+        speech.text = "Hi";
+        speech.voice = "sulafat";
+        Ai::Reply *audio = gemini.synthesize(speech);
+        int chunks = 0;
+        connect(audio, &Ai::Reply::audioReceived, this, [&chunks] { ++chunks; });
+        QTRY_VERIFY(audio->isFinished());
+        QVERIFY(!audio->error());
+        QCOMPARE(chunks, 3);
+        QCOMPARE(audio->audio().size(), 24);
+        QCOMPARE(audio->sampleRate(), 24000);
+        QCOMPARE(audio->usage().audioTokens, qint64(87));
+
+        speech.stream = false;
+        Ai::Reply *unary = gemini.synthesize(speech);
+        QTRY_VERIFY(unary->isFinished());
+        QCOMPARE(unary->audio().size(), 8);
+
+        Ai::Reply *limited = gemini.synthesize(speech);
+        QTRY_VERIFY(limited->isFinished());
+        QCOMPARE(limited->error().kind, Ai::Error::Limited);
+    }
+
+    void ledgerPricesByDateAndTier() {
+        Ai::Usage speech;
+        speech.inputTokens = 10;
+        speech.outputTokens = 90;
+        const QDate today(2026, 11, 23);
+        QCOMPARE(AiUsageLedger::cost("gemini-3.8-flash-tts", speech, today, false), (10 * 0.5 + 90 * 9.0) / 1e6);
+        QCOMPARE(AiUsageLedger::cost("gemini-3.8-flash-tts", speech, QDate(2027, 1, 2), false), (10 * 1.0 + 90 * 18.0) / 1e6);
+        QCOMPARE(AiUsageLedger::cost("gemini-3.8-flash-tts", speech, today, true), (10 * 0.5 + 90 * 9.0) / 2e6);
+        Ai::Usage ask;
+        ask.inputTokens = 100000;
+        ask.cachedTokens = 90000;
+        ask.outputTokens = 500;
+        ask.thoughtTokens = 500;
+        QCOMPARE(AiUsageLedger::cost("gemini-4-hydrogen", ask, today, false), (10000 * 1.5 + 90000 * 0.075 + 1000 * 7.5) / 1e6);
+        QCOMPARE(AiUsageLedger::cost("a-local-model", ask, today, false), 0.0);
+        QVERIFY(qAbs(AiUsageLedger::listeningCost("gemini-3.8-flash-tts", 60, today, false) - 0.81) < 0.01);
+    }
+
+    void servicesKeepOnlyWorkingKeysAndCountCosts() {
+        qunsetenv("GEMINI_API_KEY");
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        FakeServer server;
+        server.responses = {{400, "application/json", fixture("error-badkey.json")},
+                            {200, "application/json", R"({"models":[{"name":"models/gemini-4-hydrogen"},{"name":"models/gemini-3.8-flash-tts"}]})"},
+                            {200, "application/json", fixture("tts-unary.json")}};
+        GeminiProvider gemini(nullptr, server.endpoint());
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        QVERIFY(!services.hasKey());
+        QVERIFY(!services.canSpeak());
+
+        QSignalSpy checked(&services, &AiServices::keyChecked);
+        services.setKey("wrong");
+        QTRY_COMPARE(checked.count(), 1);
+        QCOMPARE(checked[0][0].toBool(), false);
+        QVERIFY(keys.load("gemini").isEmpty());
+        QVERIFY(!services.hasKey());
+
+        services.setKey("right");
+        QTRY_COMPARE(checked.count(), 2);
+        QVERIFY(checked[1][0].toBool());
+        QCOMPARE(keys.load("gemini"), QString("right"));
+        QVERIFY(services.connected());
+        QVERIFY(services.canSpeak());
+
+        Ai::SpeechRequest speech;
+        speech.text = "Hi";
+        speech.voice = "sulafat";
+        speech.stream = false;
+        Ai::Reply *reply = services.speech()->synthesize(speech);
+        services.track(reply);
+        QTRY_VERIFY(reply->isFinished());
+        QTRY_VERIFY(services.spentThisMonth() > 0);
+        QCOMPARE(services.usageThisMonth().value(0).toMap().value("feature").toString(), QString("listen"));
+
+        services.forgetKey();
+        QVERIFY(keys.load("gemini").isEmpty());
+        QVERIFY(!services.hasKey());
     }
 
     // --- Names ---------------------------------------------------------

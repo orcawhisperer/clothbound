@@ -1,7 +1,10 @@
 // Dogear — an ebook reader for Omarchy: your EPUBs and PDFs in one library,
 // and a calm page to read them on.
 
+#include "aiservices.h"
 #include "bookscheme.h"
+#include "gemini.h"
+#include "keystore.h"
 #include "cli.h"
 #include "library.h"
 #include "portalfilepicker.h"
@@ -142,6 +145,12 @@ int main(int argc, char *argv[]) {
     profile->installUrlSchemeHandler("dogear", &bookScheme);
     profile->setUrlRequestInterceptor(&offline);
     Reader reader(&library, &bookScheme);
+
+    // The composition root for intelligence: Gemini is today's provider,
+    // with its key in the keyring. Features only ever see AiServices.
+    GeminiProvider gemini;
+    SecretKeyStore keys;
+    AiServices ai(&gemini, &keys, library.database().connectionName());
     // A book named on the command line joins the library (it may live
     // anywhere) and opens.
     int bookToOpen = 0;
@@ -162,6 +171,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("library", &library);
     engine.rootContext()->setContextProperty("picker", &picker);
     engine.rootContext()->setContextProperty("reader", &reader);
+    engine.rootContext()->setContextProperty("ai", &ai);
     engine.rootContext()->setContextProperty("readerProfile", profile);
     engine.rootContext()->setContextProperty("debugMode", qEnvironmentVariableIsSet("DOGEAR_DEBUG"));
     engine.rootContext()->setContextProperty(

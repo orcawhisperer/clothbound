@@ -9,6 +9,7 @@
         <file alias="EmptyLibrary.qml">EmptyLibrary.qml</file>
         <file alias="EpubReader.qml">EpubReader.qml</file>
         <file alias="AppearancePanel.qml">AppearancePanel.qml</file>
+        <file alias="AiSettings.qml">AiSettings.qml</file>
         <file alias="ContentsPanel.qml">ContentsPanel.qml</file>
         <file alias="GoToBox.qml">GoToBox.qml</file>
         <file alias="ProgressScrubber.qml">ProgressScrubber.qml</file>

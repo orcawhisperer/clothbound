@@ -25,7 +25,7 @@ ApplicationWindow {
     readonly property bool readerOpen: reader.open
     // Letters are text while a field has the keys, not shortcuts.
     readonly property bool typing: libraryView.typing
-    readonly property bool overlayOpen: helpVisible || libraryView.menuOpen
+    readonly property bool overlayOpen: helpVisible || libraryView.menuOpen || aiSettings.open
     readonly property bool libraryKeys: !readerOpen && !typing && !overlayOpen && !libraryView.detailsOpen
 
     function openBook(bookId) {
@@ -58,15 +58,19 @@ ApplicationWindow {
     Shortcut {
         sequence: "Esc"
         context: Qt.ApplicationShortcut
-        enabled: win.helpVisible || libraryView.detailsOpen
+        enabled: win.helpVisible || libraryView.detailsOpen || aiSettings.open
         onActivated: {
             if (win.helpVisible)
                 win.helpVisible = false
+            else if (aiSettings.open)
+                aiSettings.close()
             else
                 libraryView.closeDetails()
         }
     }
     Shortcut { sequences: [StandardKey.Undo]; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: toast.runAction() }
+    Shortcut { sequences: ["Ctrl+,"]; context: Qt.ApplicationShortcut; onActivated: aiSettings.open ? aiSettings.close() : aiSettings.show() }
+    function showAiSettings() { aiSettings.show() }
 
     // --- Library ---------------------------------------------------------
     Shortcut { sequence: "/"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.focusSearch() }
@@ -151,6 +155,13 @@ ApplicationWindow {
         }
 
         Toast { id: toast }
+
+        AiSettings {
+            id: aiSettings
+            anchors.fill: parent
+            z: 55
+            onClosed: if (!win.readerOpen) libraryView.focusGrid()
+        }
 
         HelpOverlay {
             anchors.fill: parent

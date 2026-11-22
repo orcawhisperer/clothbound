@@ -1,0 +1,69 @@
+{
+ "voices": [
+  {
+   "id": "achernar",
+   "type": "prebuilt",
+   "display_name": "Achernar",
+   "language_code": "en-US",
+   "region_code": "US",
+   "accent": "General American",
+   "persona": "Storyteller & Narrator",
+   "context": "Content & Media",
+   "gender": "female",
+   "pitch": "high",
+   "description": "Soft, calm, and soothing voice with a higher pitch. Recommended for quiet or personal storytelling."
+  },
+  {
+   "id": "algenib",
+   "type": "prebuilt",
+   "display_name": "Algenib",
+   "language_code": "en-US",
+   "region_code": "US",
+   "accent": "General American",
+   "persona": "Storyteller & Narrator",
+   "context": "Content & Media",
+   "gender": "male",
+   "pitch": "low",
+   "description": "Gravelly, grounded, and hard-hitting voice with a low pitch. Recommended for dramatic narration or intense stories."
+  },
+  {
+   "id": "en-gb-advisor-2",
+   "type": "prebuilt",
+   "display_name": "Authoritative Advisor 2",
+   "language_code": "en-GB",
+   "region_code": "GB",
+   "accent": "Manchester English",
+   "persona": "Storyteller & Narrator (Lawyer)",
+   "context": "Content & Media",
+   "gender": "male",
+   "pitch": "medium",
+   "description": "44-year-old Lawyer from Manchester. Speaks with a Manchester English accent. Voice is highly approachable."
+  },
+  {
+   "id": "en-gb-storyteller-4",
+   "type": "prebuilt",
+   "display_name": "Storyteller 4",
+   "language_code": "en-GB",
+   "region_code": "GB",
+   "accent": "Bristol English",
+   "persona": "Storyteller & Narrator (Nature Documentary Narrator)",
+   "context": "Content & Media",
+   "gender": "male",
+   "pitch": "low",
+   "description": "56-year-old Nature Documentary Narrator from Bristol. Speaks with a Bristol English accent. Voice is deep, velvety, and unhurried."
+  },
+  {
+   "id": "voice_testnarrator1",
+   "model": "models/gemini-3.8-flash-tts",
+   "type": "prompted",
+   "expire_time": "2027-11-22T00:00:00Z",
+   "display_name": "Harbor Narrator",
+   "prompted": {
+    "input": "A calm harbor-master in his sixties who reads aloud slowly."
+   },
+   "language_code": "en-GB",
+   "gender": "male"
+  }
+ ],
+ "next_page_token": ""
+}

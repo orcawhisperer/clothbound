@@ -1,7 +1,10 @@
 // The command pattern follows Hype's (MIT, David Heinemeier Hansson).
 #include "cli.h"
 
+#include "aiservices.h"
 #include "bookinfo.h"
+#include "gemini.h"
+#include "keystore.h"
 #include "epubbook.h"
 #include "library.h"
 #include "pdfbook.h"
@@ -15,6 +18,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QTextStream>
 #include <cstdio>
 
 namespace {
@@ -239,6 +243,83 @@ int list(const QStringList &arguments) {
     return 0;
 }
 
+// dogear ai: the reader's Gemini key and what it has cost. The key is read
+// from standard input, so it never appears in the shell's history.
+int ai(const QStringList &arguments) {
+    Command command("ai", "Gemini for Dogear's listening and companion: status, key, forget.");
+    command.parser.addPositionalArgument("action", "status (default), key (read from standard input), or forget", "[action]");
+    command.json();
+    command.parser.process(arguments);
+    const QString action = command.argument(1).isEmpty() ? QStringLiteral("status") : command.argument(1);
+
+    Library library;
+    if (!openLibrary(library))
+        return 1;
+    GeminiProvider gemini;
+    SecretKeyStore keys;
+    AiServices services(&gemini, &keys, library.database().connectionName());
+
+    if (action == "forget") {
+        services.forgetKey();
+        print(stdout, "The Gemini key is gone from your keyring.");
+        return 0;
+    }
+    if (action == "key") {
+        QTextStream in(stdin);
+        const QString key = in.readLine().trimmed();
+        if (key.isEmpty())
+            return fail("Pipe the key in: dogear ai key < keyfile");
+        QEventLoop loop;
+        bool ok = false;
+        QString message;
+        QObject::connect(&services, &AiServices::keyChecked, [&](bool success, const QString &text) {
+            ok = success;
+            message = text;
+            loop.quit();
+        });
+        services.setKey(key);
+        loop.exec();
+        print(ok ? stdout : stderr, message);
+        return ok ? 0 : 1;
+    }
+    if (action != "status")
+        return fail("Use dogear ai status, dogear ai key, or dogear ai forget.");
+
+    if (services.hasKey()) {
+        QEventLoop loop;
+        QObject::connect(&services, &AiServices::changed, &loop, [&] {
+            if (!services.checking())
+                loop.quit();
+        });
+        services.check();
+        if (services.checking())
+            loop.exec();
+    }
+    QJsonArray usage;
+    for (const QVariant &row : services.usageThisMonth())
+        usage.append(QJsonObject::fromVariantMap(row.toMap()));
+    const QJsonObject status{{"provider", services.providerName()},
+                             {"key", services.hasKey()},
+                             {"keyLocation", services.keyLocation()},
+                             {"connected", services.connected()},
+                             {"status", services.status()},
+                             {"textModel", services.textModel()},
+                             {"speechModel", services.speechModel()},
+                             {"spentThisMonth", services.spentThisMonth()},
+                             {"budget", services.budget()},
+                             {"usage", usage}};
+    if (command.asJson()) {
+        print(status);
+    } else {
+        print(stdout, services.providerName() + ": " + services.status());
+        if (services.hasKey())
+            print(stdout, "Key in " + services.keyLocation() + "; models " + services.textModel() + ", " + services.speechModel());
+        print(stdout, QString("This month: about $%1 of a $%2 budget").arg(services.spentThisMonth(), 0, 'f', 2)
+                          .arg(services.budget(), 0, 'f', 2));
+    }
+    return services.hasKey() && !services.connected() ? 1 : 0;
+}
+
 // As Hype does: one shared copy, linked into Claude Code, found directly by Codex.
 int skill(const QStringList &arguments) {
     Command command("skill", "Print the agent skill, or install it for your coding agents with: skill install.");
@@ -291,11 +372,12 @@ QString cliSummary() {
            "  add <folder-or-book>...         Add books to the library; files are never changed\n"
            "  list                            The books in the library, with reading progress\n"
            "  info <book>                     Metadata and table of contents of an EPUB or PDF\n"
+           "  ai [status|key|forget]          Gemini for listening and the companion: key and costs\n"
            "  skill [install]                 Print the skill for coding agents, or install it";
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"add", "list", "info", "skill", "help"}.contains(word);
+    return QStringList{"add", "list", "info", "ai", "skill", "help"}.contains(word);
 }
 
 int runCli(const QStringList &arguments) {
@@ -303,6 +385,7 @@ int runCli(const QStringList &arguments) {
     return command == "add"     ? add(arguments)
            : command == "list"  ? list(arguments)
            : command == "info"  ? info(arguments)
+           : command == "ai"    ? ai(arguments)
            : command == "skill" ? skill(arguments)
                                 : help(arguments);
 }
