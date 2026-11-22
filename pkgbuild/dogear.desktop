@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Dogear
+GenericName=Ebook Reader
+Comment=Read your EPUB and PDF books
+Exec=dogear open %f
+Icon=dogear
+Terminal=false
+Categories=Office;Viewer;Education;Literature;
+MimeType=application/epub+zip;application/pdf;
+Keywords=ebook;book;epub;pdf;reader;library;read;
+StartupWMClass=dogear

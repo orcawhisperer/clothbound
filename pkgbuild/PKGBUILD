@@ -1,0 +1,26 @@
+pkgname=dogear
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='An ebook reader for Omarchy: your EPUBs and PDFs in one library, and a calm page to read them on'
+arch=('x86_64' 'aarch64')
+license=('MIT' 'OFL-1.1')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-webengine' 'qt6-webchannel' 'qt6-svg'
+         'xdg-desktop-portal' 'zlib')
+optdepends=('sdcv: look words up in your own StarDict dictionaries, offline')
+makedepends=('gcc' 'make')
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+  ./bin/build
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 build/dogear "$pkgdir/usr/bin/dogear"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 src/fonts/OFL.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-Literata.txt"
+  install -Dm644 "$startdir/dogear.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/dogear.svg"
+  install -Dm644 "$startdir/dogear.desktop" "$pkgdir/usr/share/applications/dogear.desktop"
+}

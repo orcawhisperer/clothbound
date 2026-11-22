@@ -1,0 +1,6 @@
+/build/
+/pkgbuild/pkg/
+/pkgbuild/src/
+/pkgbuild/dogear/
+*.pkg.tar.*
+*.user
