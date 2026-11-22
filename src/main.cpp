@@ -1,9 +1,11 @@
 // Dogear — an ebook reader for Omarchy: your EPUBs and PDFs in one library,
 // and a calm page to read them on.
 
+#include "bookscheme.h"
 #include "cli.h"
 #include "library.h"
 #include "portalfilepicker.h"
+#include "reader.h"
 #include "theme.h"
 #include "translator.h"
 
@@ -17,8 +19,11 @@
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQmlExpression>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QStandardPaths>
+#include <QtWebEngineQuick/QQuickWebEngineProfile>
 #include <QTimer>
 #include <QWebEngineUrlScheme>
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
@@ -95,6 +100,15 @@ int main(int argc, char *argv[]) {
     args.addVersionOption();
     args.addPositionalArgument("book", "An EPUB or PDF to open", "[book]");
     args.addOption({"screenshot", "Save a screenshot of the window and exit", "file"});
+    // For tests and the README: QML run in the window, step by step, before
+    // the screenshot is taken.
+    QCommandLineOption runOption("run", "Evaluate a QML expression in the window (repeatable)", "expression");
+    QCommandLineOption delayOption("delay", "Milliseconds before the first --run step", "ms", "1500");
+    QCommandLineOption stepOption("step", "Milliseconds between --run steps", "ms", "700");
+    for (auto *option : {&runOption, &delayOption, &stepOption}) {
+        option->setFlags(QCommandLineOption::HiddenFromHelp);
+        args.addOption(*option);
+    }
     QStringList arguments = app.arguments();
     if (arguments.value(1) == "open")
         arguments.removeAt(1);
@@ -116,6 +130,18 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     PortalFilePicker picker;
+
+    // The reading surface's own profile: nothing is written to disk (no
+    // cache, no cookies), books are served from their ZIPs, and nothing a
+    // book contains can reach the network.
+    BookScheme bookScheme;
+    OfflineInterceptor offline;
+    auto *profile = new QQuickWebEngineProfile(&app);
+    profile->setOffTheRecord(true);
+    profile->setHttpCacheType(QQuickWebEngineProfile::MemoryHttpCache);
+    profile->installUrlSchemeHandler("dogear", &bookScheme);
+    profile->setUrlRequestInterceptor(&offline);
+    Reader reader(&library, &bookScheme);
     // A book named on the command line joins the library (it may live
     // anywhere) and opens.
     int bookToOpen = 0;
@@ -135,6 +161,12 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("library", &library);
     engine.rootContext()->setContextProperty("picker", &picker);
+    engine.rootContext()->setContextProperty("reader", &reader);
+    engine.rootContext()->setContextProperty("readerProfile", profile);
+    engine.rootContext()->setContextProperty("debugMode", qEnvironmentVariableIsSet("DOGEAR_DEBUG"));
+    engine.rootContext()->setContextProperty(
+        "settingsUrl", QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
+                                           QStringLiteral("/settings.ini")));
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty())
         return 1;
@@ -144,12 +176,23 @@ int main(int argc, char *argv[]) {
     if (!library.folders().isEmpty())
         QTimer::singleShot(400, &library, &Library::rescan);
 
-    if (args.isSet("screenshot")) {
-        QTimer::singleShot(1500, &app, [&] {
-            auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-            const bool ok = window && window->grabWindow().save(args.value("screenshot"));
-            app.exit(ok ? 0 : 1);
-        });
+    const QStringList steps = args.values(runOption);
+    if (!steps.isEmpty() || args.isSet("screenshot")) {
+        QObject *root = engine.rootObjects().first();
+        const int delay = args.value(delayOption).toInt(), step = args.value(stepOption).toInt();
+        for (int i = 0; i < steps.size(); ++i)
+            QTimer::singleShot(delay + i * step, root, [root, code = steps[i]] {
+                QQmlExpression expression(qmlContext(root), root, code);
+                expression.evaluate();
+                if (expression.hasError())
+                    fprintf(stderr, "--run %s: %s\n", qPrintable(code), qPrintable(expression.error().toString()));
+            });
+        if (args.isSet("screenshot"))
+            QTimer::singleShot(delay + int(steps.size()) * step + 400, &app, [&] {
+                auto window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+                const bool ok = window && window->grabWindow().save(args.value("screenshot"));
+                app.exit(ok ? 0 : 1);
+            });
     }
     return app.exec();
 }

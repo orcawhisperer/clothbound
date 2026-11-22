@@ -174,7 +174,7 @@ FocusScope {
                     hint: "↵"
                     text: details.book.finished ? qsTr("Read again")
                         : (details.book.progress || 0) > 0.005
-                          ? qsTr("Continue reading · %1%").arg(Math.round(details.book.progress * 100).toLocaleString(Qt.locale(translator.language)))
+                          ? qsTr("Continue reading · %1%").arg(Math.round(details.book.progress * 100).toLocaleString(Qt.locale(translator.language), 'f', 0))
                           : qsTr("Read")
                     onClicked: details.read(details.bookId)
                 }

@@ -7,6 +7,9 @@
 
 #include "bookinfo.h"
 #include "bookname.h"
+#include "bookscheme.h"
+#include "library.h"
+#include "reader.h"
 #include "epubbook.h"
 #include "htmltokenizer.h"
 #include "pdfbook.h"
@@ -382,6 +385,91 @@ private slots:
         QVERIFY(!BookFiles::read(dir.filePath("missing.epub")).ok());
         QVERIFY(BookFiles::isBook("a/b.EPUB"));
         QVERIFY(!BookFiles::isBook("notes.txt"));
+    }
+
+
+    // --- Library and reader ----------------------------------------------
+
+    void libraryStoresBooksAndReadingState() {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("Marsh, Ada - Lantern Keeper, The (Harbor, 1911).epub");
+        QVERIFY(TestBooks::write(path, TestBooks::epub2(png(20, 30))));
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY2(library.open(), qPrintable(library.errorString()));
+        const int id = library.addBookFile(path);
+        QVERIFY2(id > 0, qPrintable(library.errorString()));
+        QCOMPARE(library.addBookFile(path), id);
+        const BookRecord book = library.record(id);
+        QCOMPARE(book.title, QString("The Lantern Keeper"));
+        QVERIFY(book.loose);
+        QCOMPARE(library.chapterLengths(id).size(), 2);
+        QVERIFY(book.length > 0);
+        QVERIFY(QFile::exists(dir.filePath("cache/covers/") + book.cover));
+
+        library.savePosition(id, R"({"chapter":0,"offset":12})", 0.4);
+        library.setFinished(id, true);
+        Library reopened(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(reopened.open());
+        QCOMPARE(reopened.record(id).progress, 0.4);
+        QVERIFY(reopened.record(id).finishedAt > 0);
+        QCOMPARE(reopened.record(id).position, QString(R"({"chapter":0,"offset":12})"));
+    }
+
+    void libraryGroupsEditionsIntoWorks() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        for (const char *name : {"Marsh, Ada - Lantern Keeper, The [ed. Reed] (Harbor, 1911).epub",
+                                 "Marsh, Ada - Lantern Keeper, The [ed. Gray] (Penguin, 2005).epub"}) {
+            const QString path = dir.filePath(name);
+            QVERIFY(TestBooks::write(path, TestBooks::epub2(png(20, 30))));
+            QVERIFY(library.addBookFile(path) > 0);
+        }
+        QTRY_COMPARE(library.works()->count(), 1);
+        QCOMPARE(library.works()->get(0).value("editions").toInt(), 2);
+        library.works()->setGrouped(false);
+        QCOMPARE(library.works()->count(), 2);
+        library.works()->setSearchText("penguin");
+        QCOMPARE(library.works()->count(), 1);
+    }
+
+    void schemeServesWellFormedBooksAsXml() {
+        QVERIFY(BookScheme::isWellFormed("<?xml version='1.0'?><html><body><p>x</p></body></html>"));
+        QVERIFY(!BookScheme::isWellFormed("<html><body><p>unclosed</body></html>"));
+        // Entities the XHTML DTD defines are fine for a browser's XML parser.
+        QVERIFY(BookScheme::isWellFormed("<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"x\"><html><body>a&nbsp;b</body></html>"));
+    }
+
+    void readerMapsPositionsOntoTheBook() {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("book.epub");
+        QVERIFY(TestBooks::write(path, TestBooks::epub2(png(20, 30))));
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int id = library.addBookFile(path);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY2(reader.openBook(id), qPrintable(reader.errorString()));
+        QCOMPARE(reader.chapterCount(), 2);
+        const QVariantList spine = reader.manifest().value("spine").toList();
+        QCOMPARE(spine[0].toMap().value("href").toString(), QString("OEBPS/text/chapter%201.xhtml"));
+        QVERIFY(reader.manifest().value("base").toString().startsWith("dogear://local/book/"));
+        QCOMPARE(reader.titleOfChapter(1), QString("Notes"));
+
+        const QList<int> lengths = library.chapterLengths(id);
+        const double total = lengths[0] + lengths[1];
+        QCOMPARE(reader.fractionAt(1, 0), lengths[0] / total);
+        const QVariantMap middle = reader.targetForFraction(lengths[0] / total + 0.001);
+        QCOMPARE(middle.value("chapter").toInt(), 1);
+        QCOMPARE(reader.targetForPageLabel("2").value("chapter").toInt(), 1);
+        QVERIFY(reader.targetForPageLabel("99").value("chapter").isValid());
+        QVERIFY(!reader.targetForPageLabel("xx").contains("chapter"));
+
+        reader.relocated({{"chapter", 1}, {"offset", 3}, {"snippet", "note"}, {"page", 0}, {"pages", 1}});
+        QCOMPARE(reader.chapter(), 1);
+        QCOMPARE(reader.chapterTitle(), QString("Notes"));
+        reader.close();
+        QCOMPARE(library.record(id).position, QString(R"({"chapter":1,"offset":3,"snippet":"note"})"));
     }
 
     // --- Names ---------------------------------------------------------

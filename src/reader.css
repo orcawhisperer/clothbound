@@ -1,0 +1,101 @@
+/* The reading surface around the book's pages: the page color edge to edge,
+   and the note pop-over. The pages themselves are styled from reader.js. */
+
+:root {
+    --dg-bg: #fbfaf6;
+    --dg-fg: #23221f;
+    --dg-link: #8a6a2a;
+    --dg-muted: #6f6b63;
+    --dg-popover: #ffffff;
+    --dg-border: rgba(0, 0, 0, 0.12);
+    --dg-radius: 0px;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--dg-bg);
+    color: var(--dg-fg);
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#stage {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
+#book {
+    position: absolute;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    opacity: 0;
+    transition: opacity 140ms ease-out;
+}
+
+#book.shown {
+    opacity: 1;
+}
+
+#overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.note {
+    position: absolute;
+    pointer-events: auto;
+    max-width: 440px;
+    min-width: 220px;
+    background: var(--dg-popover);
+    color: var(--dg-fg);
+    border: 1px solid var(--dg-border);
+    border-radius: var(--dg-radius);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+    padding: 14px 16px 10px;
+    font: 14px/1.45 system-ui, sans-serif;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+
+.note.shown {
+    opacity: 1;
+    transform: none;
+}
+
+.note iframe {
+    display: block;
+    width: 100%;
+    border: 0;
+    height: 40px;
+    background: transparent;
+}
+
+.note .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 14px;
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+.note .actions button {
+    font: inherit;
+    border: 0;
+    background: none;
+    padding: 2px 0;
+    color: var(--dg-link);
+    cursor: pointer;
+}
+
+.note .actions button:hover {
+    text-decoration: underline;
+}

@@ -69,7 +69,11 @@ FocusScope {
         const row = library.works.rowOfBook(bookId)
         if (row >= 0) {
             grid.currentIndex = row
-            grid.positionViewAtIndex(row, GridView.Contain)
+            // The first row keeps the continue-reading shelf above it in view.
+            if (row < grid.columns)
+                grid.positionViewAtBeginning()
+            else
+                grid.positionViewAtIndex(row, GridView.Contain)
         }
         grid.forceActiveFocus()
     }

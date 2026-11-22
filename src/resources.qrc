@@ -7,6 +7,11 @@
         <file alias="ContinueShelf.qml">ContinueShelf.qml</file>
         <file alias="CoverImage.qml">CoverImage.qml</file>
         <file alias="EmptyLibrary.qml">EmptyLibrary.qml</file>
+        <file alias="EpubReader.qml">EpubReader.qml</file>
+        <file alias="AppearancePanel.qml">AppearancePanel.qml</file>
+        <file alias="ContentsPanel.qml">ContentsPanel.qml</file>
+        <file alias="GoToBox.qml">GoToBox.qml</file>
+        <file alias="ProgressScrubber.qml">ProgressScrubber.qml</file>
         <file alias="GeneratedCover.qml">GeneratedCover.qml</file>
         <file alias="Glyph.qml">Glyph.qml</file>
         <file alias="HelpOverlay.qml">HelpOverlay.qml</file>
@@ -18,6 +23,13 @@
         <file alias="Format.js">Format.js</file>
         <file alias="Icons.js">Icons.js</file>
         <file alias="Ui.js">Ui.js</file>
+        <file alias="Themes.js">Themes.js</file>
+        <file alias="reader.html">reader.html</file>
+        <file alias="reader.js">reader.js</file>
+        <file alias="reader.css">reader.css</file>
+        <file alias="hyphenation.js">hyphenation.js</file>
+        <file alias="hyphenation/hyph-en-us.pat.txt">hyphenation/hyph-en-us.pat.txt</file>
+        <file alias="hyphenation/hyph-en-us.hyp.txt">hyphenation/hyph-en-us.hyp.txt</file>
         <file alias="dogear.svg">../pkgbuild/dogear.svg</file>
         <file alias="skill.md">skill.md</file>
         <file alias="fonts/Literata.ttf">fonts/Literata.ttf</file>

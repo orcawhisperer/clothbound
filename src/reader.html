@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Dogear</title>
+<link rel="stylesheet" href="reader.css">
+<script src="qwebchannel.js"></script>
+<script src="hyphenation.js"></script>
+<script src="reader.js"></script>
+</head>
+<body>
+<div id="stage">
+    <!-- Book pages never run scripts: the sandbox allows only same-origin
+         access, which is what lets this page lay them out. -->
+    <iframe id="book" sandbox="allow-same-origin" tabindex="-1" title="Book"></iframe>
+</div>
+<div id="overlay"></div>
+</body>
+</html>

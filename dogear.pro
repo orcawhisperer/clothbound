@@ -1,4 +1,4 @@
-QT += core gui qml quick quickcontrols2 dbus sql concurrent network pdf webenginequick webchannel
+QT += core gui qml quick quickcontrols2 dbus sql concurrent network pdf webenginecore webenginequick webchannel
 
 CONFIG += c++20 release
 TARGET = dogear
@@ -12,6 +12,7 @@ HEADERS += \
     src/bookinfo.h \
     src/bookname.h \
     src/bookrecord.h \
+    src/bookscheme.h \
     src/cli.h \
     src/epubbook.h \
     src/filepicker.h \
@@ -20,6 +21,7 @@ HEADERS += \
     src/librarymodel.h \
     src/pdfbook.h \
     src/portalfilepicker.h \
+    src/reader.h \
     src/scanner.h \
     src/theme.h \
     src/translator.h \
@@ -28,6 +30,7 @@ HEADERS += \
 SOURCES += \
     src/bookinfo.cpp \
     src/bookname.cpp \
+    src/bookscheme.cpp \
     src/cli.cpp \
     src/epubbook.cpp \
     src/htmltokenizer.cpp \
@@ -36,6 +39,7 @@ SOURCES += \
     src/main.cpp \
     src/pdfbook.cpp \
     src/portalfilepicker.cpp \
+    src/reader.cpp \
     src/scanner.cpp \
     src/theme.cpp \
     src/translator.cpp \

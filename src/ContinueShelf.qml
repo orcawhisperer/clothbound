@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
+import "Format.js" as Format
 import "Ui.js" as Ui
 
 // The books under way, newest first, each a click from where it was left.
@@ -111,7 +112,7 @@ Column {
                 }
                 Label {
                     text: {
-                        const percent = Math.round(entry.modelData.progress * 100).toLocaleString(Qt.locale(translator.language))
+                        const percent = Math.round(entry.modelData.progress * 100).toLocaleString(Qt.locale(translator.language), 'f', 0)
                         const minutes = entry.modelData.minutesLeft
                         if (minutes <= 0)
                             return qsTr("%1%").arg(percent)

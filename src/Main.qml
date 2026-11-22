@@ -1,3 +1,4 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
@@ -13,7 +14,7 @@ ApplicationWindow {
     minimumWidth: 720
     minimumHeight: 480
     visible: true
-    title: readerOpen ? readerTitle + " — Dogear" : "Dogear"
+    title: readerOpen ? reader.title + " — Dogear" : "Dogear"
     color: theme.background
 
     Material.theme: theme.light ? Material.Light : Material.Dark
@@ -21,8 +22,7 @@ ApplicationWindow {
     Material.roundedScale: theme.radius
 
     property bool helpVisible: false
-    property bool readerOpen: false
-    property string readerTitle
+    readonly property bool readerOpen: reader.open
     // Letters are text while a field has the keys, not shortcuts.
     readonly property bool typing: libraryView.typing
     readonly property bool overlayOpen: helpVisible || libraryView.menuOpen
@@ -36,8 +36,16 @@ ApplicationWindow {
             toast.show(qsTr("“%1” can't be opened: %2").arg(book.title).arg(book.problem))
             return
         }
-        library.markOpened(bookId)
-        toast.show(qsTr("Opening “%1”").arg(book.title))
+        // The reading surface starts loading with the first book and then
+        // stays, so later books open at once.
+        readerLoader.active = true
+        if (!reader.openBook(bookId))
+            toast.show(reader.errorString())
+    }
+    function closeBook() {
+        const id = reader.bookId
+        reader.close()
+        libraryView.select(id)
     }
     function toggleFullScreen() {
         visibility = visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
@@ -100,6 +108,17 @@ ApplicationWindow {
             onOpenBook: (bookId) => win.openBook(bookId)
         }
 
+        Loader {
+            id: readerLoader
+            anchors.fill: parent
+            active: false
+            visible: reader.open
+            sourceComponent: EpubReader {
+                settings: readingSettings
+                onCloseRequested: win.closeBook()
+            }
+        }
+
         // Books and folders dropped anywhere join the library.
         DropArea {
             id: drop
@@ -140,6 +159,23 @@ ApplicationWindow {
             z: 60
             onDismissed: win.helpVisible = false
         }
+    }
+
+    // How pages look, kept between sessions in ~/.config/dogear/settings.ini.
+    Settings {
+        id: readingSettings
+        location: settingsUrl
+        category: "reading"
+        property string theme: "omarchy"
+        property string font: "Literata"
+        property real fontScale: 1.15
+        property real lineHeight: 1.55
+        property string margins: "normal"
+        property bool justify: true
+        property bool hyphenate: true
+        property string layout: "auto"
+        property bool animate: true
+        property bool publisher: false
     }
 
     Connections {
