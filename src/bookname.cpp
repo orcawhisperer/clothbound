@@ -272,6 +272,18 @@ BookIdentity identify(const QString &filePath, const QString &metadataTitle, con
     }
     if (title.isEmpty() || looksLikeGarbageTitle(title))
         title = file.matched ? file.title : displayTitle(info.completeBaseName());
+    // A file name that says more about the same title ("Outline of History,
+    // Vol. 2: …" for "The Outline of History") is the better title; it keeps
+    // the metadata's leading article.
+    if (file.matched && file.title != title) {
+        const QString shortTitle = comparable(sortTitle(title)), longTitle = comparable(sortTitle(file.title));
+        if (!shortTitle.isEmpty() && longTitle.size() > shortTitle.size() + 2 && longTitle.startsWith(shortTitle)) {
+            static const QRegularExpression article(R"(^(The|A|An)\s)");
+            const auto match = article.match(title);
+            title = match.hasMatch() && !article.match(file.title).hasMatch() ? match.captured(1) + ' ' + file.title
+                                                                              : file.title;
+        }
+    }
     if (author.isEmpty())
         author = fileAuthor;
     // The file name's spelling, when it names the same person, keeps one
@@ -284,6 +296,13 @@ BookIdentity identify(const QString &filePath, const QString &metadataTitle, con
     identity.author = author;
     identity.sortTitle = sortTitle(title);
     identity.sortAuthor = sortAuthor(author);
+    // Books by several people sort under the one the collection is named
+    // for, or else under the first of them.
+    if (!fileAuthor.isEmpty() && comparable(author) != comparable(fileAuthor) &&
+        comparable(author).contains(comparable(fileAuthor)))
+        identity.sortAuthor = sortAuthor(fileAuthor);
+    else if (static const QRegularExpression several(R"(\s+(?:&|and)\s+|;\s*)"); author.contains(several))
+        identity.sortAuthor = sortAuthor(author.section(several, 0, 0));
     identity.editor = !file.editor.isEmpty() ? file.editor : metadataEditors.join(QStringLiteral(" & "));
     identity.publisher = !file.publisher.isEmpty() ? file.publisher : cleanPublisher(metadataPublisher);
     identity.year = file.year > 0 ? file.year : yearOf(metadataDate);

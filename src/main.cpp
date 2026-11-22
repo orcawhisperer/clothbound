@@ -2,6 +2,8 @@
 // and a calm page to read them on.
 
 #include "cli.h"
+#include "library.h"
+#include "portalfilepicker.h"
 #include "theme.h"
 #include "translator.h"
 
@@ -108,6 +110,20 @@ int main(int argc, char *argv[]) {
     QQuickStyle::setStyle("Material");
 
     Theme theme;
+    Library library;
+    if (!library.open()) {
+        fprintf(stderr, "The library can't be opened: %s\n", qPrintable(library.errorString()));
+        return 1;
+    }
+    PortalFilePicker picker;
+    // A book named on the command line joins the library (it may live
+    // anywhere) and opens.
+    int bookToOpen = 0;
+    if (!args.positionalArguments().isEmpty()) {
+        bookToOpen = library.addBookFile(args.positionalArguments().first());
+        if (!bookToOpen)
+            fprintf(stderr, "%s\n", qPrintable(library.errorString()));
+    }
 
     QQmlApplicationEngine engine;
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
@@ -117,9 +133,16 @@ int main(int argc, char *argv[]) {
     });
     engine.rootContext()->setContextProperty("translator", &translator);
     engine.rootContext()->setContextProperty("theme", &theme);
+    engine.rootContext()->setContextProperty("library", &library);
+    engine.rootContext()->setContextProperty("picker", &picker);
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty())
         return 1;
+    if (bookToOpen)
+        QMetaObject::invokeMethod(engine.rootObjects().first(), "openBook", Q_ARG(QVariant, bookToOpen));
+    // New books in watched folders are picked up each time Dogear starts.
+    if (!library.folders().isEmpty())
+        QTimer::singleShot(400, &library, &Library::rescan);
 
     if (args.isSet("screenshot")) {
         QTimer::singleShot(1500, &app, [&] {

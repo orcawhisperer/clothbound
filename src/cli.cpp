@@ -3,10 +3,12 @@
 
 #include "bookinfo.h"
 #include "epubbook.h"
+#include "library.h"
 #include "pdfbook.h"
 
 #include <QCommandLineParser>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -126,6 +128,117 @@ int info(const QStringList &arguments) {
     return book.ok() ? 0 : 1;
 }
 
+bool openLibrary(Library &library) {
+    if (library.open())
+        return true;
+    print(stderr, "The library can't be opened: " + library.errorString());
+    return false;
+}
+
+QJsonObject bookJson(const Library &library, const BookRecord &book) {
+    QJsonObject object{{"id", book.id},         {"title", book.title},   {"author", book.author},
+                       {"format", book.format}, {"path", book.path},     {"progress", book.progress},
+                       {"finished", book.finishedAt > 0},                {"work", book.workKey}};
+    if (!book.editionLine().isEmpty())
+        object.insert("edition", book.editionLine());
+    if (!book.problem.isEmpty())
+        object.insert("problem", book.problem);
+    if (const int minutes = library.minutesLeft(book.id); minutes > 0)
+        object.insert("minutesLeft", minutes);
+    return object;
+}
+
+int add(const QStringList &arguments) {
+    Command command("add", "Add folders or book files to the library and read them in. Files are never changed.",
+                    "<folder-or-book>");
+    command.json();
+    command.parser.process(arguments);
+    const QStringList paths = command.parser.positionalArguments().mid(1);
+    if (paths.isEmpty())
+        return fail("Name a folder of books, or a book.");
+    Library library;
+    if (!openLibrary(library))
+        return 1;
+
+    QEventLoop loop;
+    QObject::connect(&library, &Library::scanFinished, &loop, &QEventLoop::quit);
+    QObject::connect(&library, &Library::problem, [](const QString &message) { print(stderr, message); });
+    if (!command.asJson())
+        QObject::connect(&library, &Library::scanProgressChanged, [&library] {
+            fprintf(stderr, "\rReading %d of %d books…", library.scanDone(), library.scanTotal());
+        });
+    bool scanning = false, ok = true;
+    QList<int> files;
+    for (const QString &path : paths) {
+        const QFileInfo info(path);
+        if (info.isDir()) {
+            library.addFolder(info.absoluteFilePath());
+            scanning = true;
+        } else if (const int id = library.addBookFile(path)) {
+            files.append(id);
+        } else {
+            print(stderr, path + ": " + library.errorString());
+            ok = false;
+        }
+    }
+    int added = 0, updated = 0;
+    if (scanning) {
+        QObject::connect(&library, &Library::scanFinished, [&](int a, int u) {
+            added = a;
+            updated = u;
+        });
+        loop.exec();
+        if (!command.asJson())
+            fprintf(stderr, "\n");
+    }
+    added += int(files.size());
+    if (command.asJson()) {
+        print(QJsonObject{{"added", added}, {"updated", updated}, {"books", library.bookCount()},
+                          {"folders", QJsonArray::fromStringList(library.folders())}});
+    } else {
+        print(stdout, QString("Added %1, updated %2; %3 books in the library.")
+                          .arg(added).arg(updated).arg(library.bookCount()));
+    }
+    return ok ? 0 : 1;
+}
+
+int list(const QStringList &arguments) {
+    Command command("list", "List the books in the library, by author and title.");
+    command.json();
+    command.parser.process(arguments);
+    Library library;
+    if (!openLibrary(library))
+        return 1;
+    QList<BookRecord> books;
+    for (const BookRecord &book : library.records())
+        if (book.visible())
+            books.append(book);
+    std::sort(books.begin(), books.end(), [](const BookRecord &a, const BookRecord &b) {
+        const int c = a.sortAuthor.localeAwareCompare(b.sortAuthor);
+        return c != 0 ? c < 0 : a.sortTitle.localeAwareCompare(b.sortTitle) < 0;
+    });
+    if (command.asJson()) {
+        QJsonArray array;
+        for (const BookRecord &book : std::as_const(books))
+            array.append(bookJson(library, book));
+        print(array);
+        return 0;
+    }
+    for (const BookRecord &book : std::as_const(books)) {
+        QString line = book.title;
+        if (!book.author.isEmpty())
+            line += " — " + book.author;
+        if (!book.editionLine().isEmpty())
+            line += " (" + book.editionLine() + ")";
+        if (book.finishedAt > 0)
+            line += "  ✓";
+        else if (book.progress > 0)
+            line += QString("  %1%").arg(qRound(book.progress * 100));
+        print(stdout, line);
+    }
+    return 0;
+}
+
 // As Hype does: one shared copy, linked into Claude Code, found directly by Codex.
 int skill(const QStringList &arguments) {
     Command command("skill", "Print the agent skill, or install it for your coding agents with: skill install.");
@@ -175,15 +288,21 @@ QString cliSummary() {
     return "Reader:\n"
            "  open [book]                     Open the library, or a book where you left off\n\n"
            "Commands that need no display (dogear help <command> for options):\n"
+           "  add <folder-or-book>...         Add books to the library; files are never changed\n"
+           "  list                            The books in the library, with reading progress\n"
            "  info <book>                     Metadata and table of contents of an EPUB or PDF\n"
            "  skill [install]                 Print the skill for coding agents, or install it";
 }
 
-bool isCliCommand(const QString &word) { return QStringList{"info", "skill", "help"}.contains(word); }
+bool isCliCommand(const QString &word) {
+    return QStringList{"add", "list", "info", "skill", "help"}.contains(word);
+}
 
 int runCli(const QStringList &arguments) {
     const QString command = arguments.value(1);
-    return command == "info"    ? info(arguments)
+    return command == "add"     ? add(arguments)
+           : command == "list"  ? list(arguments)
+           : command == "info"  ? info(arguments)
            : command == "skill" ? skill(arguments)
                                 : help(arguments);
 }

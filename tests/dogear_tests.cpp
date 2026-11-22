@@ -468,6 +468,18 @@ private slots:
         QCOMPARE(id.year, 1920);
         QVERIFY(id.workKey.endsWith("|v2"));
 
+        // A file name more specific than the metadata title wins.
+        id = BookName::identify("/b/Marsh, Ada - Atlas of Tides, Vol. 2_ The South (Harbor, 2004).epub",
+                                "The Atlas of Tides", {"Ada Marsh"}, {}, {}, {});
+        QCOMPARE(id.title, QString("The Atlas of Tides, Vol. 2: The South"));
+        QVERIFY(id.workKey.endsWith("|v2"));
+
+        // Several authors sort under the collection's own.
+        id = BookName::identify("/b/Marsh, Ada - Letters [with Tom Reed] (Harbor, 1935).pdf",
+                                "Letters", {"Tom Reed & Ada Marsh"}, {}, {}, {});
+        QCOMPARE(id.author, QString("Tom Reed & Ada Marsh"));
+        QCOMPARE(id.sortAuthor, QString("Marsh, Ada"));
+
         // Without a file-name pattern, metadata and publisher clean up.
         id = BookName::identify("/b/x.epub", "Emma", {"Austen, Jane"}, {"Ed Itor"}, "Harbor Books Ltd", "1815-12-23");
         QCOMPARE(id.author, QString("Jane Austen"));
