@@ -1,4 +1,4 @@
-QT += core gui qml quick quickcontrols2 dbus sql concurrent network pdf webenginecore webenginequick webchannel
+QT += core gui qml quick quickcontrols2 dbus sql concurrent network multimedia pdf webenginecore webenginequick webchannel
 
 CONFIG += c++20 release
 TARGET = dogear
@@ -15,6 +15,7 @@ HEADERS += \
     src/ai.h \
     src/aiservices.h \
     src/aiusage.h \
+    src/audiocache.h \
     src/bookinfo.h \
     src/bookname.h \
     src/bookrecord.h \
@@ -27,10 +28,13 @@ HEADERS += \
     src/keystore.h \
     src/library.h \
     src/librarymodel.h \
+    src/narration.h \
     src/pdfbook.h \
     src/portalfilepicker.h \
     src/reader.h \
     src/scanner.h \
+    src/speech.h \
+    src/speechplayer.h \
     src/sseparser.h \
     src/theme.h \
     src/translator.h \
@@ -39,6 +43,7 @@ HEADERS += \
 SOURCES += \
     src/aiservices.cpp \
     src/aiusage.cpp \
+    src/audiocache.cpp \
     src/bookinfo.cpp \
     src/bookname.cpp \
     src/bookscheme.cpp \
@@ -49,11 +54,14 @@ SOURCES += \
     src/keystore.cpp \
     src/library.cpp \
     src/librarymodel.cpp \
+    src/narration.cpp \
     src/main.cpp \
     src/pdfbook.cpp \
     src/portalfilepicker.cpp \
     src/reader.cpp \
     src/scanner.cpp \
+    src/speech.cpp \
+    src/speechplayer.cpp \
     src/sseparser.cpp \
     src/theme.cpp \
     src/translator.cpp \

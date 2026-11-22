@@ -20,6 +20,7 @@ FocusScope {
     readonly property bool panelOpen: contents.open || appearance.open || goTo.open
     property bool chromeShown: false
     property bool surfaceReady: false
+    property bool listening: false
 
     signal closeRequested()
 
@@ -47,7 +48,8 @@ FocusScope {
             animate: settings.animate,
             publisher: settings.publisher,
             marginTop: 54,
-            marginBottom: 54,
+            // Room for the listen bar under the text while listening.
+            marginBottom: narration.active ? 84 : 54,
             radius: theme.radius,
             strings: { goToNote: qsTr("Go to note") },
         }
@@ -58,12 +60,31 @@ FocusScope {
         js("dogear.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
            + JSON.stringify(style()) + ")")
     }
-    function next() { js("dogear.next()") }
-    function prev() { js("dogear.prev()") }
-    function nextChapter() { js("dogear.nextChapter()") }
-    function prevChapter() { js("dogear.prevChapter()") }
-    function back() { js("dogear.back()") }
-    function goTo(target) { js("dogear.goTo(" + JSON.stringify(target) + ")") }
+    // Turning pages by hand while listening leaves the voice where it is;
+    // "Follow along" brings the page back to it.
+    function leaveVoice() {
+        if (narration.active)
+            narration.following = false
+    }
+    function next() { leaveVoice(); js("dogear.next()") }
+    function prev() { leaveVoice(); js("dogear.prev()") }
+    function nextChapter() { leaveVoice(); js("dogear.nextChapter()") }
+    function prevChapter() { leaveVoice(); js("dogear.prevChapter()") }
+    function back() { leaveVoice(); js("dogear.back()") }
+    function goTo(target) { leaveVoice(); js("dogear.goTo(" + JSON.stringify(target) + ")") }
+
+    // Listening starts from the top of the page in view.
+    function listen() {
+        if (narration.active) {
+            narration.stop()
+            return
+        }
+        js("JSON.stringify(dogear.listeningStart())", function(result) {
+            const place = JSON.parse(result || "null")
+            if (place)
+                narration.start(place.chapter, place.offset)
+        })
+    }
     function closePanels() {
         contents.close()
         appearance.close()
@@ -112,6 +133,30 @@ FocusScope {
         function onLayoutChanged() { styleTimer.restart() }
         function onAnimateChanged() { styleTimer.restart() }
         function onPublisherChanged() { styleTimer.restart() }
+    }
+
+    Connections {
+        target: narration
+        function onBlocksWanted(chapter) { view.js("dogear.requestSpeakable(" + chapter + ")") }
+        function onSpeaking(chapter, start, end) {
+            if (chapter === reader.chapter)
+                view.js("dogear.speak(" + start + "," + end + "," + narration.following + ")")
+            else if (narration.following)
+                view.js("dogear.goTo({chapter:" + chapter + ",offset:" + start + ",instant:true,quiet:true})"
+                        + ".then(() => dogear.speak(" + start + "," + end + ",true))")
+        }
+        function onStateChanged() {
+            if (narration.active !== view.listening) {
+                view.listening = narration.active
+                styleTimer.restart()
+            }
+            if (!narration.active)
+                view.js("dogear.highlight('dg-speaking', [])")
+        }
+        function onNeedsKey() {
+            toast.show(qsTr("Listening uses your Gemini key. Add it to start."))
+            win.showAiSettings()
+        }
     }
 
     Connections {
@@ -254,7 +299,7 @@ FocusScope {
         anchors.leftMargin: 28
         anchors.rightMargin: 28
         height: 44
-        opacity: view.chromeShown ? 0 : 1
+        opacity: view.chromeShown || narration.active ? 0 : 1
         Behavior on opacity { NumberAnimation { duration: 160 } }
 
         Label {
@@ -422,6 +467,17 @@ FocusScope {
         }
     }
 
+    ListenBar {
+        id: listenBar
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: narration.active ? parent.height - height - (view.chromeShown ? 84 : 14) : parent.height + 10
+        Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        visible: y < parent.height
+        look: view.look
+        onFollowRequested: narration.following = true
+        onVoiceRequested: toast.show(qsTr("Voices are coming next"))
+    }
+
     ContentsPanel {
         id: contents
         height: parent.height
@@ -460,4 +516,14 @@ FocusScope {
     Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: view.visible; onActivated: view.resize(0) }
     Shortcut { sequence: "Tab"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
     Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: view.visible && !win.helpVisible; onActivated: view.dismiss() }
+    // Listening.
+    Shortcut { sequence: "L"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.listen() }
+    Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.toggle() }
+    Shortcut { sequence: ","; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.previousParagraph() }
+    Shortcut { sequence: "."; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.nextParagraph() }
+    Shortcut { sequences: ["<", "Shift+,"]; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.rate = narration.rate - 0.1 }
+    Shortcut { sequences: [">", "Shift+."]; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.rate = narration.rate + 0.1 }
+    Shortcut { sequence: "Media Play"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.resume() }
+    Shortcut { sequence: "Media Pause"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.pause() }
+    Shortcut { sequence: "Toggle Media Play/Pause"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.toggle() }
 }

@@ -22,3 +22,11 @@ function hash(text) {
         h = (h * 31 + text.charCodeAt(i)) | 0
     return Math.abs(h)
 }
+
+// Black or white, whichever reads on `color` (WCAG relative luminance).
+function readableOn(color) {
+    var c = Qt.lighter(color, 1.0)
+    function linear(v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4) }
+    var luminance = 0.2126 * linear(c.r) + 0.7152 * linear(c.g) + 0.0722 * linear(c.b)
+    return luminance > 0.179 ? "black" : "white"
+}

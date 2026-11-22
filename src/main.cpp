@@ -2,11 +2,13 @@
 // and a calm page to read them on.
 
 #include "aiservices.h"
+#include "audiocache.h"
 #include "bookscheme.h"
 #include "gemini.h"
 #include "keystore.h"
 #include "cli.h"
 #include "library.h"
+#include "narration.h"
 #include "portalfilepicker.h"
 #include "reader.h"
 #include "theme.h"
@@ -151,6 +153,9 @@ int main(int argc, char *argv[]) {
     GeminiProvider gemini;
     SecretKeyStore keys;
     AiServices ai(&gemini, &keys, library.database().connectionName());
+    AudioCache audioCache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/audio"),
+                          library.database().connectionName());
+    Narration narration(&ai, &audioCache, &reader, &library);
     // A book named on the command line joins the library (it may live
     // anywhere) and opens.
     int bookToOpen = 0;
@@ -172,6 +177,8 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("picker", &picker);
     engine.rootContext()->setContextProperty("reader", &reader);
     engine.rootContext()->setContextProperty("ai", &ai);
+    engine.rootContext()->setContextProperty("narration", &narration);
+    engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);
     engine.rootContext()->setContextProperty("debugMode", qEnvironmentVariableIsSet("DOGEAR_DEBUG"));
     engine.rootContext()->setContextProperty(

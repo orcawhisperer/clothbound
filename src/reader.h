@@ -86,6 +86,8 @@ public:
     Q_INVOKABLE void openExternal(const QString &url);
     Q_INVOKABLE void keyPressed(const QString &key, int modifiers);
     Q_INVOKABLE void log(const QString &message);
+    // A chapter's blocks to read aloud, as JSON from the surface.
+    Q_INVOKABLE void speakableReady(int chapter, const QString &blocks) { emit speakable(chapter, blocks); }
 
     // Progress through the whole book at a chapter and an offset in it.
     double fractionAt(int chapter, qint64 offset) const;
@@ -99,6 +101,7 @@ signals:
     void externalLink(const QString &url);
     void key(const QString &key, int modifiers);
     void failed(const QString &message);
+    void speakable(int chapter, const QString &blocks);
 
 private:
     void savePosition();

@@ -922,7 +922,56 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         await show(place, false)
     }
 
-    // --- The window's interface ------------------------------------------------
+    // --- Listening ---------------------------------------------------------------
+
+    // What can be read aloud from a chapter document, block by block, in
+    // the text model's offsets: each paragraph's text, the spans not to say
+    // (note markers), and what kind of block it is.
+    const sceneBreak = /^\s*(?:[*⁂※✻❦•·~#]\s*){1,7}$/
+
+    function blocksOf(doc) {
+        const index = buildIndex(doc)
+        const blocks = []
+        const blockSelector = 'p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, dt, figcaption, td, th, pre, div, section, article, aside, body'
+        let current = null
+        for (const entry of index.nodes) {
+            const parent = entry.node.parentElement
+            const block = parent ? parent.closest(blockSelector) : null
+            if (!current || current.element !== block) {
+                current = { element: block, start: entry.start, end: entry.start, skips: [] }
+                blocks.push(current)
+            }
+            current.end = entry.start + entry.length
+            // Note references and their markers are seen, not heard.
+            const anchor = parent && parent.closest('a')
+            const marker = parent && parent.closest('sup, sub')
+            if ((anchor && hrefOf(anchor) && isNoteReference(anchor)) ||
+                (marker && /^[\s\d*†‡§¶#a-z.,]*$/i.test(entry.node.data)))
+                current.skips.push([entry.start, entry.start + entry.length])
+        }
+        const result = []
+        for (const block of blocks) {
+            const text = index.text.slice(block.start, block.end)
+            if (!text.trim())
+                continue
+            const tag = block.element ? block.element.localName : ''
+            const kind = sceneBreak.test(text) ? 'break' : /^h[1-6]$/.test(tag) ? 'heading' : 'text'
+            result.push({ start: block.start, end: block.end, text, skips: block.skips, kind })
+        }
+        return result
+    }
+
+    // The visible chapter's blocks, or another chapter's, parsed aside
+    // without showing it.
+    async function blocksOfChapter(chapter) {
+        if (chapter === state.chapter && state.index)
+            return blocksOf(chapterDocument())
+        const url = new URL(state.book.base + state.book.spine[chapter].href)
+        const doc = await documentAt(url, chapter)
+        return blocksOf(doc)
+    }
+
+        // --- The window's interface ------------------------------------------------
 
     const api = {
         open(book, position, style) {
@@ -1011,7 +1060,8 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
 
         goTo(place) {
             return run(async () => {
-                remember()
+                if (!place.quiet)
+                    remember()
                 await show(place, place.chapter === state.chapter && !place.instant)
             })
         },
@@ -1062,6 +1112,39 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 view.CSS.highlights.set(name, new view.Highlight(...ranges))
             else
                 view.CSS.highlights.delete(name)
+        },
+
+        // The blocks to read aloud from a chapter, reported to the bridge
+        // when they're ready (the window can't wait on a promise).
+        requestSpeakable(chapter) {
+            const wanted = chapter === undefined || chapter === null || chapter < 0 ? state.chapter : chapter
+            blocksOfChapter(wanted)
+                .then(blocks => state.bridge.speakableReady(wanted, JSON.stringify(blocks)))
+                .catch(error => {
+                    log(error && error.stack || error)
+                    state.bridge.speakableReady(wanted, '[]')
+                })
+        },
+
+        // The offset the narration should start from: the top of this page.
+        listeningStart() {
+            return state.location ? { chapter: state.location.chapter, offset: state.location.offset } : null
+        },
+
+        // The sentence being spoken: highlighted, and the page turned to it
+        // when `follow` is set.
+        speak(start, end, follow) {
+            if (!state.index)
+                return
+            api.highlight('dg-speaking', [{ start, end }])
+            if (!follow)
+                return
+            const page = pageOfOffset(start)
+            if (page !== state.page)
+                run(async () => {
+                    await turnTo(page, true)
+                    report()
+                })
         },
 
         // The selected text, for copying from the window.

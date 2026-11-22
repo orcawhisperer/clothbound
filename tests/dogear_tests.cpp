@@ -5,10 +5,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkReply>
+#include <QSqlDatabase>
 #include <QTemporaryDir>
+#include <cmath>
 #include <QtTest>
 
 #include "aiservices.h"
+#include "audiocache.h"
 #include "aiusage.h"
 #include "bookinfo.h"
 #include "fakeserver.h"
@@ -22,6 +25,8 @@
 #include "epubbook.h"
 #include "htmltokenizer.h"
 #include "pdfbook.h"
+#include "speech.h"
+#include "speechplayer.h"
 #include "testbooks.h"
 #include "theme.h"
 #include "translator.h"
@@ -69,6 +74,225 @@ private:
     }
 
 private slots:
+
+    // --- Listening -----------------------------------------------------
+
+    static SpeechBlock block(qint64 start, const QString &text, const QString &kind = "text") {
+        SpeechBlock b;
+        b.start = start;
+        b.end = start + text.size();
+        b.text = text;
+        b.kind = kind;
+        return b;
+    }
+
+    void speechFindsSentences() {
+        const SpeechBlock b = block(100, "Mr. Hyde met H. G. Wells at noon. “Who are you?” he asked. Nobody knew… "
+                                         "and then e.g. tea was served.");
+        const QList<SpeechSentence> said = Speech::sentences(b);
+        QCOMPARE(said.size(), 3);
+        QCOMPARE(said[0].text, QString("Mr. Hyde met H. G. Wells at noon."));
+        QCOMPARE(said[1].text, QString("“Who are you?” he asked."));
+        QCOMPARE(said[2].text, QString("Nobody knew… and then e.g. tea was served."));
+        // Offsets are the reader's, so the highlight lands on the words.
+        QCOMPARE(said[0].start, 100);
+        QCOMPARE(b.text.mid(said[1].start - 100, said[1].end - said[1].start), said[1].text);
+    }
+
+    void speechLeavesOutNoteMarkers() {
+        SpeechBlock b = block(0, "He arrived in Paris.12 It rained.");
+        b.skips = {{20, 22}};
+        const QList<SpeechSentence> said = Speech::sentences(b);
+        QCOMPARE(said.size(), 2);
+        QCOMPARE(said[0].text, QString("He arrived in Paris."));
+        // The marker is inside the highlight, though it isn't said.
+        QCOMPARE(said[0].end, 22);
+        QCOMPARE(said[1].text, QString("It rained."));
+    }
+
+    void speechSaysHeadingsWell() {
+        QCOMPARE(Speech::spokenHeading("V"), QString("5."));
+        QCOMPARE(Speech::spokenHeading("CHAPTER XII"), QString("Chapter 12."));
+        QCOMPARE(Speech::spokenHeading("Part iv: The Return"), QString("Part 4: The Return."));
+        QCOMPARE(Speech::spokenHeading("IV. THE GOLDEN AGE"), QString("4. The Golden Age."));
+        QCOMPARE(Speech::spokenHeading("XL — Twenty-one"), QString("40 — Twenty-one."));
+        // Not numerals: a pronoun, a letter, a word.
+        QCOMPARE(Speech::spokenHeading("I AM LEGEND"), QString("I Am Legend."));
+        QCOMPARE(Speech::spokenHeading("Appendix C"), QString("Appendix C."));
+        QCOMPARE(Speech::spokenHeading("Civil War"), QString("Civil War."));
+        QCOMPARE(Speech::spokenHeading("“THE END”"), QString("“The End.”"));
+        QCOMPARE(Speech::spokenHeading("Was it?"), QString("Was it?"));
+    }
+
+    void speechMakesClips() {
+        const QString first = "The Time Traveller was expounding a recondite matter to us.";
+        const QString rest = " His grey eyes shone and twinkled. The fire burned brightly. Our chairs embraced us.";
+        QList<SpeechBlock> blocks{block(0, "V", "heading"), block(1, "THE GOLDEN AGE", "heading"),
+                                  block(15, first + rest), block(200, "“Yes,” he said."),
+                                  block(220, "“No.”"), block(230, "* * *", "break"),
+                                  block(240, "Morning came.")};
+        QList<SpeechClip> made = Speech::clips(3, blocks, 0, true);
+        // The number and title together, then one sentence to start at once,
+        // then the rest of the paragraph.
+        QCOMPARE(made[0].text, QString("5. The Golden Age."));
+        QCOMPARE(made[0].sentences.size(), 2);
+        QCOMPARE(made[0].block, 0);
+        QCOMPARE(made[1].text, first);
+        QCOMPARE(made[1].block, 2);
+        // Short lines of dialogue join the clip before them, so a page of
+        // conversation isn't a request a line.
+        QCOMPARE(made[2].text, rest.trimmed() + " “Yes,” he said. “No.”");
+        QCOMPARE(made[2].block, 2);
+        // A scene break is a pause.
+        QCOMPARE(made[3].pauseMs, 1300);
+        QCOMPARE(made[4].text, QString("Morning came."));
+        QCOMPARE(made.size(), 5);
+        for (const SpeechClip &clip : std::as_const(made))
+            QCOMPARE(clip.chapter, 3);
+
+        // From the middle of a paragraph: from the sentence there on, and
+        // past the headings.
+        made = Speech::clips(3, blocks, 15 + first.size() + 5, false);
+        QVERIFY(made[0].text.startsWith(rest.trimmed()));
+        QCOMPARE(made[0].block, 2);
+    }
+
+    void speechBeginsAClipWhereTheMoodChanges() {
+        const QList<SpeechBlock> blocks{block(0, "It was quiet."), block(20, "“Hush,” she said."),
+                                        block(40, "They waited."), block(60, "Then the door burst open.")};
+        // Short paragraphs share a clip, unless the mood changes between them.
+        QCOMPARE(Speech::clips(0, blocks, 0, false).size(), 1);
+        const QList<SpeechClip> made = Speech::clips(0, blocks, 0, false, 1500, 600, {1, 3});
+        QCOMPARE(made.size(), 3);
+        QCOMPARE(made[0].block, 0);
+        QCOMPARE(made[1].block, 1);
+        QCOMPARE(made[1].text, QString("“Hush,” she said. They waited."));
+        QCOMPARE(made[2].block, 3);
+
+        const QMap<int, QString> changes{{1, "hushed"}, {3, "urgent"}, {5, ""}};
+        QCOMPARE(Speech::moodAt(changes, 0), QString());
+        QCOMPARE(Speech::moodAt(changes, 2), QString("hushed"));
+        QCOMPARE(Speech::moodAt(changes, 3), QString("urgent"));
+        QCOMPARE(Speech::moodAt(changes, 7), QString());
+        QCOMPARE(Speech::styleFor("hushed", false), QString("Hushed and low."));
+        QCOMPARE(Speech::styleFor("hushed", true), QString("Hushed, almost a whisper."));
+        QCOMPARE(Speech::styleFor("", false), QString());
+        QCOMPARE(Speech::styleFor("shouty", true), QString());
+        for (const QString &mood : Speech::moods())
+            QVERIFY(mood == "neutral" || !Speech::styleFor(mood, false).isEmpty());
+    }
+
+    void speechSplitsLongParagraphs() {
+        QString text;
+        for (int i = 0; i < 60; ++i)
+            text += QStringLiteral("Sentence number %1 goes on for a little while longer. ").arg(i);
+        const QList<SpeechClip> made = Speech::clips(0, {block(0, text.trimmed())}, 0, true, 1500, 600);
+        QVERIFY(made.size() > 3);
+        QCOMPARE(made[0].sentences.size(), 1);
+        QVERIFY(made[1].text.size() <= 400);
+        QVERIFY(made[2].text.size() <= 900);
+        qsizetype total = 0;
+        for (const SpeechClip &clip : made) {
+            QVERIFY(clip.text.size() <= 1500);
+            total += clip.sentences.size();
+        }
+        QCOMPARE(total, 60);
+    }
+
+    void speechTimelineCoversTheClip() {
+        SpeechClip clip;
+        clip.sentences = {{0, 10, "Short one."}, {11, 80, "A much longer sentence, with a pause or two; and more after it."}};
+        const auto spans = Speech::timeline(clip);
+        QCOMPARE(spans.size(), 2);
+        QCOMPARE(spans[0].first, 0.0);
+        QCOMPARE(spans[1].second, 1.0);
+        QCOMPARE(spans[0].second, spans[1].first);
+        QVERIFY(spans[0].second < 0.3);
+    }
+
+    void stretcherKeepsPitchAtSpeed() {
+        // Two seconds of a 200 Hz tone, played at 1.5×: two thirds as long,
+        // still 200 Hz.
+        const int rate = 24000;
+        QVector<qint16> tone(2 * rate);
+        for (int n = 0; n < tone.size(); ++n)
+            tone[n] = qint16(8000 * std::sin(2 * M_PI * 200 * n / rate));
+        Stretcher stretcher;
+        stretcher.reset();
+        QVector<qint16> out;
+        while (stretcher.process(tone.constData(), tone.size(), true, 1.5, 4096, out)) {
+        }
+        const double seconds = double(out.size()) / rate;
+        QVERIFY2(std::abs(seconds - 2.0 / 1.5) < 0.1, qPrintable(QString::number(seconds)));
+        int crossings = 0;
+        for (int n = rate / 10; n + 1 < out.size() - rate / 10; ++n)
+            crossings += (out[n] < 0) != (out[n + 1] < 0) ? 1 : 0;
+        const double hertz = crossings / 2.0 / (double(out.size() - rate / 5) / rate);
+        QVERIFY2(std::abs(hertz - 200) < 6, qPrintable(QString::number(hertz)));
+        // The level holds: no dips where frames overlap.
+        qint16 peak = 0;
+        for (int n = rate / 10; n < out.size() - rate / 10; ++n)
+            peak = qMax<qint16>(peak, qAbs(out[n]));
+        QVERIFY(peak > 7000 && peak < 9000);
+    }
+
+    void stretcherWaitsForAudioStillArriving() {
+        QVector<qint16> audio(3000, 100);
+        Stretcher stretcher;
+        stretcher.reset();
+        QVector<qint16> out;
+        // Not enough yet for a frame and its search: nothing, but not done.
+        QVERIFY(stretcher.process(audio.constData(), 1000, false, 1.25, 4096, out));
+        QVERIFY(out.isEmpty());
+        QVERIFY(stretcher.process(audio.constData(), audio.size(), false, 1.25, 4096, out));
+        QVERIFY(!out.isEmpty());
+        // Once complete, it flushes and ends.
+        while (stretcher.process(audio.constData(), audio.size(), true, 1.25, 4096, out)) {
+        }
+        QVERIFY(!stretcher.process(audio.constData(), audio.size(), true, 1.25, 4096, out));
+    }
+
+    void audioCacheKeepsClips() {
+        if (QStandardPaths::findExecutable("ffmpeg").isEmpty())
+            QSKIP("ffmpeg isn't installed");
+        QTemporaryDir dir;
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", "cachetest");
+            db.setDatabaseName(dir.filePath("cache.db"));
+            QVERIFY(db.open());
+            AudioCache cache(dir.filePath("audio"), "cachetest");
+            const QString key = AudioCache::keyFor("gemini", "tts", "sulafat", "", "Hello.");
+            QVERIFY(key != AudioCache::keyFor("gemini", "tts", "gacrux", "", "Hello."));
+            QVERIFY(key != AudioCache::keyFor("gemini", "tts", "sulafat", "whispered", "Hello."));
+            QVERIFY(cache.lookup(key).isEmpty());
+
+            QByteArray pcm(24000 * 2, '\0');
+            auto *samples = reinterpret_cast<qint16 *>(pcm.data());
+            for (int n = 0; n < 24000; ++n)
+                samples[n] = qint16(4000 * std::sin(2 * M_PI * 220 * n / 24000.0));
+            QSignalSpy stored(&cache, &AudioCache::stored);
+            cache.store(key, pcm, 24000);
+            QVERIFY(stored.wait(10000));
+            const QString file = cache.lookup(key);
+            QVERIFY(file.endsWith(".opus"));
+            QVERIFY(QFileInfo(file).size() > 1000);
+            QVERIFY(!QFile::exists(file + ".part"));
+            QVERIFY(cache.megabytes() > 0);
+
+            // A file gone from the disk is forgotten.
+            QFile::remove(file);
+            QVERIFY(cache.lookup(key).isEmpty());
+
+            // A director's answer is kept beside the audio, and cleared with it.
+            QVERIFY(cache.directions("chapter").isEmpty());
+            cache.storeDirections("chapter", "{\"changes\":[]}");
+            QCOMPARE(cache.directions("chapter"), QString("{\"changes\":[]}"));
+            cache.clear();
+            QVERIFY(cache.directions("chapter").isEmpty());
+        }
+        QSqlDatabase::removeDatabase("cachetest");
+    }
+
     // --- Theme ---------------------------------------------------------
 
     void themeFallsBack() {

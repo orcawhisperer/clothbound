@@ -74,6 +74,9 @@ public:
     void savePosition(int id, const QString &position, double progress);
     void addReadingTime(int id, int seconds, qint64 charsRead);
     QList<int> chapterLengths(int id) const;
+    // Small per-book choices, such as the narrator's voice.
+    QString bookSetting(int id, const QString &key) const;
+    void setBookSetting(int id, const QString &key, const QString &value);
     void setChapterLengths(int id, const QList<int> &lengths);
 
     QSqlDatabase database() const { return QSqlDatabase::database(m_connection); }

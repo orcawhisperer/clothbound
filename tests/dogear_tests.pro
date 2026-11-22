@@ -1,4 +1,4 @@
-QT += core gui quick quickcontrols2 testlib dbus sql concurrent network pdf webenginecore
+QT += core gui quick quickcontrols2 testlib dbus sql concurrent network multimedia pdf webenginecore
 CONFIG += c++20 testcase
 TARGET = dogear_tests
 TEMPLATE = app
@@ -12,6 +12,9 @@ HEADERS += \
     ../src/ai.h \
     ../src/aiservices.h \
     ../src/aiusage.h \
+    ../src/audiocache.h \
+    ../src/speech.h \
+    ../src/speechplayer.h \
     ../src/gemini.h \
     ../src/keystore.h \
     ../src/sseparser.h \
@@ -36,6 +39,9 @@ SOURCES += \
     dogear_tests.cpp \
     ../src/aiservices.cpp \
     ../src/aiusage.cpp \
+    ../src/audiocache.cpp \
+    ../src/speech.cpp \
+    ../src/speechplayer.cpp \
     ../src/gemini.cpp \
     ../src/keystore.cpp \
     ../src/sseparser.cpp \

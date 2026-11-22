@@ -166,6 +166,8 @@ bool Library::migrate() {
         "CREATE INDEX IF NOT EXISTS annotations_book ON annotations (book_id)",
         "CREATE TABLE IF NOT EXISTS reading_days (book_id INTEGER NOT NULL, day TEXT NOT NULL,"
         " seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (book_id, day))",
+        "CREATE TABLE IF NOT EXISTS book_settings (book_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,"
+        " PRIMARY KEY (book_id, key))",
         "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema', '1')",
     };
     db.transaction();
@@ -707,6 +709,23 @@ void Library::addReadingTime(int id, int seconds, qint64 charsRead) {
     }
     db.commit();
     m_books[id].secondsRead += seconds;
+}
+
+QString Library::bookSetting(int id, const QString &key) const {
+    QSqlQuery query(database());
+    query.prepare(QStringLiteral("SELECT value FROM book_settings WHERE book_id = ? AND key = ?"));
+    query.addBindValue(id);
+    query.addBindValue(key);
+    return query.exec() && query.next() ? query.value(0).toString() : QString();
+}
+
+void Library::setBookSetting(int id, const QString &key, const QString &value) {
+    QSqlQuery query(database());
+    query.prepare(QStringLiteral("INSERT OR REPLACE INTO book_settings (book_id, key, value) VALUES (?, ?, ?)"));
+    query.addBindValue(id);
+    query.addBindValue(key);
+    query.addBindValue(value);
+    exec(query);
 }
 
 QList<int> Library::chapterLengths(int id) const {

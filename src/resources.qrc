@@ -2,6 +2,7 @@
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
         <file alias="LibraryView.qml">LibraryView.qml</file>
+        <file alias="ListenBar.qml">ListenBar.qml</file>
         <file alias="BookCard.qml">BookCard.qml</file>
         <file alias="BookDetails.qml">BookDetails.qml</file>
         <file alias="ContinueShelf.qml">ContinueShelf.qml</file>
@@ -33,6 +34,7 @@
         <file alias="hyphenation/hyph-en-us.hyp.txt">hyphenation/hyph-en-us.hyp.txt</file>
         <file alias="dogear.svg">../pkgbuild/dogear.svg</file>
         <file alias="skill.md">skill.md</file>
+        <file alias="prompts/director.md">prompts/director.md</file>
         <file alias="fonts/Literata.ttf">fonts/Literata.ttf</file>
         <file alias="fonts/Literata-Italic.ttf">fonts/Literata-Italic.ttf</file>
         <file alias="i18n/en.json">i18n/en.json</file>
