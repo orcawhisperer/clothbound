@@ -2,7 +2,9 @@
 Type=Application
 Name=Dogear
 GenericName=Ebook Reader
+GenericName[da]=E-bogslæser
 Comment=Read your EPUB and PDF books
+Comment[da]=Læs dine EPUB- og PDF-bøger
 Exec=dogear open %f
 Icon=dogear
 Terminal=false

@@ -426,7 +426,8 @@ FocusScope {
                     font.family: "Literata"
                     wrapMode: Text.Wrap
                 }
-                RowLayout {
+                Flow {
+                    Layout.fillWidth: true
                     spacing: 6
                     TextButton {
                         text: reader.titleOfChapter(modelData.chapter) ? qsTr("Go to “%1”").arg(reader.titleOfChapter(modelData.chapter)) : qsTr("Go to its page")

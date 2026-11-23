@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Dogear's translations, kept up to date with Gemini.
+
+    bin/translate extract            list the strings to translate (and how many each language lacks)
+    bin/translate [code ...]         translate what's missing into these languages (all of Omarchy's by default)
+
+Strings come from qsTr() in the QML, tr() and translate() in the C++, and the
+.desktop entry. Each language's catalog is src/i18n/<code>.json: English text
+to its translation, or, for a counted string (%n), an object of the
+language's plural forms. Only what's missing is sent, so running it again
+after a change costs a few cents. It needs GEMINI_API_KEY in the environment.
+"""
+
+import json
+import os
+import re
+import sys
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+SRC = ROOT / "src"
+I18N = SRC / "i18n"
+LOCALES = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy")) / "default/i18n/locales.json"
+MODEL = os.environ.get("DOGEAR_TRANSLATE_MODEL", "gemini-3.5-flash-lite")
+
+# CLDR plural categories each language uses (as src/translator.cpp chooses them).
+PLURALS = {
+    "ja": ["other"], "ko": ["other"], "zh-CN": ["other"], "zh-TW": ["other"], "th": ["other"], "vi": ["other"],
+    "id": ["other"], "ms": ["other"], "fr": ["one", "many", "other"], "pt-BR": ["one", "many", "other"],
+    "ca": ["one", "many", "other"], "es-MX": ["one", "many", "other"], "it": ["one", "many", "other"],
+    "pt": ["one", "many", "other"], "cs": ["one", "few", "other"], "sk": ["one", "few", "other"],
+    "pl": ["one", "few", "many"], "ru": ["one", "few", "many"], "uk": ["one", "few", "many"],
+    "hr": ["one", "few", "other"], "sr": ["one", "few", "other"], "sl": ["one", "two", "few", "other"],
+    "lt": ["one", "few", "other"], "lv": ["zero", "one", "other"], "ro": ["one", "few", "other"],
+    "ar": ["zero", "one", "two", "few", "many", "other"], "he": ["one", "two", "other"],
+    "ga": ["one", "two", "few", "many", "other"],
+}
+
+LITERAL = r'"((?:[^"\\]|\\.)*)"'
+
+
+def unescape(text):
+    return json.loads('"' + text + '"')
+
+
+def extract():
+    """{english: plural?} for every visible string."""
+    strings = {}
+    qml = re.compile(r"qsTr\(\s*" + LITERAL + r"(\s*,\s*" + LITERAL + r"\s*,)?")
+    for path in sorted(SRC.glob("*.qml")):
+        for match in qml.finditer(path.read_text()):
+            text = unescape(match.group(1))
+            strings[text] = strings.get(text, False) or bool(match.group(2)) or "%n" in text or "%Ln" in text
+    # C++: tr("…") and translate("Context", "…"), with adjacent literals joined.
+    joined = r'((?:"(?:[^"\\]|\\.)*"\s*)+)'
+    cpp = re.compile(r"\btr\(\s*" + joined + r"|translate\(\s*" + LITERAL + r"\s*,\s*" + joined)
+    for path in sorted(list(SRC.glob("*.cpp")) + list(SRC.glob("*.h"))):
+        for match in cpp.finditer(path.read_text()):
+            raw = match.group(1) or match.group(3)
+            text = "".join(unescape(part) for part in re.findall(LITERAL, raw))
+            if text:
+                strings[text] = strings.get(text, False) or "%n" in text
+    return strings
+
+
+def catalog(code):
+    path = I18N / f"{code}.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def save(code, entries):
+    I18N.mkdir(exist_ok=True)
+    (I18N / f"{code}.json").write_text(json.dumps(dict(sorted(entries.items())), ensure_ascii=False, indent=1) + "\n")
+
+
+SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "i": {"type": "INTEGER"},
+            "translation": {"type": "STRING"},
+            "forms": {"type": "OBJECT", "properties": {form: {"type": "STRING"} for form in
+                                                         ("zero", "one", "two", "few", "many", "other")}},
+        },
+        "required": ["i"],
+    },
+}
+
+
+def ask(prompt):
+    """The model's answers, by entry number: {i: {"translation": …} or {"forms": …}}."""
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        sys.exit("Set GEMINI_API_KEY to translate.")
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": SCHEMA, "temperature": 0.2},
+    }
+    for attempt in range(3):
+        request = urllib.request.Request(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent",
+            data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "x-goog-api-key": key})
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                answer = json.load(response)
+            parts = answer["candidates"][0]["content"]["parts"]
+            items = json.loads("".join(part.get("text", "") for part in parts))
+            return {item["i"]: item for item in items if isinstance(item, dict) and "i" in item}
+        except (ValueError, KeyError, OSError) as error:
+            print(f"  (trying again: {error})", flush=True)
+    return {}
+
+
+def translate(code, name, strings, existing):
+    missing = [text for text in strings if text not in existing]
+    if not missing:
+        return existing, 0
+    forms = PLURALS.get(code, ["one", "other"])
+    done = dict(existing)
+    for start in range(0, len(missing), 100):
+        batch = missing[start:start + 100]
+        listed = [{"i": i, "text": text, "counted": strings[text]} for i, text in enumerate(batch)]
+        prompt = f"""Translate the interface text of Dogear, an ebook reader and audiobook app for the Omarchy desktop, into {name} ({code}).
+
+Rules:
+- Natural, friendly, concise {name}, as a native speaker would write a well-made desktop app; keep the same tone (plain, warm, no jargon).
+- Keep placeholders exactly: %1, %2, %n, %Ln, and keep HTML tags, URLs, and keyboard keys (P, ⇧, Ctrl, Esc, Super W) as they are.
+- Keep brand and product names as they are: Dogear, Omarchy, Gemini, Google, Kokoro, Piper, Ollama, llama.cpp, LM Studio, MLX, vLLM, EPUB, PDF, M4B, MPRIS.
+- For an entry with "counted": true, give "forms": the plural forms {name} uses ({", ".join(forms)}), each containing %n (or %Ln) where the number goes. Otherwise give "translation".
+
+Answer with a JSON array: for each entry, its "i" and its translation.
+
+{json.dumps(listed, ensure_ascii=False, indent=0)}"""
+        answer = ask(prompt)
+        for i, text in enumerate(batch):
+            item = answer.get(i, {})
+            value, plural = item.get("translation"), item.get("forms")
+            if strings[text] and isinstance(plural, dict) and plural.get("other"):
+                done[text] = {form: plural.get(form) or plural["other"] for form in forms}
+            elif isinstance(value, str) and value.strip():
+                done[text] = value
+        print(f"  {code}: {min(start + 100, len(missing))} of {len(missing)}", flush=True)
+    return done, len(missing)
+
+
+def english(strings):
+    """English plural forms, so "%n models" reads "1 model"."""
+    entries = catalog("en")
+    counted = [text for text, plural in strings.items() if plural and text not in entries]
+    if counted:
+        listed = [{"i": i, "text": text} for i, text in enumerate(counted)]
+        answer = ask("For each English interface string below, give \"forms\" with its \"one\" (singular) and "
+                     "\"other\" (plural) forms, keeping %n, %Ln, %1 and %2. Answer with a JSON array: for each "
+                     "entry, its \"i\" and \"forms\".\n\n" + json.dumps(listed))
+        for i, text in enumerate(counted):
+            forms = answer.get(i, {}).get("forms") or {}
+            if forms.get("other"):
+                entries[text] = {"one": forms.get("one") or forms["other"], "other": forms["other"]}
+    save("en", entries)
+
+
+def register(codes):
+    """Every catalog compiled in, and the launcher entry translated."""
+    qrc = SRC / "resources.qrc"
+    text = qrc.read_text()
+    lines = "".join(f'        <file alias="i18n/{code}.json">i18n/{code}.json</file>\n'
+                    for code in sorted(p.stem for p in I18N.glob("*.json")))
+    text = re.sub(r'(        <file alias="i18n/[^"]+">[^<]+</file>\n)+', lambda _: lines, text)
+    qrc.write_text(text)
+    desktop = ROOT / "pkgbuild/dogear.desktop"
+    entry = [line for line in desktop.read_text().splitlines() if not re.match(r"^(Name|Comment|GenericName)\[", line)]
+    keys = {"Name": "Dogear", "GenericName": "Ebook Reader", "Comment": "Read your EPUB and PDF books"}
+    out = []
+    for line in entry:
+        out.append(line)
+        key = line.split("=", 1)[0]
+        if key in keys:
+            for code in sorted(codes):
+                value = catalog(code).get(keys[key])
+                if isinstance(value, str) and value != keys[key]:
+                    out.append(f"{key}[{code.replace('-', '_')}]={value}")
+    desktop.write_text("\n".join(out) + "\n")
+
+
+def main():
+    strings = extract()
+    # The launcher's words too.
+    for text in ("Ebook Reader", "Read your EPUB and PDF books"):
+        strings.setdefault(text, False)
+    locales = json.loads(LOCALES.read_text()) if LOCALES.exists() else {}
+    if sys.argv[1:2] == ["extract"]:
+        print(f"{len(strings)} strings, {sum(strings.values())} counted")
+        for code in sorted(locales):
+            if code != "en":
+                print(f"  {code}: {len([t for t in strings if t not in catalog(code)])} to translate")
+        return
+    codes = sys.argv[1:] or [code for code in locales if code != "en"]
+    english(strings)
+    for code in codes:
+        name = locales.get(code, {}).get("englishName", code)
+        entries, asked = translate(code, name, strings, catalog(code))
+        # Strings no longer in the app are dropped.
+        save(code, {text: value for text, value in entries.items() if text in strings})
+        print(f"{code}: {asked} translated")
+    register([code for code in locales if code != "en"])
+
+
+if __name__ == "__main__":
+    main()
