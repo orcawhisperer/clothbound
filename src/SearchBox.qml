@@ -21,7 +21,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         radius: Math.min(8, theme.radius)
-        color: Ui.tint(theme.text, input.activeFocus ? 0.09 : 0.06)
+        color: Ui.tint(theme.ink1, input.activeFocus ? 0.09 : 0.06)
         border.width: input.activeFocus ? 1.5 : 0
         border.color: theme.accent
     }
@@ -34,7 +34,7 @@ FocusScope {
         width: 17
         height: 17
         path: Icons.search
-        color: theme.textTertiary
+        color: theme.ink3
     }
 
     TextInput {
@@ -45,9 +45,9 @@ FocusScope {
         anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
         focus: true
-        color: theme.text
+        color: theme.ink1
         selectionColor: Ui.tint(theme.accent, 0.4)
-        selectedTextColor: theme.text
+        selectedTextColor: theme.ink1
         font.pixelSize: 14
         clip: true
         selectByMouse: true
@@ -66,7 +66,7 @@ FocusScope {
             verticalAlignment: Text.AlignVCenter
             visible: input.text === ""
             text: box.placeholder
-            color: theme.textTertiary
+            color: theme.ink3
             font: input.font
             elide: Text.ElideRight
         }
@@ -81,7 +81,7 @@ FocusScope {
         width: 30
         height: 30
         glyph: Icons.close
-        tone: theme.textSecondary
+        tone: theme.ink2
         onClicked: input.text = ""
     }
 }

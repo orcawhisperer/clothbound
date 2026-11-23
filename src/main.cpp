@@ -50,6 +50,7 @@
 #include <QQmlExpression>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
@@ -270,12 +271,29 @@ int main(int argc, char *argv[]) {
     // re-evaluated when the Omarchy language changes.
     Translator translator;
     app.installTranslator(&translator);
-    adoptDesktopFont(&app);
     for (const char *font : {":/fonts/Literata.ttf", ":/fonts/Literata-Italic.ttf"})
         QFontDatabase::addApplicationFont(font);
-    QQuickStyle::setStyle("Material");
+    // Inter's variable font names its family "Inter Variable".
+    const QStringList interFamilies =
+        QFontDatabase::applicationFontFamilies(QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/Inter.ttf")));
+    // The interface is set in Inter at 13 px, as designed, unless the reader
+    // asked for the desktop's own font in Settings.
+    const QSettings appearance(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
+                                   QStringLiteral("/settings.ini"),
+                               QSettings::IniFormat);
+    if (appearance.value(QStringLiteral("appearance/desktopFont"), false).toBool()) {
+        adoptDesktopFont(&app);
+    } else {
+        QFont inter(interFamilies.value(0, QStringLiteral("Inter")));
+        inter.setPixelSize(13);
+        inter.setHintingPreference(QFont::PreferNoHinting);
+        QGuiApplication::setFont(inter);
+    }
+    // Dogear's own Controls style (src/style/Dogear), on top of Basic.
+    QQuickStyle::setStyle(QStringLiteral("Dogear"));
 
     Theme theme;
+    theme.setAppearance(appearance.value(QStringLiteral("appearance/mode"), QStringLiteral("match")).toString());
     Library library;
     if (!library.open()) {
         fprintf(stderr, "The library can't be opened: %s\n", qPrintable(library.errorString()));
@@ -347,6 +365,7 @@ int main(int argc, char *argv[]) {
     }
 
     QQmlApplicationEngine engine;
+    engine.addImportPath(QStringLiteral("qrc:/style"));
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
     QObject::connect(&engine, &QQmlEngine::warnings, [](const QList<QQmlError> &errors) {
         for (const auto &error : errors)

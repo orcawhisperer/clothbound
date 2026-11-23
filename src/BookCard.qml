@@ -54,8 +54,8 @@ Item {
                 height: art.box.height
                 radius: art.radius
                 z: -1 - index
-                color: Ui.mix(theme.surface, theme.background, 0.25 * index)
-                border.color: Ui.tint(theme.text, 0.08)
+                color: Ui.mix(theme.raised, theme.ground, 0.25 * index)
+                border.color: Ui.tint(theme.ink1, 0.08)
             }
         }
 
@@ -162,7 +162,7 @@ Item {
             width: parent.width
             text: card.title
             textFormat: Text.PlainText
-            color: card.problem !== "" ? theme.textTertiary : theme.text
+            color: card.problem !== "" ? theme.ink3 : theme.ink1
             font.pixelSize: 13
             font.weight: Font.DemiBold
             wrapMode: Text.Wrap
@@ -175,7 +175,7 @@ Item {
             text: card.problem !== "" ? card.problem
                 : card.editions > 1 ? qsTr("%n editions", "", card.editions) : card.author
             textFormat: Text.PlainText
-            color: card.editions > 1 && card.problem === "" ? theme.accent : theme.textSecondary
+            color: card.editions > 1 && card.problem === "" ? theme.accentInk : theme.ink2
             font.pixelSize: 12
             elide: Text.ElideRight
         }

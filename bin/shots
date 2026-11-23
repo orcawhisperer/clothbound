@@ -1,0 +1,41 @@
+#!/bin/sh
+# Every main screen of Dogear, in a dark and a light Omarchy theme, one PNG
+# per board of the design canvas: bin/shots [prefix] [extra bin/shot options].
+# Compare build/shots/<prefix>-*.png against the canvas after each change.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+prefix="${1:-now}"; [ $# -gt 0 ] && shift
+SHOT="$ROOT/bin/shot"
+
+# A novel from the seeded library, opened in the reader.
+BOOK="library.allBooks().find(b => /Ann Veronica/.test(b.title)) || library.allBooks()[0]"
+OPEN="win.openBook(($BOOK).id)"
+# Past the cover and front matter, to a page of text.
+TEXT="readerLoader.item.goTo({chapter: 6, instant: true})"
+R="readerLoader.item"
+
+failed=0
+export DOGEAR_SHOT_QUIET=1
+command -v xvfb-run >/dev/null 2>&1 || echo "bin/shots: no xvfb-run, so book pages render blank (install xorg-server-xvfb)" >&2
+shoot() {
+    name="$1"; shift
+    "$SHOT" "$prefix-$name" "$@" >/dev/null || { echo "FAILED: $prefix-$name (see build/shots/$prefix-$name.log)" >&2; failed=1; }
+}
+
+for mode in dark light; do
+    if [ "$mode" = dark ]; then theme="tokyo-night"; else theme="catppuccin-latte"; fi
+    t="--theme $theme"
+    shoot "library-$mode" $t "$@"
+    shoot "empty-$mode" $t --empty "$@"
+    shoot "welcome-$mode" $t --empty --first-run "$@"
+    shoot "palette-$mode" $t "$@" -- --run "commandPalette.show()"
+    shoot "settings-$mode" $t "$@" -- --run "win.showAiSettings()"
+    shoot "reader-$mode" $t "$@" -- --delay 2500 --step 2500 --run "$OPEN" --run "$TEXT" --run "$R.showChrome()"
+    shoot "companion-$mode" $t "$@" -- --delay 2500 --step 2500 --run "$OPEN" --run "$TEXT" --run "$R.showCompanion('ask')"
+    shoot "narrator-$mode" $t "$@" -- --delay 2500 --step 2500 --run "$OPEN" --run "$TEXT" --run "$R.showVoices()"
+    shoot "appearance-$mode" $t "$@" -- --delay 2500 --step 2500 --run "$OPEN" --run "$TEXT" --run "$R.showAppearance()"
+    shoot "help-$mode" $t "$@" -- --run "win.helpVisible = true"
+done
+ls "$ROOT/build/shots/$prefix"-*.png
+exit "$failed"

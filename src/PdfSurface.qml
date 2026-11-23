@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 
 import "Ui.js" as Ui
+import "Themes.js" as Themes
 
 // A PDF's reading surface: its pages rendered to the reading theme, one at
 // a time, two side by side, or scrolling, with margins cut the same on
@@ -365,7 +366,7 @@ Item {
                         y: modelData.rect.y * whole.height
                         width: modelData.rect.width * whole.width
                         height: modelData.rect.height * whole.height
-                        color: ({ yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" })[modelData.color] || "#f2c94c"
+                        color: Themes.swatches[modelData.color] || Themes.swatches.yellow
                         opacity: 0.38
                         Rectangle {
                             visible: modelData.noted

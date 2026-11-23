@@ -1,6 +1,13 @@
 <RCC>
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
+        <file alias="KeyHint.qml">KeyHint.qml</file>
+        <file alias="Segmented.qml">Segmented.qml</file>
+        <file alias="Badge.qml">Badge.qml</file>
+        <file alias="Skeleton.qml">Skeleton.qml</file>
+        <file alias="OptionCard.qml">OptionCard.qml</file>
+        <file alias="SidePanel.qml">SidePanel.qml</file>
+        <file alias="Sheet.qml">Sheet.qml</file>
         <file alias="LibraryView.qml">LibraryView.qml</file>
         <file alias="ListenBar.qml">ListenBar.qml</file>
         <file alias="VoicePanel.qml">VoicePanel.qml</file>
@@ -47,6 +54,7 @@
         <file alias="skill.md">skill.md</file>
         <file alias="fonts/Literata.ttf">fonts/Literata.ttf</file>
         <file alias="fonts/Literata-Italic.ttf">fonts/Literata-Italic.ttf</file>
+        <file alias="fonts/Inter.ttf">fonts/Inter.ttf</file>
         <file alias="i18n/ar.json">i18n/ar.json</file>
         <file alias="i18n/bg.json">i18n/bg.json</file>
         <file alias="i18n/bn.json">i18n/bn.json</file>
@@ -97,5 +105,27 @@
         <file alias="i18n/vi.json">i18n/vi.json</file>
         <file alias="i18n/zh-CN.json">i18n/zh-CN.json</file>
         <file alias="i18n/zh-TW.json">i18n/zh-TW.json</file>
+    </qresource>
+    <qresource prefix="/style/Dogear">
+        <file alias="BusyIndicator.qml">style/Dogear/BusyIndicator.qml</file>
+        <file alias="Button.qml">style/Dogear/Button.qml</file>
+        <file alias="CheckBox.qml">style/Dogear/CheckBox.qml</file>
+        <file alias="ComboBox.qml">style/Dogear/ComboBox.qml</file>
+        <file alias="ItemDelegate.qml">style/Dogear/ItemDelegate.qml</file>
+        <file alias="Label.qml">style/Dogear/Label.qml</file>
+        <file alias="Menu.qml">style/Dogear/Menu.qml</file>
+        <file alias="MenuItem.qml">style/Dogear/MenuItem.qml</file>
+        <file alias="MenuSeparator.qml">style/Dogear/MenuSeparator.qml</file>
+        <file alias="Popup.qml">style/Dogear/Popup.qml</file>
+        <file alias="ProgressBar.qml">style/Dogear/ProgressBar.qml</file>
+        <file alias="RadioButton.qml">style/Dogear/RadioButton.qml</file>
+        <file alias="ScrollBar.qml">style/Dogear/ScrollBar.qml</file>
+        <file alias="ScrollIndicator.qml">style/Dogear/ScrollIndicator.qml</file>
+        <file alias="Slider.qml">style/Dogear/Slider.qml</file>
+        <file alias="Switch.qml">style/Dogear/Switch.qml</file>
+        <file alias="TextArea.qml">style/Dogear/TextArea.qml</file>
+        <file alias="TextField.qml">style/Dogear/TextField.qml</file>
+        <file alias="ToolTip.qml">style/Dogear/ToolTip.qml</file>
+        <file alias="qmldir">style/Dogear/qmldir</file>
     </qresource>
 </RCC>

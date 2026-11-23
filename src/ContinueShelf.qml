@@ -23,7 +23,7 @@ Column {
 
     Label {
         text: qsTr("Continue reading")
-        color: theme.text
+        color: theme.ink1
         font.pixelSize: 15
         font.weight: Font.DemiBold
     }
@@ -91,7 +91,7 @@ Column {
                 anchors.fill: parent
                 radius: Math.min(10, theme.radius)
                 color: entry.focused ? Ui.tint(theme.accent, 0.14)
-                     : hover.hovered ? Ui.tint(theme.text, 0.07) : Ui.tint(theme.text, 0.035)
+                     : hover.hovered ? Ui.tint(theme.ink1, 0.07) : Ui.tint(theme.ink1, 0.035)
                 border.width: entry.focused ? 1.5 : 0
                 border.color: theme.accent
                 Behavior on color { ColorAnimation { duration: 120 } }
@@ -128,7 +128,7 @@ Column {
                 Label {
                     width: parent.width
                     text: entry.modelData.title
-                    color: theme.text
+                    color: theme.ink1
                     font.pixelSize: 14
                     font.weight: Font.DemiBold
                     wrapMode: Text.Wrap
@@ -138,7 +138,7 @@ Column {
                 Label {
                     width: parent.width
                     text: entry.modelData.author
-                    color: theme.textSecondary
+                    color: theme.ink2
                     font.pixelSize: 12
                     elide: Text.ElideRight
                 }
@@ -146,7 +146,7 @@ Column {
                     width: parent.width
                     visible: text !== ""
                     text: entry.modelData.editionLine
-                    color: theme.textTertiary
+                    color: theme.ink3
                     font.pixelSize: 11
                     elide: Text.ElideRight
                 }
@@ -155,7 +155,7 @@ Column {
                     width: parent.width
                     height: 4
                     radius: 2
-                    color: Ui.tint(theme.text, 0.12)
+                    color: Ui.tint(theme.ink1, 0.12)
                     Rectangle {
                         width: parent.width * entry.modelData.progress
                         height: parent.height
@@ -172,7 +172,7 @@ Column {
                             return qsTr("%1%").arg(percent)
                         return qsTr("%1% · %2 left").arg(percent).arg(Format.duration(minutes))
                     }
-                    color: theme.textSecondary
+                    color: theme.ink2
                     font.pixelSize: 11
                 }
             }

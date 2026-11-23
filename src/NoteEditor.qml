@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Controls.Material
 import QtQuick.Layouts
 
 import "Ui.js" as Ui
@@ -43,8 +42,6 @@ FocusScope {
     width: Math.min(parent.width - 48, 520)
     height: column.implicitHeight + 36
 
-    Material.theme: look.dark ? Material.Dark : Material.Light
-    Material.accent: look.link
 
     Rectangle {
         anchors.fill: parent

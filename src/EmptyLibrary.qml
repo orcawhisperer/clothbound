@@ -27,7 +27,7 @@ Column {
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
         text: qsTr("Your library is empty")
-        color: theme.text
+        color: theme.ink1
         font.family: "Literata"
         font.pixelSize: 26
         font.weight: Font.DemiBold
@@ -36,7 +36,7 @@ Column {
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
         text: qsTr("Add a folder of EPUB and PDF books. Dogear reads them where they are and never changes them.")
-        color: theme.textSecondary
+        color: theme.ink2
         font.pixelSize: 15
         wrapMode: Text.Wrap
         lineHeight: 1.3
@@ -64,7 +64,7 @@ Column {
         width: parent.width
         horizontalAlignment: Text.AlignHCenter
         text: qsTr("You can also drop books or folders on this window.")
-        color: theme.textTertiary
+        color: theme.ink3
         font.pixelSize: 13
         wrapMode: Text.Wrap
     }

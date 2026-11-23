@@ -71,8 +71,8 @@ Rectangle {
         width: Math.min(parent.width - 48, columns.implicitWidth + 64)
         height: Math.min(parent.height - 48, columns.implicitHeight + 56)
         radius: Math.min(12, theme.radius)
-        color: theme.background
-        border.color: Ui.tint(theme.text, 0.1)
+        color: theme.ground
+        border.color: Ui.tint(theme.ink1, 0.1)
 
         TapHandler {}
 
@@ -117,7 +117,7 @@ Rectangle {
 
                                 Label {
                                     text: section.modelData.title
-                                    color: theme.text
+                                    color: theme.ink1
                                     font.pixelSize: 16
                                     font.weight: Font.DemiBold
                                     bottomPadding: 6
@@ -131,14 +131,14 @@ Rectangle {
                                             width: 150
                                             horizontalAlignment: Text.AlignRight
                                             text: modelData.keys
-                                            color: theme.accent
+                                            color: theme.accentInk
                                             font.pixelSize: 13
                                             font.family: "monospace"
                                         }
                                         Label {
                                             width: Math.min(implicitWidth, Math.max(180, help.width - 280))
                                             text: modelData.action
-                                            color: theme.textSecondary
+                                            color: theme.ink2
                                             font.pixelSize: 13
                                             wrapMode: Text.Wrap
                                         }
