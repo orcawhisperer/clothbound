@@ -41,6 +41,7 @@ FocusScope {
     }
 
     property bool replacing: false
+    property bool routingExpanded: false
     readonly property bool askingForKey: !ai.hasKey || replacing
 
     visible: open
@@ -239,6 +240,179 @@ FocusScope {
                 }
 
                 WhereItRuns { Layout.fillWidth: true }
+
+                // Per-feature routing overrides (collapsible).
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    spacing: 8
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+                        AbstractButton {
+                            id: routingToggle
+                            Layout.fillWidth: true
+                            implicitHeight: 32
+                            hoverEnabled: true
+                            focusPolicy: Qt.NoFocus
+                            onClicked: sheet.routingExpanded = !sheet.routingExpanded
+                            background: Rectangle {
+                                radius: Math.min(8, theme.radius)
+                                color: routingToggle.hovered ? Ui.tint(theme.text, 0.06) : "transparent"
+                            }
+                            contentItem: RowLayout {
+                                spacing: 6
+                                Glyph {
+                                    Layout.leftMargin: 4
+                                    Layout.preferredWidth: 14
+                                    Layout.preferredHeight: 14
+                                    path: sheet.routingExpanded ? Icons.chevronDown : Icons.chevronRight
+                                    color: theme.textTertiary
+                                }
+                                Label {
+                                    text: qsTr("Advanced routing")
+                                    color: theme.textTertiary
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                    font.capitalization: Font.AllUppercase
+                                    font.letterSpacing: 0.8
+                                }
+                                Rectangle {
+                                    visible: ai.overrideCount > 0
+                                    implicitHeight: 18
+                                    implicitWidth: customCountLabel.implicitWidth + 10
+                                    radius: 9
+                                    color: Ui.tint(theme.accent, 0.2)
+                                    Label {
+                                        id: customCountLabel
+                                        anchors.centerIn: parent
+                                        text: qsTr("%1 custom").arg(ai.overrideCount.toLocaleString(Qt.locale(), 'f', 0))
+                                        color: theme.accent
+                                        font.pixelSize: 11
+                                        font.weight: Font.Medium
+                                    }
+                                }
+                                Item { Layout.fillWidth: true }
+                            }
+                        }
+                        TextButton {
+                            visible: sheet.routingExpanded && ai.overrideCount > 0
+                            text: qsTr("Reset")
+                            onClicked: ai.clearOverrides()
+                        }
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        visible: sheet.routingExpanded
+                        radius: Math.min(10, theme.radius)
+                        color: Ui.tint(theme.text, 0.04)
+                        border.color: Ui.tint(theme.text, 0.1)
+                        implicitHeight: routingColumn.implicitHeight + 24
+
+                        ColumnLayout {
+                            id: routingColumn
+                            x: 12
+                            y: 12
+                            width: parent.width - 24
+                            spacing: 8
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Override where each feature runs, or leave on Auto to follow the preset above. Local overrides never fall back to Gemini.")
+                                color: theme.textSecondary
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                                lineHeight: 1.25
+                            }
+
+                            Repeater {
+                                model: [
+                                    { id: "ask",       label: qsTr("Ask about the book") },
+                                    { id: "explain",   label: qsTr("Explain passage") },
+                                    { id: "recap",     label: qsTr("Previously… recaps") },
+                                    { id: "whoswho",   label: qsTr("Who's who") },
+                                    { id: "define",    label: qsTr("Define word") },
+                                    { id: "translate", label: qsTr("Translate") },
+                                    { id: "search",    label: qsTr("Search by meaning") },
+                                    { id: "director",  label: qsTr("Narration styles") },
+                                    { id: "cast",      label: qsTr("Full cast") }
+                                ]
+                                delegate: RowLayout {
+                                    id: routeRow
+                                    required property var modelData
+                                    readonly property string currentOverride: {
+                                        void(ai.overrideCount); void(ai.preset)
+                                        return ai.overrideFor(modelData.id)
+                                    }
+                                    readonly property string destination: {
+                                        void(ai.overrideCount); void(ai.preset); void(ai.hasKey); void(ai.hasLocal); void(ai.localUrl); void(ai.localEmbeddingModel)
+                                        return ai.whereFor(modelData.id)
+                                    }
+                                    Layout.fillWidth: true
+                                    spacing: 8
+
+                                    ColumnLayout {
+                                        Layout.fillWidth: true
+                                        spacing: 1
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: routeRow.modelData.label
+                                            color: theme.text
+                                            font.pixelSize: 13
+                                            elide: Text.ElideRight
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: routeRow.destination
+                                            color: theme.textTertiary
+                                            font.pixelSize: 11
+                                            elide: Text.ElideRight
+                                        }
+                                    }
+
+                                    Row {
+                                        spacing: 4
+                                        Repeater {
+                                            model: [
+                                                { value: "",      label: qsTr("Auto") },
+                                                { value: "cloud", label: qsTr("Gemini") },
+                                                { value: "local", label: qsTr("Local") }
+                                            ]
+                                            delegate: AbstractButton {
+                                                id: routePill
+                                                required property var modelData
+                                                readonly property bool active: routeRow.currentOverride === modelData.value
+                                                implicitHeight: 26
+                                                implicitWidth: routePillLabel.implicitWidth + 14
+                                                hoverEnabled: true
+                                                focusPolicy: Qt.NoFocus
+                                                onClicked: ai.setOverride(routeRow.modelData.id, modelData.value)
+                                                background: Rectangle {
+                                                    radius: Math.min(6, theme.radius)
+                                                    color: routePill.active ? Ui.tint(theme.accent, 0.22)
+                                                         : routePill.hovered ? Ui.tint(theme.text, 0.1) : Ui.tint(theme.text, 0.05)
+                                                    border.width: routePill.active ? 1 : 0
+                                                    border.color: theme.accent
+                                                }
+                                                contentItem: Label {
+                                                    id: routePillLabel
+                                                    text: routePill.modelData.label
+                                                    color: routePill.active ? theme.text : theme.textSecondary
+                                                    font.pixelSize: 11
+                                                    font.weight: routePill.active ? Font.DemiBold : Font.Normal
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    verticalAlignment: Text.AlignVCenter
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
 
                 Heading { text: qsTr("Privacy") }
                 Label {

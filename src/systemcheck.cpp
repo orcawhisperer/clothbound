@@ -202,9 +202,9 @@ QString SystemCheck::tierFor(const Machine &machine) {
     const bool appleLarge = machine.graphics == QLatin1String("Apple") && memory >= 23;
     if (machine.graphicsMemoryGb >= 16 && memory >= 30)
         return tr("Local Full");
-    if (memory >= 30 || appleLarge || (memory >= 15 && machine.graphicsMemoryGb >= 8))
+    if (memory >= 30 || appleLarge || machine.graphicsMemoryGb >= 10 || (memory >= 15 && machine.graphicsMemoryGb >= 8))
         return tr("Local Standard");
-    if (memory >= 15)
+    if (memory >= 15 || machine.graphicsMemoryGb >= 6)
         return tr("Local Lite");
     if (memory >= 7.5)
         return tr("Local voices");
@@ -212,8 +212,10 @@ QString SystemCheck::tierFor(const Machine &machine) {
 }
 
 QString SystemCheck::suggestedModel(const Machine &machine) {
-    // As Intelligence offers to download (LocalSetup::modelsFor).
-    if (machine.memoryGb >= 30 || machine.graphicsMemoryGb >= 10)
+    // Aligned with tierFor() and LocalSetup::modelsFor().
+    const bool appleLarge = machine.graphics == QLatin1String("Apple") && machine.memoryGb >= 23;
+    if (machine.memoryGb >= 30 || appleLarge || machine.graphicsMemoryGb >= 10 ||
+        (machine.memoryGb >= 15 && machine.graphicsMemoryGb >= 8))
         return QStringLiteral("Qwen3.5 9B");
     if (machine.memoryGb >= 15 || machine.graphicsMemoryGb >= 6)
         return QStringLiteral("Qwen3.5 4B");
@@ -420,7 +422,7 @@ void SystemCheck::finish(int generation) {
         m_recommendation = tr("Hybrid: quick work on this computer, careful work with Gemini.");
     else if (m_ai->hasLocal())
         m_recommendation = tr("On this computer: everything that can run here does, and nothing leaves it.");
-    else if (m_machine.memoryGb >= 15)
+    else if (m_machine.memoryGb >= 15 || m_machine.graphicsMemoryGb >= 6)
         m_recommendation = tr("This computer (%1) can run a local model such as %2 for quick work.").arg(tierName, suggestedModel(m_machine));
     else
         m_recommendation = tr("Gemini for text work; built-in voices for free narration.");

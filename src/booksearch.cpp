@@ -12,9 +12,53 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QPointer>
+#include <QRegularExpression>
+#include <QSet>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QThreadPool>
 
 namespace {
+QSettings searchSettings() {
+    return QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini"),
+                     QSettings::IniFormat);
+}
+
+bool isAbbreviationBeforeDot(const QString &text, qsizetype dotPos) {
+    qsizetype wordEnd = dotPos;
+    qsizetype wordStart = wordEnd;
+    while (wordStart > 0 && text[wordStart - 1].isLetter())
+        --wordStart;
+    const QString word = text.mid(wordStart, wordEnd - wordStart).toLower();
+    if (word.size() == 1)
+        return true;
+    static const QSet<QString> abbrevs = {
+        QStringLiteral("mr"),   QStringLiteral("mrs"), QStringLiteral("ms"),  QStringLiteral("dr"),
+        QStringLiteral("prof"), QStringLiteral("sr"),  QStringLiteral("jr"),  QStringLiteral("st"),
+        QStringLiteral("vs"),   QStringLiteral("etc"), QStringLiteral("fig"), QStringLiteral("no"),
+    };
+    return abbrevs.contains(word);
+}
+
+QStringList queryTokens(const QString &query) {
+    static const QRegularExpression rx(QStringLiteral("[\\p{L}\\p{N}']{3,}"));
+    static const QSet<QString> stops = {
+        QStringLiteral("the"), QStringLiteral("and"), QStringLiteral("that"), QStringLiteral("was"),
+        QStringLiteral("for"), QStringLiteral("with"), QStringLiteral("his"), QStringLiteral("her"),
+        QStringLiteral("had"), QStringLiteral("but"), QStringLiteral("not"), QStringLiteral("you"),
+        QStringLiteral("what"), QStringLiteral("who"), QStringLiteral("why"), QStringLiteral("how"),
+        QStringLiteral("this"), QStringLiteral("from"), QStringLiteral("they"), QStringLiteral("there"),
+        QStringLiteral("were"), QStringLiteral("have"), QStringLiteral("about"), QStringLiteral("where"),
+    };
+    QStringList out;
+    auto it = rx.globalMatch(query.toLower());
+    while (it.hasNext()) {
+        const QString token = it.next().captured();
+        if (!stops.contains(token) && !out.contains(token))
+            out.append(token);
+    }
+    return out;
+}
 struct Normalized {
     QString text;
     QList<qint64> starts;
@@ -125,6 +169,7 @@ struct BookSearch::BookCache {
 };
 
 BookSearch::BookSearch(Reader *reader, QObject *parent) : QObject(parent), m_reader(reader) {
+    m_spoilerFree = searchSettings().value(QStringLiteral("search/spoilerFree"), false).toBool();
     connect(reader, &Reader::bookChanged, this, [this] {
         m_cache.reset();
         clear();
@@ -403,6 +448,126 @@ QVariantList BookSearch::inChapter(int chapter) const {
     return spans;
 }
 
+QPair<qint64, qint64> BookSearch::sentenceSpan(const QString &chapterText, qint64 passageStart, qint64 passageEnd,
+                                               const QString &query) {
+    const qsizetype len = chapterText.size();
+    qsizetype pStart = qBound<qsizetype>(0, qsizetype(passageStart), len);
+    qsizetype pEnd = qBound<qsizetype>(pStart, qsizetype(passageEnd), len);
+    while (pStart < pEnd && chapterText[pStart].isSpace())
+        ++pStart;
+    while (pEnd > pStart && chapterText[pEnd - 1].isSpace())
+        --pEnd;
+    if (pStart >= pEnd)
+        return {pStart, pEnd};
+
+    auto isCloser = [](QChar c) {
+        return c == QLatin1Char('"') || c == QLatin1Char('\'') || c == QLatin1Char(')') || c == QLatin1Char(']') ||
+               c == QChar(0x201D) || c == QChar(0x2019) || c == QChar(0x00BB);
+    };
+    auto isTerminator = [](QChar c) {
+        return c == QLatin1Char('.') || c == QLatin1Char('?') || c == QLatin1Char('!') || c == QChar(0x2026) ||
+               c == QChar(0x3002) || c == QChar(0xFF1F) || c == QChar(0xFF01);
+    };
+
+    // Split passage into sentence spans [sStart, sEnd) with exact chapter offsets.
+    QList<QPair<qsizetype, qsizetype>> sentences;
+    qsizetype cur = pStart;
+    for (qsizetype i = pStart; i < pEnd; ++i) {
+        const QChar c = chapterText[i];
+        bool boundary = false;
+        qsizetype endPos = i + 1;
+        if (c == QLatin1Char('\n')) {
+            boundary = true;
+            endPos = i;
+        } else if (isTerminator(c)) {
+            if (c == QLatin1Char('.') && isAbbreviationBeforeDot(chapterText, i))
+                continue;
+            while (endPos < pEnd && (isTerminator(chapterText[endPos]) || isCloser(chapterText[endPos])))
+                ++endPos;
+            if (endPos >= pEnd || chapterText[endPos].isSpace() || c.unicode() >= 0x3000)
+                boundary = true;
+        }
+        if (boundary) {
+            qsizetype s = cur, e = endPos;
+            while (s < e && chapterText[s].isSpace())
+                ++s;
+            while (e > s && chapterText[e - 1].isSpace())
+                --e;
+            if (e > s)
+                sentences.append({s, e});
+            cur = endPos;
+            while (cur < pEnd && chapterText[cur].isSpace())
+                ++cur;
+            i = qMax(i, cur - 1);
+        }
+    }
+    if (cur < pEnd) {
+        qsizetype s = cur, e = pEnd;
+        while (s < e && chapterText[s].isSpace())
+            ++s;
+        while (e > s && chapterText[e - 1].isSpace())
+            --e;
+        if (e > s)
+            sentences.append({s, e});
+    }
+    if (sentences.isEmpty())
+        sentences.append({pStart, pEnd});
+
+    // Prefer the sentence inside the passage with the highest query term overlap.
+    const QStringList tokens = queryTokens(query);
+    qsizetype bestIdx = 0;
+    int bestMatches = 0;
+    if (!tokens.isEmpty()) {
+        for (qsizetype i = 0; i < sentences.size(); ++i) {
+            const QString slice = chapterText.mid(sentences[i].first, sentences[i].second - sentences[i].first).toLower();
+            int hits = 0;
+            for (const QString &tok : tokens)
+                if (slice.contains(tok))
+                    ++hits;
+            if (hits > bestMatches) {
+                bestMatches = hits;
+                bestIdx = i;
+            }
+        }
+    }
+
+    qsizetype spanStart = sentences[bestIdx].first;
+    qsizetype spanEnd = sentences[bestIdx].second;
+    // If the chosen sentence is very short, include the next sentence if still concise.
+    if (spanEnd - spanStart < 45 && bestIdx + 1 < sentences.size() &&
+        sentences[bestIdx + 1].second - spanStart <= 240)
+        spanEnd = sentences[bestIdx + 1].second;
+
+    // Cap overly long punctuationless sentences cleanly at a clause or word boundary.
+    constexpr qsizetype maxSpan = 240;
+    if (spanEnd - spanStart > maxSpan) {
+        const qsizetype limit = spanStart + maxSpan;
+        const qsizetype floor = spanStart + maxSpan / 2;
+        qsizetype cut = -1;
+        for (qsizetype i = limit - 1; i >= floor; --i) {
+            const QChar c = chapterText[i];
+            if ((c == QLatin1Char(';') || c == QLatin1Char(':') || c == QLatin1Char(',') || c == QChar(0x2014)) &&
+                i + 1 < spanEnd && chapterText[i + 1].isSpace()) {
+                cut = i + 1;
+                break;
+            }
+        }
+        if (cut < 0) {
+            for (qsizetype i = limit; i >= floor; --i) {
+                if (i < spanEnd && chapterText[i].isSpace()) {
+                    cut = i;
+                    break;
+                }
+            }
+        }
+        if (cut > spanStart)
+            spanEnd = cut;
+    }
+    while (spanEnd > spanStart && chapterText[spanEnd - 1].isSpace())
+        --spanEnd;
+    return {qint64(spanStart), qint64(spanEnd)};
+}
+
 // --- By meaning -----------------------------------------------------------------
 
 void BookSearch::setMeaning(AiServices *ai, const QString &databaseConnection) {
@@ -425,6 +590,16 @@ void BookSearch::setByMeaning(bool byMeaning) {
     emit changed();
     if (!again.isEmpty())
         find(again);
+}
+
+void BookSearch::setSpoilerFree(bool spoilerFree) {
+    if (spoilerFree == m_spoilerFree)
+        return;
+    m_spoilerFree = spoilerFree;
+    searchSettings().setValue(QStringLiteral("search/spoilerFree"), spoilerFree);
+    emit changed();
+    if (m_byMeaning && !m_query.isEmpty())
+        findByMeaning(m_query);
 }
 
 void BookSearch::findByMeaning(const QString &query) {
@@ -451,40 +626,51 @@ void BookSearch::findByMeaning(const QString &query) {
     const QString path = m_reader->bookPath();
     const QString format = m_reader->format();
     const int bookId = m_reader->bookId();
+    const bool spoilerFree = m_spoilerFree;
+    const int limitChapter = spoilerFree ? m_reader->chapter() : (1 << 30);
+    const qint64 limitOffset =
+        spoilerFree ? (m_reader->pageEnd() > 0 ? m_reader->pageEnd() : m_reader->pageStart()) : -1;
     auto cancel = std::make_shared<std::atomic_bool>(false);
     m_cancel = cancel;
     QPointer<BookSearch> self(this);
-    QThreadPool::globalInstance()->start([self, cancel, path, format, run, wanted, bookId] {
+    QThreadPool::globalInstance()->start([self, cancel, path, format, run, wanted, bookId, limitChapter, limitOffset] {
         if (*cancel)
             return;
-        // The whole book, as search sees it.
-        const QList<Companion::Chapter> chapters = Companion::textUpTo(path, format, 1 << 30, -1);
+        // Either the whole book, or strictly up to the reader's current place when spoiler shield is on.
+        const QList<Companion::Chapter> chapters =
+            Companion::textUpTo(path, format, limitChapter, limitOffset, -1, cancel);
+        if (*cancel)
+            return;
+        QList<PassageIndex::Passage> passages;
+        QHash<int, QString> texts;
+        for (const Companion::Chapter &chapter : chapters) {
+            passages += PassageIndex::split(chapter.index, chapter.text);
+            texts.insert(chapter.index, chapter.text);
+        }
         if (*cancel)
             return;
         QMetaObject::invokeMethod(
             qApp,
-            [self, cancel, chapters, run, wanted, bookId] {
+            [self, cancel, passages, texts, run, wanted, bookId] {
                 if (!self || *cancel || run != self->m_meaningRun)
                     return;
-                QList<PassageIndex::Passage> passages;
-                QHash<int, QString> texts;
-                for (const Companion::Chapter &chapter : chapters) {
-                    passages += PassageIndex::split(chapter.index, chapter.text);
-                    texts.insert(chapter.index, chapter.text);
-                }
                 const auto search = [self, cancel, run, wanted, bookId, passages, texts] {
                     self->m_index->search(
-                        bookId, passages, wanted, 25, [self, cancel, run, texts](const QList<PassageIndex::Hit> &hits, bool byMeaning) {
+                        bookId, passages, wanted, 25,
+                        [self, cancel, run, texts, wanted](const QList<PassageIndex::Hit> &hits, bool byMeaning) {
                             if (!self || *cancel || run != self->m_meaningRun)
                                 return;
-                            constexpr double minMeaningScore = 0.25;
                             for (const PassageIndex::Hit &found : hits) {
-                                if (byMeaning && found.score < minMeaningScore)
-                                    continue;
-                                QVariantMap hit = BookSearch::hit(texts.value(found.passage.chapter), found.passage.chapter,
-                                                                  found.passage.start,
-                                                                  qMin(found.passage.end, found.passage.start + 160));
+                                const QString chapterText = texts.value(found.passage.chapter);
+                                const auto [spanStart, spanEnd] =
+                                    sentenceSpan(chapterText, found.passage.start, found.passage.end, wanted);
+                                QVariantMap hit = BookSearch::hit(chapterText, found.passage.chapter, spanStart, spanEnd);
                                 hit.insert(QStringLiteral("score"), found.score);
+                                hit.insert(QStringLiteral("semantic"), found.semantic);
+                                hit.insert(QStringLiteral("lexical"), found.lexical);
+                                hit.insert(QStringLiteral("matchKind"),
+                                           byMeaning ? (found.matchKind.isEmpty() ? QStringLiteral("semantic") : found.matchKind)
+                                                     : QStringLiteral("lexical"));
                                 self->m_results.append(hit);
                             }
                             self->m_searching = false;
