@@ -1093,9 +1093,11 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
             layoutMarginNotes()
         })
     }
+    let marginCards = []
     function layoutMarginNotes() {
-        for (const old of document.querySelectorAll('.margin-note'))
+        for (const old of marginCards)
             old.remove()
+        marginCards = []
         const noted = (state.marks || []).filter(span => span.noted && span.note)
         if (!noted.length || !state.index || state.vertical || state.style.marginNotes === false)
             return
@@ -1138,6 +1140,7 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
                                                         width: line.width, height: line.height, session: sessionId() })
             })
             overlay().appendChild(card)
+            marginCards.push(card)
             const side = leftPage ? 'left' : 'right'
             const top = Math.max(frameRect.top + line.top - 2, bottoms[side] + 8)
             card.style.top = top + 'px'
