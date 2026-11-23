@@ -35,6 +35,7 @@ private:
         quint64 offset = 0;
         quint64 compressed = 0;
         quint64 uncompressed = 0;
+        quint32 crc = 0;
         quint16 method = 0;
         quint16 flags = 0;
     };

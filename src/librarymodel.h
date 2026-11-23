@@ -48,6 +48,9 @@ public:
     int count() const { return int(m_works.size()); }
 
     void setBooks(const QHash<int, BookRecord> &books);
+    // Fast in-place update for progress/position changes without rebuilding the
+    // whole grid unless sort order or visibility is affected.
+    void updateBook(const BookRecord &book);
     Q_INVOKABLE QVariantMap get(int row) const;
     Q_INVOKABLE int rowOfBook(int bookId) const;
 
@@ -70,10 +73,13 @@ private:
     };
 
     void rebuild();
-    bool matches(const BookRecord &book, const QStringList &tokens) const;
+    bool matches(int id, const QStringList &tokens) const;
+    static QString searchableFor(const BookRecord &book);
 
     Library *m_library;
     QHash<int, BookRecord> m_books;
+    QHash<int, QString> m_searchable;
+    QHash<int, int> m_bookRow;
     QList<Work> m_works;
     QString m_search;
     QString m_sort = QStringLiteral("recent");

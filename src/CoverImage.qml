@@ -51,8 +51,9 @@ Item {
             fillMode: Image.Stretch
             smooth: true
             mipmap: true
-            // Decode no larger than the screen shows it.
-            sourceSize.height: Math.ceil(cover.height * Screen.devicePixelRatio)
+            // Bucket decode height to 128px steps so continuous window resizes
+            // don't re-decode every visible cover JPEG on every frame.
+            sourceSize.height: Math.max(128, Math.min(960, Math.ceil((cover.height * Screen.devicePixelRatio) / 128) * 128))
             visible: cover.loaded
             opacity: cover.loaded ? 1 : 0
             Behavior on opacity { NumberAnimation { duration: 160 } }

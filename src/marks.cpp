@@ -28,9 +28,17 @@ public:
     int id() const { return m_mark.id; }
 
 private:
-    void put() { m_mark.id = m_marks->insert(m_mark); }
+    void put() {
+        const int inserted = m_marks->insert(m_mark);
+        if (inserted > 0)
+            m_mark.id = inserted;
+    }
     void take() {
-        m_mark = m_marks->find(m_mark.id);
+        if (m_mark.id <= 0)
+            return;
+        const Mark found = m_marks->find(m_mark.id);
+        if (found.id != 0)
+            m_mark = found;
         m_marks->erase(m_mark.id);
     }
     Marks *m_marks;
@@ -183,7 +191,10 @@ void Marks::erase(int id) {
     QSqlQuery query(m_library->database());
     query.prepare(QStringLiteral("DELETE FROM annotations WHERE id = ?"));
     query.addBindValue(id);
-    query.exec();
+    if (!query.exec()) {
+        qWarning("marks: %s", qPrintable(query.lastError().text()));
+        return;
+    }
     beginRemoveRows({}, row, row);
     m_marks.removeAt(row);
     endRemoveRows();
@@ -202,13 +213,18 @@ void Marks::update(const Mark &mark) {
     query.addBindValue(text(changed.color));
     query.addBindValue(changed.updated.toSecsSinceEpoch());
     query.addBindValue(changed.id);
-    query.exec();
+    if (!query.exec()) {
+        qWarning("marks: %s", qPrintable(query.lastError().text()));
+        return;
+    }
     m_marks[row] = changed;
     emit dataChanged(index(row), index(row));
     emit this->changed();
 }
 
 int Marks::addBookmark(int chapter, qint64 offset, const QString &text, const QString &label) {
+    if (m_bookId <= 0 || !m_library->database().isOpen())
+        return 0;
     Mark mark;
     mark.kind = QStringLiteral("bookmark");
     mark.chapter = chapter;
@@ -222,7 +238,7 @@ int Marks::addBookmark(int chapter, qint64 offset, const QString &text, const QS
 
 int Marks::addHighlight(int chapter, qint64 start, qint64 end, const QString &text, const QString &color,
                         const QString &label) {
-    if (end <= start)
+    if (end <= start || m_bookId <= 0 || !m_library->database().isOpen())
         return 0;
     Mark mark;
     mark.kind = QStringLiteral("highlight");
@@ -301,6 +317,29 @@ QVariantList Marks::highlightsIn(int chapter) const {
     return spans;
 }
 
+QVariantList Marks::filtered(const QString &filter) const {
+    QVariantList out;
+    for (const Mark &mark : m_marks) {
+        const bool included = filter.isEmpty() || filter == QLatin1String("all") ||
+                              (filter == QLatin1String("highlights") && mark.kind == QLatin1String("highlight")) ||
+                              (filter == QLatin1String("notes") && !mark.note.isEmpty()) ||
+                              (filter == QLatin1String("bookmarks") && mark.kind == QLatin1String("bookmark"));
+        if (!included)
+            continue;
+        out.append(QVariantMap{{"markId", mark.id},
+                               {"kind", mark.kind},
+                               {"chapter", mark.chapter},
+                               {"start", mark.start},
+                               {"end", mark.end},
+                               {"quote", mark.text},
+                               {"note", mark.note},
+                               {"color", mark.color},
+                               {"label", mark.label},
+                               {"created", mark.created}});
+    }
+    return out;
+}
+
 QString Marks::markdown(const QString &title, const QString &author) const {
     QString out = QStringLiteral("# %1\n").arg(title);
     if (!author.isEmpty())
@@ -311,10 +350,13 @@ QString Marks::markdown(const QString &title, const QString &author) const {
             place = mark.label;
             out += QStringLiteral("\n## %1\n").arg(place);
         }
-        if (mark.kind == QStringLiteral("bookmark"))
-            out += QStringLiteral("\n- %1 %2\n").arg(QChar(0x1F516), mark.text);
-        else
-            out += QStringLiteral("\n> %1\n").arg(mark.text);
+        if (mark.kind == QStringLiteral("bookmark")) {
+            out += QStringLiteral("\n- \U0001F516 %1\n").arg(mark.text);
+        } else {
+            QString quote = mark.text;
+            quote.replace(QLatin1Char('\n'), QStringLiteral("\n> "));
+            out += QStringLiteral("\n> %1\n").arg(quote);
+        }
         if (!mark.note.isEmpty())
             out += QStringLiteral("\n%1\n").arg(mark.note);
     }

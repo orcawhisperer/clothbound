@@ -50,6 +50,13 @@ private:
 // A small tree for the book's own XML: container.xml, the OPF package, the
 // NCX, and the navigation document. Chapters are streamed, never built.
 struct HtmlNode {
+    HtmlNode() = default;
+    ~HtmlNode();
+    HtmlNode(const HtmlNode &) = delete;
+    HtmlNode &operator=(const HtmlNode &) = delete;
+    HtmlNode(HtmlNode &&) = default;
+    HtmlNode &operator=(HtmlNode &&) = default;
+
     QString name;  // empty for text
     QList<QPair<QString, QString>> attributes;
     QString text;

@@ -2,12 +2,16 @@
 
 #include <QMutexLocker>
 #include <QStringDecoder>
+#include <limits>
 #include <zlib.h>
 
 namespace {
-// The largest entry we inflate. Books are far smaller; this only stops a
-// damaged or hostile archive from claiming gigabytes.
-constexpr quint64 maxEntrySize = 512ull * 1024 * 1024;
+// The largest entry we inflate. Books are far smaller; this stops a damaged
+// or hostile archive from exhausting memory.
+constexpr quint64 maxEntrySize = 128ull * 1024 * 1024;
+constexpr quint64 maxDirectorySize = 256ull * 1024 * 1024;
+constexpr quint64 initialInflateCap = 64ull * 1024;
+constexpr quint64 maxFileOffset = quint64(std::numeric_limits<qint64>::max());
 
 quint16 u16(const char *p) { return quint16(quint8(p[0]) | quint8(p[1]) << 8); }
 quint32 u32(const char *p) { return quint32(u16(p)) | quint32(u16(p + 2)) << 16; }
@@ -27,6 +31,8 @@ ZipArchive::ZipArchive(const QString &path) : m_path(path), m_file(path) {}
 bool ZipArchive::fail(const QString &message) {
     m_error = message;
     m_open = false;
+    if (m_file.isOpen())
+        m_file.close();
     return false;
 }
 
@@ -39,15 +45,26 @@ bool ZipArchive::open() {
     // The end-of-central-directory record sits in the last 64 KiB + 22 bytes,
     // behind an optional comment; search backwards for its signature.
     const qint64 fileSize = m_file.size();
+    if (fileSize < 22)
+        return fail(QStringLiteral("not a ZIP archive"));
     const qint64 tailSize = qMin<qint64>(fileSize, 65535 + 22 + 20);
-    m_file.seek(fileSize - tailSize);
+    if (!m_file.seek(fileSize - tailSize))
+        return fail(QStringLiteral("not a ZIP archive"));
     const QByteArray tail = m_file.read(tailSize);
     qint64 eocd = -1;
-    for (qint64 i = tail.size() - 22; i >= 0; --i)
+    qint64 fallbackEocd = -1;
+    for (qint64 i = tail.size() - 22; i >= 0; --i) {
         if (u32(tail.constData() + i) == 0x06054b50) {
-            eocd = i;
-            break;
+            if (fallbackEocd < 0)
+                fallbackEocd = i;
+            if (qint64(u16(tail.constData() + i + 20)) == tail.size() - i - 22) {
+                eocd = i;
+                break;
+            }
         }
+    }
+    if (eocd < 0)
+        eocd = fallbackEocd;
     if (eocd < 0)
         return fail(QStringLiteral("not a ZIP archive"));
 
@@ -58,11 +75,14 @@ bool ZipArchive::open() {
 
     // Zip64 keeps the real values in a second record, found via a locator
     // that sits just before the classic one.
+    const quint64 uFileSize = quint64(fileSize);
     if (count == 0xffff || directorySize == 0xffffffff || directoryOffset == 0xffffffff) {
         if (eocd < 20 || u32(tail.constData() + eocd - 20) != 0x07064b50)
             return fail(QStringLiteral("damaged zip64 archive"));
         const quint64 recordOffset = u64(tail.constData() + eocd - 20 + 8);
-        m_file.seek(qint64(recordOffset));
+        if (recordOffset > uFileSize || recordOffset > maxFileOffset || uFileSize - recordOffset < 56 ||
+            !m_file.seek(qint64(recordOffset)))
+            return fail(QStringLiteral("damaged zip64 archive"));
         const QByteArray zip64 = m_file.read(56);
         if (zip64.size() < 56 || u32(zip64.constData()) != 0x06064b50)
             return fail(QStringLiteral("damaged zip64 archive"));
@@ -70,10 +90,12 @@ bool ZipArchive::open() {
         directorySize = u64(zip64.constData() + 40);
         directoryOffset = u64(zip64.constData() + 48);
     }
-    if (directoryOffset + directorySize > quint64(fileSize) || directorySize > 256ull * 1024 * 1024)
+    if (directorySize > maxDirectorySize || directoryOffset > uFileSize || directorySize > uFileSize - directoryOffset ||
+        directoryOffset > maxFileOffset)
         return fail(QStringLiteral("damaged ZIP directory"));
 
-    m_file.seek(qint64(directoryOffset));
+    if (!m_file.seek(qint64(directoryOffset)))
+        return fail(QStringLiteral("damaged ZIP directory"));
     const QByteArray directory = m_file.read(qint64(directorySize));
     if (quint64(directory.size()) != directorySize)
         return fail(QStringLiteral("truncated ZIP archive"));
@@ -94,13 +116,15 @@ bool ZipArchive::readCentralDirectory(const QByteArray &directory, quint64 count
         Entry entry;
         entry.flags = u16(header + 8);
         entry.method = u16(header + 10);
+        entry.crc = u32(header + 16);
         entry.compressed = u32(header + 20);
         entry.uncompressed = u32(header + 24);
         const int nameLength = u16(header + 28), extraLength = u16(header + 30), commentLength = u16(header + 32);
         entry.offset = u32(header + 42);
         if (pos + 46 + nameLength + extraLength + commentLength > size)
             return fail(QStringLiteral("damaged ZIP directory"));
-        const QString name = decodeName(QByteArray(header + 46, nameLength));
+        QString name = decodeName(QByteArray(header + 46, nameLength));
+        name.replace(QLatin1Char('\\'), QLatin1Char('/'));
 
         // The zip64 extra field holds, in this order, only the values the
         // classic header marked as overflowing.
@@ -136,7 +160,13 @@ bool ZipArchive::readCentralDirectory(const QByteArray &directory, quint64 count
 QString ZipArchive::resolve(const QString &name) const {
     if (m_entries.contains(name))
         return name;
-    return m_folded.value(name.toLower());
+    QString normalized = name;
+    if (normalized.contains(QLatin1Char('\\'))) {
+        normalized.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        if (m_entries.contains(normalized))
+            return normalized;
+    }
+    return m_folded.value(normalized.toLower());
 }
 
 qint64 ZipArchive::size(const QString &name) const {
@@ -171,43 +201,60 @@ QByteArray ZipArchive::read(const QString &name, QString *error) const {
         // The local header repeats the name and has its own extra field, so
         // the data starts after both; only the lengths are read from it.
         QMutexLocker lock(&m_mutex);
-        if (!m_file.seek(qint64(entry.offset)))
+        if (entry.offset > maxFileOffset || !m_file.seek(qint64(entry.offset)))
             return setError(QStringLiteral("%1 could not be read").arg(name));
         const QByteArray local = m_file.read(30);
         if (local.size() < 30 || u32(local.constData()) != 0x04034b50)
             return setError(QStringLiteral("%1 is damaged").arg(name));
-        const qint64 skip = u16(local.constData() + 26) + u16(local.constData() + 28);
-        m_file.seek(qint64(entry.offset) + 30 + skip);
+        const quint64 skip = quint64(u16(local.constData() + 26)) + quint64(u16(local.constData() + 28));
+        if (entry.offset > maxFileOffset - 30 - skip || !m_file.seek(qint64(entry.offset + 30 + skip)))
+            return setError(QStringLiteral("%1 could not be read").arg(name));
         compressed = m_file.read(qint64(entry.compressed));
     }
     if (quint64(compressed.size()) != entry.compressed)
         return setError(QStringLiteral("%1 is truncated").arg(name));
-    if (entry.method == 0)
+    auto validCrc = [&](const QByteArray &bytes) {
+        const quint32 actual = quint32(
+            crc32(0, bytes.isEmpty() ? nullptr : reinterpret_cast<const Bytef *>(bytes.constData()), uInt(bytes.size())));
+        return actual == entry.crc;
+    };
+    if (entry.method == 0) {
+        if (!validCrc(compressed))
+            return setError(QStringLiteral("%1 is damaged").arg(name));
         return compressed;
+    }
 
+    // Start with a small buffer rather than trusting entry.uncompressed, and
+    // grow strictly up to maxEntrySize.
+    const quint64 initial = qMin<quint64>(qMax<quint64>(entry.uncompressed, 4096), initialInflateCap);
     QByteArray output;
-    output.resize(qsizetype(entry.uncompressed));
+    output.resize(qsizetype(initial));
     z_stream stream{};
     if (inflateInit2(&stream, -MAX_WBITS) != Z_OK)
         return setError(QStringLiteral("%1 could not be decompressed").arg(name));
-    stream.next_in = reinterpret_cast<Bytef *>(compressed.data());
+    stream.next_in = compressed.isEmpty() ? nullptr : reinterpret_cast<Bytef *>(compressed.data());
     stream.avail_in = uInt(compressed.size());
     stream.next_out = reinterpret_cast<Bytef *>(output.data());
     stream.avail_out = uInt(output.size());
-    int result = inflate(&stream, Z_FINISH);
-    // A header that understates the size still gets the whole entry, growing
-    // the buffer up to the same cap.
-    while (result == Z_BUF_ERROR && stream.avail_out == 0 && quint64(output.size()) < maxEntrySize) {
-        const qsizetype used = output.size();
-        output.resize(qMax<qsizetype>(used * 2, 4096));
+    int result = inflate(&stream, Z_NO_FLUSH);
+    while (result == Z_OK && stream.avail_out == 0) {
+        const quint64 used = quint64(output.size());
+        if (used >= maxEntrySize) {
+            inflateEnd(&stream);
+            return setError(QStringLiteral("%1 is too large").arg(name));
+        }
+        const quint64 nextSize = qMin<quint64>(qMax<quint64>(used * 2, 4096), maxEntrySize);
+        output.resize(qsizetype(nextSize));
         stream.next_out = reinterpret_cast<Bytef *>(output.data() + used);
-        stream.avail_out = uInt(output.size() - used);
-        result = inflate(&stream, Z_FINISH);
+        stream.avail_out = uInt(nextSize - used);
+        result = inflate(&stream, Z_NO_FLUSH);
     }
     const qsizetype produced = qsizetype(stream.total_out);
     inflateEnd(&stream);
     if (result != Z_STREAM_END)
         return setError(QStringLiteral("%1 is damaged").arg(name));
     output.truncate(produced);
+    if (!validCrc(output))
+        return setError(QStringLiteral("%1 is damaged").arg(name));
     return output;
 }

@@ -36,5 +36,7 @@ namespace BookFiles {
 QString formatOf(const QString &path);
 bool isBook(const QString &path);
 // Reads metadata, and the cover scaled to `coverHeight` when it's above 0.
-BookInfo read(const QString &path, int coverHeight = 0);
+// When `chapterLengths` is given for an EPUB, each spine chapter's length is
+// measured from the already-opened archive without opening it a second time.
+BookInfo read(const QString &path, int coverHeight = 0, QList<int> *chapterLengths = nullptr);
 }

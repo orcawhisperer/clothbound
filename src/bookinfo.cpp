@@ -3,10 +3,13 @@
 #include "epubbook.h"
 #include "pdfbook.h"
 
+#include <QBuffer>
 #include <QFile>
 #include <QFileInfo>
+#include <QImageIOHandler>
 #include <QImageReader>
-#include <QBuffer>
+#include <QPainter>
+#include <mutex>
 
 namespace BookFiles {
 QString formatOf(const QString &path) {
@@ -21,32 +24,67 @@ QString formatOf(const QString &path) {
 bool isBook(const QString &path) { return !formatOf(path).isEmpty(); }
 
 namespace {
+constexpr int maxCoverDimension = 16384;
+constexpr qint64 maxCoverPixels = 40ll * 1024 * 1024;
+
 QImage scaledCover(QImage image, int height) {
     if (image.isNull() || height <= 0)
         return {};
-    if (image.height() > height)
-        image = image.scaledToHeight(height, Qt::SmoothTransformation);
+    const QSize bounds(qMax(1, height * 4), height);
+    if (image.height() > bounds.height() || image.width() > bounds.width())
+        image = image.scaled(bounds, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    if (image.hasAlphaChannel()) {
+        // Composite transparent covers on white instead of turning alpha black.
+        QImage flat(image.size(), QImage::Format_RGB32);
+        flat.fill(Qt::white);
+        QPainter painter(&flat);
+        painter.drawImage(0, 0, image);
+        return flat;
+    }
     return image.convertToFormat(QImage::Format_RGB32);
 }
 
 QImage decodeImage(const QByteArray &bytes, int height) {
+    if (bytes.isEmpty() || height <= 0)
+        return {};
+    static std::once_flag limitOnce;
+    std::call_once(limitOnce, [] { QImageReader::setAllocationLimit(64); });
     QBuffer buffer;
     buffer.setData(bytes);
     buffer.open(QIODevice::ReadOnly);
     QImageReader reader(&buffer);
     reader.setAutoTransform(true);
-    // Covers can be enormous; let the decoder shrink them while reading.
+    // Covers can be enormous or have extreme aspect ratios; shrink while
+    // decoding and refuse images that would exceed safe pixel limits.
     const QSize size = reader.size();
-    if (size.isValid() && height > 0 && size.height() > height * 2)
-        reader.setScaledSize(size.scaled(QSize(height * 4, height), Qt::KeepAspectRatio));
+    if (size.isValid()) {
+        if (size.width() <= 0 || size.height() <= 0)
+            return {};
+        const bool transposed = (int(reader.transformation()) & int(QImageIOHandler::TransformationRotate90)) != 0;
+        const QSize bounds = transposed ? QSize(height, qMax(1, height * 4)) : QSize(qMax(1, height * 4), height);
+        const qint64 pixels = qint64(size.width()) * qint64(size.height());
+        const bool oversized = size.width() > maxCoverDimension || size.height() > maxCoverDimension || pixels > maxCoverPixels;
+        const bool needsScale = oversized || size.height() > bounds.height() * 2 || size.width() > bounds.width();
+        if (needsScale) {
+            if (reader.supportsOption(QImageIOHandler::ScaledSize)) {
+                QSize target = size.scaled(bounds, Qt::KeepAspectRatio);
+                target.setWidth(qMax(1, target.width()));
+                target.setHeight(qMax(1, target.height()));
+                reader.setScaledSize(target);
+            } else if (oversized) {
+                return {};
+            }
+        }
+    }
     return scaledCover(reader.read(), height);
 }
 }
 
-BookInfo read(const QString &path, int coverHeight) {
+BookInfo read(const QString &path, int coverHeight, QList<int> *chapterLengths) {
     BookInfo info;
     const QFileInfo file(path);
-    info.path = file.absoluteFilePath();
+    const QString resolved = file.canonicalFilePath();
+    info.path = resolved.isEmpty() ? file.absoluteFilePath() : resolved;
     info.format = formatOf(path);
     info.size = file.size();
     info.modified = file.lastModified();
@@ -76,6 +114,12 @@ BookInfo read(const QString &path, int coverHeight) {
             info.problem = QStringLiteral("This book is protected by DRM.");
         if (coverHeight > 0)
             info.cover = decodeImage(book.coverImage(), coverHeight);
+        if (chapterLengths && info.ok()) {
+            chapterLengths->clear();
+            chapterLengths->reserve(book.spine().size());
+            for (int i = 0; i < book.spine().size(); ++i)
+                chapterLengths->append(int(book.chapterText(i).size()));
+        }
     } else if (info.format == "pdf") {
         PdfBook book(path);
         if (!book.open()) {

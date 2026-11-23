@@ -72,6 +72,8 @@ signals:
     void currentChanged();
 
 private:
+    struct BookCache;
+
     void findByMeaning(const QString &query);
 
     Reader *m_reader;
@@ -86,4 +88,5 @@ private:
     QVariantList m_results;
     int m_current = -1;
     std::shared_ptr<std::atomic_bool> m_cancel;
+    std::shared_ptr<BookCache> m_cache;
 };

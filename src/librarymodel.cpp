@@ -72,10 +72,7 @@ QVariantMap WorksModel::get(int row) const {
 }
 
 int WorksModel::rowOfBook(int bookId) const {
-    for (int row = 0; row < m_works.size(); ++row)
-        if (m_works[row].books.contains(bookId))
-            return row;
-    return -1;
+    return m_bookRow.value(bookId, -1);
 }
 
 void WorksModel::setSearchText(const QString &text) {
@@ -104,6 +101,29 @@ void WorksModel::setGrouped(bool grouped) {
 
 void WorksModel::setBooks(const QHash<int, BookRecord> &books) {
     m_books = books;
+    m_searchable.clear();
+    m_searchable.reserve(m_books.size());
+    for (auto it = m_books.cbegin(); it != m_books.cend(); ++it)
+        m_searchable.insert(it.key(), searchableFor(*it));
+    rebuild();
+}
+
+void WorksModel::updateBook(const BookRecord &book) {
+    const auto oldIt = m_books.constFind(book.id);
+    const bool existed = oldIt != m_books.cend();
+    const QString searchKey = searchableFor(book);
+    const bool shapeChanged = !existed || oldIt->visible() != book.visible() || oldIt->workKey != book.workKey ||
+                              oldIt->openedAt != book.openedAt || oldIt->addedAt != book.addedAt ||
+                              oldIt->finishedAt != book.finishedAt || m_sort == QLatin1String("progress") ||
+                              m_searchable.value(book.id) != searchKey;
+    m_books.insert(book.id, book);
+    m_searchable.insert(book.id, searchKey);
+    if (!shapeChanged) {
+        const int row = m_bookRow.value(book.id, -1);
+        if (row >= 0 && row < m_works.size())
+            emit dataChanged(index(row), index(row));
+        return;
+    }
     rebuild();
 }
 
@@ -117,11 +137,15 @@ QString WorksModel::searchable(const QString &text) {
     return out;
 }
 
-bool WorksModel::matches(const BookRecord &book, const QStringList &tokens) const {
-    const QString haystack = searchable(QStringList{book.title, book.author, book.editor, book.publisher,
-                                                    book.year > 0 ? QString::number(book.year) : QString(),
-                                                    book.series, book.format, book.subjects}
-                                            .join(' '));
+QString WorksModel::searchableFor(const BookRecord &book) {
+    return searchable(QStringList{book.title, book.author, book.editor, book.publisher,
+                                  book.year > 0 ? QString::number(book.year) : QString(), book.series, book.format,
+                                  book.subjects}
+                          .join(QLatin1Char(' ')));
+}
+
+bool WorksModel::matches(int id, const QStringList &tokens) const {
+    const QString haystack = m_searchable.value(id);
     for (const QString &token : tokens)
         if (!haystack.contains(token))
             return false;
@@ -149,7 +173,7 @@ void WorksModel::rebuild() {
         Work work = groups.value(key);
         bool any = tokens.isEmpty();
         for (const int id : std::as_const(work.books))
-            any = any || matches(m_books[id], tokens);
+            any = any || matches(id, tokens);
         if (!any)
             continue;
         // The edition shown is the one being read; otherwise a readable
@@ -210,14 +234,22 @@ void WorksModel::rebuild() {
     bool sameShape = works.size() == m_works.size();
     for (int i = 0; sameShape && i < works.size(); ++i)
         sameShape = works[i].key == m_works[i].key && works[i].books == m_works[i].books;
+    auto rebuildRowIndex = [this] {
+        m_bookRow.clear();
+        for (int row = 0; row < m_works.size(); ++row)
+            for (const int id : std::as_const(m_works[row].books))
+                m_bookRow.insert(id, row);
+    };
     if (sameShape) {
         m_works = works;
+        rebuildRowIndex();
         if (!m_works.isEmpty())
             emit dataChanged(index(0), index(int(m_works.size()) - 1));
         return;
     }
     beginResetModel();
     m_works = works;
+    rebuildRowIndex();
     endResetModel();
     emit countChanged();
 }
