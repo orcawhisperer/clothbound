@@ -23,6 +23,33 @@ html, body {
     user-select: none;
 }
 
+@font-face { font-family: "Inter"; src: url("fonts/Inter.ttf"); font-weight: 100 900; }
+
+/* A note beside its highlight, in the page's outer margin, when the margin
+   is wide enough to hold one; narrower, a note is the dotted underline. */
+.margin-note {
+    position: absolute;
+    pointer-events: auto;
+    box-sizing: border-box;
+    padding: 6px 9px 7px 10px;
+    border-inline-start: 2px solid var(--dg-mark, var(--dg-link));
+    border-radius: 0 6px 6px 0;
+    background: var(--dg-popover);
+    color: var(--dg-fg);
+    font: 12px/1.4 "Inter", system-ui, sans-serif;
+    opacity: 0.86;
+    cursor: pointer;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 6;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    transition: opacity 120ms ease-out;
+}
+.margin-note:hover {
+    opacity: 1;
+}
+
 #stage {
     position: absolute;
     inset: 0;

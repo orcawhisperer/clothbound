@@ -117,6 +117,18 @@ ColumnLayout {
                 onClicked: libraryIndex.rebuild()
             }
         }
+        Rectangle { Layout.fillWidth: true; height: 1; color: theme.hairline }
+        SettingsRow {
+            title: qsTr("By meaning")
+            description: !bookSearch.canSearchByMeaning
+                         ? qsTr("Needs a search model, from Gemini or on this computer (Settings › Intelligence).")
+                         : qsTr("A book is prepared the first time you search inside it by meaning (/ while reading); prepared books are searched together from the palette.")
+            Label {
+                text: qsTr("%n books prepared", "", bookSearch.booksPrepared)
+                color: theme.ink2
+                font.pixelSize: 13
+            }
+        }
     }
 
     SettingsCard {

@@ -47,6 +47,8 @@ public:
     // matched words with ‹ and ›.
     Q_INVOKABLE QVariantList search(const QString &query, int limit = 8) const;
     Q_INVOKABLE void rebuild();
+    // The text of a chapter between two offsets, for showing a passage.
+    Q_INVOKABLE QString passage(int bookId, int chapter, qint64 start, qint64 end) const;
     void cancel();
 
     // The FTS5 query for what someone typed: each word must appear, the last

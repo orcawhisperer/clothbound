@@ -444,7 +444,8 @@ QVariantList Marks::highlightsIn(int chapter) const {
                                      {"start", mark.start},
                                      {"end", mark.end},
                                      {"color", mark.color},
-                                     {"noted", !mark.note.isEmpty()}});
+                                     {"noted", !mark.note.isEmpty()},
+                                     {"note", mark.note}});
     return spans;
 }
 

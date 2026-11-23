@@ -579,6 +579,30 @@ void BookSearch::setMeaning(AiServices *ai, const QString &databaseConnection) {
 
 bool BookSearch::canSearchByMeaning() const { return m_ai && m_ai->embedder(); }
 
+int BookSearch::booksPrepared() const { return m_index ? m_index->booksPrepared() : 0; }
+
+void BookSearch::searchLibrary(const QString &query) {
+    const int run = ++m_libraryRun;
+    if (!m_index || query.trimmed().size() < 3) {
+        if (!m_libraryResults.isEmpty()) {
+            m_libraryResults.clear();
+            emit libraryResultsChanged();
+        }
+        return;
+    }
+    QPointer<BookSearch> self(this);
+    m_index->searchLibrary(query, 6, [self, run](const QList<PassageIndex::LibraryHit> &hits) {
+        if (!self || run != self->m_libraryRun)
+            return;
+        QVariantList list;
+        for (const auto &hit : hits)
+            list.append(QVariantMap{{"bookId", hit.bookId}, {"chapter", hit.chapter}, {"start", double(hit.start)},
+                                    {"end", double(hit.end)}, {"score", hit.score}});
+        self->m_libraryResults = list;
+        emit self->libraryResultsChanged();
+    });
+}
+
 QString BookSearch::where() const { return m_ai ? m_ai->whereFor(QStringLiteral("search")) : QString(); }
 
 void BookSearch::setByMeaning(bool byMeaning) {

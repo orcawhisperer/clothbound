@@ -332,6 +332,30 @@ FocusScope {
             }
         }
 
+        // Passages close in meaning, from every book prepared for it.
+        if (mode === "all" && q.length >= 3 && q === meaningQuery) {
+            const shown = out.filter(r => r.kind === "text").map(r => r.bookId + ":" + r.chapter)
+            for (const hit of bookSearch.libraryResults) {
+                if (shown.indexOf(hit.bookId + ":" + hit.chapter) >= 0)
+                    continue
+                const book = library.book(hit.bookId)
+                const text = libraryIndex.passage(hit.bookId, hit.chapter, hit.start, Math.min(hit.end, hit.start + 160))
+                if (!book.id || text === "")
+                    continue
+                out.push({
+                    kind: "text",
+                    section: qsTr("By meaning"),
+                    bookId: hit.bookId,
+                    chapter: hit.chapter,
+                    offset: hit.start,
+                    title: text + "…",
+                    subtitle: book.title,
+                    hint: "",
+                    glyph: Icons.sparkle,
+                })
+            }
+        }
+
         // 4. Cross-book & current-book highlights and notes
         if (mode === "all" || mode === "marks") {
             const hits = q === "" ? cachedMarks : marks.searchAll(q, mode === "marks" ? 30 : 8)
@@ -395,7 +419,25 @@ FocusScope {
     Timer {
         id: searchDebounce
         interval: 45
-        onTriggered: cmdPalette.rebuild()
+        onTriggered: { cmdPalette.rebuild(); meaningDebounce.restart() }
+    }
+    // Search by meaning across the library asks the embedder, so it waits
+    // for a pause in typing.
+    property string meaningQuery: ""
+    Timer {
+        id: meaningDebounce
+        interval: 450
+        onTriggered: {
+            const q = input.text.trim()
+            if (q.length >= 3 && !/^[>#@"]/.test(q) && bookSearch.canSearchByMeaning && bookSearch.booksPrepared > 0) {
+                cmdPalette.meaningQuery = q
+                bookSearch.searchLibrary(q)
+            }
+        }
+    }
+    Connections {
+        target: bookSearch
+        function onLibraryResultsChanged() { if (cmdPalette.open) cmdPalette.rebuild() }
     }
 
     visible: opacity > 0

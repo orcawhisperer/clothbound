@@ -462,6 +462,7 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
         applyTypography(doc)
         doc.addEventListener('click', onChapterClick, true)
         doc.addEventListener('wheel', onWheel, { passive: false })
+        doc.addEventListener('scroll', scheduleMarginNotes, { passive: true })
         doc.addEventListener('keydown', onKey, true)
         doc.addEventListener('copy', event => {
             const selection = doc.getSelection()
@@ -1077,9 +1078,80 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
         restoreDecorations()
     }
 
+    // Notes beside their highlights, in the outer margin of the page they're
+    // on, when that margin can hold a readable card (otherwise a note shows as
+    // the highlight's dotted underline, and opens with a click). Cards on one
+    // side stack downwards rather than overlap. Laid out again on every turn,
+    // resize and change of marks.
+    const marginNoteMinimum = 140
+    let marginNotesFrame = 0
+    function scheduleMarginNotes() {
+        if (marginNotesFrame)
+            return
+        marginNotesFrame = requestAnimationFrame(() => {
+            marginNotesFrame = 0
+            layoutMarginNotes()
+        })
+    }
+    let marginCards = []
+    function layoutMarginNotes() {
+        for (const old of marginCards)
+            old.remove()
+        marginCards = []
+        const noted = (state.marks || []).filter(span => span.noted && span.note)
+        if (!noted.length || !state.index || state.vertical || state.style.marginNotes === false)
+            return
+        const frameRect = frame().getBoundingClientRect()
+        const g = state.geometry
+        // The text block's outer edges in the window: the left of the first
+        // column and the right of the last (the frame holds the gaps around them).
+        const textLeft = frameRect.left + g.gap / 2, textRight = frameRect.left + frameRect.width - g.gap / 2
+        const cards = []
+        for (const span of noted) {
+            const range = rangeFor(span.start, span.end)
+            if (!range)
+                continue
+            const line = [...range.getClientRects()].find(r => r.width > 0 && r.height > 0
+                && r.right > 0 && r.left < frameRect.width && r.bottom > 0 && r.top < frameRect.height)
+            if (!line)
+                continue
+            // On a spread, the left page's notes go in the left margin.
+            const leftPage = g.columns > 1 && (line.left + line.right) / 2 < frameRect.width / 2
+            const room = leftPage ? textLeft - 20 : window.innerWidth - textRight - 20
+            if (room < marginNoteMinimum)
+                continue
+            cards.push({ span, line, leftPage, width: Math.min(220, room - 8) })
+        }
+        cards.sort((a, b) => a.line.top - b.line.top)
+        const bottoms = { left: -Infinity, right: -Infinity }
+        for (const { span, line, leftPage, width } of cards) {
+            const card = document.createElement('div')
+            card.className = 'margin-note'
+            card.textContent = span.note
+            card.style.width = width + 'px'
+            card.style.left = (leftPage ? textLeft - 16 - width : textRight + 16) + 'px'
+            const mark = state.style.theme['mark' + span.color.charAt(0).toUpperCase() + span.color.slice(1)]
+            if (mark)
+                card.style.setProperty('--dg-mark', mark)
+            card.addEventListener('click', event => {
+                event.preventDefault()
+                if (state.bridge)
+                    state.bridge.markClicked(span.id, { x: frameRect.left + line.left, y: frameRect.top + line.top,
+                                                        width: line.width, height: line.height, session: sessionId() })
+            })
+            overlay().appendChild(card)
+            marginCards.push(card)
+            const side = leftPage ? 'left' : 'right'
+            const top = Math.max(frameRect.top + line.top - 2, bottoms[side] + 8)
+            card.style.top = top + 'px'
+            bottoms[side] = top + card.offsetHeight
+        }
+    }
+
     // A chapter's highlights, search hits and spoken sentence, drawn again
     // after it's laid out anew; a different chapter starts with none.
     function restoreDecorations() {
+        scheduleMarginNotes()
         if (state.decorated !== state.chapter) {
             state.decorations = {}
             state.decorated = state.chapter
@@ -1997,6 +2069,7 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
             for (const color of ['yellow', 'green', 'blue', 'pink'])
                 api.highlight('dg-mark-' + color, state.marks.filter(span => span.color === color))
             api.highlight('dg-noted', state.marks.filter(span => span.noted))
+            scheduleMarginNotes()
         },
 
         clearSelection() {

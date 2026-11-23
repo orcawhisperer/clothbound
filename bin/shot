@@ -56,7 +56,9 @@ if [ "$theme" != "none" ]; then
     cp "$THEMES/$theme/colors.toml" "$home/.local/state/omarchy/current/theme/colors.toml"
 fi
 
-seed="$OUT/.seed"
+# DOGEAR_SHOT_SEED names another seeded profile (as the README's, of
+# public-domain books), kept apart from the everyday one.
+seed="${DOGEAR_SHOT_SEED:-$OUT/.seed}"
 if [ "$empty" -eq 0 ]; then
     if [ ! -d "$seed/data/dogear" ]; then
         books="${DOGEAR_SHOT_BOOKS:-}"

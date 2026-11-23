@@ -540,6 +540,13 @@ FocusScope {
             win.showAiSettings()
         }
         function onVoiceMissing() {
+            // No voice at all yet: offer the one for this book, right here.
+            const pack = voicePacks.supported && narration.hasPendingStart && !narration.voice.startsWith("builtin:")
+                         ? voicePacks.offer(reader.language) : ({})
+            if (pack.voice) {
+                listenOffer.show()
+                return
+            }
             toast.show(qsTr("That voice isn't downloaded yet. Choose or download one."))
             view.showVoices()
         }
@@ -1246,13 +1253,17 @@ FocusScope {
             anchors.centerIn: parent
             readonly property real room: Math.max(0, parent.width - 2 * Math.max(backButton.width + 24, tools.width + 24))
             readonly property bool showChapter: reader.chapterTitle !== "" && reader.chapterTitle !== reader.title
-            readonly property real chapterRoom: showChapter ? Math.min(chapterLabel.implicitWidth, room * 0.45) : 0
+            // Natural widths, measured apart from the (eliding) labels so their
+            // widths never feed back into themselves.
+            TextMetrics { id: titleMetrics; text: reader.title; font: titleLabel.font }
+            TextMetrics { id: chapterMetrics; text: " — " + reader.chapterTitle; font: chapterLabel.font }
+            readonly property real chapterRoom: showChapter ? Math.min(chapterMetrics.advanceWidth + 2, room * 0.45) : 0
             width: titleLabel.width + chapterLabel.width
             height: parent.height
             Label {
                 id: titleLabel
                 anchors.verticalCenter: parent.verticalCenter
-                width: Math.min(implicitWidth, heading.room - heading.chapterRoom)
+                width: Math.min(titleMetrics.advanceWidth + 2, heading.room - heading.chapterRoom)
                 text: reader.title
                 color: view.look.fg
                 font.pixelSize: 13
@@ -1264,7 +1275,7 @@ FocusScope {
                 anchors.left: titleLabel.right
                 anchors.verticalCenter: parent.verticalCenter
                 visible: heading.showChapter
-                width: visible ? Math.min(implicitWidth, heading.room - titleLabel.width) : 0
+                width: visible ? Math.min(chapterMetrics.advanceWidth + 2, heading.room - titleLabel.width) : 0
                 text: " — " + reader.chapterTitle
                 color: view.look.muted
                 font.pixelSize: 13
@@ -1369,6 +1380,16 @@ FocusScope {
             look: view.look
             onGo: (target) => view.goTo(target)
         }
+    }
+
+    ListenOffer {
+        id: listenOffer
+        z: 7
+        look: view.look
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 40
+        onMoreVoices: view.showVoices()
     }
 
     ListenBar {
