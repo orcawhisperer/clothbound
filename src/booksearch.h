@@ -34,6 +34,9 @@ class BookSearch : public QObject {
     // While a book is read for meaning the first time: "Reading the book… 40%".
     Q_PROPERTY(QString preparing READ preparing NOTIFY changed)
     Q_PROPERTY(QString where READ where NOTIFY changed)
+    // Search by meaning across the whole library (the palette's "By meaning").
+    Q_PROPERTY(QVariantList libraryResults READ libraryResults NOTIFY libraryResultsChanged)
+    Q_PROPERTY(int booksPrepared READ booksPrepared NOTIFY changed)
 
 public:
     static constexpr int limit = 2000;
@@ -53,6 +56,12 @@ public:
     Q_INVOKABLE void clear();
     // The hits in a chapter, as {start, end} spans for highlighting.
     Q_INVOKABLE QVariantList inChapter(int chapter) const;
+    // Finds passages close in meaning to `query` in every book prepared for
+    // the current embedder; results arrive in libraryResults as
+    // [{bookId, chapter, start, end, score}].
+    Q_INVOKABLE void searchLibrary(const QString &query);
+    QVariantList libraryResults() const { return m_libraryResults; }
+    int booksPrepared() const;
 
     void setMeaning(AiServices *ai, const QString &databaseConnection);
     bool byMeaning() const { return m_byMeaning; }
@@ -77,6 +86,7 @@ public:
 signals:
     void changed();
     void currentChanged();
+    void libraryResultsChanged();
 
 private:
     struct BookCache;
@@ -86,6 +96,8 @@ private:
     Reader *m_reader;
     AiServices *m_ai = nullptr;
     PassageIndex *m_index = nullptr;
+    QVariantList m_libraryResults;
+    int m_libraryRun = 0;
     bool m_byMeaning = false;
     bool m_spoilerFree = false;
     QString m_preparing;

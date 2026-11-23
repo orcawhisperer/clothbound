@@ -61,6 +61,24 @@ public:
                 std::function<void(const QList<Hit> &, bool byMeaning)> done);
     // How many of a book's passages have vectors for the current embedder.
     int indexed(int bookId) const;
+
+    // A passage anywhere in the library, close in meaning to a question.
+    struct LibraryHit {
+        int bookId = 0;
+        int chapter = 0;
+        qint64 start = 0;
+        qint64 end = 0;
+        double score = 0;
+    };
+    // Every stored passage vector for `model`, in every book, ranked by
+    // closeness to `asked`: the best `count` at or above `minCosine`.
+    static QList<LibraryHit> rankLibrary(const QString &dbPath, const QString &model, const QList<float> &asked,
+                                         int count, double minCosine = minSemanticScore);
+    // Searches every book prepared for the current embedder (only the
+    // question is embedded); `done` gets the hits, or none without one.
+    void searchLibrary(const QString &query, int count, std::function<void(const QList<LibraryHit> &)> done);
+    // How many books have passages with vectors for the current embedder.
+    int booksPrepared() const;
     void cancel();
 
 private:

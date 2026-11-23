@@ -262,3 +262,15 @@ QVariantList LibraryIndex::search(const QString &query, int limit) const {
     }
     return results;
 }
+
+QString LibraryIndex::passage(int bookId, int chapter, qint64 start, qint64 end) const {
+    if (!m_available || end <= start)
+        return {};
+    QSqlQuery q(QSqlDatabase::database(m_connection));
+    q.prepare(QStringLiteral("SELECT substr(body, ?, ?) FROM chapter_text WHERE book = ? AND chapter = ?"));
+    q.addBindValue(start + 1);
+    q.addBindValue(end - start);
+    q.addBindValue(bookId);
+    q.addBindValue(chapter);
+    return q.exec() && q.next() ? q.value(0).toString().simplified() : QString();
+}

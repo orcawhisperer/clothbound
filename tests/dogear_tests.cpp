@@ -4985,6 +4985,45 @@ private slots:
 
     // --- Round 4 regression tests: Library / Marks / CLI -------------------
 
+    void meaningSearchSpansTheLibrary() {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("library.sqlite");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("meaning-seed"));
+            db.setDatabaseName(path);
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            QVERIFY(q.exec(QStringLiteral("CREATE TABLE passage_vectors (book_id INTEGER NOT NULL, model TEXT NOT NULL, "
+                                          "passage TEXT NOT NULL, vector BLOB NOT NULL, PRIMARY KEY (book_id, model, passage))")));
+            auto add = [&](int book, const QString &model, const QString &key, QList<float> v) {
+                q.prepare(QStringLiteral("INSERT INTO passage_vectors VALUES (?, ?, ?, ?)"));
+                q.addBindValue(book);
+                q.addBindValue(model);
+                q.addBindValue(key);
+                q.addBindValue(QByteArray(reinterpret_cast<const char *>(v.constData()), v.size() * qsizetype(sizeof(float))));
+                QVERIFY(q.exec());
+            };
+            add(1, "m", "2:100:400:aa", {1, 0, 0});       // exactly what's asked
+            add(1, "m", "2:400:700:bb", {0.9f, 0.1f, 0}); // the same chapter again
+            add(2, "m", "5:0:300:cc", {0.7f, 0.7f, 0});   // another book, close
+            add(3, "m", "1:0:300:dd", {0, 0, 1});         // unrelated
+            add(4, "other", "1:0:300:ee", {1, 0, 0});     // another embedder's vectors
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("meaning-seed"));
+
+        const auto hits = PassageIndex::rankLibrary(path, "m", {1, 0, 0}, 5);
+        QCOMPARE(hits.size(), 2);
+        QCOMPARE(hits[0].bookId, 1);
+        QCOMPARE(hits[0].chapter, 2);
+        QCOMPARE(hits[0].start, qint64(100));
+        QCOMPARE(hits[0].end, qint64(400));
+        QCOMPARE(hits[1].bookId, 2);
+        QVERIFY(hits[0].score > hits[1].score);
+        QVERIFY(PassageIndex::rankLibrary(path, "missing", {1, 0, 0}, 5).isEmpty());
+        QCOMPARE(PassageIndex::rankLibrary(path, "m", {1, 0, 0}, 1).size(), 1);
+    }
+
     void libraryIndexFindsWordsAcrossBooks() {
         QTemporaryDir dir;
         const QString epubPath = dir.filePath("book.epub");
