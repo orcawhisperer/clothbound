@@ -282,6 +282,10 @@ void SpeechPlayer::clear() {
 }
 
 void SpeechPlayer::play() {
+    if (m_headless) {
+        m_playing = true;
+        return;
+    }
     ensureSink();
     if (!m_sink || !m_out) {
         emit sinkError(tr("No audio output device is available."));

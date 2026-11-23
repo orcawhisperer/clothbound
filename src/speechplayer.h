@@ -63,6 +63,7 @@ public:
     bool isPlaying() const { return m_playing; }
     void setRate(double rate);
     void setMuted(bool muted);
+    void setHeadless(bool headless) { m_headless = headless; }
     double volume() const { return m_volume; }
     void setVolume(double volume);
     bool starved() const { return m_starved; }
@@ -118,6 +119,7 @@ private:
     double m_volume = 1.0;
     bool m_playing = false;
     bool m_muted = false;
+    bool m_headless = false;
     bool m_starved = false;
     bool m_recovered = false;
     int m_lastTrack = -1;

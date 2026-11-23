@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QHash>
+#include <QMultiMap>
 #include <QMutex>
+#include <QUrl>
 #include <QWebEngineUrlRequestInterceptor>
 #include <QWebEngineUrlSchemeHandler>
 #include <memory>
@@ -26,6 +28,15 @@ public:
     static QString baseUrl(const QString &token);
 
     void requestStarted(QWebEngineUrlRequestJob *job) override;
+
+    struct ResolvedResource {
+        bool ok = false;
+        bool invalidUrl = false;
+        QByteArray mimeType;
+        QByteArray data;
+        QMultiMap<QByteArray, QByteArray> headers;
+    };
+    ResolvedResource resolveRequest(const QUrl &url, const QByteArray &referer = {});
 
     // Whether a chapter can be served as XML (XHTML); books that aren't
     // well-formed are served as HTML instead, which browsers forgive.

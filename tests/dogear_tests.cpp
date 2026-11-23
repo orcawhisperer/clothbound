@@ -12,11 +12,14 @@
 #include <QCryptographicHash>
 #include <QProcess>
 #include <QPromise>
+#include <QQuickTextureFactory>
 #include <QQuickWindow>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <cmath>
 #include <QtTest>
@@ -34,6 +37,9 @@
 #include "pdfbook.h"
 #include "pdfpages.h"
 #include "cast.h"
+#include "director.h"
+#include "download.h"
+#include "narration.h"
 #include "audiobook.h"
 #include <QPdfWriter>
 #include <QPainter>
@@ -214,6 +220,13 @@ private:
                 samples[n] = 0.5f * std::sin(2 * M_PI * 300 * n / 16000.0);
             return samples;
         }
+    };
+
+    class SilentEngine : public TtsEngine {
+    public:
+        QString prepare(const VoicePacks::Model &) override { return {}; }
+        int sampleRate() const override { return 24000; }
+        QVector<float> speak(const QString &, int, const std::atomic_bool &) override { return {}; }
     };
 
 private slots:
@@ -2378,6 +2391,1406 @@ private slots:
 
         // ai local runs without opening SQLite or libsecret keyring.
         QCOMPARE(runCli({"dogear", "ai", "local", "--json"}), 0);
+    }
+
+    // --- Post-merge regression tests: Input / PDF -------------------------
+
+    void pdfPagesConcurrentCancelAndRapidBookSwitch() {
+        QTemporaryDir dir;
+        const QString pathA = dir.filePath("a.pdf");
+        const QString pathB = dir.filePath("b.pdf");
+        QVERIFY(TestBooks::write(pathA, TestBooks::pdf("Book A", "Author A")));
+        QVERIFY(TestBooks::write(pathB, TestBooks::pdf("Book B", "Author B")));
+        auto bookA = std::make_shared<PdfBook>(pathA);
+        auto bookB = std::make_shared<PdfBook>(pathB);
+        QVERIFY(bookA->open());
+        QVERIFY(bookB->open());
+
+        const QString tokA = QStringLiteral("reg-tok-a");
+        const QString tokB = QStringLiteral("reg-tok-b");
+        PdfPages::add(tokA, bookA);
+        PdfPages::add(tokB, bookB);
+
+        // Keep responses alive until after PdfPages::~PdfPages() drains its worker pool.
+        std::vector<std::unique_ptr<QQuickImageResponse>> responses;
+        {
+            PdfPages pages;
+            int done = 0;
+            auto track = [&](QQuickImageResponse *resp) {
+                QObject::connect(resp, &QQuickImageResponse::finished, this, [&done] { ++done; });
+                responses.emplace_back(resp);
+                return resp;
+            };
+
+            // Fire a burst for Book A, cancel several mid-flight, then immediately
+            // drop Book A and switch to Book B.
+            for (int i = 0; i < 6; ++i) {
+                auto *r = track(pages.requestImageResponse(
+                    QStringLiteral("%1/0?bg=%231e1f24&fg=%23d6d2c9").arg(tokA), QSize(180 + i * 10, 270 + i * 15)));
+                if (i % 2 == 1)
+                    r->cancel();
+            }
+            PdfPages::remove(tokA);
+
+            auto *respB = track(pages.requestImageResponse(
+                QStringLiteral("%1/0?bg=%231e1f24&fg=%23d6d2c9").arg(tokB), QSize(200, 300)));
+
+            QTRY_COMPARE_WITH_TIMEOUT(done, int(responses.size()), 10000);
+            std::unique_ptr<QQuickTextureFactory> factory(respB->textureFactory());
+            QVERIFY(factory != nullptr);
+            const QImage rendered = factory->image();
+            QCOMPARE(rendered.size(), QSize(200, 300));
+            QCOMPARE(QColor(rendered.pixel(2, 2)).name(), QString("#1e1f24"));
+
+            // Second request with identical key hits the LRU cache cleanly.
+            auto *cachedB = track(pages.requestImageResponse(
+                QStringLiteral("%1/0?bg=%231e1f24&fg=%23d6d2c9").arg(tokB), QSize(200, 300)));
+            QTRY_COMPARE_WITH_TIMEOUT(done, int(responses.size()), 5000);
+            std::unique_ptr<QQuickTextureFactory> cachedFactory(cachedB->textureFactory());
+            QVERIFY(cachedFactory != nullptr);
+            QCOMPARE(cachedFactory->image().size(), QSize(200, 300));
+
+            PdfPages::remove(tokB);
+        }
+    }
+
+    void pdfBookOversizedAndExtremeAspectClamped() {
+        auto pdfWithBox = [](int w, int h) {
+            QByteArray out = "%PDF-1.4\n";
+            QList<qsizetype> offsets;
+            auto obj = [&](const QByteArray &body) {
+                offsets.append(out.size());
+                out += QByteArray::number(offsets.size()) + " 0 obj\n" + body + "\nendobj\n";
+            };
+            obj("<< /Type /Catalog /Pages 2 0 R >>");
+            obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+            obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + QByteArray::number(w) + " " + QByteArray::number(h) +
+                "] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>");
+            const QByteArray stream = "BT /F1 12 Tf 20 20 Td (Clamp test) Tj ET";
+            obj("<< /Length " + QByteArray::number(stream.size()) + " >>\nstream\n" + stream + "\nendstream");
+            obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+            const qsizetype xref = out.size();
+            out += "xref\n0 " + QByteArray::number(offsets.size() + 1) + "\n0000000000 65535 f \n";
+            for (const qsizetype offset : offsets)
+                out += QByteArray::number(offset).rightJustified(10, '0') + " 00000 n \n";
+            out += "trailer\n<< /Size " + QByteArray::number(offsets.size() + 1) + " /Root 1 0 R >>\n";
+            out += "startxref\n" + QByteArray::number(xref) + "\n%%EOF\n";
+            return out;
+        };
+
+        QTemporaryDir dir;
+        const QString normalPath = dir.filePath("normal.pdf");
+        const QString extremePath = dir.filePath("extreme.pdf");
+        QVERIFY(TestBooks::write(normalPath, pdfWithBox(200, 300)));
+        QVERIFY(TestBooks::write(extremePath, pdfWithBox(40000, 10)));
+
+        PdfBook normal(normalPath);
+        QVERIFY(normal.open());
+        // Single-dimension clamp (<= 6000 px).
+        const QImage wide = normal.renderPage(0, QSize(12000, 100));
+        QVERIFY(!wide.isNull());
+        QCOMPARE(wide.width(), 6000);
+        QCOMPARE(wide.height(), 100);
+        // Total pixel budget clamp (<= 24 MP).
+        const QImage huge = normal.renderPage(0, QSize(5500, 5500));
+        QVERIFY(!huge.isNull());
+        QVERIFY(huge.width() <= 6000 && huge.height() <= 6000);
+        QVERIFY(qint64(huge.width()) * qint64(huge.height()) <= 24LL * 1000 * 1000);
+
+        // Extreme aspect-ratio PDF (4000:1): cover and crop stay strictly bounded.
+        PdfBook extreme(extremePath);
+        QVERIFY(extreme.open());
+        const QImage cover = extreme.renderCover(5000);
+        QVERIFY(!cover.isNull());
+        QVERIFY(cover.height() <= 2048);
+        QVERIFY(cover.width() <= 2048);
+        QVERIFY(double(cover.width()) / double(cover.height()) <= 5.05);
+        const QRectF crop = PdfPages::bookCrop(extreme);
+        QVERIFY(crop.x() >= 0.0 && crop.y() >= 0.0 && crop.right() <= 1.001 && crop.bottom() <= 1.001);
+
+        // PdfBook::speakable preserves chapter headings and handles mixed \r\n / \n.
+        const QString mixed = QStringLiteral("THE LANTERN\r\nCHAPTER ONE\nThe sea was calm.\r\n\nA gull cried.\n");
+        const QJsonArray blocks = PdfBook::speakable(mixed, QStringLiteral("The Lantern"));
+        QVERIFY(blocks.size() >= 2);
+        QVERIFY(blocks[0].toObject().value("text").toString().contains(QStringLiteral("CHAPTER ONE")));
+        for (const QJsonValue &v : blocks) {
+            const QJsonObject o = v.toObject();
+            const qint64 s = o.value("start").toInteger(), e = o.value("end").toInteger();
+            QCOMPARE(e - s, o.value("text").toString().size());
+        }
+    }
+
+    void readerPdfSpeakableIsAsyncAndDropsStaleSession() {
+        QTemporaryDir dir;
+        const QString pathA = dir.filePath("a.pdf");
+        const QString pathB = dir.filePath("b.pdf");
+        QVERIFY(TestBooks::write(pathA, TestBooks::pdf("Pdf A", "Author A")));
+        QVERIFY(TestBooks::write(pathB, TestBooks::pdf("Pdf B", "Author B")));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int idA = library.addBookFile(pathA);
+        const int idB = library.addBookFile(pathB);
+        QVERIFY(idA > 0 && idB > 0);
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(idA));
+        QVERIFY(reader.hasPageList());
+        QCOMPARE(reader.targetForPageLabel("1").value("chapter").toInt(), 0);
+        const qint64 sessionA = reader.manifest().value("session").toLongLong();
+
+        QSignalSpy spoke(&reader, &Reader::speakable);
+        reader.pdfSpeakable(0);
+        // Must be queued asynchronously, never emitted synchronously inside pdfSpeakable().
+        QCOMPARE(spoke.count(), 0);
+        // Switch books before the queued callback executes: stale session must be dropped.
+        QVERIFY(reader.openBook(idB));
+        QCoreApplication::processEvents();
+        QTest::qWait(30);
+        QCOMPARE(spoke.count(), 0);
+
+        // Stale session token from JS surface is also rejected; current session passes.
+        const qint64 sessionB = reader.manifest().value("session").toLongLong();
+        QVERIFY(sessionB > sessionA);
+        reader.speakableReadyFor(sessionA, 0, QStringLiteral("[]"));
+        QCOMPARE(spoke.count(), 0);
+
+        reader.pdfSpeakable(0);
+        QCOMPARE(spoke.count(), 0);
+        QTRY_COMPARE(spoke.count(), 1);
+        QCOMPARE(spoke[0][0].toInt(), 0);
+        QVERIFY(spoke[0][1].toString().contains(QStringLiteral("Hello reader")));
+        reader.close();
+    }
+
+    // --- Post-merge regression tests: Parsers / Storage -------------------
+
+    void htmlDeepNestingParsesAndDestroysIteratively() {
+        QString deep;
+        deep.reserve(1200 * 11 + 20);
+        for (int i = 0; i < 1200; ++i)
+            deep += QStringLiteral("<div>");
+        deep += QStringLiteral("deep leaf");
+        for (int i = 0; i < 1200; ++i)
+            deep += QStringLiteral("</div>");
+        {
+            const auto doc = Html::parse(deep, true);
+            QVERIFY(doc != nullptr);
+            QVERIFY(doc->textContent().contains(QStringLiteral("deep leaf")));
+        }
+
+        // Also stress iterative textContent() and ~HtmlNode() on a 2500-deep tree
+        // built directly (beyond Html::parse's 512 depth cap).
+        auto root = std::make_unique<HtmlNode>();
+        root->name = QStringLiteral("div");
+        HtmlNode *cur = root.get();
+        for (int i = 0; i < 2500; ++i) {
+            auto child = std::make_unique<HtmlNode>();
+            child->name = QStringLiteral("span");
+            child->parent = cur;
+            HtmlNode *next = child.get();
+            cur->children.push_back(std::move(child));
+            cur = next;
+        }
+        auto leaf = std::make_unique<HtmlNode>();
+        leaf->text = QStringLiteral("bottom");
+        leaf->parent = cur;
+        cur->children.push_back(std::move(leaf));
+        QCOMPARE(root->textContent(), QStringLiteral("bottom"));
+        root.reset();
+    }
+
+    void zipRejectsBombsBadCrcAndZip64Wraparound() {
+        QTemporaryDir dir;
+
+        // 1. Lying-header ZIP bomb: claims 100 uncompressed bytes, actually inflates > 128 MiB.
+        QByteArray bombDeflated;
+        {
+            const QByteArray oneMb(1024 * 1024, '\0');
+            z_stream zs{};
+            QCOMPARE(deflateInit2(&zs, Z_BEST_SPEED, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY), Z_OK);
+            QByteArray buf(64 * 1024, Qt::Uninitialized);
+            for (int mb = 0; mb < 129; ++mb) {
+                zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(oneMb.constData()));
+                zs.avail_in = uInt(oneMb.size());
+                const int flush = (mb == 128) ? Z_FINISH : Z_NO_FLUSH;
+                while (zs.avail_in > 0 || flush == Z_FINISH) {
+                    zs.next_out = reinterpret_cast<Bytef *>(buf.data());
+                    zs.avail_out = uInt(buf.size());
+                    const int rc = deflate(&zs, flush);
+                    bombDeflated.append(buf.constData(), qsizetype(buf.size()) - qsizetype(zs.avail_out));
+                    if (rc == Z_STREAM_END)
+                        break;
+                    QVERIFY(rc == Z_OK);
+                }
+            }
+            deflateEnd(&zs);
+        }
+        auto makeCustomZip = [](const QByteArray &name, const QByteArray &payload, quint16 method, quint32 crc,
+                                quint32 declaredUncompressed) {
+            QByteArray out, cd;
+            TestBooks::put32(out, 0x04034b50);
+            TestBooks::put16(out, 20);
+            TestBooks::put16(out, 0x0800);
+            TestBooks::put16(out, method);
+            TestBooks::put32(out, 0);
+            TestBooks::put32(out, crc);
+            TestBooks::put32(out, quint32(payload.size()));
+            TestBooks::put32(out, declaredUncompressed);
+            TestBooks::put16(out, quint16(name.size()));
+            TestBooks::put16(out, 0);
+            out.append(name);
+            out.append(payload);
+
+            const quint32 cdOff = quint32(out.size());
+            TestBooks::put32(cd, 0x02014b50);
+            TestBooks::put16(cd, 20);
+            TestBooks::put16(cd, 20);
+            TestBooks::put16(cd, 0x0800);
+            TestBooks::put16(cd, method);
+            TestBooks::put32(cd, 0);
+            TestBooks::put32(cd, crc);
+            TestBooks::put32(cd, quint32(payload.size()));
+            TestBooks::put32(cd, declaredUncompressed);
+            TestBooks::put16(cd, quint16(name.size()));
+            TestBooks::put16(cd, 0);
+            TestBooks::put16(cd, 0);
+            TestBooks::put16(cd, 0);
+            TestBooks::put16(cd, 0);
+            TestBooks::put32(cd, 0);
+            TestBooks::put32(cd, 0);
+            cd.append(name);
+            out.append(cd);
+
+            TestBooks::put32(out, 0x06054b50);
+            TestBooks::put16(out, 0);
+            TestBooks::put16(out, 0);
+            TestBooks::put16(out, 1);
+            TestBooks::put16(out, 1);
+            TestBooks::put32(out, quint32(cd.size()));
+            TestBooks::put32(out, cdOff);
+            TestBooks::put16(out, 0);
+            return out;
+        };
+
+        const QString bombPath = dir.filePath("bomb.zip");
+        QVERIFY(TestBooks::write(bombPath, makeCustomZip("bomb.txt", bombDeflated, 8, 0, 100)));
+        ZipArchive bombZip(bombPath);
+        QVERIFY(bombZip.open());
+        QString err;
+        QVERIFY(bombZip.read("bomb.txt", &err).isEmpty());
+        QVERIFY2(err.contains("too large"), qPrintable(err));
+
+        // 2. Declared > 128 MiB rejected immediately before inflating.
+        const QString hugePath = dir.filePath("huge.zip");
+        QVERIFY(TestBooks::write(hugePath, makeCustomZip("huge.txt", TestBooks::rawDeflate("hi"), 8, 0, 200u * 1024 * 1024)));
+        ZipArchive hugeZip(hugePath);
+        QVERIFY(hugeZip.open());
+        err.clear();
+        QVERIFY(hugeZip.read("huge.txt", &err).isEmpty());
+        QVERIFY2(err.contains("too large"), qPrintable(err));
+
+        // 3. Bad CRC-32 rejected on both stored and deflated entries.
+        const QString crcPath = dir.filePath("badcrc.zip");
+        QVERIFY(TestBooks::write(crcPath, makeCustomZip("corrupt.txt", TestBooks::rawDeflate("hello"), 8, 0xdeadbeef, 5)));
+        ZipArchive crcZip(crcPath);
+        QVERIFY(crcZip.open());
+        err.clear();
+        QVERIFY(crcZip.read("corrupt.txt", &err).isEmpty());
+        QVERIFY2(err.contains("damaged"), qPrintable(err));
+
+        // 4. ZIP64 directoryOffset + directorySize uint64 wraparound rejected.
+        QByteArray z64 = TestBooks::zip({{"one.txt", "first", true}}, true);
+        const QByteArray sig("\x50\x4b\x06\x06", 4);
+        const qsizetype pos = z64.indexOf(sig);
+        QVERIFY(pos > 0 && pos + 56 <= z64.size());
+        auto patch64 = [&](qsizetype at, quint64 val) {
+            for (int b = 0; b < 8; ++b)
+                z64[at + b] = char((val >> (b * 8)) & 0xff);
+        };
+        patch64(pos + 40, 0x40ULL);                  // directorySize
+        patch64(pos + 48, 0xffffffffffffffe0ULL);    // directoryOffset (wraps to 0x20 when added!)
+        const QString wrapPath = dir.filePath("wrap64.zip");
+        QVERIFY(TestBooks::write(wrapPath, z64));
+        ZipArchive wrapZip(wrapPath);
+        QVERIFY(!wrapZip.open());
+        QVERIFY2(wrapZip.errorString().contains("damaged"), qPrintable(wrapZip.errorString()));
+    }
+
+    void bookSchemeEnforcesSecurityHeadersRootRelativeAndXhtmlEntities() {
+        // XHTML DTD resolves entities and still validates the ENTIRE document after &nbsp;.
+        const QByteArray xhtmlGood =
+            "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">"
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><p>a&nbsp;&mdash;b</p></body></html>";
+        const QByteArray xhtmlBrokenAfterEntity =
+            "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.1//EN\" \"http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd\">"
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\"><body><p>a&nbsp;<b>unclosed</p></body></html>";
+        const QByteArray html5WithEntity = "<!DOCTYPE html><html><body><p>a&nbsp;b</p></body></html>";
+        QVERIFY(BookScheme::isWellFormed(xhtmlGood));
+        QVERIFY(!BookScheme::isWellFormed(xhtmlBrokenAfterEntity));
+        QVERIFY(!BookScheme::isWellFormed(html5WithEntity));
+
+        QTemporaryDir dir;
+        const QByteArray cover = png(16, 16);
+        const QByteArray svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>";
+        const QString path = dir.filePath("sec.epub");
+        const QByteArray secOpf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\"><metadata/>\n"
+            "<manifest>\n"
+            "  <item id=\"ok\" href=\"ok.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  <item id=\"bad\" href=\"bad.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  <item id=\"h5\" href=\"h5.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  <item id=\"img\" href=\"images/cover.png\" media-type=\"image/png\"/>\n"
+            "  <item id=\"svg\" href=\"images/pic.svg\" media-type=\"image/svg+xml\"/>\n"
+            "</manifest>\n"
+            "<spine><itemref idref=\"ok\"/><itemref idref=\"bad\"/><itemref idref=\"h5\"/></spine>\n"
+            "</package>";
+        const QByteArray secBytes = TestBooks::epub({
+            {"OEBPS/content.opf", secOpf},
+            {"OEBPS/ok.xhtml", xhtmlGood},
+            {"OEBPS/bad.xhtml", xhtmlBrokenAfterEntity},
+            {"OEBPS/h5.xhtml", html5WithEntity},
+            {"OEBPS/images/cover.png", cover},
+            {"OEBPS/images/pic.svg", svg},
+        });
+        QVERIFY(TestBooks::write(path, secBytes));
+        auto book = std::make_shared<EpubBook>(path);
+        QVERIFY(book->open());
+
+        BookScheme scheme;
+        const QString token = scheme.add(book);
+        const QByteArray ref = QStringLiteral("dogear://local/book/%1/OEBPS/ok.xhtml").arg(token).toUtf8();
+
+        auto checkSecurity = [](const BookScheme::ResolvedResource &res) {
+            QVERIFY(res.ok);
+            QCOMPARE(res.headers.value("X-Content-Type-Options"), QByteArray("nosniff"));
+            const QByteArray csp = res.headers.value("Content-Security-Policy");
+            QVERIFY(csp.contains("script-src 'none'"));
+            QVERIFY(csp.contains("object-src 'none'"));
+        };
+
+        const auto okRes = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/book/%1/OEBPS/ok.xhtml").arg(token)));
+        checkSecurity(okRes);
+        QCOMPARE(okRes.mimeType, QByteArray("application/xhtml+xml"));
+
+        const auto badRes = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/book/%1/OEBPS/bad.xhtml").arg(token)));
+        checkSecurity(badRes);
+        QCOMPARE(badRes.mimeType, QByteArray("text/html"));
+
+        const auto h5Res = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/book/%1/OEBPS/h5.xhtml").arg(token)));
+        checkSecurity(h5Res);
+        QCOMPARE(h5Res.mimeType, QByteArray("text/html"));
+
+        // SVG/binary resources also carry strict CSP + nosniff.
+        const auto svgRes = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/book/%1/OEBPS/images/pic.svg").arg(token)));
+        checkSecurity(svgRes);
+        QCOMPARE(svgRes.mimeType, QByteArray("image/svg+xml"));
+
+        // Root-relative /path resolves safely via valid dogear://local/book/<token>/ Referer.
+        const auto rootRel = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/OEBPS/images/cover.png")), ref);
+        checkSecurity(rootRel);
+        QCOMPARE(rootRel.data, cover);
+
+        // Missing, external, or traversal root-relative requests are refused.
+        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/OEBPS/images/cover.png"))).ok);
+        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/OEBPS/images/cover.png")),
+                                       "https://evil.example/book/" + token.toUtf8() + "/ok.xhtml")
+                     .ok);
+        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/../../etc/passwd")), ref).ok);
+        const auto wrongHost = scheme.resolveRequest(QUrl(QStringLiteral("dogear://evil/book/%1/OEBPS/ok.xhtml").arg(token)));
+        QVERIFY(!wrongHost.ok && wrongHost.invalidUrl);
+    }
+
+    void libraryRelinksMovedFilesByFingerprintAndRollsBackFailedTransactions() {
+        QTemporaryDir dir;
+        const QString shelf = dir.filePath("shelf");
+        QVERIFY(QDir().mkpath(shelf));
+        const QString origPath = QDir(shelf).filePath("original.epub");
+        QVERIFY(TestBooks::write(origPath, TestBooks::epub2(png(20, 30))));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        library.addFolder(shelf);
+        QTRY_VERIFY(!library.scanning());
+
+        const int id = library.idForPath(origPath);
+        QVERIFY(id > 0);
+        library.savePosition(id, R"({"chapter":0,"offset":42})", 0.65);
+        library.setBookSetting(id, QStringLiteral("voice"), QStringLiteral("sulafat"));
+
+        Marks marks(&library);
+        marks.setBook(id);
+        const int hl = marks.addHighlight(0, 4, 14, QStringLiteral("lamp light"), QStringLiteral("blue"), QStringLiteral("Ch 1"));
+        marks.setNote(hl, QStringLiteral("Keep across move"));
+        const int bm = marks.addBookmark(0, 2, QStringLiteral("Chapter One"), QStringLiteral("Ch 1"));
+        QVERIFY(hl > 0 && bm > 0);
+
+        // Move and rename the book inside the watched folder, then rescan.
+        QVERIFY(QDir(shelf).mkpath("nested"));
+        const QString movedPath = QDir(shelf).filePath("nested/renamed.epub");
+        QVERIFY(QFile::rename(origPath, movedPath));
+        library.rescan();
+        QTRY_VERIFY(!library.scanning());
+
+        // Same book_id relinked via SHA-256 content fingerprint; reading state and marks intact.
+        QCOMPARE(library.idForPath(movedPath), id);
+        QCOMPARE(library.idForPath(origPath), 0);
+        const BookRecord relinked = library.record(id);
+        QVERIFY(!relinked.missing);
+        QCOMPARE(relinked.progress, 0.65);
+        QCOMPARE(relinked.position, QString(R"({"chapter":0,"offset":42})"));
+        QCOMPARE(library.bookSetting(id, QStringLiteral("voice")), QStringLiteral("sulafat"));
+
+        Marks reloaded(&library);
+        reloaded.setBook(id);
+        QCOMPARE(reloaded.count(), 2);
+        QCOMPARE(reloaded.mark(hl).value("note").toString(), QStringLiteral("Keep across move"));
+
+        // Checked SAVEPOINT rollback on multi-statement write failure (addReadingTime).
+        QSqlDatabase db = library.database();
+        QSqlQuery trigger(db);
+        QVERIFY(trigger.exec(
+            QStringLiteral("CREATE TEMP TRIGGER fail_reading_days BEFORE INSERT ON reading_days "
+                           "BEGIN SELECT RAISE(ABORT, 'injected failure'); END")));
+        library.addReadingTime(id, 180, 1200);
+        QCOMPARE(library.record(id).secondsRead, qint64(0));
+        {
+            QSqlQuery check(db);
+            QVERIFY(check.exec(QStringLiteral("SELECT seconds_read FROM books WHERE id = %1").arg(id)));
+            QVERIFY(check.next());
+            QCOMPARE(check.value(0).toLongLong(), qint64(0));
+        }
+        QVERIFY(trigger.exec(QStringLiteral("DROP TRIGGER fail_reading_days")));
+        library.addReadingTime(id, 180, 1200);
+        QCOMPARE(library.record(id).secondsRead, qint64(180));
+
+        // Checked SAVEPOINT rollback on setChapterLengths(): earlier DELETE is rolled back.
+        const QList<int> beforeLengths = library.chapterLengths(id);
+        QVERIFY(!beforeLengths.isEmpty());
+        QVERIFY(trigger.exec(
+            QStringLiteral("CREATE TEMP TRIGGER fail_chapter_lengths BEFORE INSERT ON chapter_lengths "
+                           "BEGIN SELECT RAISE(ABORT, 'injected failure'); END")));
+        library.setChapterLengths(id, {999, 888});
+        QCOMPARE(library.chapterLengths(id), beforeLengths);
+        QVERIFY(trigger.exec(QStringLiteral("DROP TRIGGER fail_chapter_lengths")));
+    }
+
+    void marksMarkdownUsesValidUtf8BookmarkIconAndGuardsClosedDb() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const QString path = dir.filePath("book.epub");
+        QVERIFY(TestBooks::write(path, TestBooks::epub2(png(20, 30))));
+        const int id = library.addBookFile(path);
+        QVERIFY(id > 0);
+
+        Marks marks(&library);
+        // No book selected -> rejected cleanly.
+        QCOMPARE(marks.addBookmark(0, 0, QStringLiteral("x"), QStringLiteral("Ch 1")), 0);
+        QCOMPARE(marks.addHighlight(0, 0, 5, QStringLiteral("hello"), QStringLiteral("yellow"), QStringLiteral("Ch 1")), 0);
+
+        marks.setBook(id);
+        const int bm = marks.addBookmark(0, 1, QStringLiteral("Opening line"), QStringLiteral("Chapter One"));
+        const int hl = marks.addHighlight(0, 10, 20, QStringLiteral("Glowing lamp"), QStringLiteral("green"), QStringLiteral("Chapter One"));
+        marks.setNote(hl, QStringLiteral("Important motif"));
+        Mark multi;
+        multi.kind = QStringLiteral("highlight");
+        multi.chapter = 0;
+        multi.start = 30;
+        multi.end = 50;
+        multi.text = QStringLiteral("First line\nSecond line");
+        multi.color = QStringLiteral("yellow");
+        multi.label = QStringLiteral("Chapter One");
+        const int mId = marks.insert(multi);
+        QVERIFY(bm > 0 && hl > 0 && mId > 0);
+
+        const QString md = marks.markdown(QStringLiteral("The Lantern"), QStringLiteral("Ada Marsh"));
+        // Valid 4-byte UTF-8 U+1F516 bookmark emoji (not truncated BMP U+F516).
+        QVERIFY2(md.contains(QStringLiteral("- \U0001F516 Opening line")), qPrintable(md));
+        QVERIFY(md.toUtf8().contains("\xF0\x9F\x94\x96"));
+        QVERIFY(!md.contains(QChar(0xF516)));
+        QVERIFY(md.contains(QStringLiteral("> First line\n> Second line")));
+
+        QCOMPARE(marks.filtered(QStringLiteral("bookmarks")).size(), 1);
+        QCOMPARE(marks.filtered(QStringLiteral("highlights")).size(), 2);
+        QCOMPARE(marks.filtered(QStringLiteral("notes")).size(), 1);
+        QCOMPARE(marks.filtered(QStringLiteral("all")).size(), 3);
+    }
+
+    void bookSearchNormalizesPdfAndEpubTextAllowsSingleCjkAndCancelsMidIndex() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+
+        // 1. EPUB with indented multi-line phrase, soft hyphen, ligature, and CJK.
+        const QString epubPath = dir.filePath("norm.epub");
+        const QByteArray normOpf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\"><metadata><dc:title>Norm</dc:title></metadata>\n"
+            "<manifest><item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>\n"
+            "<spine><itemref idref=\"c1\"/></spine></package>";
+        const QByteArray normBytes = TestBooks::epub({
+            {"OEBPS/content.opf", normOpf},
+            {"OEBPS/c1.xhtml",
+             TestBooks::chapter("C1", "<p>across\n      indented   lines</p>"
+                                      "<p>of&#xFB01;ce lan&#xAD;tern</p>"
+                                      "<p>\xE6\xA3\xAE\xE3\x81\xAE\xE4\xB8\xAD\xE3\x81\xAE\xE6\x9C\x88</p>")},
+        });
+        QVERIFY(TestBooks::write(epubPath, normBytes));
+        const int epubId = library.addBookFile(epubPath);
+        QVERIFY(epubId > 0);
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(epubId));
+        BookSearch search(&reader);
+
+        search.find(QStringLiteral("across indented lines"));
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+        const QVariantList spans = search.inChapter(0);
+        QCOMPARE(spans.size(), 1);
+        QCOMPARE(spans[0].toMap().value("chapter").toInt(), 0);
+
+        search.find(QStringLiteral("office lantern"));
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+
+        // Single-character CJK searches work; single-character Latin is ignored.
+        search.find(QString::fromUtf8("\xE6\x9C\x88"));
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+        search.find(QStringLiteral("o"));
+        QCOMPARE(search.count(), 0);
+
+        // 2. PDF with \r\n line break, PDFium U+FFFE line-break hyphen, and fi ligature.
+        const QString pdfPath = dir.filePath("search.pdf");
+        {
+            QByteArray out = "%PDF-1.4\n";
+            QList<qsizetype> offsets;
+            auto obj = [&](const QByteArray &body) {
+                offsets.append(out.size());
+                out += QByteArray::number(offsets.size()) + " 0 obj\n" + body + "\nendobj\n";
+            };
+            obj("<< /Type /Catalog /Pages 2 0 R >>");
+            obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+            obj("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>");
+            const QByteArray stream =
+                "BT /F1 12 Tf 20 350 Td (silver) Tj 0 -20 Td (lantern) Tj 0 -20 Td (of\\200ce) Tj 0 -20 Td (recon-) Tj 0 -20 Td (dite) Tj ET";
+            obj("<< /Length " + QByteArray::number(stream.size()) + " >>\nstream\n" + stream + "\nendstream");
+            obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [128 /fi] >> >>");
+            const qsizetype xref = out.size();
+            out += "xref\n0 " + QByteArray::number(offsets.size() + 1) + "\n0000000000 65535 f \n";
+            for (const qsizetype offset : offsets)
+                out += QByteArray::number(offset).rightJustified(10, '0') + " 00000 n \n";
+            out += "trailer\n<< /Size " + QByteArray::number(offsets.size() + 1) + " /Root 1 0 R >>\n";
+            out += "startxref\n" + QByteArray::number(xref) + "\n%%EOF\n";
+            QVERIFY(TestBooks::write(pdfPath, out));
+        }
+        const int pdfId = library.addBookFile(pdfPath);
+        QVERIFY(pdfId > 0);
+        QVERIFY(reader.openBook(pdfId));
+
+        search.find(QStringLiteral("silver lantern"));
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+        const QVariantList pdfSpans = search.inChapter(0);
+        QCOMPARE(pdfSpans.size(), 1);
+        QCOMPARE(pdfSpans[0].toMap().value("chapter").toInt(), 0);
+
+        search.find(QStringLiteral("office"));
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+
+        search.find(QStringLiteral("recondite"));
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+
+        const QVariantMap hyphHit = BookSearch::hit(QStringLiteral("pre recon\uFFFE\r\ndite post"), 2, 4, 16);
+        QCOMPARE(hyphHit.value("match").toString(), QStringLiteral("recondite"));
+        QCOMPARE(hyphHit.value("chapter").toInt(), 2);
+
+        // 3. Mid-index semantic cancel: switching books while Book A is indexing never leaks results.
+        QTcpServer slowServer;
+        QVERIFY(slowServer.listen(QHostAddress::LocalHost));
+        QList<QPointer<QTcpSocket>> heldSockets;
+        int embedRequests = 0;
+        QObject::connect(&slowServer, &QTcpServer::newConnection, &slowServer, [&] {
+            while (QTcpSocket *sock = slowServer.nextPendingConnection()) {
+                auto buf = std::make_shared<QByteArray>();
+                QObject::connect(sock, &QTcpSocket::readyRead, sock, [sock, buf, &heldSockets, &embedRequests] {
+                    *buf += sock->readAll();
+                    if (buf->contains("\r\n\r\n")) {
+                        ++embedRequests;
+                        heldSockets.append(sock);
+                    }
+                });
+            }
+        });
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        services.setLocalModels(&local);
+        LocalModels::Server where;
+        where.kind = LocalModels::Ollama;
+        where.url = QUrl(QStringLiteral("http://127.0.0.1:%1").arg(slowServer.serverPort()));
+        local.configure(where, QStringLiteral("qwen"), QStringLiteral("embed"));
+        services.setPreset(QStringLiteral("local"));
+
+        search.setMeaning(&services, library.database().connectionName());
+        search.setByMeaning(true);
+        QVERIFY(reader.openBook(epubId));
+        search.find(QStringLiteral("indented lantern"));
+        QTRY_VERIFY_WITH_TIMEOUT(embedRequests >= 1, 5000);
+
+        // Switch to the PDF mid-index; Book A's in-flight embed must be cancelled cleanly.
+        QVERIFY(reader.openBook(pdfId));
+        for (const QPointer<QTcpSocket> &sock : heldSockets) {
+            if (sock && sock->state() == QAbstractSocket::ConnectedState) {
+                const QByteArray body = "{\"embeddings\":[[1.0,0.0]]}";
+                sock->write("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " +
+                            QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+                sock->disconnectFromHost();
+            }
+        }
+        QTest::qWait(80);
+        QCOMPARE(search.count(), 0);
+        QVERIFY(!search.searching());
+        QVERIFY(search.preparing().isEmpty());
+        QVERIFY(search.query().isEmpty());
+        services.setPreset(QStringLiteral("cloud"));
+        QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.ini", QSettings::IniFormat)
+            .remove("ai/preset");
+    }
+
+    // --- Post-merge regression tests: AI / Companion ----------------------
+
+    void companionStripsMarkdownImagesAndHtmlImg() {
+        const QString dirty = QStringLiteral(
+            "See ![tracker](http://127.0.0.1:9999/leak.png) and ![ref alt][img1] "
+            "plus <img src=\"https://evil.test/x.gif\" onerror=\"alert(1)\"> "
+            "and <IMG SRC='file:///etc/passwd'/> and [safe](https://example.com) **bold** and stray ![open.");
+        const QString cleaned = Companion::cleanMarkdown(dirty);
+        QVERIFY2(!cleaned.contains(QStringLiteral("![")), qPrintable(cleaned));
+        QVERIFY2(!cleaned.contains(QStringLiteral("<img"), Qt::CaseInsensitive), qPrintable(cleaned));
+        QVERIFY2(!cleaned.contains(QStringLiteral("127.0.0.1")), qPrintable(cleaned));
+        QVERIFY2(!cleaned.contains(QStringLiteral("evil.test")), qPrintable(cleaned));
+        QVERIFY2(!cleaned.contains(QStringLiteral("/etc/passwd")), qPrintable(cleaned));
+        QVERIFY(cleaned.contains(QStringLiteral("tracker")));
+        QVERIFY(cleaned.contains(QStringLiteral("ref alt")));
+        QVERIFY(cleaned.contains(QStringLiteral("[safe](https://example.com)")));
+        QVERIFY(cleaned.contains(QStringLiteral("**bold**")));
+        QVERIFY(cleaned.contains(QStringLiteral("!\u200B[open.")));
+
+        // Nested "!![alt](url)" cannot re-form an active "![" after replacement.
+        const QString nested = Companion::cleanMarkdown(QStringLiteral("!![alt](http://evil.test/x.png)"));
+        QVERIFY(!nested.contains(QStringLiteral("![")));
+        QVERIFY(!nested.contains(QStringLiteral("evil.test")));
+    }
+
+    void aiServicesLocalOverrideNeverFallsBackToCloud() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        gemini.setKey(QStringLiteral("cloud-key"));
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        services.setLocalModels(&local);
+
+        // Cloud preset with valid Gemini key, no local model configured:
+        // explicit "local" override MUST NOT fall back to cloud Gemini.
+        services.setPreset(QStringLiteral("cloud"));
+        services.setOverride(QStringLiteral("ask"), QStringLiteral("local"));
+        QCOMPARE(services.routeFor(QStringLiteral("ask")), QString());
+        QVERIFY(services.textFor(QStringLiteral("ask")) == nullptr);
+        QVERIFY(services.textProviderFor(QStringLiteral("ask")) == nullptr);
+
+        services.setOverride(QStringLiteral("search"), QStringLiteral("local"));
+        QVERIFY(services.embedderProvider() == nullptr);
+        QVERIFY(services.embedder() == nullptr);
+
+        // Local preset without overrides also never falls back to cloud embedder.
+        services.setOverride(QStringLiteral("ask"), QString());
+        services.setOverride(QStringLiteral("search"), QString());
+        services.setPreset(QStringLiteral("local"));
+        QCOMPARE(services.routeFor(QStringLiteral("explain")), QString());
+        QVERIFY(services.embedderProvider() == nullptr);
+
+        // Honest loopback vs remote LAN reporting.
+        LocalModels::Server loopback;
+        loopback.kind = LocalModels::Ollama;
+        loopback.url = QUrl(QStringLiteral("http://127.0.0.1:11434"));
+        local.configure(loopback, QStringLiteral("qwen3.5:4b"));
+        QVERIFY(services.localIsLoopback());
+        QVERIFY(services.whereFor(QStringLiteral("ask")).contains(QStringLiteral("On this computer")));
+
+        LocalModels::Server remote;
+        remote.kind = LocalModels::Ollama;
+        remote.url = QUrl(QStringLiteral("http://192.168.1.50:11434"));
+        local.configure(remote, QStringLiteral("qwen3.5:4b"));
+        QVERIFY(!services.localIsLoopback());
+        QVERIFY(!local.isLocal());
+        QVERIFY(services.whereFor(QStringLiteral("ask")).contains(QStringLiteral("192.168.1.50")));
+
+        services.setPreset(QStringLiteral("cloud"));
+        QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.ini", QSettings::IniFormat)
+            .remove("ai");
+    }
+
+    void aiServicesBudgetZeroStrictVsUnlimitedAndAskRollback() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+
+        // $0 strict budget stops all cloud spending unless unlimitedBudget is explicitly enabled.
+        services.setUnlimitedBudget(false);
+        services.setBudget(0.0);
+        QVERIFY(!services.fitsBudget(0.0));
+        QVERIFY(!services.fitsBudget(0.001));
+
+        services.setUnlimitedBudget(true);
+        QVERIFY(services.fitsBudget(0.0));
+        QVERIFY(services.fitsBudget(500.0));
+
+        services.setUnlimitedBudget(false);
+        services.setBudget(10.0);
+        QVERIFY(services.fitsBudget(10.0));
+        QVERIFY(!services.fitsBudget(10.01));
+
+        // Companion::ask() rolls back orphaned user turn when the model fails.
+        const QString epubPath = dir.filePath("ask.epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+
+        FakeServer server;
+        server.responses.append({500, "application/json", "{\"error\":\"server exploded\"}"});
+        LocalModels local;
+        services.setLocalModels(&local);
+        LocalModels::Server where;
+        where.kind = LocalModels::Ollama;
+        where.url = QUrl(server.origin());
+        local.configure(where, QStringLiteral("qwen3.5:4b"));
+        services.setPreset(QStringLiteral("local"));
+
+        Companion companion(&services, &reader, library.database().connectionName());
+        companion.ask(QStringLiteral("Who keeps the lantern?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY(!companion.problem().isEmpty());
+        QVERIFY(companion.conversation().isEmpty());
+
+        QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.ini", QSettings::IniFormat)
+            .remove("ai");
+    }
+
+    void geminiPcmFromWavGuards32BitWraparound() {
+        auto le32 = [](quint32 v) {
+            QByteArray b(4, Qt::Uninitialized);
+            b[0] = char(v & 0xff);
+            b[1] = char((v >> 8) & 0xff);
+            b[2] = char((v >> 16) & 0xff);
+            b[3] = char((v >> 24) & 0xff);
+            return b;
+        };
+
+        // Chunk size 0xFFFFFFF8u: naive 32-bit `at += 8 + size` would wrap back to `at` (infinite loop).
+        const QByteArray wrapEven = "RIFF" + le32(32) + "WAVE" + "JUNK" + le32(0xFFFFFFF8u) + QByteArray(16, '\0');
+        QVERIFY(GeminiProvider::pcmFromWav(wrapEven).isEmpty());
+
+        // Chunk size 0xFFFFFFFFu: `size + (size & 1)` wraps 32-bit unsigned to 0.
+        const QByteArray wrapOdd = "RIFF" + le32(32) + "WAVE" + "JUNK" + le32(0xFFFFFFFFu) + QByteArray(16, '\0');
+        QVERIFY(GeminiProvider::pcmFromWav(wrapOdd).isEmpty());
+
+        // Oversized data chunk size safely clamped to available bytes.
+        const QByteArray tail("ABCDEFGH");
+        const QByteArray clamped = "RIFF" + le32(100) + "WAVE" + "data" + le32(0xFFFFFFFFu) + tail;
+        QCOMPARE(GeminiProvider::pcmFromWav(clamped), tail);
+    }
+
+    void localModelsStripsChunkSplitThinkTagsAndRejectsNonHttpUrls() {
+        QVERIFY(!LocalModels::isHttpUrl(QUrl(QStringLiteral("file:///etc/passwd"))));
+        QVERIFY(!LocalModels::isHttpUrl(QUrl(QStringLiteral("ftp://127.0.0.1:11434"))));
+        QVERIFY(!LocalModels::isHttpUrl(QUrl(QStringLiteral("http://"))));
+        QVERIFY(LocalModels::isHttpUrl(QUrl(QStringLiteral("http://127.0.0.1:11434"))));
+        QVERIFY(LocalModels::isHttpUrl(QUrl(QStringLiteral("https://llm.example.com/v1"))));
+
+        LocalModels local;
+        LocalModels::Server badServer;
+        badServer.kind = LocalModels::Ollama;
+        badServer.url = QUrl(QStringLiteral("file:///tmp"));
+        local.configure(badServer, QStringLiteral("qwen"));
+        QVERIFY(!local.isConfigured());
+        QVERIFY(local.text() == nullptr);
+
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        services.setLocalModels(&local);
+        services.useLocal(QStringLiteral("ollama"), QStringLiteral("file:///etc/passwd"), QStringLiteral("qwen"), {});
+        QVERIFY(!services.hasLocal());
+
+        // Chunk-split <think>...</think> across Ollama NDJSON stream lines.
+        FakeServer server;
+        LocalModels::Server where;
+        where.kind = LocalModels::Ollama;
+        where.url = QUrl(server.origin());
+        local.configure(where, QStringLiteral("qwen3.5:4b"));
+        server.responses.append({200, "application/x-ndjson",
+                                 "{\"message\":{\"content\":\"<th\"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"ink>secret \"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"plan</th\"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"ink>\\n\\nFinal \"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"answer.\"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"\"},\"done\":true,\"eval_count\":5}\n"});
+        Ai::TextRequest req;
+        req.stream = true;
+        req.messages = {{true, QStringLiteral("Hi")}};
+        Ai::Reply *reply = local.generate(req);
+        QString streamed;
+        connect(reply, &Ai::Reply::textReceived, this, [&](const QString &delta) {
+            QVERIFY2(!delta.contains(QStringLiteral("think")), qPrintable(delta));
+            QVERIFY2(!delta.contains(QStringLiteral("secret")), qPrintable(delta));
+            QVERIFY2(!delta.contains(QStringLiteral("plan")), qPrintable(delta));
+            streamed += delta;
+        });
+        QSignalSpy done(reply, &Ai::Reply::finished);
+        QVERIFY(done.wait(3000));
+        QVERIFY(!reply->error());
+        QCOMPARE(streamed, QStringLiteral("Final answer."));
+        QCOMPARE(reply->text(), QStringLiteral("Final answer."));
+
+        // Non-<think> leading "<..." prefix is flushed intact without loss.
+        server.responses.append({200, "application/x-ndjson",
+                                 "{\"message\":{\"content\":\"<em\"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"phasis>\"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"\"},\"done\":true}\n"});
+        Ai::Reply *nonThink = local.generate(req);
+        QString nonThinkStreamed;
+        connect(nonThink, &Ai::Reply::textReceived, this, [&](const QString &d) { nonThinkStreamed += d; });
+        QSignalSpy done2(nonThink, &Ai::Reply::finished);
+        QVERIFY(done2.wait(3000));
+        QCOMPARE(nonThinkStreamed, QStringLiteral("<emphasis>"));
+        QCOMPARE(nonThink->text(), QStringLiteral("<emphasis>"));
+    }
+
+    void passageIndexSplitsMinifiedSingleLineEpub() {
+        QString minified;
+        for (int i = 0; i < 120; ++i)
+            minified += QStringLiteral("The lantern shone brightly over the dark harbor #%1. ").arg(i);
+        minified = minified.trimmed();
+        QVERIFY(!minified.contains(QLatin1Char('\n')));
+
+        const QList<PassageIndex::Passage> passages = PassageIndex::split(2, minified, 400);
+        QVERIFY(passages.size() >= 12);
+        for (int i = 0; i < passages.size(); ++i) {
+            const auto &p = passages[i];
+            QCOMPARE(p.chapter, 2);
+            QVERIFY2(p.text.size() <= 400, qPrintable(QString::number(p.text.size())));
+            QCOMPARE(minified.mid(p.start, p.end - p.start), p.text);
+            if (i + 1 < passages.size())
+                QVERIFY2(p.text.endsWith(QLatin1Char('.')), qPrintable(p.text));
+        }
+
+        // Single-line paragraph without sentence punctuation splits cleanly at word boundaries.
+        QString words;
+        for (int i = 0; i < 200; ++i)
+            words += QStringLiteral("harborlight ");
+        words = words.trimmed();
+        const QList<PassageIndex::Passage> wordPassages = PassageIndex::split(0, words, 250);
+        QVERIFY(wordPassages.size() >= 8);
+        for (const auto &p : wordPassages) {
+            QVERIFY(p.text.size() <= 250);
+            QCOMPARE(words.mid(p.start, p.end - p.start), p.text);
+            QVERIFY(p.text.startsWith(QStringLiteral("harborlight")));
+            QVERIFY(p.text.endsWith(QStringLiteral("harborlight")));
+        }
+    }
+
+    // --- Post-merge regression tests: Narration / Audio -------------------
+
+    void narrationNullProviderRecutAndChapterEndSleepCancel() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath("two-linear.epub");
+        const QByteArray twoOpf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>Two Chapters</dc:title><dc:language>en-GB</dc:language></metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "    <item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/></spine>\n"
+            "</package>";
+        const QByteArray twoBytes = TestBooks::epub({
+            {"OEBPS/content.opf", twoOpf},
+            {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>Chapter one sentence.</p>")},
+            {"OEBPS/c2.xhtml", TestBooks::chapter("Ch 2", "<p>Chapter two sentence.</p>")},
+        });
+        QVERIFY(TestBooks::write(epubPath, twoBytes));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        keys.save(QStringLiteral("gemini"), QStringLiteral("test-key"));
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+
+        AudioCache cache(dir.filePath("audio"), library.database().connectionName());
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+
+        // 1. Null-provider graceful pause (no SIGSEGV when provider disappears mid-session).
+        narration.setVoice(QStringLiteral("sulafat"), QStringLiteral("Sulafat"));
+        narration.start(0, 0);
+        QVERIFY(narration.active() && narration.playing());
+        services.forgetKey();
+        QVERIFY(services.speechFor(QStringLiteral("sulafat")) == nullptr);
+        narration.addBlocks(0, R"([{"start":0,"end":20,"text":"A short first line.","kind":"text"}])");
+        QVERIFY(narration.active());
+        QVERIFY(!narration.playing());
+        QVERIFY(!narration.problem().isEmpty());
+        narration.stop();
+
+        // 2. recut() preserves stable track IDs for active/queued clips and assigns monotonic IDs.
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        narration.start(0, 0);
+        QJsonArray manyBlocks;
+        qint64 off = 0;
+        for (int i = 0; i < 10; ++i) {
+            const QString para = QStringLiteral("Paragraph %1. ").arg(i) + QString(1100, QLatin1Char('a'));
+            manyBlocks.append(QJsonObject{{"start", double(off)}, {"end", double(off + para.size())}, {"text", para}, {"kind", "text"}});
+            off += para.size() + 1;
+        }
+        narration.addBlocks(0, QString::fromUtf8(QJsonDocument(manyBlocks).toJson(QJsonDocument::Compact)));
+        QTRY_VERIFY_WITH_TIMEOUT(!narration.m_clips.isEmpty() && narration.m_clips[0].queued, 5000);
+        // Ensure the tail has Waiting clips so recut() actually replaces them.
+        QVERIFY(narration.m_clips.size() >= 10);
+        QCOMPARE(narration.m_clips.last().state, Narration::Clip::Waiting);
+        const int clip0Id = narration.m_clips[0].id;
+        const int queuedId = narration.m_clips[narration.m_queued].id;
+        const int maxIdBefore = narration.m_clips.last().id;
+
+        narration.applyMoods(0, {{9, QStringLiteral("hushed")}});
+        QCOMPARE(narration.m_clips[narration.m_current].id, clip0Id);
+        QCOMPARE(narration.m_clips[narration.m_queued].id, queuedId);
+        QVERIFY(narration.m_player->hasTrack(clip0Id));
+        QVERIFY(narration.m_clips.last().id > maxIdBefore);
+        for (int i = 1; i < narration.m_clips.size(); ++i)
+            QVERIFY(narration.m_clips[i].id > narration.m_clips[i - 1].id);
+        narration.heard(clip0Id, 100);
+        QCOMPARE(narration.m_current, 0);
+        narration.stop();
+
+        // 3. sleepAtEndOfChapter() -> sleepIn(0) pumps and queues ready next-chapter clips without stalling.
+        narration.start(0, 0);
+        narration.sleepAtEndOfChapter();
+        QVERIFY(narration.sleepAtChapterEnd());
+        narration.addBlocks(0, R"([{"start":0,"end":21,"text":"Chapter one sentence.","kind":"text"}])");
+        // Chapter 1 was auto-requested because remaining < 5.
+        QVERIFY(narration.m_requested.contains(1));
+        narration.addBlocks(1, R"([{"start":0,"end":21,"text":"Chapter two sentence.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(narration.m_clips.size() == 2 &&
+                                     narration.m_clips[0].state == Narration::Clip::Complete &&
+                                     narration.m_clips[1].state == Narration::Clip::Complete,
+                                 5000);
+        // Chapter 0 is queued, chapter 1 is held back while chapter-end sleep is armed.
+        QVERIFY(narration.m_clips[0].queued && narration.m_player->hasTrack(narration.m_clips[0].id));
+        QVERIFY(!narration.m_clips[1].queued && !narration.m_player->hasTrack(narration.m_clips[1].id));
+
+        // Cancelling chapter-end sleep mid-chapter immediately queues chapter 1 (no buffering stall).
+        narration.sleepIn(0);
+        QVERIFY(!narration.sleepAtChapterEnd());
+        QVERIFY(narration.m_clips[1].queued && narration.m_player->hasTrack(narration.m_clips[1].id));
+
+        // SpeechPlayer::drained also pumps if an already-ready clip was not yet queued.
+        narration.heard(narration.m_clips[0].id, 0);
+        QVERIFY(!narration.buffering());
+        narration.m_clips[1].queued = false;
+        narration.m_queued = 0;
+        narration.m_player->clear();
+        QVERIFY(narration.m_player->drainedOut());
+        emit narration.m_player->drained();
+        QVERIFY(narration.m_clips[1].queued && narration.m_player->hasTrack(narration.m_clips[1].id));
+        QVERIFY(!narration.buffering());
+        narration.stop();
+    }
+
+    void castIsolatesVoiceFamiliesAcrossNarratorSwitches() {
+        VoiceRig rig;
+        const QString epubPath = rig.dir.filePath("cast.epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+        const int bookId = rig.library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        QVERIFY(rig.reader.openBook(bookId));
+
+        auto classic = [](const QString &id, const QString &gender) {
+            Ai::Voice v;
+            v.id = id;
+            v.name = id;
+            v.language = QStringLiteral("en-US");
+            v.gender = gender;
+            return v;
+        };
+        rig.catalog->setVoices({classic("sulafat", "female"), classic("gacrux", "female"),
+                                classic("achernar", "male"), classic("aoede", "female")});
+
+        VoicePacks packs(rig.dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        fakeInstall(rig.dir.filePath("voices"), "engine-arm");
+        fakeInstall(rig.dir.filePath("voices"), "kokoro-fp32");
+
+        Cast cast(rig.services.get(), rig.cache.get(), &rig.reader, &rig.library, rig.catalog.get(), &packs);
+        cast.setEnabled(true);
+        cast.setNarrator(QStringLiteral("sulafat"));
+        QVERIFY(cast.available());
+        cast.learn(0, {{1, {QStringLiteral("Weena"), QStringLiteral("female")}},
+                       {2, {QStringLiteral("Filby"), QStringLiteral("male")}}});
+        cast.setVoice(QStringLiteral("Weena"), QStringLiteral("gacrux"));
+        QCOMPARE(cast.voiceAt(0, 1), QStringLiteral("gacrux"));
+        QVERIFY(!AiServices::isOnThisComputer(cast.voiceAt(0, 2)));
+
+        // Switching narrator to offline Kokoro must NEVER resolve a paid Gemini voice.
+        cast.setNarrator(QStringLiteral("builtin:kokoro:af_heart"));
+        QVERIFY(cast.available());
+        const QString kokoroWeena = cast.voiceAt(0, 1);
+        const QString kokoroFilby = cast.voiceAt(0, 2);
+        QVERIFY2(kokoroWeena.startsWith(QStringLiteral("builtin:kokoro:")), qPrintable(kokoroWeena));
+        QVERIFY2(kokoroFilby.startsWith(QStringLiteral("builtin:kokoro:")), qPrintable(kokoroFilby));
+        // Trying to assign a Gemini voice under a Kokoro narrator is rejected.
+        cast.setVoice(QStringLiteral("Weena"), QStringLiteral("gacrux"));
+        QCOMPARE(cast.voiceAt(0, 1), kokoroWeena);
+
+        // Switching back to Gemini restores the Gemini family map independently.
+        cast.setNarrator(QStringLiteral("sulafat"));
+        QCOMPARE(cast.voiceAt(0, 1), QStringLiteral("gacrux"));
+
+        // Legacy v1 flat cast JSON with a Gemini voice never leaks when loaded under Kokoro.
+        rig.library.setBookSetting(bookId, QStringLiteral("cast"), QStringLiteral("{\"Weena\":\"gacrux\"}"));
+        Cast reloaded(rig.services.get(), rig.cache.get(), &rig.reader, &rig.library, rig.catalog.get(), &packs);
+        reloaded.setNarrator(QStringLiteral("builtin:kokoro:af_heart"));
+        QVERIFY(reloaded.voiceAt(0, 1).startsWith(QStringLiteral("builtin:kokoro:")));
+    }
+
+    void audioCacheConcurrentWritesAndCorruptDecodeEviction() {
+        if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty())
+            QSKIP("ffmpeg isn't installed");
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const QString audioDir = dir.filePath("audio");
+        AudioCache cache(audioDir, library.database().connectionName());
+
+        QByteArray pcm(6000 * 2, '\0');
+        auto *samples = reinterpret_cast<qint16 *>(pcm.data());
+        for (int n = 0; n < 6000; ++n)
+            samples[n] = qint16(5000 * std::sin(2 * M_PI * 260 * n / 24000.0));
+
+        // 1. Concurrent stores (including duplicate key) use unique .part.<pid>.<seq> and leave no leftovers.
+        QStringList keys;
+        for (int i = 0; i < 4; ++i)
+            keys.append(AudioCache::keyFor("builtin", "m", "v", "", QStringLiteral("Clip %1.").arg(i)));
+        cache.store(keys[0], pcm, 24000);
+        cache.store(keys[0], pcm, 24000);
+        cache.store(keys[1], pcm, 24000);
+        cache.store(keys[2], pcm, 24000);
+        cache.store(keys[3], pcm, 24000);
+        QTRY_VERIFY_WITH_TIMEOUT(!cache.hasPendingStores(), 15000);
+
+        const auto batch = cache.clipInfoBatch(keys);
+        QCOMPARE(batch.size(), 4);
+        for (const QString &k : keys)
+            QVERIFY(QFileInfo(batch.value(k).first).size() > 200);
+        QVERIFY(QDir(audioDir).entryList({QStringLiteral("*.part"), QStringLiteral("*.part.*")}, QDir::Files).isEmpty());
+
+        // 2. Corrupt WAV and corrupt Opus decode callbacks are deferred asynchronously with ok == false.
+        const QString badWav = dir.filePath("corrupt.wav");
+        write(badWav, "RIFFshort");
+        bool wavCalled = false, wavOk = true;
+        cache.decode(badWav, 24000, this, [&](const QByteArray &, bool ok) {
+            wavCalled = true;
+            wavOk = ok;
+        });
+        QVERIFY(!wavCalled);  // strictly deferred via QueuedConnection
+        QTRY_VERIFY(wavCalled);
+        QVERIFY(!wavOk);
+
+        // 3. Narration::decode() evicts a corrupt cached Opus file and re-synthesizes ONCE without recursion.
+        const QString epubPath = dir.filePath("evict.epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        GeminiProvider gemini;
+        MemoryKeyStore keyStore;
+        AiServices services(&gemini, &keyStore, library.database().connectionName());
+        VoicePacks packs(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        auto spoken = std::make_shared<QStringList>();
+        LocalSpeech local(&packs, nullptr, [spoken](const QString &) {
+            auto tone = std::make_unique<ToneEngine>();
+            tone->spoken = spoken;
+            return tone;
+        });
+        services.setLocalSpeech(&local);
+
+        const QString text = QStringLiteral("Corrupt cache recovery test.");
+        const QString corruptKey = AudioCache::keyFor(QStringLiteral("builtin"), local.speechModelName(false),
+                                                      QStringLiteral("builtin:kokoro:bm_george"), QString(), text);
+        cache.store(corruptKey, pcm, 24000);
+        QTRY_VERIFY_WITH_TIMEOUT(!cache.hasPendingStores(), 10000);
+        const QString cachedFile = cache.lookup(corruptKey);
+        QVERIFY(!cachedFile.isEmpty());
+        // Corrupt the Opus file on disk so ffmpeg fails to decode it.
+        write(cachedFile, "this is not valid opus data");
+
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        narration.start(0, 0);
+        const QString blocksJson =
+            QStringLiteral("[{\"start\":0,\"end\":28,\"text\":\"%1\",\"kind\":\"text\"}]").arg(text);
+        narration.addBlocks(0, blocksJson);
+        QTRY_VERIFY_WITH_TIMEOUT(!narration.m_clips.isEmpty() && narration.m_clips[0].state == Narration::Clip::Complete,
+                                 10000);
+        QCOMPARE(spoken->size(), 1);
+        QVERIFY(!narration.m_clips[0].pcm.isEmpty());
+        narration.stop();
+        QTRY_VERIFY_WITH_TIMEOUT(!cache.hasPendingStores(), 10000);
+    }
+
+    void stretcherFlushesShortClipsAndTailsAtNonUnitRate() {
+        // 1. Short clip (< Stretcher::frame = 1024 samples) at rate != 1.0 must never be dropped.
+        QVector<qint16> tiny(300);
+        for (int i = 0; i < tiny.size(); ++i)
+            tiny[i] = qint16(100 + i * 5);
+        for (double rate : {0.75, 1.5}) {
+            Stretcher stretcher;
+            stretcher.reset();
+            QVector<qint16> out;
+            while (stretcher.process(tiny.constData(), tiny.size(), true, rate, 4096, out)) {
+            }
+            QCOMPARE(out, tiny);
+            QVERIFY(!stretcher.process(tiny.constData(), tiny.size(), true, rate, 4096, out));
+        }
+
+        // 2. Tail flush at rate != 1.0 (even when `room` == Stretcher::hop) keeps tail energy and ends cleanly.
+        const int rateHz = 24000;
+        QVector<qint16> clip(2400);
+        for (int n = 0; n < clip.size(); ++n)
+            clip[n] = qint16(9000 * std::sin(2 * M_PI * 300 * n / rateHz));
+        for (double speed : {0.8, 1.5}) {
+            Stretcher stretcher;
+            stretcher.reset();
+            QVector<qint16> out;
+            while (stretcher.process(clip.constData(), clip.size(), true, speed, Stretcher::hop, out)) {
+            }
+            const double expected = clip.size() / speed;
+            QVERIFY2(std::abs(out.size() - expected) < 700,
+                     qPrintable(QStringLiteral("speed=%1 got=%2 expected=%3").arg(speed).arg(out.size()).arg(expected)));
+            qint16 tailPeak = 0;
+            for (int n = qMax(0, int(out.size()) - 400); n < out.size(); ++n)
+                tailPeak = qMax<qint16>(tailPeak, qAbs(out[n]));
+            QVERIFY(tailPeak > 1000);
+            QVERIFY(!stretcher.process(clip.constData(), clip.size(), true, speed, Stretcher::hop, out));
+        }
+
+        // 3. SpeechPlayer track tracking & volume clamping.
+        SpeechPlayer player;
+        player.setHeadless(true);
+        player.setVolume(2.5);
+        QCOMPARE(player.volume(), 1.0);
+        player.setVolume(-1.0);
+        QCOMPARE(player.volume(), 0.0);
+        player.addTrack(7);
+        QVERIFY(player.hasTrack(7));
+        player.appendAudio(7, QByteArray(200, '\0'));
+        QCOMPARE(player.trackSamples(7), qint64(100));
+        QVERIFY(!player.trackComplete(7));
+        player.finishTrack(7);
+        QVERIFY(player.trackComplete(7));
+        player.clear();
+        QVERIFY(!player.hasTrack(7));
+    }
+
+    void localReplyRecordsBoundaryBeforeAudioReceived() {
+        QTemporaryDir dir;
+        VoicePacks packs(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        Ai::SpeechRequest request;
+        request.voice = QStringLiteral("builtin:kokoro:bm_george");
+        request.sentences = {QStringLiteral("One."), QStringLiteral("Two."), QStringLiteral("Three.")};
+
+        Ai::Reply *reply = local.synthesize(request);
+        int emissions = 0;
+        QList<int> boundaryCounts;
+        QList<bool> matchedEnd;
+        connect(reply, &Ai::Reply::audioReceived, this, [&](const QByteArray &) {
+            ++emissions;
+            const QList<qint64> b = reply->boundaries();
+            boundaryCounts.append(int(b.size()));
+            matchedEnd.append(!b.isEmpty() && b.last() == reply->audio().size() / 2);
+        });
+        QTRY_VERIFY(reply->isFinished());
+        QVERIFY(!reply->error());
+        QCOMPARE(emissions, 3);
+        QCOMPARE(boundaryCounts, (QList<int>{1, 2, 3}));
+        QCOMPARE(matchedEnd, (QList<bool>{true, true, true}));
+
+        // An engine producing 0 samples for non-empty text reports Ai::Error::Invalid.
+        LocalSpeech broken(&packs, nullptr, [](const QString &) { return std::make_unique<SilentEngine>(); });
+        Ai::Reply *emptyReply = broken.synthesize(request);
+        QTRY_VERIFY(emptyReply->isFinished());
+        QCOMPARE(emptyReply->error().kind, Ai::Error::Invalid);
+    }
+
+    void audiobookResolvesCoverArtAndSanitizesFilename() {
+        // Metadata and concat list strip CR/LF injection cleanly.
+        const QString meta = Audiobook::metadata(QStringLiteral("Title\r\n=1"), QStringLiteral("Auth;or"),
+                                                 {{QStringLiteral("Ch\r1"), 0, 1000}});
+        QVERIFY(!meta.contains(QLatin1Char('\r')));
+        QVERIFY(meta.contains(QStringLiteral("title=Title\\\n\\=1\n")));
+        QVERIFY(meta.contains(QStringLiteral("artist=Auth\\;or\n")));
+        QCOMPARE(Audiobook::concatList({QStringLiteral("/a/b\r\nc'd.opus")}),
+                 QStringLiteral("ffconcat version 1.0\nfile '/a/bc'\\''d.opus'\n"));
+
+        const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+        if (ffmpeg.isEmpty())
+            QSKIP("ffmpeg isn't installed");
+
+        QTemporaryDir dir;
+        // Isolate XDG_MUSIC_DIR inside the test XDG config directory so ~/Music is never touched.
+        const QString musicDir = dir.filePath("music");
+        QVERIFY(QDir().mkpath(musicDir));
+        const QString userDirsPath = QString::fromUtf8(qgetenv("XDG_CONFIG_HOME")) + QStringLiteral("/user-dirs.dirs");
+        const bool hadUserDirs = QFile::exists(userDirsPath);
+        QByteArray prevUserDirs;
+        if (hadUserDirs) {
+            QFile f(userDirsPath);
+            if (f.open(QIODevice::ReadOnly))
+                prevUserDirs = f.readAll();
+        }
+        auto restoreUserDirs = qScopeGuard([&] {
+            if (hadUserDirs)
+                write(userDirsPath, prevUserDirs);
+            else
+                QFile::remove(userDirsPath);
+        });
+        write(userDirsPath, QStringLiteral("XDG_MUSIC_DIR=\"%1\"\n").arg(musicDir).toUtf8());
+        QCOMPARE(QStandardPaths::writableLocation(QStandardPaths::MusicLocation), musicDir);
+
+        // EPUB with a real PNG cover and a hostile filename title (leading dots + path/shell chars).
+        const QString epubPath = dir.filePath("hostile.epub");
+        const QByteArray hostileOpf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            "    <dc:title>...Evil/Title:With*Bad?Chars</dc:title>\n"
+            "    <dc:creator>Ada Marsh</dc:creator>\n"
+            "    <dc:language>en-GB</dc:language>\n"
+            "    <meta name=\"cover\" content=\"cover-image\"/>\n"
+            "  </metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"cover-image\" href=\"images/cover.png\" media-type=\"image/png\"/>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine><itemref idref=\"c1\"/></spine>\n"
+            "</package>";
+        const QByteArray hostileBytes = TestBooks::epub({
+            {"OEBPS/content.opf", hostileOpf},
+            {"OEBPS/images/cover.png", png(40, 60)},
+            {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>Hello audiobook export.</p>")},
+        });
+        QVERIFY(TestBooks::write(epubPath, hostileBytes));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        const QString coverFile = library.record(bookId).cover;
+        QVERIFY(!coverFile.isEmpty());
+        QVERIFY(QFileInfo::exists(QDir(library.coverDirectory()).filePath(coverFile)));
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+
+        AudioCache cache(dir.filePath("audio"), library.database().connectionName());
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+
+        Download download(&services, &cache, &reader, &narration);
+        download.start(0, 0);
+        download.addBlocks(0, R"([{"start":0,"end":23,"text":"Hello audiobook export.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(download.finished(), 15000);
+        QVERIFY(download.problem().isEmpty());
+
+        Audiobook audiobook(&cache, &download, &reader, &library);
+        audiobook.save();
+        QTRY_VERIFY_WITH_TIMEOUT(!audiobook.busy(), 15000);
+        QVERIFY2(audiobook.problem().isEmpty(), qPrintable(audiobook.problem()));
+        const QString expected = QDir(musicDir + QStringLiteral("/Dogear")).filePath(QStringLiteral("Evil Title With Bad Chars.m4b"));
+        QCOMPARE(audiobook.saved(), expected);
+        QVERIFY(QFileInfo(expected).size() > 1000);
+
+        // Verify ffmpeg embedded the resolved cover art from library.coverDirectory().
+        const QString ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+        if (!ffprobe.isEmpty()) {
+            QProcess probe;
+            probe.start(ffprobe, {QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-show_entries"),
+                                  QStringLiteral("stream=codec_type,codec_name:stream_disposition=attached_pic"),
+                                  QStringLiteral("-of"), QStringLiteral("default=noprint_wrappers=1"), expected});
+            QVERIFY(probe.waitForFinished(5000));
+            const QByteArray out = probe.readAllStandardOutput();
+            QVERIFY2(out.contains("codec_type=video"), out.constData());
+            QVERIFY2(out.contains("attached_pic=1"), out.constData());
+        }
     }
 };
 

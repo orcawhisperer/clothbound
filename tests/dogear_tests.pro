@@ -22,6 +22,9 @@ HEADERS += \
     ../src/localsetup.h \
     ../src/audiobook.h \
     ../src/cast.h \
+    ../src/director.h \
+    ../src/download.h \
+    ../src/narration.h \
     ../src/illustrator.h \
     ../src/pdfpages.h \
     ../src/passageindex.h \
@@ -69,6 +72,9 @@ SOURCES += \
     ../src/localsetup.cpp \
     ../src/audiobook.cpp \
     ../src/cast.cpp \
+    ../src/director.cpp \
+    ../src/download.cpp \
+    ../src/narration.cpp \
     ../src/illustrator.cpp \
     ../src/pdfpages.cpp \
     ../src/passageindex.cpp \
