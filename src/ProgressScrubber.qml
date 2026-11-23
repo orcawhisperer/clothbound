@@ -94,7 +94,7 @@ Item {
         }
         // 11 px circular thumb (13 px hovered/dragging) with a 3 px paper-cutout halo.
         Rectangle {
-            readonly property real dotSize: scrubber.dragging || hover.hovered ? 13 : 11
+            property real dotSize: scrubber.dragging || hover.hovered ? 13 : 11
             x: track.width * Math.max(0, Math.min(1, scrubber.shown)) - width / 2
             anchors.verticalCenter: parent.verticalCenter
             width: dotSize + 6

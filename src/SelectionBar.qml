@@ -33,7 +33,9 @@ Rectangle {
     readonly property var colors: ["yellow", "green", "blue", "pink"]
     readonly property var swatches: Themes.swatches
     readonly property string selectedWords: (target && (target.text || target.quote) ? String(target.text || target.quote) : "").trim()
-    readonly property bool isLocalDefine: ai.routeFor("define") === "local" && ai.localIsLoopback
+    readonly property bool isLocalDefine: companion["whereLocal"] !== undefined
+                                        ? Boolean(companion["whereLocal"])
+                                        : (ai.routeFor("define") === "local" && ai.localIsLoopback)
 
     property var anchorRect: null
     property var anchorArea: null

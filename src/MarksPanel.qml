@@ -193,7 +193,7 @@ SidePanel {
                                     textFormat: Text.PlainText
                                     color: panel.look.fg
                                     font.family: "Literata"
-                                    font.pixelSize: 13.5
+                                    font.pixelSize: 14
                                     wrapMode: Text.Wrap
                                     maximumLineCount: 4
                                     elide: Text.ElideRight
