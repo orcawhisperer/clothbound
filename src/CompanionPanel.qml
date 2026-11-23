@@ -169,6 +169,7 @@ FocusScope {
             Chip { text: qsTr("Ask"); value: "ask" }
             Chip { text: qsTr("Previously…"); value: "recap" }
             Chip { text: qsTr("Who's who"); value: "whoswho" }
+            Chip { text: qsTr("Pictures"); value: "pictures" }
             Chip { visible: panel.selectionFeature; text: panel.featureName; value: "selection" }
         }
 
@@ -341,6 +342,105 @@ FocusScope {
                         text: qsTr("Again")
                         onClicked: companion.recap()
                     }
+                }
+            }
+        }
+
+        // --- Pictures --------------------------------------------------------
+        ListView {
+            id: pictureList
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.leftMargin: 22
+            Layout.rightMargin: 22
+            visible: panel.tab === "pictures"
+            clip: true
+            spacing: 18
+            model: illustrator.pictures
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
+            header: ColumnLayout {
+                width: ListView.view.width
+                spacing: 8
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("An illustration of the page in view (or of words you select and right-click), in the manner of the book's own time.")
+                    color: panel.look.muted
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    spacing: 10
+                    TextButton {
+                        primary: true
+                        enabled: illustrator.available && !illustrator.busy
+                        text: qsTr("Illustrate this page")
+                        onClicked: illustrator.illustrate("", reader.chapter, reader.pageEnd)
+                    }
+                    Label {
+                        visible: illustrator.available
+                        text: qsTr("about %1, with Gemini").arg(Number(illustrator.cost).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
+                        color: panel.look.muted
+                        font.pixelSize: 12
+                    }
+                }
+                RowLayout {
+                    visible: illustrator.busy
+                    spacing: 8
+                    BusyIndicator { running: parent.visible; implicitWidth: 20; implicitHeight: 20 }
+                    Label { text: illustrator.status; color: panel.look.muted; font.pixelSize: 13 }
+                    Item { Layout.fillWidth: true }
+                    TextButton { text: qsTr("Stop"); onClicked: illustrator.stop() }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: illustrator.problem !== "" || !illustrator.available
+                    text: illustrator.problem !== "" ? illustrator.problem
+                        : qsTr("Pictures are made with Gemini: add your key in Intelligence (✦).")
+                    color: illustrator.problem !== "" ? (theme.colors.red || panel.look.fg) : panel.look.muted
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                }
+                Item { implicitHeight: 4 }
+            }
+            delegate: ColumnLayout {
+                required property var modelData
+                width: ListView.view.width
+                spacing: 6
+                Image {
+                    Layout.preferredWidth: parent.width
+                    Layout.maximumWidth: parent.width
+                    Layout.preferredHeight: parent.width * (implicitHeight > 0 ? implicitHeight / Math.max(1, implicitWidth) : 4 / 3)
+                    source: modelData.url
+                    fillMode: Image.PreserveAspectFit
+                    asynchronous: true
+                    sourceSize.width: 880
+                    mipmap: true
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: modelData.caption
+                    color: panel.look.fg
+                    font.pixelSize: 14
+                    font.italic: true
+                    font.family: "Literata"
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    spacing: 6
+                    TextButton {
+                        text: reader.titleOfChapter(modelData.chapter) ? qsTr("Go to “%1”").arg(reader.titleOfChapter(modelData.chapter)) : qsTr("Go to its page")
+                        onClicked: view.goTo({ chapter: modelData.chapter, offset: modelData.offset, instant: true })
+                    }
+                    TextButton {
+                        text: qsTr("Save a copy")
+                        onClicked: {
+                            const path = illustrator.saveCopy(modelData.id)
+                            if (path)
+                                toast.show(qsTr("Saved in %1").arg(path.replace(/^.*\/(Pictures\/)/, "$1")))
+                        }
+                    }
+                    TextButton { text: qsTr("Remove"); onClicked: illustrator.remove(modelData.id) }
                 }
             }
         }

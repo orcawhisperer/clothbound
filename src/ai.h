@@ -112,6 +112,8 @@ public:
     QList<qint64> boundaries() const { return m_boundaries; }
     // An Embedder's vectors, one per text asked about.
     QList<QList<float>> vectors() const { return m_vectors; }
+    // An ImageGenerator's picture, as the file the provider made (PNG, JPEG).
+    QByteArray image() const { return m_image; }
 
     virtual void abort() = 0;
 
@@ -148,6 +150,7 @@ protected:
     QString m_feature;
     QList<qint64> m_boundaries;
     QList<QList<float>> m_vectors;
+    QByteArray m_image;
     bool m_finished = false;
 };
 
@@ -191,6 +194,21 @@ public:
     virtual QString embeddingModelName() const = 0;
 };
 
+struct ImageRequest {
+    QString feature = QStringLiteral("illustrate");
+    QString prompt;
+    QString aspectRatio = QStringLiteral("3:4");
+};
+
+class ImageGenerator {
+public:
+    virtual ~ImageGenerator() = default;
+    virtual Reply *generateImage(const ImageRequest &request) = 0;
+    virtual QString imageModelName() const = 0;
+    // About what one picture costs, in US dollars.
+    virtual double imageCost() const = 0;
+};
+
 class VoiceDesigner {
 public:
     virtual ~VoiceDesigner() = default;
@@ -222,6 +240,7 @@ public:
     virtual SpeechSynthesizer *speech() { return nullptr; }
     virtual VoiceDesigner *voiceDesigner() { return nullptr; }
     virtual Embedder *embedder() { return nullptr; }
+    virtual ImageGenerator *images() { return nullptr; }
 };
 
 }

@@ -21,6 +21,8 @@ const QList<AiUsageLedger::Price> &AiUsageLedger::prices() {
         {"gemini-3.5-flash-lite", QDate(2026, 1, 1), 0.30, 2.50, 0.03},
         {"gemini-3.1-flash-lite", QDate(2026, 1, 1), 0.25, 1.50, 0.025},
         {"gemini-nano-banana-2.1", QDate(2026, 1, 1), 1.50, 30.00, 0},
+        // Nano Banana 2.1, as the API names it: $30 per million image tokens.
+        {"gemini-3.1-flash-image", QDate(2026, 1, 1), 0.50, 30.00, 0},
         {"gemini-embedding-2", QDate(2026, 1, 1), 0.20, 0, 0},
     };
     return table;

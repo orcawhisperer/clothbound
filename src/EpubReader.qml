@@ -910,6 +910,18 @@ FocusScope {
             text: qsTr("Translate")
             onTriggered: view.askCompanion("translate", view.selection)
         }
+        MenuItem {
+            visible: illustrator.available
+            height: visible ? implicitHeight : 0
+            text: pageMenu.hasSelection ? qsTr("Illustrate these words") : qsTr("Illustrate this moment")
+            onTriggered: {
+                view.showCompanion("pictures")
+                if (pageMenu.hasSelection)
+                    illustrator.illustrate(view.selection.text, view.selection.chapter, view.selection.end)
+                else
+                    illustrator.illustrate("", pageMenu.place.chapter, pageMenu.place.offset + 600)
+            }
+        }
         MenuSeparator {}
         MenuItem {
             text: view.pageBookmark ? qsTr("Remove the bookmark") : qsTr("Bookmark this page")

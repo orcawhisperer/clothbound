@@ -25,6 +25,7 @@ HEADERS += \
     src/epubbook.h \
     src/filepicker.h \
     src/gemini.h \
+    src/illustrator.h \
     src/pdfpages.h \
     src/passageindex.h \
     src/companion.h \
@@ -68,6 +69,7 @@ SOURCES += \
     src/cli.cpp \
     src/epubbook.cpp \
     src/gemini.cpp \
+    src/illustrator.cpp \
     src/pdfpages.cpp \
     src/passageindex.cpp \
     src/companion.cpp \

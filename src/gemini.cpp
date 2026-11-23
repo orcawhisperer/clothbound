@@ -1,4 +1,6 @@
 #include "gemini.h"
+#include "aiusage.h"
+#include <QDate>
 
 #include "sseparser.h"
 
@@ -18,7 +20,7 @@ quint32 le32(const char *p) {
 // Ai::Reply signals and results.
 class GeminiReply : public Ai::Reply {
 public:
-    enum Kind { Interaction, Voices, VoiceDesign, Forget, Models, Embed };
+    enum Kind { Interaction, Voices, VoiceDesign, Forget, Models, Embed, Image };
 
     GeminiReply(QNetworkReply *reply, Kind kind, const QString &model, const QString &feature, QObject *parent)
         : Ai::Reply(parent), m_reply(reply), m_kind(kind) {
@@ -157,6 +159,24 @@ private:
                 m_vectors.append(vector);
             }
             m_usage.inputTokens = json.value("usageMetadata").toObject().value("promptTokenCount").toInteger();
+            break;
+        }
+        case Image: {
+            for (const auto &candidate : json.value("candidates").toArray())
+                for (const auto &part : candidate.toObject().value("content").toObject().value("parts").toArray()) {
+                    const QJsonObject inlineData = part.toObject().value("inlineData").toObject();
+                    if (!inlineData.isEmpty() && m_image.isEmpty())
+                        m_image = QByteArray::fromBase64(inlineData.value("data").toString().toLatin1());
+                    if (part.toObject().contains("text"))
+                        m_text += part.toObject().value("text").toString();
+                }
+            const QJsonObject usage = json.value("usageMetadata").toObject();
+            m_usage.inputTokens = usage.value("promptTokenCount").toInteger();
+            m_usage.outputTokens = usage.value("candidatesTokenCount").toInteger();
+            if (m_image.isEmpty()) {
+                finish({Ai::Error::Refused, m_text.isEmpty() ? QStringLiteral("No picture came back.") : m_text});
+                return;
+            }
             break;
         }
         case Forget:
@@ -429,4 +449,24 @@ Ai::Reply *GeminiProvider::embed(const QStringList &texts, bool query) {
     return new GeminiReply(send("POST", QStringLiteral("models/%1:batchEmbedContents").arg(m_embeddingModel),
                                 embedBody(texts, query, m_embeddingModel)),
                            GeminiReply::Embed, m_embeddingModel, QStringLiteral("embed"), this);
+}
+
+QJsonObject GeminiProvider::imageBody(const Ai::ImageRequest &request) {
+    return QJsonObject{
+        {"contents", QJsonArray{QJsonObject{{"parts", QJsonArray{QJsonObject{{"text", request.prompt}}}}}}},
+        {"generationConfig", QJsonObject{{"responseModalities", QJsonArray{"IMAGE"}},
+                                         {"imageConfig", QJsonObject{{"aspectRatio", request.aspectRatio}, {"imageSize", "1K"}}}}}};
+}
+
+Ai::Reply *GeminiProvider::generateImage(const Ai::ImageRequest &request) {
+    return new GeminiReply(send("POST", QStringLiteral("models/%1:generateContent").arg(m_imageModel), imageBody(request)),
+                           GeminiReply::Image, m_imageModel, request.feature, this);
+}
+
+double GeminiProvider::imageCost() const {
+    // A 1K picture is about 1,120 output tokens, and the prompt a few hundred.
+    Ai::Usage usage;
+    usage.inputTokens = 400;
+    usage.outputTokens = 1120;
+    return AiUsageLedger::cost(m_imageModel, usage, QDate::currentDate(), false);
 }

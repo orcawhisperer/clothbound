@@ -11,7 +11,7 @@ class QNetworkReply;
 // the Interactions API, speech through the TTS models, and Voice Design.
 // The only place in Dogear that knows Gemini's wire format.
 class GeminiProvider : public Ai::Provider, public Ai::TextModel, public Ai::SpeechSynthesizer, public Ai::VoiceDesigner,
-                       public Ai::Embedder {
+                       public Ai::Embedder, public Ai::ImageGenerator {
     Q_OBJECT
 
 public:
@@ -31,6 +31,12 @@ public:
     Ai::SpeechSynthesizer *speech() override { return this; }
     Ai::VoiceDesigner *voiceDesigner() override { return this; }
     Ai::Embedder *embedder() override { return this; }
+    Ai::ImageGenerator *images() override { return this; }
+
+    Ai::Reply *generateImage(const Ai::ImageRequest &request) override;
+    QString imageModelName() const override { return m_imageModel; }
+    double imageCost() const override;
+    static QJsonObject imageBody(const Ai::ImageRequest &request);
 
     Ai::Reply *embed(const QStringList &texts, bool query) override;
     QString embeddingModelName() const override { return m_embeddingModel; }
@@ -73,4 +79,5 @@ private:
     QString m_speechModel = QStringLiteral("gemini-3.8-flash-tts");
     QString m_economySpeechModel = QStringLiteral("gemini-3.8-flash-lite-tts");
     QString m_embeddingModel = QStringLiteral("gemini-embedding-2");
+    QString m_imageModel = QStringLiteral("gemini-3.1-flash-image");
 };

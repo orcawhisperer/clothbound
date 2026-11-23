@@ -72,6 +72,9 @@ public:
         return speaker && speaker->canSpeak(voice);
     }
     Ai::VoiceDesigner *voiceDesigner() const { return m_provider->hasKey() ? m_provider->voiceDesigner() : nullptr; }
+    // Pictures: Gemini's (making them on a computer needs a large graphics
+    // card, and nothing local is wired up for it).
+    Ai::ImageGenerator *images() const { return m_provider->hasKey() ? m_provider->images() : nullptr; }
 
     // --- Routing: which model does a feature's text work --------------------
     // Features: "director", "casting", "define", "translate", "whoswho",
