@@ -91,6 +91,14 @@ public:
     Q_INVOKABLE QVariantMap bookReadingStats(int id) const;
 
     BookRecord record(int id) const { return m_books.value(id); }
+    // Every book shown in the library (not missing, not removed).
+    QList<BookRecord> visibleRecords() const {
+        QList<BookRecord> list;
+        for (const auto &r : m_books)
+            if (r.visible())
+                list.append(r);
+        return list;
+    }
     int idForPath(const QString &path) const;
     QList<BookRecord> records() const { return m_books.values(); }
     QVariantMap toMap(const BookRecord &record) const;

@@ -60,6 +60,7 @@
 #include "booksearch.h"
 #include "library.h"
 #include "libraryfinder.h"
+#include "libraryindex.h"
 #include "marks.h"
 #include "reader.h"
 #include "epubbook.h"
@@ -4983,6 +4984,60 @@ private slots:
     }
 
     // --- Round 4 regression tests: Library / Marks / CLI -------------------
+
+    void libraryIndexFindsWordsAcrossBooks() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath("book.epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+        QCOMPARE(LibraryIndex::matchExpression(QStringLiteral("time  trav")), QStringLiteral("\"time\" \"trav\"*"));
+        QCOMPARE(LibraryIndex::matchExpression(QStringLiteral("\" OR NEAR(")), QStringLiteral("\"OR\" \"NEAR\"*"));
+        QCOMPARE(LibraryIndex::matchExpression(QStringLiteral("—")), QString());
+
+        LibraryIndex index(dir.filePath("index.sqlite"));
+        if (!index.available())
+            QSKIP("SQLite without FTS5");
+        QVERIFY(LibraryIndex::indexBook(dir.filePath("index.sqlite"), {7, epubPath, "epub", 100}));
+        EpubBook epub(epubPath);
+        QVERIFY(epub.open());
+        // A word from the book's text is found, with where it is.
+        QString word;
+        for (int c = 0; c < int(epub.spine().size()) && word.isEmpty(); ++c) {
+            const auto m = QRegularExpression(QStringLiteral("\\b\\p{L}{6,}\\b")).match(epub.chapterText(c));
+            if (m.hasMatch())
+                word = m.captured(0);
+        }
+        QVERIFY(!word.isEmpty());
+        const QVariantList hits = index.search(word.left(4));
+        QVERIFY(!hits.isEmpty());
+        const QVariantMap hit = hits.first().toMap();
+        QCOMPARE(hit.value("bookId").toInt(), 7);
+        const QString chapterText = epub.chapterText(hit.value("chapter").toInt());
+        QVERIFY(chapterText.mid(qint64(hit.value("offset").toDouble()), 4).compare(word.left(4), Qt::CaseInsensitive) == 0);
+        QVERIFY(hit.value("snippet").toString().contains(QStringLiteral("‹")));
+        QCOMPARE(index.bookCount(), 1);
+        QVERIFY(index.search(QStringLiteral("zzqxv")).isEmpty());
+
+        // A book no longer in the library leaves the index.
+        index.update({});
+        QCOMPARE(index.bookCount(), 0);
+        QVERIFY(index.search(word.left(4)).isEmpty());
+
+        // Accents don't matter: "cafe" finds "café".
+        QVERIFY(LibraryIndex::indexBook(dir.filePath("index.sqlite"), {8, epubPath, "epub", 100}));
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("idx-accents"));
+            db.setDatabaseName(dir.filePath("index.sqlite"));
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            QVERIFY(q.exec(QStringLiteral("INSERT INTO chapter_text (body, book, chapter) VALUES ('Un café noir, s''il vous plaît.', 8, 99)")));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("idx-accents"));
+        const QVariantList accents = index.search(QStringLiteral("cafe noir"));
+        QVERIFY(!accents.isEmpty());
+        QCOMPARE(accents.first().toMap().value("chapter").toInt(), 99);
+        QCOMPARE(qint64(accents.first().toMap().value("offset").toDouble()), qint64(3));
+    }
 
     void libraryFinderOffersFoldersWithBooks() {
         QTemporaryDir dir;

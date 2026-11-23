@@ -296,7 +296,13 @@ ApplicationWindow {
     }
 
     // --- Everywhere ------------------------------------------------------
-    Shortcut { sequence: "Ctrl+K"; context: Qt.ApplicationShortcut; onActivated: commandPalette.open ? commandPalette.close() : commandPalette.show() }
+    Shortcut {
+        sequence: "Ctrl+K"
+        context: Qt.ApplicationShortcut
+        onActivated: commandPalette.open ? commandPalette.close()
+                   : !win.readerOpen && libraryView.searchText !== "" ? commandPalette.search(libraryView.searchText)
+                   : commandPalette.show()
+    }
     Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: win.helpVisible = !win.helpVisible }
     Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: { win.saveWindowGeometry(); Qt.quit() } }
     Shortcut { sequences: ["F", "F11"]; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: win.toggleFullScreen() }
