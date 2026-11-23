@@ -4,6 +4,7 @@
 #include "audiocache.h"
 #include "cast.h"
 #include "director.h"
+#include "library.h"
 #include "narration.h"
 #include "reader.h"
 
@@ -431,6 +432,8 @@ void Download::checkFinished() {
     if (m_clock.isValid())
         m_activeMs += m_clock.elapsed();
     m_clock.invalidate();
+    if (m_narration && m_narration->library() && m_bookId > 0)
+        m_narration->library()->setBookSetting(m_bookId, QStringLiteral("audio_downloaded"), QStringLiteral("1"));
     emit progressChanged();
     emit changed();
     emit ready();

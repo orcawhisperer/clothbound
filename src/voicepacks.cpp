@@ -48,6 +48,27 @@ qint64 sizeOf(const QString &directory) {
         total += it.nextFileInfo().size();
     return total;
 }
+
+QString curatedVoiceNote(const QString &voiceId) {
+    const QString key = voiceId.section(QLatin1Char(':'), -1).toLower();
+    static const QHash<QString, QString> notes{
+        {QStringLiteral("bf_emma"), QStringLiteral("warm, measured")},
+        {QStringLiteral("bm_george"), QStringLiteral("low, unhurried")},
+        {QStringLiteral("bm_lewis"), QStringLiteral("bright")},
+        {QStringLiteral("bm_fable"), QStringLiteral("storyteller")},
+        {QStringLiteral("bf_isabella"), QStringLiteral("poised")},
+        {QStringLiteral("af_heart"), QStringLiteral("clear, friendly")},
+        {QStringLiteral("af_bella"), QStringLiteral("expressive, warm")},
+        {QStringLiteral("am_michael"), QStringLiteral("steady")},
+        {QStringLiteral("am_fenrir"), QStringLiteral("deep, resonant")},
+        {QStringLiteral("af_nicole"), QStringLiteral("soft, intimate")},
+        {QStringLiteral("af_sarah"), QStringLiteral("crisp, calm")},
+        {QStringLiteral("af_sky"), QStringLiteral("light, breezy")},
+        {QStringLiteral("bria"), QStringLiteral("natural, warm")},
+        {QStringLiteral("loona"), QStringLiteral("bright, crisp")},
+    };
+    return notes.value(key);
+}
 }
 
 VoicePacks::VoicePacks(const QString &directory, QObject *parent, const QString &architecture, const QByteArray &manifest)
@@ -86,6 +107,37 @@ VoicePacks::~VoicePacks() {
 QString VoicePacks::currentArchitecture() {
     const QString arch = QSysInfo::currentCpuArchitecture();
     return arch == QStringLiteral("arm64") ? QStringLiteral("aarch64") : arch;
+}
+
+QString VoicePacks::accentFor(const QString &language, const QString &voiceId) {
+    if (voiceId.contains(QLatin1String("alba"), Qt::CaseInsensitive) ||
+        language.contains(QLatin1String("scotland"), Qt::CaseInsensitive))
+        return tr("Scottish");
+    const QString norm = QString(language).replace(QLatin1Char('_'), QLatin1Char('-')).toLower();
+    if (norm == QLatin1String("en-gb"))
+        return tr("British");
+    if (norm == QLatin1String("en-us"))
+        return tr("American");
+    if (norm == QLatin1String("en-au"))
+        return tr("Australian");
+    if (norm == QLatin1String("en-ie"))
+        return tr("Irish");
+    if (norm == QLatin1String("en-in"))
+        return tr("Indian");
+    if (norm == QLatin1String("en-ca"))
+        return tr("Canadian");
+    if (norm == QLatin1String("pt-br"))
+        return tr("Brazilian");
+    if (norm == QLatin1String("pt-pt"))
+        return tr("Portuguese");
+    if (norm == QLatin1String("es-mx"))
+        return tr("Mexican");
+    if (norm == QLatin1String("es-es"))
+        return tr("Spanish");
+    if (norm == QLatin1String("fr-ca"))
+        return tr("Canadian French");
+    const QString native = QLocale(language).nativeLanguageName();
+    return native.isEmpty() ? language : native;
 }
 
 void VoicePacks::load(const QByteArray &manifest) {
@@ -248,15 +300,27 @@ QVariantMap VoicePacks::toMap(const Voice &voice) const {
         bytes += m_engine.size;
     const bool kokoro = voice.pack == QStringLiteral("kokoro-v1.0") ||
                         (!voice.pack.startsWith(QStringLiteral("piper:")) && voice.reference.isEmpty());
+    QString note = curatedVoiceNote(voice.id);
+    if (note.isEmpty()) {
+        if (!voice.grade.isEmpty())
+            note = tr("grade %1").arg(voice.grade);
+        else if (!voice.quality.isEmpty())
+            note = voice.quality == QLatin1String("high") ? tr("high quality")
+                 : voice.quality == QLatin1String("medium") ? tr("medium quality")
+                 : tr("low quality");
+    }
     return {{"id", voice.id},
             {"name", voice.name},
             {"title", voice.name},
             {"language", voice.language},
             {"languageName", QLocale(voice.language).nativeLanguageName()},
+            {"accent", accentFor(voice.language, voice.id)},
+            {"note", note},
             {"gender", voice.gender},
             {"grade", voice.grade},
             {"quality", voice.quality},
             {"recommended", voice.recommended},
+            {"suggested", voice.recommended},
             {"engine", !voice.reference.isEmpty() ? QStringLiteral("Pocket TTS") : kokoro ? QStringLiteral("Kokoro") : QStringLiteral("Piper")},
             {"pack", voice.pack},
             {"kind", QStringLiteral("builtin")},
@@ -312,6 +376,8 @@ QVariantList VoicePacks::searchVoices(const QString &query, const QString &langu
             const QString hay = QStringList{map.value(QStringLiteral("name")).toString(),
                                             map.value(QStringLiteral("language")).toString(),
                                             map.value(QStringLiteral("languageName")).toString(),
+                                            map.value(QStringLiteral("accent")).toString(),
+                                            map.value(QStringLiteral("note")).toString(),
                                             map.value(QStringLiteral("engine")).toString(),
                                             map.value(QStringLiteral("gender")).toString(),
                                             map.value(QStringLiteral("grade")).toString(),

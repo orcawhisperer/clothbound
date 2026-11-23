@@ -9,6 +9,7 @@
 #include "localspeech.h"
 #include "reader.h"
 #include "speechplayer.h"
+#include "voicepacks.h"
 
 #include <QFile>
 #include <QJsonArray>
@@ -40,6 +41,43 @@ constexpr qint64 directionsPatienceMs = 6000;
 constexpr double charsPerMinute = 900;
 constexpr int sampleRate = 24000;
 constexpr qint64 sleepFadeMs = 10000;
+constexpr qint64 timeEmitIntervalMs = 250;
+
+QString classicGeminiTrait(const QString &voiceId) {
+    static const QHash<QString, QString> traits{
+        {QStringLiteral("sulafat"), QStringLiteral("Warm")},
+        {QStringLiteral("charon"), QStringLiteral("Informative")},
+        {QStringLiteral("kore"), QStringLiteral("Firm")},
+        {QStringLiteral("puck"), QStringLiteral("Upbeat")},
+        {QStringLiteral("aoede"), QStringLiteral("Breezy")},
+        {QStringLiteral("fenrir"), QStringLiteral("Excitable")},
+        {QStringLiteral("zephyr"), QStringLiteral("Bright")},
+        {QStringLiteral("orus"), QStringLiteral("Firm")},
+        {QStringLiteral("leda"), QStringLiteral("Youthful")},
+        {QStringLiteral("autonoe"), QStringLiteral("Bright")},
+        {QStringLiteral("enceladus"), QStringLiteral("Breathy")},
+        {QStringLiteral("iapetus"), QStringLiteral("Clear")},
+        {QStringLiteral("umbriel"), QStringLiteral("Easy-going")},
+        {QStringLiteral("algieba"), QStringLiteral("Smooth")},
+        {QStringLiteral("despina"), QStringLiteral("Smooth")},
+        {QStringLiteral("erinome"), QStringLiteral("Clear")},
+        {QStringLiteral("algenib"), QStringLiteral("Gravelly")},
+        {QStringLiteral("rasalgethi"), QStringLiteral("Informative")},
+        {QStringLiteral("laomedeia"), QStringLiteral("Upbeat")},
+        {QStringLiteral("achernar"), QStringLiteral("Soft")},
+        {QStringLiteral("alnilam"), QStringLiteral("Firm")},
+        {QStringLiteral("schedar"), QStringLiteral("Even")},
+        {QStringLiteral("gacrux"), QStringLiteral("Mature")},
+        {QStringLiteral("pulcherrima"), QStringLiteral("Forward")},
+        {QStringLiteral("achird"), QStringLiteral("Friendly")},
+        {QStringLiteral("zubenelgenubi"), QStringLiteral("Casual")},
+        {QStringLiteral("vindemiatrix"), QStringLiteral("Gentle")},
+        {QStringLiteral("sadachbia"), QStringLiteral("Lively")},
+        {QStringLiteral("sadaltager"), QStringLiteral("Knowledgeable")},
+        {QStringLiteral("callirrhoe"), QStringLiteral("Easy-going")},
+    };
+    return traits.value(voiceId.toLower());
+}
 }
 
 Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, QObject *parent)
@@ -159,6 +197,22 @@ int Narration::chapter() const {
     return m_current >= 0 && m_current < m_clips.size() ? m_clips[m_current].chapter : m_startChapter;
 }
 
+QString Narration::voiceAccent() const {
+    if (m_voice.isEmpty())
+        return {};
+    if (AiServices::isBuiltinVoice(m_voice)) {
+        if (auto *local = qobject_cast<LocalSpeech *>(m_ai->providerFor(QStringLiteral("builtin:"))))
+            if (local->packs())
+                return local->packs()->voice(m_voice).value(QStringLiteral("accent")).toString();
+        return {};
+    }
+    if (AiServices::isStudioVoice(m_voice)) {
+        const QString model = m_ai ? m_ai->localSpeechModel() : QString();
+        return model.isEmpty() ? tr("Studio") : model;
+    }
+    return classicGeminiTrait(m_voice);
+}
+
 void Narration::setFollowing(bool following) {
     if (following == m_following)
         return;
@@ -178,6 +232,7 @@ void Narration::setRate(double rate) {
     settings().setValue(QStringLiteral("listen/rate"), m_rate);
     emit rateChanged();
     emit positionChanged();
+    emit timeChanged();
 }
 
 void Narration::setPerformance(const QString &performance) {
@@ -534,8 +589,10 @@ void Narration::addBlocks(int chapter, const QString &json) {
         requestCast(chapter);
     if (directed() && m_ai->textFor(QStringLiteral("director")) && !made.isEmpty() && !kept)
         requestDirections(chapter);
-    if (!made.isEmpty())
+    if (!made.isEmpty()) {
         emit positionChanged();
+        emit timeChanged();
+    }
     pump();
 }
 
@@ -858,8 +915,10 @@ void Narration::fetch(int index) {
             m_player->finishTrack(clip.id);
         if (!clip.pcm.isEmpty() && reply->sampleRate() > 0)
             m_cache->store(clip.key, clip.pcm, reply->sampleRate(), clip.boundaries);
-        if (m_current >= 0 && m_current < m_clips.size() && clip.chapter == m_clips[m_current].chapter)
+        if (m_current >= 0 && m_current < m_clips.size() && clip.chapter == m_clips[m_current].chapter) {
             emit positionChanged();
+            emit timeChanged();
+        }
         pump();
     });
 }
@@ -896,8 +955,10 @@ void Narration::decode(int index, const QString &file) {
             m_player->finishTrack(clip.id);
         }
         checkHeadStart();
-        if (m_current >= 0 && m_current < m_clips.size() && clip.chapter == m_clips[m_current].chapter)
+        if (m_current >= 0 && m_current < m_clips.size() && clip.chapter == m_clips[m_current].chapter) {
             emit positionChanged();
+            emit timeChanged();
+        }
         pump();
     });
 }
@@ -940,10 +1001,18 @@ void Narration::heard(int trackId, qint64 sample) {
             if (m_clips[i].state == Clip::Complete)
                 m_clips[i].pcm = QByteArray();
         emit positionChanged();
+        emit timeChanged();
         pump();
     }
     m_currentSample = qMax<qint64>(0, sample);
     showSentenceForSample(track, m_currentSample);
+    const qint64 now = nowMs();
+    const qint64 sec = positionUs() / 1000000LL;
+    if (sec != m_lastReportedSec || now - m_lastTimeEmitMs >= timeEmitIntervalMs) {
+        m_lastReportedSec = sec;
+        m_lastTimeEmitMs = now;
+        emit timeChanged();
+    }
 }
 
 void Narration::showSentenceForSample(int index, qint64 sample, int forceSentence) {
@@ -1064,7 +1133,11 @@ void Narration::jumpTo(int index, qint64 sampleOffset, bool preservePause, int f
         showSentenceForSample(index, clampedSample, forceSentence);
     else
         emit positionChanged();
-    emit seeked(positionUs());
+    const qint64 posUs = positionUs();
+    m_lastTimeEmitMs = nowMs();
+    m_lastReportedSec = posUs / 1000000LL;
+    emit timeChanged();
+    emit seeked(posUs);
 }
 
 void Narration::nextParagraph() {
@@ -1291,6 +1364,8 @@ void Narration::stop() {
     m_current = -1;
     m_queued = -1;
     m_currentSample = 0;
+    m_lastTimeEmitMs = 0;
+    m_lastReportedSec = -1;
     m_requested.clear();
     m_loadedChapters.clear();
     m_directionsAsked.clear();
@@ -1314,6 +1389,7 @@ void Narration::stop() {
     if (was) {
         emit stateChanged();
         emit positionChanged();
+        emit timeChanged();
     }
 }
 

@@ -531,6 +531,8 @@ void Audiobook::startMux() {
         m_partial.clear();
         cleanupWork();
         m_saved = target;
+        if (m_library && m_reader && m_reader->bookId() > 0)
+            m_library->setBookSetting(m_reader->bookId(), QStringLiteral("audiobook_saved"), QStringLiteral("1"));
         m_progress = 1;
         m_busy = false;
         emit changed();

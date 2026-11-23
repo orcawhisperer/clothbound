@@ -60,6 +60,41 @@ QString regionOf(const QString &language) {
     const QString norm = QString(language).replace('_', '-');
     return norm.section('-', 1, 1).toUpper();
 }
+QString classicTrait(const QString &id) {
+    static const QHash<QString, QString> traits{
+        {QStringLiteral("sulafat"), QStringLiteral("Warm")},
+        {QStringLiteral("charon"), QStringLiteral("Informative")},
+        {QStringLiteral("kore"), QStringLiteral("Firm")},
+        {QStringLiteral("puck"), QStringLiteral("Upbeat")},
+        {QStringLiteral("aoede"), QStringLiteral("Breezy")},
+        {QStringLiteral("fenrir"), QStringLiteral("Excitable")},
+        {QStringLiteral("zephyr"), QStringLiteral("Bright")},
+        {QStringLiteral("orus"), QStringLiteral("Firm")},
+        {QStringLiteral("leda"), QStringLiteral("Youthful")},
+        {QStringLiteral("autonoe"), QStringLiteral("Bright")},
+        {QStringLiteral("enceladus"), QStringLiteral("Breathy")},
+        {QStringLiteral("iapetus"), QStringLiteral("Clear")},
+        {QStringLiteral("umbriel"), QStringLiteral("Easy-going")},
+        {QStringLiteral("algieba"), QStringLiteral("Smooth")},
+        {QStringLiteral("despina"), QStringLiteral("Smooth")},
+        {QStringLiteral("erinome"), QStringLiteral("Clear")},
+        {QStringLiteral("algenib"), QStringLiteral("Gravelly")},
+        {QStringLiteral("rasalgethi"), QStringLiteral("Informative")},
+        {QStringLiteral("laomedeia"), QStringLiteral("Upbeat")},
+        {QStringLiteral("achernar"), QStringLiteral("Soft")},
+        {QStringLiteral("alnilam"), QStringLiteral("Firm")},
+        {QStringLiteral("schedar"), QStringLiteral("Even")},
+        {QStringLiteral("gacrux"), QStringLiteral("Mature")},
+        {QStringLiteral("pulcherrima"), QStringLiteral("Forward")},
+        {QStringLiteral("achird"), QStringLiteral("Friendly")},
+        {QStringLiteral("zubenelgenubi"), QStringLiteral("Casual")},
+        {QStringLiteral("vindemiatrix"), QStringLiteral("Gentle")},
+        {QStringLiteral("sadachbia"), QStringLiteral("Lively")},
+        {QStringLiteral("sadaltager"), QStringLiteral("Knowledgeable")},
+        {QStringLiteral("callirrhoe"), QStringLiteral("Easy-going")},
+    };
+    return traits.value(id.toLower());
+}
 }
 
 VoiceCatalog::VoiceCatalog(AiServices *ai, AudioCache *cache, Reader *reader, const QString &databaseConnection,
@@ -188,21 +223,30 @@ QVariantMap VoiceCatalog::toMap(const Ai::Voice &voice) {
     // so the accent is what tells them apart.
     map["title"] = !voice.designed && !isClassic(voice) && !voice.accent.isEmpty() ? voice.accent : map["name"];
     map["description"] = voice.description;
+    const bool studio = voice.id.startsWith(QLatin1String("studio:"));
+    const QString trait = isClassic(voice) && !studio ? classicTrait(voice.id) : QString();
+    QString accent = voice.accent;
+    if (accent.isEmpty())
+        accent = trait;
+    else if (!trait.isEmpty() && !accent.contains(trait, Qt::CaseInsensitive))
+        accent += QStringLiteral(", ") + trait.toLower();
     map["language"] = voice.language;
-    map["accent"] = voice.accent;
+    map["accent"] = accent;
     map["gender"] = voice.gender;
     map["pitch"] = voice.pitch;
     map["persona"] = voice.persona;
     map["role"] = role.match(voice.persona).captured(1);
-    map["kind"] = voice.designed ? QStringLiteral("designed") : isClassic(voice) ? QStringLiteral("classic")
-                                                                               : QStringLiteral("library");
+    map["kind"] = studio ? QStringLiteral("studio")
+                : voice.designed ? QStringLiteral("designed")
+                : isClassic(voice) ? QStringLiteral("classic")
+                : QStringLiteral("library");
     map["narrator"] = isNarrator(voice);
     map["age"] = age.match(voice.description).captured(1).toInt();
     map["prompt"] = voice.prompt;
     map["expires"] = voice.expires;
     // What the voice is like, without the age, place and accent shown beside it.
     QString summary = voice.designed ? voice.prompt : voice.description;
-    if (!voice.designed) {
+    if (!voice.designed && !studio) {
         // The catalog sets a scene for each voice ("Currently in a
         // bookstore.") and suggests uses for it ("Recommended for onboarding
         // screens"), which say nothing about how it sounds.
@@ -213,7 +257,12 @@ QVariantMap VoiceCatalog::toMap(const Ai::Voice &voice) {
         });
         summary = sentences.join(' ');
     }
-    map["summary"] = summary.simplified();
+    const QString simplified = summary.simplified();
+    map["summary"] = simplified;
+    map["note"] = studio ? simplified
+                : voice.designed ? simplified
+                : (!simplified.isEmpty() ? simplified : tr("Moods change with the scene"));
+    map["suggested"] = false;
     return map;
 }
 
@@ -244,15 +293,25 @@ QVariantList VoiceCatalog::suggestions(const QString &language) const {
         bool any = false;
         for (const QString &region : std::as_const(order))
             if (round < regions[region].size() && result.size() < 12) {
-                result.append(toMap(*regions[region][round]));
+                QVariantMap entry = toMap(*regions[region][round]);
+                if (result.size() < 2)
+                    entry[QStringLiteral("suggested")] = true;
+                result.append(entry);
                 any = true;
             }
         if (!any)
             break;
     }
+    int suggestedCount = int(qMin<qsizetype>(2, result.size()));
     for (const Ai::Voice &voice : m_voices)
-        if (isClassic(voice) && isNarrator(voice))
-            result.append(toMap(voice));
+        if (isClassic(voice) && isNarrator(voice)) {
+            QVariantMap entry = toMap(voice);
+            if (suggestedCount < 2) {
+                entry[QStringLiteral("suggested")] = true;
+                ++suggestedCount;
+            }
+            result.append(entry);
+        }
     return result;
 }
 
@@ -312,8 +371,12 @@ QVariantMap VoiceCatalog::voice(const QString &id) const {
 
 QVariantList VoiceCatalog::studioVoices() const {
     QVariantList out;
-    for (const Ai::Voice &voice : m_studioVoices)
-        out.append(toMap(voice));
+    for (int i = 0; i < m_studioVoices.size(); ++i) {
+        QVariantMap entry = toMap(m_studioVoices[i]);
+        if (i == 0)
+            entry[QStringLiteral("suggested")] = true;
+        out.append(entry);
+    }
     return out;
 }
 
@@ -328,9 +391,11 @@ void VoiceCatalog::loadStudioVoices() {
         emit studioChanged();
         return;
     }
+    const bool supportsStyle = studio->supportsStyle();
+    const QString modelName = m_ai->localSpeechModel();
     Ai::Reply *reply = studio->listVoices(QString());
     m_studioReply = reply;
-    connect(reply, &Ai::Reply::finished, this, [this, reply] {
+    connect(reply, &Ai::Reply::finished, this, [this, reply, supportsStyle, modelName] {
         reply->deleteLater();
         if (reply != m_studioReply)
             return;
@@ -345,8 +410,10 @@ void VoiceCatalog::loadStudioVoices() {
         setProblem({});
         for (Ai::Voice voice : reply->voices()) {
             voice.id = QStringLiteral("studio:") + voice.id;
+            if (voice.accent.isEmpty())
+                voice.accent = modelName;
             if (voice.description.isEmpty())
-                voice.description = tr("Studio voice, made on this computer");
+                voice.description = supportsStyle ? tr("On your server · follows styles") : tr("On your server");
             m_studioVoices.append(voice);
         }
         emit studioChanged();
