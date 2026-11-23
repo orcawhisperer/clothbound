@@ -436,6 +436,7 @@ FocusScope {
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.AllButtons
+            onPressed: input.forceActiveFocus()
             onWheel: (wheel) => wheel.accepted = true
         }
 

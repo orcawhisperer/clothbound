@@ -244,9 +244,12 @@ ApplicationWindow {
             } else if (actionId === "companion-ask") {
                 readerLoader.item.showCompanion("ask")
             } else if (actionId === "companion-prev") {
-                readerLoader.item.showCompanion("previously")
+                readerLoader.item.showCompanion("recap")
+                if (companion.feature !== "recap" || companion.problem !== "")
+                    companion.recap()
             } else if (actionId === "companion-people") {
-                readerLoader.item.showCompanion("people")
+                readerLoader.item.showCompanion("whoswho")
+                companion.whosWho()
             } else if (actionId === "voices") {
                 readerLoader.item.showVoices()
             } else if (actionId === "listen") {
@@ -284,7 +287,7 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: win.helpVisible || welcome.open || aiSettings.open || libraryView.detailsOpen
                  || libraryView.foldersOpen || libraryView.statsOpen || libraryView.collectionDialogOpen
-                 || (commandPalette.open && !win.readerOpen)
+                 || commandPalette.open
         onActivated: {
             if (win.helpVisible)
                 win.helpVisible = false
