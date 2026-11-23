@@ -51,23 +51,38 @@ FocusScope {
     }
 
     visible: open
-    width: 420
+    width: Math.min(parent ? parent.width - 48 : 420, 420)
     height: column.implicitHeight + 36
 
+    // Soft elevation shadow.
     Rectangle {
+        z: -2
         anchors.fill: parent
-        radius: Math.min(12, theme.radius)
+        anchors.leftMargin: -4
+        anchors.rightMargin: -4
+        anchors.topMargin: 8
+        anchors.bottomMargin: -14
+        radius: cardBg.radius > 0 ? cardBg.radius + 4 : 0
+        color: "black"
+        opacity: box.look.dark ? 0.36 : 0.12
+    }
+    Rectangle {
+        z: -1
+        anchors.fill: parent
+        anchors.topMargin: 3
+        anchors.bottomMargin: -5
+        radius: cardBg.radius
+        color: "black"
+        opacity: box.look.dark ? 0.28 : 0.08
+    }
+
+    Rectangle {
+        id: cardBg
+        anchors.fill: parent
+        radius: Ui.radius(12, theme.radius)
         color: box.look.popover
+        border.width: 1
         border.color: box.look.line
-        Rectangle {
-            z: -1
-            anchors.fill: parent
-            anchors.topMargin: 4
-            anchors.bottomMargin: -4
-            radius: parent.radius
-            color: "black"
-            opacity: box.look.dark ? 0.35 : 0.12
-        }
         // Keep clicks and wheel inside the box from falling through to the scrim.
         MouseArea {
             anchors.fill: parent
@@ -91,19 +106,25 @@ FocusScope {
         }
         Rectangle {
             width: parent.width
-            height: 38
-            radius: Math.min(8, theme.radius)
+            height: 36
+            radius: Ui.radius(7, theme.radius)
             color: Ui.tint(box.look.fg, 0.06)
             border.width: 1.5
             border.color: box.look.link
             TextInput {
                 id: input
-                anchors.fill: parent
+                anchors.left: parent.left
+                anchors.right: enterHint.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
                 anchors.leftMargin: 12
-                anchors.rightMargin: 12
+                anchors.rightMargin: 8
                 verticalAlignment: TextInput.AlignVCenter
                 color: box.look.fg
-                font.pixelSize: 15
+                selectionColor: Ui.tint(box.look.link, 0.35)
+                selectedTextColor: box.look.fg
+                font.pixelSize: 13
+                font.features: ({ "tnum": 1 })
                 selectByMouse: true
                 Keys.onReturnPressed: box.submit()
                 Keys.onEnterPressed: box.submit()
@@ -117,12 +138,20 @@ FocusScope {
                     font: input.font
                 }
             }
+            KeyHint {
+                id: enterHint
+                anchors.right: parent.right
+                anchors.rightMargin: 8
+                anchors.verticalCenter: parent.verticalCenter
+                text: "↵"
+                keycap: true
+            }
         }
         Label {
             visible: box.problem !== ""
             text: box.problem
-            color: theme.colors.red || "#e06c75"
-            font.pixelSize: 13
+            color: theme.danger
+            font.pixelSize: 12
         }
     }
 }

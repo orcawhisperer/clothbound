@@ -1,14 +1,19 @@
 /* The reading surface around the book's pages: the page color edge to edge,
-   and the note pop-over. The pages themselves are styled from reader.js. */
+   margin note badges, and the footnote pop-over. The pages themselves are
+   styled from reader.js. */
 
 :root {
-    --dg-bg: #f6f1e7;
-    --dg-fg: #26221d;
-    --dg-link: #8a5a12;
-    --dg-muted: #6b655a;
-    --dg-popover: #fdfaf3;
-    --dg-border: rgba(0, 0, 0, 0.12);
+    --dg-bg: #F6F1E7;
+    --dg-fg: #26221D;
+    --dg-ink-soft: #4D463D;
+    --dg-link: #3E5F99;
+    --dg-muted: #6E665A;
+    --dg-popover: #FDFAF3;
+    --dg-highlight: #F7DE8A;
+    --dg-border: rgba(38, 34, 29, 0.12);
     --dg-radius: 0px;
+    --dg-radius-lg: 0px;
+    --dg-radius-sm: 0px;
 }
 
 html, body {
@@ -25,29 +30,33 @@ html, body {
 
 @font-face { font-family: "Inter"; src: url("fonts/Inter.ttf"); font-weight: 100 900; }
 
-/* A note beside its highlight, in the page's outer margin, when the margin
-   is wide enough to hold one; narrower, a note is the dotted underline. */
-.margin-note {
+/* A compact note badge beside its highlight in the outer margin (02_reading). */
+.margin-note-badge {
     position: absolute;
     pointer-events: auto;
     box-sizing: border-box;
-    padding: 6px 9px 7px 10px;
-    border-inline-start: 2px solid var(--dg-mark, var(--dg-link));
-    border-radius: 0 6px 6px 0;
-    background: var(--dg-popover);
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--dg-radius-sm, 6px);
+    background: var(--dg-mark, var(--dg-highlight));
     color: var(--dg-fg);
-    font: 12px/1.4 "Inter", system-ui, sans-serif;
-    opacity: 0.86;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 6;
-    overflow: hidden;
-    overflow-wrap: anywhere;
-    transition: opacity 120ms ease-out;
+    opacity: 0.92;
+    transition: opacity 120ms ease-out, transform 120ms ease-out, box-shadow 120ms ease-out;
 }
-.margin-note:hover {
+.margin-note-badge:hover {
     opacity: 1;
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.14);
+}
+.margin-note-badge:focus-visible {
+    outline: 2px solid var(--dg-link);
+    outline-offset: 2px;
 }
 
 #stage {
@@ -63,7 +72,7 @@ html, body {
     padding: 0;
     background: transparent;
     opacity: 0;
-    transition: opacity 140ms ease-out;
+    transition: opacity 120ms ease-out;
 }
 
 #book.shown {
@@ -84,10 +93,10 @@ html, body {
     background: var(--dg-popover);
     color: var(--dg-fg);
     border: 1px solid var(--dg-border);
-    border-radius: var(--dg-radius);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
-    padding: 14px 16px 10px;
-    font: 14px/1.45 system-ui, sans-serif;
+    border-radius: var(--dg-radius-lg);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.34);
+    padding: 14px 16px 12px;
+    font: 13px/1.45 "Inter", system-ui, sans-serif;
     opacity: 0;
     transform: translateY(4px);
     transition: opacity 120ms ease-out, transform 120ms ease-out;
@@ -109,22 +118,26 @@ html, body {
 .note .actions {
     display: flex;
     justify-content: flex-end;
-    gap: 14px;
+    gap: 10px;
     margin-top: 8px;
     font-size: 13px;
 }
 
 .note .actions button {
     font: inherit;
+    font-weight: 500;
     border: 0;
     background: none;
-    padding: 2px 0;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: var(--dg-radius);
     color: var(--dg-link);
     cursor: pointer;
+    transition: background-color 100ms ease-out;
 }
 
 .note .actions button:hover {
-    text-decoration: underline;
+    background: rgba(128, 128, 128, 0.12);
 }
 
 /* Listening from a paragraph: a small play button in its margin. */

@@ -29,7 +29,7 @@ Reader::Reader(Library *library, BookScheme *scheme, QObject *parent)
     QSettings settings(typographySettingsPath(), QSettings::IniFormat);
     settings.beginGroup(QStringLiteral("typography"));
     m_fontWeight = qBound(300, settings.value(QStringLiteral("fontWeight"), 400).toInt(), 700);
-    m_paragraphSpacing = qBound(0.0, settings.value(QStringLiteral("paragraphSpacing"), 0.4).toDouble(), 1.2);
+    m_paragraphSpacing = qBound(0.0, settings.value(QStringLiteral("paragraphSpacing"), 0.0).toDouble(), 1.2);
     settings.endGroup();
 
     // Positions are saved shortly after the reader settles on a page, so a
@@ -156,6 +156,8 @@ bool Reader::openBook(int bookId) {
     m_relocationSeq = 0;
     m_page = 0;
     m_pages = 1;
+    m_visibleColumns = 1;
+    m_visiblePageEnd = -1;
     m_progress = record.progress;
     m_pageLabel.clear();
     m_atEnd = false;
@@ -165,6 +167,8 @@ bool Reader::openBook(int bookId) {
     m_backLabel.clear();
     loadBookAppearance(bookId);
 
+    m_previousOpenedAt = record.openedAt;
+    updateBookPages();
     m_library->markOpened(bookId);
     m_lastGlobal = -1;
     m_sinceTurn.start();
@@ -208,6 +212,12 @@ void Reader::close() {
     m_relocationSeq = 0;
     m_page = 0;
     m_pages = 1;
+    m_bookPageStart = 1;
+    m_bookPageEnd = 1;
+    m_bookPages = 1;
+    m_visibleColumns = 1;
+    m_visiblePageEnd = -1;
+    m_previousOpenedAt = 0;
     m_progress = 0;
     m_pageLabel.clear();
     m_atEnd = false;
@@ -219,6 +229,46 @@ void Reader::close() {
     m_bookAppearance.clear();
     emit bookChanged();
     emit appearanceChanged();
+    emit locationChanged();
+}
+
+void Reader::updateBookPages() {
+    if (m_pdf) {
+        m_bookPages = qMax(1, chapterCount());
+        m_bookPageStart = qBound(1, m_chapter + 1, m_bookPages);
+        const int endIndex = m_visiblePageEnd >= m_chapter ? m_visiblePageEnd : m_chapter;
+        m_bookPageEnd = qBound(m_bookPageStart, endIndex + 1, m_bookPages);
+        return;
+    }
+    qint64 total = 0;
+    for (const int length : m_lengths)
+        total += length;
+    if (total <= 0) {
+        m_bookPages = qMax(1, m_pages);
+        m_bookPageStart = qBound(1, m_page + 1, m_bookPages);
+        m_bookPageEnd = m_bookPageStart;
+        return;
+    }
+    constexpr double kCharsPerBookPage = 1650.0;
+    m_bookPages = qMax(1, int(std::ceil(double(total) / kCharsPerBookPage)));
+    if (m_atEnd) {
+        m_bookPageEnd = m_bookPages;
+        m_bookPageStart = (m_visibleColumns > 1 && m_bookPages > 1) ? (m_bookPages - 1) : m_bookPages;
+        return;
+    }
+    const qint64 startGlobal = globalOffset(m_chapter, m_offset);
+    int startPage = qBound(1, int(std::floor(double(startGlobal) / kCharsPerBookPage)) + 1, m_bookPages);
+    int endPage = startPage;
+    if (m_visibleColumns > 1 && m_bookPages > 1) {
+        if (startPage >= m_bookPages) {
+            startPage = m_bookPages - 1;
+            endPage = m_bookPages;
+        } else {
+            endPage = startPage + 1;
+        }
+    }
+    m_bookPageStart = startPage;
+    m_bookPageEnd = endPage;
 }
 
 void Reader::measureChapters() {
@@ -235,6 +285,7 @@ void Reader::measureChapters() {
             return;
         m_lengths = lengths;
         m_progress = fractionAt(m_chapter, m_offset);
+        updateBookPages();
         emit lengthsChanged();
         emit locationChanged();
     });
@@ -470,6 +521,10 @@ void Reader::relocated(const QVariantMap &location) {
     m_pageEnd = qMax(m_offset, location.value("end", m_offset).toLongLong());
     m_page = location.value("page").toInt();
     m_pages = qMax(1, location.value("pages").toInt());
+    m_visibleColumns = qBound(1, location.value(QStringLiteral("columns"), m_visibleColumns).toInt(), 2);
+    m_visiblePageEnd = location.contains(QStringLiteral("visiblePageEnd"))
+                           ? location.value(QStringLiteral("visiblePageEnd")).toInt()
+                           : -1;
     m_pageLabel = location.value("pageLabel").toString();
     if (location.contains(QStringLiteral("rtl")))
         m_rtl = location.value(QStringLiteral("rtl")).toBool();
@@ -489,6 +544,7 @@ void Reader::relocated(const QVariantMap &location) {
     const bool nearEnd = m_pdf ? (m_chapter >= qMax(0, chapterCount() - 2)) : (m_chapter >= m_lastLinear);
     m_atEnd = location.value("atEnd").toBool() && nearEnd;
     m_progress = m_atEnd ? 1.0 : fractionAt(m_chapter, m_offset);
+    updateBookPages();
     ++m_relocationSeq;
 
     // Reading pace comes from steady forward reading: the time spent on a
@@ -788,6 +844,8 @@ bool Reader::openPdf(int bookId) {
     m_relocationSeq = 0;
     m_page = 0;
     m_pages = 1;
+    m_visibleColumns = 1;
+    m_visiblePageEnd = -1;
     m_progress = record.progress;
     m_pageLabel.clear();
     m_atEnd = false;
@@ -796,6 +854,8 @@ bool Reader::openPdf(int bookId) {
     m_canGoForward = false;
     m_backLabel.clear();
     loadBookAppearance(bookId);
+    m_previousOpenedAt = record.openedAt;
+    updateBookPages();
     m_library->markOpened(bookId);
     m_lastGlobal = -1;
     m_sinceTurn.start();

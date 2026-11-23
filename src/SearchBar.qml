@@ -96,7 +96,7 @@ FocusScope {
     }
 
     visible: open
-    width: Math.min(parent.width - 48, 680)
+    width: Math.min(parent.width - 48, 660)
     height: card.height
 
     Timer {
@@ -105,13 +105,36 @@ FocusScope {
         onTriggered: if (!bookSearch.byMeaning) bookSearch.find(input.text)
     }
 
+    // Soft elevation shadow.
+    Rectangle {
+        z: -2
+        anchors.fill: card
+        anchors.leftMargin: -4
+        anchors.rightMargin: -4
+        anchors.topMargin: 8
+        anchors.bottomMargin: -14
+        radius: card.radius > 0 ? card.radius + 4 : 0
+        color: "black"
+        opacity: bar.look.dark ? 0.34 : 0.11
+    }
+    Rectangle {
+        z: -1
+        anchors.fill: card
+        anchors.topMargin: 3
+        anchors.bottomMargin: -5
+        radius: card.radius
+        color: "black"
+        opacity: bar.look.dark ? 0.28 : 0.08
+    }
+
     Rectangle {
         id: card
         width: parent.width
-        height: header.height + (bar.expanded && list.count > 0 ? list.height + 10 : 0)
+        height: searchHeader.height + (bar.expanded && list.count > 0 ? list.height + 10 : 0)
                 + (bar.expanded && note.visible ? note.height + 8 : 0)
-        radius: Math.min(12, theme.radius)
+        radius: Ui.radius(12, theme.radius)
         color: bar.look.popover
+        border.width: 1
         border.color: bar.look.line
         clip: true
 
@@ -123,15 +146,15 @@ FocusScope {
         }
 
         RowLayout {
-            id: header
+            id: searchHeader
             width: parent.width
-            height: 50
+            height: 44
             spacing: 6
 
             Glyph {
-                Layout.leftMargin: 16
-                width: 17
-                height: 17
+                Layout.leftMargin: 14
+                Layout.preferredWidth: 16
+                Layout.preferredHeight: 16
                 path: Icons.search
                 color: bar.look.muted
             }
@@ -139,11 +162,11 @@ FocusScope {
                 id: input
                 Layout.fillWidth: true
                 Layout.minimumWidth: 140
-                Layout.leftMargin: 6
+                Layout.leftMargin: 4
                 color: bar.look.fg
                 selectionColor: Ui.tint(bar.look.link, 0.4)
                 selectedTextColor: bar.look.fg
-                font.pixelSize: 15
+                font.pixelSize: 13
                 clip: true
                 onTextEdited: {
                     bar.expanded = true
@@ -166,18 +189,18 @@ FocusScope {
                                                     : qsTr("Describe what you're looking for"))
                           : qsTr("Search in the book")
                     color: bar.look.muted
-                    font.pixelSize: 15
+                    font.pixelSize: 13
                     elide: Text.ElideRight
                 }
             }
-            // Words, or meaning.
+            // Words, or meaning (26 px pill).
             AbstractButton {
                 id: meaning
                 visible: bookSearch.canSearchByMeaning
                 implicitHeight: 26
                 implicitWidth: meaningLabel.implicitWidth + 18
                 hoverEnabled: true
-                focusPolicy: Qt.NoFocus
+                focusPolicy: Qt.TabFocus
                 onClicked: {
                     typing.stop()
                     bar.pendingJump = false
@@ -191,28 +214,30 @@ FocusScope {
                 ToolTip.delay: 500
                 ToolTip.text: qsTr("Find passages by what they're about, not their words. %1.").arg(bookSearch.where)
                 background: Rectangle {
-                    radius: 13
-                    color: bookSearch.byMeaning ? Ui.tint(bar.look.link, 0.22) : meaning.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
-                    border.width: 1
-                    border.color: bookSearch.byMeaning ? bar.look.link : Ui.tint(bar.look.fg, 0.2)
+                    radius: Ui.radius(7, theme.radius)
+                    color: bookSearch.byMeaning ? Ui.tint(bar.look.link, 0.20)
+                         : meaning.hovered ? Ui.tint(bar.look.fg, 0.08) : Ui.tint(bar.look.fg, 0.04)
+                    border.width: bookSearch.byMeaning ? 1 : 0
+                    border.color: bar.look.link
                 }
                 contentItem: Label {
                     id: meaningLabel
                     text: qsTr("By meaning")
                     color: bookSearch.byMeaning ? bar.look.fg : bar.look.muted
                     font.pixelSize: 12
+                    font.weight: Font.Medium
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
             }
-            // Optional spoiler shield for semantic search.
+            // Optional spoiler shield for semantic search (26 px pill).
             AbstractButton {
                 id: spoilerShield
                 visible: bookSearch.canSearchByMeaning && bookSearch.byMeaning
                 implicitHeight: 26
-                implicitWidth: shieldLabel.implicitWidth + 16
+                implicitWidth: shieldRow.implicitWidth + 16
                 hoverEnabled: true
-                focusPolicy: Qt.NoFocus
+                focusPolicy: Qt.TabFocus
                 onClicked: {
                     bookSearch.spoilerFree = !bookSearch.spoilerFree
                     input.forceActiveFocus()
@@ -223,33 +248,48 @@ FocusScope {
                               ? qsTr("Spoiler shield on: searching only up to your current page.")
                               : qsTr("Limit semantic search to chapters up to your current page so nothing ahead is spoiled.")
                 background: Rectangle {
-                    radius: 13
-                    color: bookSearch.spoilerFree ? Ui.tint(bar.look.link, 0.22) : spoilerShield.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
-                    border.width: 1
-                    border.color: bookSearch.spoilerFree ? bar.look.link : Ui.tint(bar.look.fg, 0.2)
+                    radius: Ui.radius(7, theme.radius)
+                    color: bookSearch.spoilerFree ? Ui.tint(bar.look.link, 0.20)
+                         : spoilerShield.hovered ? Ui.tint(bar.look.fg, 0.08) : Ui.tint(bar.look.fg, 0.04)
+                    border.width: bookSearch.spoilerFree ? 1 : 0
+                    border.color: bar.look.link
                 }
-                contentItem: Label {
-                    id: shieldLabel
-                    text: qsTr("Up to here")
-                    color: bookSearch.spoilerFree ? bar.look.fg : bar.look.muted
-                    font.pixelSize: 12
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                contentItem: Item {
+                    Row {
+                        id: shieldRow
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Glyph {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 12
+                            height: 12
+                            path: Icons.shieldCheck
+                            color: bookSearch.spoilerFree ? bar.look.link : bar.look.muted
+                        }
+                        Label {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Up to here")
+                            color: bookSearch.spoilerFree ? bar.look.fg : bar.look.muted
+                            font.pixelSize: 12
+                            font.weight: Font.Medium
+                        }
+                    }
                 }
             }
             Label {
-                Layout.maximumWidth: 190
+                Layout.maximumWidth: 180
                 elide: Text.ElideRight
                 text: bookSearch.preparing !== "" ? bookSearch.preparing
                     : bookSearch.searching ? qsTr("Searching…")
                     : bookSearch.query.length < 2 ? ""
                     : bookSearch.count === 0 ? (bookSearch.byMeaning && bookSearch.query.length < 3 ? "" : qsTr("Not found"))
                     : bookSearch.current >= 0 && translator.language !== ""
-                      ? qsTr("%1 of %2").arg((bookSearch.current + 1).toLocaleString(Qt.locale(), 'f', 0))
-                                        .arg(bookSearch.count.toLocaleString(Qt.locale(), 'f', 0) + (bookSearch.capped ? "+" : ""))
+                      ? qsTr("%1 of %2").arg(Number(bookSearch.current + 1).toLocaleString(Qt.locale(), 'f', 0))
+                                        .arg(Number(bookSearch.count).toLocaleString(Qt.locale(), 'f', 0) + (bookSearch.capped ? "+" : ""))
                     : qsTr("%Ln found", "", bookSearch.count) + (bookSearch.capped ? "+" : "")
                 color: bar.look.muted
-                font.pixelSize: 13
+                font.pixelSize: 12
+                font.features: ({ "tnum": 1 })
             }
             IconButton {
                 glyph: Icons.chevronLeft
@@ -279,9 +319,9 @@ FocusScope {
 
         Label {
             id: note
-            anchors.top: header.bottom
-            x: 18
-            width: parent.width - 36
+            anchors.top: searchHeader.bottom
+            x: 16
+            width: parent.width - 32
             visible: bar.expanded && bookSearch.capped && !bookSearch.searching
             text: qsTr("Showing the first %Ln. A few more words will narrow it down.", "", bookSearch.count)
             color: bar.look.muted
@@ -291,7 +331,7 @@ FocusScope {
 
         ListView {
             id: list
-            anchors.top: note.visible ? note.bottom : header.bottom
+            anchors.top: note.visible ? note.bottom : searchHeader.bottom
             anchors.topMargin: note.visible ? 6 : 0
             x: 6
             width: parent.width - 12
@@ -329,8 +369,7 @@ FocusScope {
                     color: bar.look.muted
                     font.pixelSize: 11
                     font.weight: Font.DemiBold
-                    font.capitalization: Font.AllUppercase
-                    font.letterSpacing: 0.6
+                    font.letterSpacing: 0.22
                     elide: Text.ElideRight
                 }
                 AbstractButton {
@@ -341,7 +380,7 @@ FocusScope {
                     focusPolicy: Qt.NoFocus
                     onClicked: { bar.jump(row.index); bar.fold() }
                     background: Rectangle {
-                        radius: Math.min(6, theme.radius)
+                        radius: Ui.radius(7, theme.radius)
                         color: row.index === bookSearch.current || row.ListView.isCurrentItem && list.activeFocus
                                ? Ui.tint(bar.look.link, 0.16) : hitButton.hovered ? Ui.tint(bar.look.fg, 0.06) : "transparent"
                     }
@@ -374,7 +413,7 @@ FocusScope {
                                 visible: !!row.modelData.matchKind
                                 height: 18
                                 width: modeBadge.implicitWidth + 10
-                                radius: 9
+                                radius: Ui.radius(9, theme.radius)
                                 color: row.modelData.matchKind === "hybrid"
                                        ? Ui.tint(bar.look.link, 0.18)
                                        : Ui.tint(bar.look.fg, 0.07)
@@ -393,7 +432,7 @@ FocusScope {
                                 visible: row.modelData.score > 0 && row.modelData.score <= 1.0
                                 height: 18
                                 width: scoreBadge.implicitWidth + 10
-                                radius: 9
+                                radius: Ui.radius(9, theme.radius)
                                 color: Ui.tint(bar.look.fg, 0.06)
                                 Label {
                                     id: scoreBadge
@@ -401,6 +440,7 @@ FocusScope {
                                     text: qsTr("%1%").arg(Math.round((row.modelData.score || 0) * 100))
                                     color: bar.look.muted
                                     font.pixelSize: 10
+                                    font.features: ({ "tnum": 1 })
                                 }
                             }
                         }

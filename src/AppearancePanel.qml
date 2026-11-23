@@ -6,13 +6,13 @@ import "Icons.js" as Icons
 import "Themes.js" as Themes
 import "Ui.js" as Ui
 
-// How the page looks: theme, typeface, size, spacing, margins, and layout.
-// Every change shows at once, on the page beside it.
-FocusScope {
+// How the page looks: theme, typeface, size, weight, spacing, margins, layout,
+// and per-book overrides. Every change shows at once on the page beside it.
+SidePanel {
     id: panel
 
-    property bool open: false
-    property var look
+    title: qsTr("Appearance")
+
     property var settings
     property bool pdf: false
     property var pdfSurface: null
@@ -20,21 +20,9 @@ FocusScope {
 
     signal settingChanged(string key, var value)
     signal bookOverrideToggled(bool enabled)
-    signal closed()
 
     function update(key, value) {
         settingChanged(key, value)
-    }
-
-    function show() {
-        open = true
-        forceActiveFocus()
-    }
-    function close() {
-        if (!open)
-            return
-        open = false
-        closed()
     }
 
     // Reading faces that are installed, plus the bundled Literata and the
@@ -47,62 +35,42 @@ FocusScope {
         return wanted.filter(name => name === "Literata" || installed.indexOf(name) >= 0)
     }
 
-    Keys.onEscapePressed: close()
-
-    width: 380
-    x: open ? parent.width - width : parent.width + 24
-    Behavior on x { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-    visible: x < parent.width + 20
-
-
-    Rectangle {
-        anchors.fill: parent
-        color: panel.look.popover
-        Rectangle { width: 1; height: parent.height; color: panel.look.line }
-    }
-    // The panel keeps its clicks and the wheel: nothing falls through to the page.
-    MouseArea {
-        anchors.fill: parent
-        acceptedButtons: Qt.AllButtons
-        onWheel: (wheel) => wheel.accepted = true
-    }
-    Rectangle {
-        anchors.right: parent.left
-        width: 18
-        height: parent.height
-        gradient: Gradient {
-            orientation: Gradient.Horizontal
-            GradientStop { position: 0; color: "transparent" }
-            GradientStop { position: 1; color: Ui.tint("black", panel.look.dark ? 0.35 : 0.12) }
-        }
-    }
-
     component Heading: Label {
-        color: panel.look.muted
-        font.pixelSize: 12
+        color: panel.look ? panel.look.muted : panel.palette.mid
+        font.pixelSize: 11
         font.weight: Font.DemiBold
-        font.capitalization: Font.AllUppercase
-        font.letterSpacing: 0.8
-        Layout.topMargin: 14
+        font.letterSpacing: 0.22
+        Layout.topMargin: 12
     }
 
     component Choice: AbstractButton {
         id: choice
         property bool selected: false
         Layout.fillWidth: true
-        implicitHeight: 34
+        implicitHeight: 30
         hoverEnabled: true
-        focusPolicy: Qt.NoFocus
+        focusPolicy: Qt.TabFocus
         background: Rectangle {
-            radius: Math.min(6, theme.radius)
-            color: choice.selected ? Ui.tint(panel.look.link, 0.2) : choice.hovered ? Ui.tint(panel.look.fg, 0.07) : Ui.tint(panel.look.fg, 0.035)
+            radius: Ui.radius(7, theme.radius)
+            color: choice.selected ? Ui.tint(panel.look.link, 0.18)
+                 : choice.hovered ? Ui.tint(panel.look.fg, 0.08) : Ui.tint(panel.look.fg, 0.04)
             border.width: choice.selected ? 1.5 : 0
             border.color: panel.look.link
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -3
+                visible: choice.visualFocus
+                radius: Ui.radius(10, theme.radius)
+                color: "transparent"
+                border.width: 2
+                border.color: panel.look.link
+            }
         }
         contentItem: Label {
             text: choice.text
             color: panel.look.fg
             font.pixelSize: 13
+            font.weight: choice.selected ? Font.Medium : Font.Normal
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
@@ -115,95 +83,149 @@ FocusScope {
         property alias checked: toggleSwitch.checked
         signal toggled(bool on)
         Layout.fillWidth: true
+        spacing: 12
         Label {
             id: toggleLabel
             Layout.fillWidth: true
             color: panel.look.fg
-            font.pixelSize: 14
+            font.pixelSize: 13
             wrapMode: Text.Wrap
         }
         Switch {
             id: toggleSwitch
-            focusPolicy: Qt.NoFocus
+            focusPolicy: Qt.TabFocus
             onToggled: toggle.toggled(checked)
-        }
-    }
-
-    // The title and close stay put while the rest scrolls.
-    RowLayout {
-        id: header
-        x: 24
-        y: 22
-        width: panel.width - 48
-        Label {
-            Layout.fillWidth: true
-            text: qsTr("Appearance")
-            color: panel.look.fg
-            font.pixelSize: 18
-            font.weight: Font.DemiBold
-        }
-        IconButton {
-            glyph: Icons.close
-            look: panel.look
-            tip: qsTr("Close (Esc)")
-            onClicked: panel.close()
         }
     }
 
     Flickable {
         anchors.fill: parent
-        anchors.topMargin: header.y + header.height + 6
-        contentHeight: content.implicitHeight + 30
+        contentHeight: content.implicitHeight + 36
         boundsBehavior: Flickable.StopAtBounds
         clip: true
         ScrollBar.vertical: ScrollBar {}
 
         ColumnLayout {
             id: content
-            x: 24
-            y: 4
-            width: panel.width - 48
+            x: 18
+            y: 6
+            width: panel.width - 36
             spacing: 8
 
-
-            Heading { text: qsTr("Theme") }
-            RowLayout {
+            Heading { Layout.topMargin: 6; text: qsTr("Theme") }
+            // 2 × 2 reading theme swatch grid (09_design_language:562-567).
+            GridLayout {
                 Layout.fillWidth: true
-                spacing: 8
+                columns: 2
+                columnSpacing: 10
+                rowSpacing: 10
                 Repeater {
-                    model: Themes.order
+                    model: ["paper", "sepia", "dusk", "night"]
                     delegate: AbstractButton {
                         id: swatch
                         required property string modelData
                         readonly property var colors: Themes.palette(modelData, theme)
                         readonly property bool selected: panel.settings.theme === modelData
                         Layout.fillWidth: true
-                        implicitHeight: 66
+                        implicitHeight: 92
                         hoverEnabled: true
-                        focusPolicy: Qt.NoFocus
+                        focusPolicy: Qt.TabFocus
+                        Accessible.name: Themes.name(modelData)
+                        Accessible.checked: selected
                         onClicked: panel.update("theme", modelData)
                         background: Rectangle {
-                            radius: Math.min(8, theme.radius)
+                            radius: Ui.radius(10, theme.radius)
                             color: swatch.colors.bg
                             border.width: swatch.selected ? 2 : 1
-                            border.color: swatch.selected ? panel.look.link : panel.look.line
+                            border.color: swatch.selected ? panel.look.link
+                                        : (swatch.colors.dark ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(0, 0, 0, 0.10))
+                            Rectangle {
+                                anchors.fill: parent
+                                anchors.margins: -3
+                                visible: swatch.visualFocus
+                                radius: Ui.radius(13, theme.radius)
+                                color: "transparent"
+                                border.width: 2
+                                border.color: panel.look.link
+                            }
                         }
-                        contentItem: Column {
-                            spacing: 2
+                        contentItem: Item {
                             Label {
-                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.left: parent.left
+                                anchors.top: parent.top
+                                anchors.leftMargin: 12
+                                anchors.topMargin: 8
                                 text: "Aa"
                                 color: swatch.colors.fg
                                 font.family: "Literata"
-                                font.pixelSize: 20
+                                font.pixelSize: 28
                             }
                             Label {
-                                anchors.horizontalCenter: parent.horizontalCenter
+                                anchors.left: parent.left
+                                anchors.bottom: parent.bottom
+                                anchors.leftMargin: 12
+                                anchors.bottomMargin: 10
                                 text: Themes.name(swatch.modelData)
-                                color: swatch.colors.muted
-                                font.pixelSize: 10
+                                color: swatch.colors.fg
+                                font.pixelSize: 13
+                                font.weight: Font.DemiBold
                             }
                         }
+                    }
+                }
+            }
+
+            // 5th reading theme: follow the live Omarchy desktop theme.
+            AbstractButton {
+                id: omarchySwatch
+                readonly property var colors: Themes.palette("omarchy", theme)
+                readonly property bool selected: panel.settings.theme === "omarchy"
+                Layout.fillWidth: true
+                implicitHeight: 38
+                hoverEnabled: true
+                focusPolicy: Qt.TabFocus
+                Accessible.name: qsTr("Match desktop (Omarchy)")
+                Accessible.checked: selected
+                onClicked: panel.update("theme", "omarchy")
+                background: Rectangle {
+                    radius: Ui.radius(8, theme.radius)
+                    color: omarchySwatch.colors.bg
+                    border.width: omarchySwatch.selected ? 2 : 1
+                    border.color: omarchySwatch.selected ? panel.look.link
+                                : (omarchySwatch.colors.dark ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(0, 0, 0, 0.10))
+                    Rectangle {
+                        anchors.fill: parent
+                        anchors.margins: -3
+                        visible: omarchySwatch.visualFocus
+                        radius: Ui.radius(11, theme.radius)
+                        color: "transparent"
+                        border.width: 2
+                        border.color: panel.look.link
+                    }
+                }
+                contentItem: RowLayout {
+                    spacing: 10
+                    Label {
+                        Layout.leftMargin: 12
+                        text: "Aa"
+                        color: omarchySwatch.colors.fg
+                        font.family: "Literata"
+                        font.pixelSize: 16
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Match desktop (Omarchy)")
+                        color: omarchySwatch.colors.fg
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                        elide: Text.ElideRight
+                    }
+                    Rectangle {
+                        Layout.rightMargin: 12
+                        Layout.preferredWidth: 8
+                        Layout.preferredHeight: 8
+                        radius: 4
+                        color: theme.accent
                     }
                 }
             }
@@ -220,7 +242,7 @@ FocusScope {
                 Layout.fillWidth: true
                 columns: 2
                 columnSpacing: 8
-                rowSpacing: 8
+                rowSpacing: 6
                 Choice {
                     text: qsTr("Book's own")
                     selected: panel.settings.font === "publisher"
@@ -237,7 +259,7 @@ FocusScope {
                         contentItem: Label {
                             text: modelData
                             font.family: modelData
-                            font.pixelSize: 14
+                            font.pixelSize: 13
                             color: panel.look.fg
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
@@ -251,7 +273,7 @@ FocusScope {
             RowLayout {
                 visible: panel.pdf && panel.pdfSurface !== null
                 Layout.fillWidth: true
-                spacing: 10
+                spacing: 8
                 IconButton {
                     look: panel.look
                     glyph: Icons.zoomOut
@@ -264,7 +286,7 @@ FocusScope {
                     to: 4.0
                     stepSize: 0.1
                     value: panel.pdfSurface ? panel.pdfSurface.zoom : 1.0
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: Qt.TabFocus
                     onMoved: if (panel.pdfSurface) panel.pdfSurface.zoom = Math.round(value * 100) / 100
                 }
                 IconButton {
@@ -274,11 +296,12 @@ FocusScope {
                     onClicked: if (panel.pdfSurface) panel.pdfSurface.zoom = Math.min(4, Math.round(panel.pdfSurface.zoom * 1.15 * 100) / 100)
                 }
                 Label {
-                    Layout.preferredWidth: 44
+                    Layout.preferredWidth: 42
                     horizontalAlignment: Text.AlignRight
                     text: Math.round((panel.pdfSurface ? panel.pdfSurface.zoom : 1.0) * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
                     color: panel.look.muted
                     font.pixelSize: 12
+                    font.features: ({ "tnum": 1 })
                 }
             }
 
@@ -286,11 +309,11 @@ FocusScope {
             RowLayout {
                 visible: !panel.pdf
                 Layout.fillWidth: true
-                spacing: 10
+                spacing: 8
                 IconButton {
                     look: panel.look
                     tip: qsTr("Smaller (−)")
-                    contentItem: Label { text: "A"; font.family: "Literata"; font.pixelSize: 13; color: panel.look.fg; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    contentItem: Label { text: "A"; font.family: "Literata"; font.pixelSize: 12; color: panel.look.fg; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     onClicked: panel.update("fontScale", Math.max(0.7, Math.round((panel.settings.fontScale - 0.05) * 100) / 100))
                 }
                 Slider {
@@ -299,21 +322,22 @@ FocusScope {
                     to: 2.0
                     stepSize: 0.05
                     value: panel.settings.fontScale
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: Qt.TabFocus
                     onMoved: panel.update("fontScale", Math.round(value * 100) / 100)
                 }
                 IconButton {
                     look: panel.look
                     tip: qsTr("Larger (+)")
-                    contentItem: Label { text: "A"; font.family: "Literata"; font.pixelSize: 21; color: panel.look.fg; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    contentItem: Label { text: "A"; font.family: "Literata"; font.pixelSize: 19; color: panel.look.fg; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     onClicked: panel.update("fontScale", Math.min(2.0, Math.round((panel.settings.fontScale + 0.05) * 100) / 100))
                 }
                 Label {
-                    Layout.preferredWidth: 44
+                    Layout.preferredWidth: 42
                     horizontalAlignment: Text.AlignRight
                     text: Math.round(panel.settings.fontScale * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
                     color: panel.look.muted
                     font.pixelSize: 12
+                    font.features: ({ "tnum": 1 })
                 }
             }
 
@@ -334,15 +358,16 @@ FocusScope {
                     to: 700
                     stepSize: 25
                     value: panel.settings.fontWeight
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: Qt.TabFocus
                     onMoved: panel.update("fontWeight", Math.round(value))
                 }
                 Label {
-                    Layout.preferredWidth: 44
+                    Layout.preferredWidth: 42
                     horizontalAlignment: Text.AlignRight
                     text: Number(panel.settings.fontWeight).toLocaleString(Qt.locale(), 'f', 0)
                     color: panel.look.muted
                     font.pixelSize: 12
+                    font.features: ({ "tnum": 1 })
                 }
             }
 
@@ -363,15 +388,16 @@ FocusScope {
                     to: 2.0
                     stepSize: 0.05
                     value: panel.settings.lineHeight
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: Qt.TabFocus
                     onMoved: panel.update("lineHeight", Math.round(value * 100) / 100)
                 }
                 Label {
-                    Layout.preferredWidth: 44
+                    Layout.preferredWidth: 42
                     horizontalAlignment: Text.AlignRight
                     text: Number(panel.settings.lineHeight).toLocaleString(Qt.locale(), 'f', 2)
                     color: panel.look.muted
                     font.pixelSize: 12
+                    font.features: ({ "tnum": 1 })
                 }
             }
 
@@ -392,50 +418,41 @@ FocusScope {
                     to: 1.2
                     stepSize: 0.1
                     value: panel.settings.paragraphSpacing
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: Qt.TabFocus
                     onMoved: panel.update("paragraphSpacing", Math.round(value * 100) / 100)
                 }
                 Label {
-                    Layout.preferredWidth: 44
+                    Layout.preferredWidth: 42
                     horizontalAlignment: Text.AlignRight
                     text: Number(panel.settings.paragraphSpacing).toLocaleString(Qt.locale(), 'f', 1) + " em"
                     color: panel.look.muted
                     font.pixelSize: 12
+                    font.features: ({ "tnum": 1 })
                 }
             }
 
             Heading { visible: !panel.pdf; text: qsTr("Margins") }
-            RowLayout {
+            Segmented {
                 visible: !panel.pdf
                 Layout.fillWidth: true
-                spacing: 8
-                Repeater {
-                    model: [{ id: "narrow", label: qsTr("Narrow") }, { id: "normal", label: qsTr("Normal") }, { id: "wide", label: qsTr("Wide") }]
-                    delegate: Choice {
-                        required property var modelData
-                        text: modelData.label
-                        selected: panel.settings.margins === modelData.id
-                        onClicked: panel.update("margins", modelData.id)
-                    }
-                }
+                compact: true
+                model: [{ value: "narrow", label: qsTr("Narrow") },
+                        { value: "normal", label: qsTr("Normal") },
+                        { value: "wide", label: qsTr("Wide") }]
+                current: panel.settings.margins
+                onActivated: (value) => panel.update("margins", value)
             }
 
             Heading { text: qsTr("Layout") }
-            GridLayout {
+            Segmented {
                 Layout.fillWidth: true
-                columns: 2
-                columnSpacing: 8
-                rowSpacing: 8
-                Repeater {
-                    model: [{ id: "auto", label: qsTr("Automatic") }, { id: "single", label: qsTr("One page") },
-                            { id: "double", label: qsTr("Two pages") }, { id: "scroll", label: qsTr("Scroll") }]
-                    delegate: Choice {
-                        required property var modelData
-                        text: modelData.label
-                        selected: panel.settings.layout === modelData.id
-                        onClicked: panel.update("layout", modelData.id)
-                    }
-                }
+                compact: true
+                model: [{ value: "auto", label: qsTr("Auto") },
+                        { value: "single", label: qsTr("One page") },
+                        { value: "double", label: qsTr("Two pages") },
+                        { value: "scroll", label: qsTr("Scroll") }]
+                current: panel.settings.layout
+                onActivated: (value) => panel.update("layout", value)
             }
 
             Item { Layout.preferredHeight: 6 }

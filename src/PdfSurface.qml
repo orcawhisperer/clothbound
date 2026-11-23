@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
+import "Icons.js" as Icons
 import "Ui.js" as Ui
 import "Themes.js" as Themes
 
@@ -216,6 +217,8 @@ Item {
         const jumped = justJumped
         justJumped = false
         reader.relocated({ chapter: page, offset: 0, end: length, page: 0, pages: 1,
+                           columns: pages.length,
+                           visiblePageEnd: pages[pages.length - 1],
                            pageLabel: label !== "" ? label : String(page + 1),
                            atEnd: pages[pages.length - 1] >= count - 1,
                            canGoBack: history.length > 0,
@@ -396,18 +399,29 @@ Item {
                                 out.push({ rect: rect, current: !!cur && cur.start === hit.start && curChapter === pageItem.page })
                         return out
                     }
-                    delegate: Rectangle {
+                    delegate: Item {
                         required property var modelData
                         x: modelData.rect.x * whole.width - 1
                         y: modelData.rect.y * whole.height - 1
                         width: modelData.rect.width * whole.width + 2
                         height: modelData.rect.height * whole.height + 2
-                        radius: 2
-                        color: modelData.current ? "#ff9f43" : "#ffd166"
-                        opacity: modelData.current ? 0.55 : 0.35
+                        Rectangle {
+                            visible: modelData.current
+                            anchors.fill: parent
+                            radius: 2
+                            color: theme.accent
+                            opacity: surface.look && surface.look.dark ? 0.28 : 0.22
+                        }
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            height: modelData.current ? 2.5 : 2
+                            color: surface.look ? (surface.look.searchUnderline || surface.look.link) : "#3E5F99"
+                        }
                     }
                 }
-                // The sentence being read aloud.
+                // The sentence being read aloud (theme.accent @ 28–30%).
                 Repeater {
                     model: surface.speaking.chapter === pageItem.page
                            ? reader.pdfRects(pageItem.page, surface.speaking.start, surface.speaking.end) : []
@@ -418,8 +432,8 @@ Item {
                         width: modelData.width * whole.width + 4
                         height: modelData.height * whole.height + 2
                         radius: 3
-                        color: surface.look ? surface.look.link : "#4a90d9"
-                        opacity: 0.22
+                        color: theme.accent
+                        opacity: surface.look && surface.look.dark ? 0.30 : 0.28
                     }
                 }
                 // The selection.
@@ -519,6 +533,65 @@ Item {
                 color: "transparent"
                 border.width: 1
                 border.color: surface.look ? surface.look.line : "transparent"
+            }
+        }
+
+        // Compact 22×22 margin note badges beside noted PDF highlights (02_reading.html).
+        Repeater {
+            model: {
+                surface.marksVersion
+                const out = []
+                if (pageItem.page < 0)
+                    return out
+                for (const mark of marks.highlightsIn(pageItem.page)) {
+                    if (!mark.noted || !mark.note)
+                        continue
+                    const rects = reader.pdfRects(pageItem.page, mark.start, mark.end)
+                    if (rects.length > 0)
+                        out.push({ id: mark.id, color: mark.color, note: mark.note, rect: rects[0] })
+                }
+                return out
+            }
+            delegate: AbstractButton {
+                id: pdfNoteBadge
+                required property var modelData
+                required property int index
+                readonly property real lineTop: (modelData.rect.y - surface.crop.y) * pageItem.fullHeight
+                readonly property real lineHeight: modelData.rect.height * pageItem.fullHeight
+                z: 5
+                visible: lineTop >= -12 && lineTop <= pageItem.height + 12
+                x: pageItem.spineSide === "left" ? -32 : pageItem.width + 10
+                y: Math.max(4, Math.min(pageItem.height - height - 4, lineTop + Math.max(0, (lineHeight - height) / 2)))
+                width: 22
+                height: 22
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+                Accessible.name: qsTr("Note: %1").arg(modelData.note)
+                onClicked: {
+                    const at = whole.mapToItem(surface, modelData.rect.x * whole.width, modelData.rect.y * whole.height)
+                    reader.markClicked(modelData.id, { x: at.x, y: at.y,
+                                                       width: modelData.rect.width * whole.width,
+                                                       height: modelData.rect.height * whole.height })
+                }
+                background: Rectangle {
+                    radius: Ui.radius(6, theme.radius)
+                    color: Themes.swatches[pdfNoteBadge.modelData.color] || (surface.look ? surface.look.highlight : "#F7DE8A")
+                    opacity: pdfNoteBadge.hovered ? 1.0 : 0.92
+                }
+                contentItem: Item {
+                    Glyph {
+                        anchors.centerIn: parent
+                        width: 12
+                        height: 12
+                        stroke: 2
+                        path: Icons.noteLines
+                        color: surface.look ? surface.look.fg : "#26221D"
+                    }
+                }
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                ToolTip.visible: hovered
+                ToolTip.delay: 350
+                ToolTip.text: modelData.note
             }
         }
 
