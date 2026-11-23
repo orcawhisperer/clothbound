@@ -43,6 +43,13 @@ Rectangle {
         { keys: "Ctrl Z  Ctrl ⇧ Z", action: qsTr("Undo / redo") },
         { keys: "Esc", action: qsTr("Close a panel, or back to the library") }
     ]
+    readonly property var listeningSection: [
+        { keys: "P", action: qsTr("Listen from this page, pause, go on") },
+        { keys: "⇧ P", action: qsTr("Stop listening") },
+        { keys: ",  .", action: qsTr("Previous / next paragraph") },
+        { keys: "<  >", action: qsTr("Slower / faster") },
+        { keys: "V", action: qsTr("Narrator and style") }
+    ]
     readonly property var everywhere: [
         { keys: "F  F11", action: qsTr("Full screen") },
         { keys: "?", action: qsTr("Show these shortcuts") },
@@ -64,39 +71,52 @@ Rectangle {
             anchors.centerIn: parent
             spacing: 48
 
+            // Each column is a few sections; the ones for where you are come first.
             Repeater {
-                model: help.reading ? [help.readingSection, help.librarySection.concat(help.everywhere)]
-                                    : [help.librarySection.concat(help.everywhere), help.readingSection]
+                model: {
+                    const reading = { title: qsTr("Reading"), items: help.readingSection }
+                    const listening = { title: qsTr("Listening"), items: help.listeningSection }
+                    const library = { title: qsTr("Library"), items: help.librarySection.concat(help.everywhere) }
+                    return help.reading ? [[reading], [listening, library]] : [[library], [reading, listening]]
+                }
                 delegate: Column {
-                    id: section
+                    id: column
                     required property var modelData
-                    required property int index
-                    spacing: 9
+                    spacing: 22
 
-                    Label {
-                        text: (section.index === 0) === help.reading ? qsTr("Reading") : qsTr("Library")
-                        color: theme.text
-                        font.pixelSize: 16
-                        font.weight: Font.DemiBold
-                        bottomPadding: 6
-                    }
                     Repeater {
-                        model: section.modelData
-                        delegate: Row {
+                        model: column.modelData
+                        delegate: Column {
+                            id: section
                             required property var modelData
-                            spacing: 18
+                            spacing: 9
+
                             Label {
-                                width: 150
-                                horizontalAlignment: Text.AlignRight
-                                text: modelData.keys
-                                color: theme.accent
-                                font.pixelSize: 13
-                                font.family: "monospace"
+                                text: section.modelData.title
+                                color: theme.text
+                                font.pixelSize: 16
+                                font.weight: Font.DemiBold
+                                bottomPadding: 6
                             }
-                            Label {
-                                text: modelData.action
-                                color: theme.textSecondary
-                                font.pixelSize: 13
+                            Repeater {
+                                model: section.modelData.items
+                                delegate: Row {
+                                    required property var modelData
+                                    spacing: 18
+                                    Label {
+                                        width: 150
+                                        horizontalAlignment: Text.AlignRight
+                                        text: modelData.keys
+                                        color: theme.accent
+                                        font.pixelSize: 13
+                                        font.family: "monospace"
+                                    }
+                                    Label {
+                                        text: modelData.action
+                                        color: theme.textSecondary
+                                        font.pixelSize: 13
+                                    }
+                                }
                             }
                         }
                     }

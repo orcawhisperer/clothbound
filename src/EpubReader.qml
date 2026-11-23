@@ -408,6 +408,13 @@ FocusScope {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
             IconButton {
+                glyph: Icons.headphones
+                tone: view.look.fg
+                active: narration.active
+                tip: narration.active ? qsTr("Stop listening (⇧P)") : qsTr("Listen from this page (P)")
+                onClicked: view.listen()
+            }
+            IconButton {
                 tone: view.look.fg
                 tip: qsTr("Appearance (A)")
                 active: appearance.open
@@ -540,9 +547,10 @@ FocusScope {
     Shortcut { sequence: "Tab"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
     Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: view.visible && !win.helpVisible; onActivated: view.dismiss() }
     // Listening.
-    Shortcut { sequence: "L"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.listen() }
+    // P listens from the page in view, then pauses and goes on; ⇧P stops.
+    Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: narration.active ? narration.toggle() : view.listen() }
+    Shortcut { sequence: "Shift+P"; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.stop() }
     Shortcut { sequence: "V"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showVoices() }
-    Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.toggle() }
     Shortcut { sequence: ","; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.previousParagraph() }
     Shortcut { sequence: "."; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.nextParagraph() }
     Shortcut { sequences: ["<", "Shift+,"]; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.rate = narration.rate - 0.1 }

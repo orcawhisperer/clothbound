@@ -215,7 +215,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             glyph: Icons.close
             tone: bar.look.muted
-            tip: qsTr("Stop listening (L)")
+            tip: qsTr("Stop listening (⇧P)")
             onClicked: narration.stop()
         }
     }
