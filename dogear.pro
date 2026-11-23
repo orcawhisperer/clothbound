@@ -12,6 +12,7 @@ CONFIG += link_pkgconfig
 PKGCONFIG += libsecret-1
 
 HEADERS += \
+    src/libraryfinder.h \
     src/ai.h \
     src/aiservices.h \
     src/aiusage.h \
@@ -63,6 +64,7 @@ HEADERS += \
     src/ziparchive.h
 
 SOURCES += \
+    src/libraryfinder.cpp \
     src/aiservices.cpp \
     src/aiusage.cpp \
     src/audiocache.cpp \

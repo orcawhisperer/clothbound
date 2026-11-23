@@ -374,7 +374,7 @@ FocusScope {
                 // Collections / shelves membership
                 Label {
                     Layout.topMargin: 18
-                    text: qsTr("Shelves")
+                    text: qsTr("Collections")
                     color: theme.ink1
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
@@ -451,7 +451,7 @@ FocusScope {
                         }
                         contentItem: Label {
                             id: addShelfLabel
-                            text: qsTr("+ New shelf")
+                            text: qsTr("+ New collection")
                             color: theme.ink2
                             font.pixelSize: 12
                             horizontalAlignment: Text.AlignHCenter
@@ -489,7 +489,7 @@ FocusScope {
                                 anchors.fill: parent
                                 verticalAlignment: Text.AlignVCenter
                                 visible: newShelfInput.text === ""
-                                text: qsTr("Shelf name…")
+                                text: qsTr("Collection name…")
                                 color: theme.ink3
                                 font: newShelfInput.font
                             }
@@ -606,10 +606,17 @@ FocusScope {
                     textFormat: Text.PlainText
                 }
 
-                RowLayout {
+                // The actions wrap onto a second line in a narrow panel.
+                Flow {
                     Layout.topMargin: 24
                     Layout.fillWidth: true
                     spacing: 8
+                    TextButton {
+                        visible: !details.book.finished
+                        text: details.book.wantToRead ? qsTr("On Want to read") : qsTr("Want to read")
+                        glyph: Icons.star
+                        onClicked: library.setWantToRead(details.bookId, !details.book.wantToRead)
+                    }
                     TextButton {
                         text: details.book.finished ? qsTr("Mark unread") : qsTr("Mark finished")
                         glyph: Icons.check
@@ -620,7 +627,6 @@ FocusScope {
                         glyph: Icons.folder
                         onClicked: library.showInFolder(details.bookId)
                     }
-                    Item { Layout.fillWidth: true }
                     IconButton {
                         glyph: Icons.trash
                         tip: qsTr("Remove from the library (the file stays)")

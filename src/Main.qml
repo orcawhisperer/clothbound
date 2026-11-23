@@ -73,6 +73,7 @@ ApplicationWindow {
         library.works.grouped = librarySettings.grouped
         if (librarySettings.viewMode === "list" || librarySettings.viewMode === "grid")
             libraryView.viewMode = librarySettings.viewMode
+        libraryView.sidebarCollapsed = librarySettings.sidebarCollapsed
         if (windowSettings.maximized)
             win.visibility = Window.Maximized
         geometryReady = true
@@ -350,6 +351,7 @@ ApplicationWindow {
     Shortcut { sequence: "S"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys && library.bookCount > 0; onActivated: libraryView.cycleSort() }
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys && library.bookCount > 0; onActivated: libraryView.toggleGrouping() }
     Shortcut { sequence: "V"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys && library.bookCount > 0; onActivated: libraryView.toggleViewMode() }
+    Shortcut { sequence: "Ctrl+B"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && !win.overlayOpen; onActivated: libraryView.toggleSidebar() }
     Shortcut { sequence: "I"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.showDetails(libraryView.currentRow) }
     Shortcut { sequence: "H"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.moveSelection("left") }
     Shortcut { sequence: "L"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.moveSelection("right") }
@@ -507,6 +509,7 @@ ApplicationWindow {
         property string sortOrder: "recent"
         property bool grouped: true
         property string viewMode: "grid"
+        property bool sidebarCollapsed: false
     }
     Connections {
         target: library.works
@@ -516,6 +519,7 @@ ApplicationWindow {
     Connections {
         target: libraryView
         function onViewModeChanged() { if (win.geometryReady) librarySettings.viewMode = libraryView.viewMode }
+        function onSidebarCollapsedChanged() { if (win.geometryReady) librarySettings.sidebarCollapsed = libraryView.sidebarCollapsed }
     }
 
     // What the reader has been shown: the welcome, the version they last

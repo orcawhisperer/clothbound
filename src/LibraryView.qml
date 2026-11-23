@@ -19,7 +19,25 @@ FocusScope {
     readonly property bool foldersOpen: foldersSheet.open
     readonly property bool statsOpen: statsSheet.open
     readonly property bool collectionDialogOpen: collectionDialog.open
-    readonly property bool menuOpen: sortMenu.opened || seriesMenu.opened || colContextMenu.opened
+    readonly property bool menuOpen: sortMenu.opened || seriesMenu.opened || filterMenu.opened || moreMenu.opened
+    property bool sidebarCollapsed: false
+    function toggleSidebar() { sidebarCollapsed = !sidebarCollapsed }
+    // The toolbar names what the grid shows: a shelf, a collection, or a search.
+    readonly property string sectionTitle: {
+        const works = library.works
+        if (works.searchText !== "")
+            return qsTr("Search")
+        if (works.collectionId !== 0) {
+            const col = library.collections.find(c => c.id === works.collectionId)
+            return col ? col.name : qsTr("Collection")
+        }
+        return works.statusFilter === "reading" ? qsTr("Reading now")
+             : works.statusFilter === "want" ? qsTr("Want to read")
+             : works.statusFilter === "finished" ? qsTr("Finished")
+             : works.statusFilter === "listening" ? qsTr("Listening")
+             : works.statusFilter === "unread" ? qsTr("Not started")
+             : qsTr("All books")
+    }
     readonly property int currentRow: viewMode === "list" ? listView.currentIndex : grid.currentIndex
 
     readonly property string listIcon: "M8 6.5 H20 M8 12 H20 M8 17.5 H20 M4 6.5 H5 M4 12 H5 M4 17.5 H5"
@@ -162,91 +180,89 @@ FocusScope {
 
     Component.onCompleted: focusGrid()
 
-    // Reusable filter pill chip.
-    component FilterChip: AbstractButton {
-        id: chip
-        property bool active: false
-        property string badge: ""
-        signal rightClicked()
-
-        implicitHeight: 30
-        implicitWidth: chipRow.implicitWidth + 22
-        hoverEnabled: true
-        focusPolicy: Qt.NoFocus
-
-        background: Rectangle {
-            radius: Math.min(15, theme.radius + 6)
-            color: chip.active ? Ui.tint(theme.accent, theme.light ? 0.16 : 0.24)
-                 : chip.hovered ? Ui.tint(theme.ink1, 0.08) : Ui.tint(theme.ink1, 0.04)
-            border.width: 1
-            border.color: chip.active ? theme.accent : Ui.tint(theme.ink1, 0.08)
-            Behavior on color { ColorAnimation { duration: 110 } }
-        }
-        contentItem: Item {
-            Row {
-                id: chipRow
-                anchors.centerIn: parent
-                spacing: 5
-                Label {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: chip.text
-                    textFormat: Text.PlainText
-                    color: chip.active ? theme.accentInk : theme.ink1
-                    font.pixelSize: 12
-                    font.weight: chip.active ? Font.DemiBold : Font.Normal
-                }
-                Label {
-                    visible: chip.badge !== ""
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: chip.badge
-                    textFormat: Text.PlainText
-                    color: chip.active ? theme.accentInk : theme.ink3
-                    font.pixelSize: 11
-                }
-            }
-        }
-        TapHandler {
-            acceptedButtons: Qt.RightButton
-            onTapped: chip.rightClicked()
-        }
+    // --- Sidebar ---------------------------------------------------------
+    LibrarySidebar {
+        id: sidebar
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        collapsed: view.sidebarCollapsed
+        onToggleRequested: view.toggleSidebar()
+        onCreateCollection: collectionDialog.showCreate()
+        onRenameCollection: (id, name) => collectionDialog.showRename(id, name)
+        onIntelligenceRequested: win.showAiSettings()
     }
 
-    // --- Top bar ---------------------------------------------------------
+    // Everything right of the sidebar, for centring the empty states.
+    Item {
+        id: contentArea
+        anchors.top: bar.bottom
+        anchors.bottom: parent.bottom
+        anchors.left: sidebar.right
+        anchors.right: parent.right
+    }
+
+    // --- Toolbar ---------------------------------------------------------
     Item {
         id: bar
         anchors.top: parent.top
-        anchors.left: parent.left
+        anchors.left: sidebar.right
         anchors.right: parent.right
-        height: 68
+        height: 56
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 32
-            anchors.rightMargin: 24
-            spacing: 8
+            anchors.leftMargin: 28
+            anchors.rightMargin: 16
+            spacing: 6
 
             Label {
-                text: qsTr("Library")
+                text: view.sectionTitle
                 color: theme.ink1
-                font.family: "Literata"
-                font.pixelSize: 24
+                font.pixelSize: 20
                 font.weight: Font.DemiBold
+                elide: Text.ElideRight
+                Layout.maximumWidth: Math.max(120, bar.width * 0.3)
             }
             Label {
-                Layout.leftMargin: 6
+                Layout.leftMargin: 4
                 Layout.alignment: Qt.AlignBaseline
-                visible: library.bookCount > 0
-                text: qsTr("%n books", "", library.bookCount)
+                visible: library.bookCount > 0 && !library.scanning
+                text: library.works.grouped && !library.works.hasActiveFilters && library.works.searchText === ""
+                      ? qsTr("%n works", "", library.works.count) : qsTr("%n books", "", library.works.count)
                 color: theme.ink3
                 font.pixelSize: 13
+            }
+            // While books arrive, their count takes the place of the total.
+            Row {
+                visible: library.scanning
+                Layout.leftMargin: 6
+                spacing: 8
+                BusyIndicator {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 16
+                    height: 16
+                    padding: 0
+                    running: parent.visible
+                }
+                Label {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: library.scanTotal > 0
+                          ? qsTr("Adding books · %1 of %2").arg(library.scanDone.toLocaleString(Qt.locale(), 'f', 0))
+                                                            .arg(library.scanTotal.toLocaleString(Qt.locale(), 'f', 0))
+                          : qsTr("Looking for books…")
+                    color: theme.ink3
+                    font.pixelSize: 13
+                    font.features: { "tnum": 1 }
+                }
             }
             Item { Layout.fillWidth: true }
 
             SearchBox {
                 id: search
-                Layout.preferredWidth: Math.min(320, view.width * 0.28)
+                Layout.preferredWidth: Math.min(280, view.width * 0.24)
                 visible: library.bookCount > 0
-                placeholder: qsTr("Search title, author, series…")
+                placeholder: qsTr("Search title, author…")
                 onTextChanged: library.works.searchText = text
                 onAccepted: {
                     const activeView = view.viewMode === "list" ? listView : grid
@@ -256,53 +272,55 @@ FocusScope {
                 }
                 onEscaped: view.focusGrid()
             }
-
+            Segmented {
+                visible: library.bookCount > 0
+                Layout.leftMargin: 4
+                compact: true
+                model: [{ value: "grid", label: qsTr("Covers (V)"), glyph: Icons.grid },
+                        { value: "list", label: qsTr("List (V)"), glyph: Icons.list }]
+                current: view.viewMode
+                onActivated: view.toggleViewMode()
+            }
             AbstractButton {
                 id: sortButton
                 visible: library.bookCount > 0
-                Layout.preferredHeight: 36
-                implicitWidth: sortRow.implicitWidth + 24
+                Layout.preferredHeight: 30
+                implicitWidth: sortRow.implicitWidth + 20
                 hoverEnabled: true
                 focusPolicy: Qt.NoFocus
                 background: Rectangle {
-                    radius: Math.min(8, theme.radius)
-                    color: sortButton.hovered || sortMenu.opened ? Ui.tint(theme.ink1, 0.08) : "transparent"
+                    radius: Math.min(7, theme.radius)
+                    color: sortButton.pressed || sortMenu.opened ? theme.fillPressed : sortButton.hovered ? theme.fill : "transparent"
                 }
                 contentItem: Item {
                     Row {
                         id: sortRow
                         anchors.centerIn: parent
-                        spacing: 6
-                        Glyph { anchors.verticalCenter: parent.verticalCenter; width: 18; height: 18; path: Icons.sort; color: theme.ink2 }
+                        spacing: 5
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
                             text: view.sortLabel(library.works.sortOrder)
-                            color: theme.ink1
+                            color: theme.ink2
                             font.pixelSize: 13
                         }
-                        Glyph { anchors.verticalCenter: parent.verticalCenter; width: 14; height: 14; path: Icons.chevronDown; color: theme.ink3 }
+                        Glyph { anchors.verticalCenter: parent.verticalCenter; width: 12; height: 12; stroke: 2; path: Icons.chevronDown; color: theme.ink3 }
                     }
                 }
                 onClicked: sortMenu.opened ? sortMenu.close() : sortMenu.open()
                 ToolTip.visible: hovered && !sortMenu.opened
                 ToolTip.text: qsTr("Order (S)")
-                ToolTip.delay: 700
+                ToolTip.delay: 600
 
                 Popup {
                     id: sortMenu
                     y: sortButton.height + 6
                     x: sortButton.width - width
-                    width: 230
-                    padding: 6
+                    width: 220
+                    padding: 5
                     focus: true
                     onClosed: view.focusGrid()
-                    background: Rectangle {
-                        radius: Math.min(10, theme.radius)
-                        color: theme.raised
-                        border.color: Ui.tint(theme.ink1, 0.1)
-                    }
                     contentItem: Column {
-                        spacing: 2
+                        spacing: 1
                         Repeater {
                             model: ["recent", "title", "author", "series", "added", "progress"]
                             delegate: MenuRow {
@@ -312,7 +330,7 @@ FocusScope {
                                 onClicked: { library.works.sortOrder = modelData; sortMenu.close() }
                             }
                         }
-                        Rectangle { width: parent.width; height: 1; color: Ui.tint(theme.ink1, 0.08) }
+                        MenuSeparator { width: parent.width }
                         MenuRow {
                             text: qsTr("Group editions")
                             hint: "G"
@@ -322,31 +340,70 @@ FocusScope {
                     }
                 }
             }
+            IconButton {
+                id: filterButton
+                visible: library.bookCount > 0
+                glyph: Icons.filter
+                active: library.works.formatFilter !== "" || library.works.seriesFilter !== ""
+                tip: qsTr("Filter by format or series")
+                onClicked: filterMenu.opened ? filterMenu.close() : filterMenu.open()
 
-            IconButton {
-                visible: library.bookCount > 0
-                glyph: view.viewMode === "grid" ? view.listIcon : view.gridIcon
-                tip: view.viewMode === "grid" ? qsTr("Switch to list view (V)") : qsTr("Switch to cover grid (V)")
-                onClicked: view.toggleViewMode()
+                Popup {
+                    id: filterMenu
+                    y: filterButton.height + 6
+                    x: filterButton.width - width
+                    width: 220
+                    padding: 5
+                    focus: true
+                    onClosed: view.focusGrid()
+                    contentItem: Column {
+                        spacing: 1
+                        MenuRow { text: qsTr("Any format"); checked: library.works.formatFilter === ""; onClicked: library.works.formatFilter = "" }
+                        MenuRow { text: qsTr("EPUB only"); checked: library.works.formatFilter === "epub"; onClicked: library.works.formatFilter = "epub" }
+                        MenuRow { text: qsTr("PDF only"); checked: library.works.formatFilter === "pdf"; onClicked: library.works.formatFilter = "pdf" }
+                        MenuSeparator { width: parent.width }
+                        MenuRow {
+                            text: library.works.seriesFilter === "" ? qsTr("Series…")
+                                : library.works.seriesFilter === "*" ? qsTr("Books in a series") : library.works.seriesFilter
+                            checked: library.works.seriesFilter !== ""
+                            onClicked: {
+                                filterMenu.close()
+                                if (library.works.seriesList.length > 0) {
+                                    const pos = filterButton.mapToItem(view, filterButton.width, filterButton.height + 6)
+                                    seriesMenu.x = Math.max(16, pos.x - seriesMenu.width)
+                                    seriesMenu.y = pos.y
+                                    seriesMenu.open()
+                                } else {
+                                    library.works.seriesFilter = library.works.seriesFilter === "" ? "*" : ""
+                                }
+                            }
+                        }
+                    }
+                }
             }
             IconButton {
-                visible: library.bookCount > 0
-                glyph: view.statsIcon
-                active: statsSheet.open
-                tip: qsTr("Reading stats & insights")
-                onClicked: statsSheet.open ? statsSheet.close() : view.openStats()
-            }
-            IconButton {
-                glyph: Icons.folder
-                active: foldersSheet.open
-                tip: qsTr("Watched folders & scanning")
-                onClicked: foldersSheet.open ? foldersSheet.close() : view.openFolders()
-            }
-            IconButton {
-                glyph: Icons.sparkle
-                tip: ai.hasKey ? qsTr("Gemini (Ctrl+,)") : qsTr("Listen and ask with Gemini (Ctrl+,)")
-                active: ai.connected
-                onClicked: win.showAiSettings()
+                id: moreButton
+                glyph: Icons.more
+                tip: qsTr("More")
+                onClicked: moreMenu.opened ? moreMenu.close() : moreMenu.open()
+
+                Popup {
+                    id: moreMenu
+                    y: moreButton.height + 6
+                    x: moreButton.width - width
+                    width: 240
+                    padding: 5
+                    focus: true
+                    onClosed: view.focusGrid()
+                    contentItem: Column {
+                        spacing: 1
+                        MenuRow { text: qsTr("Reading stats"); onClicked: { moreMenu.close(); view.openStats() } }
+                        MenuRow { text: qsTr("Watched folders…"); onClicked: { moreMenu.close(); view.openFolders() } }
+                        MenuRow { text: qsTr("Look for new books"); onClicked: { moreMenu.close(); library.rescan() } }
+                        MenuSeparator { width: parent.width }
+                        MenuRow { text: qsTr("Add books…"); onClicked: { moreMenu.close(); picker.chooseBooks() } }
+                    }
+                }
             }
             IconButton {
                 glyph: Icons.plus
@@ -364,157 +421,18 @@ FocusScope {
             color: theme.accent
             Behavior on width { NumberAnimation { duration: 200 } }
         }
-    }
-
-    // --- Filter chips & collections bar ----------------------------------
-    Item {
-        id: filterBar
-        anchors.top: bar.bottom
-        anchors.left: parent.left
-        anchors.right: parent.right
-        height: library.bookCount > 0 ? 44 : 0
-        visible: library.bookCount > 0
-        clip: true
-
-        Flickable {
-            id: chipScroll
-            anchors.fill: parent
-            anchors.leftMargin: 32
-            anchors.rightMargin: 24
-            contentWidth: chipRowLayout.implicitWidth
-            contentHeight: height
-            boundsBehavior: Flickable.StopAtBounds
-            flickableDirection: Flickable.HorizontalFlick
-            clip: true
-
-            WheelHandler {
-                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
-                onWheel: (event) => {
-                    const maxX = Math.max(0, chipScroll.contentWidth - chipScroll.width)
-                    if (maxX <= 0) {
-                        event.accepted = false
-                        return
-                    }
-                    const delta = event.angleDelta.x !== 0 ? event.angleDelta.x : event.angleDelta.y
-                    chipScroll.contentX = Math.max(0, Math.min(maxX, chipScroll.contentX - delta * 0.6))
-                    event.accepted = true
-                }
-            }
-
-            Row {
-                id: chipRowLayout
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 6
-
-                FilterChip {
-                    text: qsTr("All")
-                    active: !library.works.hasActiveFilters
-                    onClicked: library.works.clearFilters()
-                }
-                FilterChip {
-                    text: qsTr("Reading")
-                    active: library.works.statusFilter === "reading"
-                    onClicked: library.works.statusFilter = active ? "" : "reading"
-                }
-                FilterChip {
-                    text: qsTr("Unread")
-                    active: library.works.statusFilter === "unread"
-                    onClicked: library.works.statusFilter = active ? "" : "unread"
-                }
-                FilterChip {
-                    text: qsTr("Finished")
-                    active: library.works.statusFilter === "finished"
-                    onClicked: library.works.statusFilter = active ? "" : "finished"
-                }
-
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 1
-                    height: 16
-                    color: Ui.tint(theme.ink1, 0.14)
-                }
-
-                FilterChip {
-                    text: "EPUB"
-                    active: library.works.formatFilter === "epub"
-                    onClicked: library.works.formatFilter = active ? "" : "epub"
-                }
-                FilterChip {
-                    text: "PDF"
-                    active: library.works.formatFilter === "pdf"
-                    onClicked: library.works.formatFilter = active ? "" : "pdf"
-                }
-
-                FilterChip {
-                    id: seriesChip
-                    text: library.works.seriesFilter === "" || library.works.seriesFilter === "*"
-                        ? qsTr("Series") : library.works.seriesFilter
-                    badge: library.works.seriesList.length > 0 && library.works.seriesFilter === ""
-                        ? String(library.works.seriesList.length) : ""
-                    active: library.works.seriesFilter !== ""
-                    onClicked: {
-                        if (library.works.seriesList.length > 0) {
-                            const pos = seriesChip.mapToItem(view, 0, seriesChip.height + 6)
-                            seriesMenu.x = Math.max(16, Math.min(view.width - seriesMenu.width - 16, pos.x))
-                            seriesMenu.y = pos.y
-                            seriesMenu.open()
-                        } else {
-                            library.works.seriesFilter = active ? "" : "*"
-                        }
-                    }
-                }
-
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 1
-                    height: 16
-                    color: Ui.tint(theme.ink1, 0.14)
-                }
-
-                Repeater {
-                    model: library.collections
-                    delegate: FilterChip {
-                        id: colChip
-                        required property var modelData
-                        text: modelData.name
-                        badge: modelData.count > 0 ? String(modelData.count) : ""
-                        active: library.works.collectionId === modelData.id
-                        onClicked: library.works.collectionId = active ? 0 : modelData.id
-                        onRightClicked: {
-                            colContextMenu.targetCol = modelData
-                            const pos = colChip.mapToItem(view, 0, colChip.height + 4)
-                            colContextMenu.x = Math.max(16, Math.min(view.width - colContextMenu.width - 16, pos.x))
-                            colContextMenu.y = pos.y
-                            colContextMenu.open()
-                        }
-                    }
-                }
-
-                FilterChip {
-                    text: qsTr("+ Shelf")
-                    active: false
-                    onClicked: collectionDialog.showCreate()
-                }
-
-                FilterChip {
-                    visible: library.works.hasActiveFilters
-                    text: qsTr("Clear")
-                    active: false
-                    onClicked: library.works.clearFilters()
-                }
-            }
-        }
-
         Rectangle {
             anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
+            width: parent.width
             height: 1
             readonly property real scrollY: view.viewMode === "list"
                 ? (listView.contentY - listView.originY) : (grid.contentY - grid.originY)
-            color: Ui.tint(theme.ink1, scrollY > 4 ? 0.08 : 0.04)
+            color: theme.hairline
+            opacity: scrollY > 4 ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 120 } }
         }
     }
+
 
     // Series picker popup
     Popup {
@@ -523,11 +441,6 @@ FocusScope {
         padding: 6
         focus: true
         onClosed: view.focusGrid()
-        background: Rectangle {
-            radius: Math.min(10, theme.radius)
-            color: theme.raised
-            border.color: Ui.tint(theme.ink1, 0.1)
-        }
         contentItem: Column {
             spacing: 2
             MenuRow {
@@ -540,7 +453,7 @@ FocusScope {
                     seriesMenu.close()
                 }
             }
-            Rectangle { width: parent.width; height: 1; color: Ui.tint(theme.ink1, 0.08) }
+            MenuSeparator { width: parent.width }
             Repeater {
                 model: library.works.seriesList
                 delegate: MenuRow {
@@ -572,62 +485,11 @@ FocusScope {
         }
     }
 
-    // Collection right-click context menu
-    Popup {
-        id: colContextMenu
-        property var targetCol: null
-        width: 190
-        padding: 6
-        focus: true
-        onClosed: view.focusGrid()
-        background: Rectangle {
-            radius: Math.min(10, theme.radius)
-            color: theme.raised
-            border.color: Ui.tint(theme.ink1, 0.1)
-        }
-        contentItem: Column {
-            spacing: 2
-            MenuRow {
-                text: qsTr("Rename shelf…")
-                onClicked: {
-                    const col = colContextMenu.targetCol
-                    colContextMenu.close()
-                    if (col)
-                        collectionDialog.showRename(col.id, col.name)
-                }
-            }
-            MenuRow {
-                text: qsTr("Delete shelf")
-                onClicked: {
-                    const col = colContextMenu.targetCol
-                    colContextMenu.close()
-                    if (col) {
-                        library.deleteCollection(col.id)
-                        toast.show(qsTr("Deleted shelf “%1”").arg(col.name))
-                    }
-                }
-            }
-        }
-    }
-
-    Label {
-        visible: library.scanning
-        anchors.top: filterBar.bottom
-        anchors.topMargin: 6
-        anchors.right: parent.right
-        anchors.rightMargin: 32
-        z: 2
-        text: library.scanTotal > 0 ? qsTr("Reading %1 of %2 books…").arg(library.scanDone).arg(library.scanTotal)
-                                    : qsTr("Looking for books…")
-        color: theme.ink3
-        font.pixelSize: 12
-    }
-
     // --- Cover grid view -------------------------------------------------
     GridView {
         id: grid
-        anchors.top: filterBar.bottom
-        anchors.left: parent.left
+        anchors.top: bar.bottom
+        anchors.left: sidebar.right
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.leftMargin: 18
@@ -664,22 +526,32 @@ FocusScope {
                 onOpen: (bookId) => view.openBook(bookId)
                 onLeaveDown: view.focusGrid()
             }
-            Item { width: 1; height: parent.showShelf ? 26 : 0 }
+            Item { width: 1; height: parent.showShelf ? 28 : 4 }
+            // Under the Continue card, the rest of the shelf gets a heading.
             Label {
                 x: 14
-                text: (library.works.searchText !== "" || library.works.hasActiveFilters)
-                      ? qsTr("%n matches", "", library.works.count)
-                      : library.works.grouped ? qsTr("All books · %n works", "", library.works.count) : qsTr("All books")
+                visible: parent.showShelf
+                text: view.sectionTitle
                 color: theme.ink1
                 font.pixelSize: 15
                 font.weight: Font.DemiBold
-                bottomPadding: 4
+                bottomPadding: 6
             }
         }
 
         delegate: BookCard {
             onActivated: view.activate(index)
             onDetailsRequested: view.showDetails(index)
+        }
+        // More books still arriving: a row of placeholders after the last.
+        footer: Flow {
+            width: grid.width
+            visible: library.scanning && library.scanTotal > library.scanDone
+            height: visible ? implicitHeight : 0
+            Repeater {
+                model: parent.visible ? Math.min(grid.columns, library.scanTotal - library.scanDone) : 0
+                delegate: SkeletonCard { width: grid.cellWidth }
+            }
         }
 
         Keys.onReturnPressed: view.activate(currentIndex)
@@ -690,8 +562,8 @@ FocusScope {
     // --- Compact list view -----------------------------------------------
     ListView {
         id: listView
-        anchors.top: filterBar.bottom
-        anchors.left: parent.left
+        anchors.top: bar.bottom
+        anchors.left: sidebar.right
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.leftMargin: 24
@@ -937,7 +809,7 @@ FocusScope {
 
     // Empty filter / search state
     Column {
-        anchors.centerIn: parent
+        anchors.centerIn: contentArea
         visible: library.bookCount > 0 && library.works.count === 0
         spacing: 12
 
@@ -958,16 +830,51 @@ FocusScope {
     }
 
     EmptyLibrary {
-        anchors.centerIn: parent
+        anchors.centerIn: contentArea
         visible: library.bookCount === 0 && !library.scanning
         onAddFolders: picker.chooseFolders()
         onAddBooks: picker.chooseBooks()
     }
 
-    BusyIndicator {
-        anchors.centerIn: parent
+    // The first books on their way: placeholders where their covers will be.
+    Flow {
+        id: firstArrivals
+        anchors.fill: contentArea
+        anchors.margins: 18
+        anchors.topMargin: 16
         visible: library.bookCount === 0 && library.scanning
-        running: visible
+        clip: true
+        readonly property int columns: Math.max(2, Math.floor(width / 190))
+        readonly property real cell: Math.floor(width / columns)
+        Repeater {
+            model: firstArrivals.visible ? Math.min(18, Math.max(firstArrivals.columns, library.scanTotal)) : 0
+            delegate: SkeletonCard { width: firstArrivals.cell }
+        }
+    }
+
+    component SkeletonCard: Item {
+        height: Math.round((width - 28) * 1.5) + 14 + 64
+        Skeleton {
+            x: 14
+            y: 14
+            width: parent.width - 28
+            height: (parent.width - 28) * 1.5
+            radius: Math.min(4, theme.radius)
+        }
+        Skeleton {
+            x: 14
+            y: (parent.width - 28) * 1.5 + 26
+            width: (parent.width - 28) * 0.8
+            height: 12
+            shimmer: false
+        }
+        Skeleton {
+            x: 14
+            y: (parent.width - 28) * 1.5 + 46
+            width: (parent.width - 28) * 0.5
+            height: 10
+            shimmer: false
+        }
     }
 
     BookDetails {
@@ -1424,12 +1331,12 @@ FocusScope {
                 return
             if (editingId > 0) {
                 if (library.renameCollection(editingId, name))
-                    toast.show(qsTr("Renamed shelf to “%1”").arg(name))
+                    toast.show(qsTr("Renamed collection to “%1”").arg(name))
             } else {
                 const id = library.createCollection(name)
                 if (id > 0) {
                     library.works.collectionId = id
-                    toast.show(qsTr("Created shelf “%1”").arg(name))
+                    toast.show(qsTr("Created collection “%1”").arg(name))
                 }
             }
             close()
@@ -1461,7 +1368,7 @@ FocusScope {
                 spacing: 12
 
                 Label {
-                    text: collectionDialog.editingId > 0 ? qsTr("Rename shelf") : qsTr("New shelf")
+                    text: collectionDialog.editingId > 0 ? qsTr("Rename collection") : qsTr("New collection")
                     color: theme.ink1
                     font.pixelSize: 16
                     font.weight: Font.DemiBold

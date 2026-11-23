@@ -3,7 +3,7 @@
 # throwaway profile so it never touches your library, theme or settings.
 #
 #   bin/shot <name> [--theme <omarchy-theme>|none] [--lang <code>] [--radius <px>]
-#            [--size WxH] [--empty] [--first-run] [--keep-warnings] [-- <app args, e.g. --run "...">]
+#            [--size WxH] [--empty] [--found] [--first-run] [--keep-warnings] [-- <app args, e.g. --run "...">]
 #
 # The PNG lands in build/shots/<name>.png. The run fails when QML prints a
 # warning, so a screen that looks right but logs errors doesn't pass.
@@ -11,6 +11,8 @@
 # The profile holds a dozen books from DOGEAR_SHOT_BOOKS (a folder of EPUBs
 # and PDFs), added once and reused; --empty starts with no books instead.
 # The welcome and What's new are marked as seen unless --first-run is given.
+# --found puts a few books (links to the seed's) in ~/Books, for the
+# first-run offer to find.
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
@@ -20,7 +22,7 @@ THEMES="${OMARCHY_PATH:-/usr/share/omarchy}/themes"
 
 [ $# -ge 1 ] || { sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 name="$1"; shift
-theme="tokyo-night"; lang="en"; radius=""; size="1280x800"; empty=0; keep=0; first=0
+theme="tokyo-night"; lang="en"; radius=""; size="1280x800"; empty=0; keep=0; first=0; found=0
 while [ $# -gt 0 ]; do
     case "$1" in
         --theme) theme="$2"; shift 2 ;;
@@ -29,6 +31,7 @@ while [ $# -gt 0 ]; do
         --size) size="$2"; shift 2 ;;
         --empty) empty=1; shift ;;
         --first-run) first=1; shift ;;
+        --found) found=1; shift ;;
         --keep-warnings) keep=1; shift ;;
         --) shift; break ;;
         *) echo "bin/shot: unknown option $1" >&2; exit 2 ;;
@@ -64,10 +67,27 @@ if [ "$empty" -eq 0 ]; then
                 HOME="$home" "$APP" add "$book" >/dev/null
         done < "$list"
         rm -f "$list"
+        # Three books under way, so the Continue card and Reading now have
+        # something to show: progress and the chapter last read.
+        db="$seed/data/dogear/library.sqlite"
+        now=$(date +%s); n=0
+        for id in $(sqlite3 "$db" "SELECT id FROM books WHERE format = 'epub' ORDER BY id LIMIT 3 OFFSET 2"); do
+            n=$((n + 1))
+            sqlite3 "$db" "UPDATE books SET opened_at = $now - $n * 3600, seconds_read = 1800 * $n,
+                progress = $(echo "$n" | awk '{print ($1 == 1) ? 0.12 : ($1 == 2) ? 0.38 : 0.71}'),
+                position = '{\"chapter\":$((n + 3)),\"offset\":0,\"title\":\"Chapter $((n + 3))\"}' WHERE id = $id"
+        done
     fi
     cp -r "$seed/data/." "$home/.local/share/"
     cp -r "$seed/config/." "$home/.config/"
     cp -r "$seed/cache/." "$home/.cache/" 2>/dev/null || true
+fi
+
+if [ "$found" -eq 1 ]; then
+    mkdir -p "$home/Books"
+    sqlite3 "$seed/data/dogear/library.sqlite" "SELECT path FROM books" 2>/dev/null | while IFS= read -r book; do
+        ln -s "$book" "$home/Books/$(basename "$book")"
+    done
 fi
 
 if [ "$first" -eq 0 ]; then

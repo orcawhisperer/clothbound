@@ -449,6 +449,8 @@ void Narration::start(int chapter, qint64 offset) {
     m_active = true;
     m_wanted = true;
     m_following = true;
+    if (m_library)
+        m_library->markListened(m_bookId);
     m_startChapter = chapter;
     m_startOffset = offset;
     m_requested.insert(chapter);

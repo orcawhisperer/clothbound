@@ -4,8 +4,9 @@ import QtQuick.Controls
 import "Ui.js" as Ui
 
 // A segmented control: a few exclusive choices in one quiet track, the
-// current one raised. `model` is a list of {value, label} (or plain
-// strings); `current` is the chosen value; `activated(value)` on a choice.
+// current one raised. `model` is a list of {value, label, glyph} (or plain
+// strings); with a glyph the label becomes its tooltip. `current` is the
+// chosen value; `activated(value)` on a choice.
 // Arrow keys move the choice when it has focus.
 FocusScope {
     id: control
@@ -18,6 +19,7 @@ FocusScope {
     readonly property int count: model ? model.length : 0
     function valueAt(i) { const m = model[i]; return typeof m === "object" ? m.value : m }
     function labelAt(i) { const m = model[i]; return typeof m === "object" ? m.label : String(m) }
+    function glyphAt(i) { const m = model[i]; return typeof m === "object" && m.glyph ? m.glyph : "" }
     function indexOfCurrent() { for (let i = 0; i < count; ++i) if (valueAt(i) === current) return i; return -1 }
     function choose(i) { if (i >= 0 && i < count && valueAt(i) !== current) activated(valueAt(i)) }
 
@@ -84,7 +86,8 @@ FocusScope {
                 readonly property bool chosen: control.valueAt(index) === control.current
                 width: control.width > control.naturalWidth + 4
                        ? (control.width - 4) / control.count : implicitWidth
-                implicitWidth: label.implicitWidth + (control.compact ? 18 : 24)
+                readonly property string glyph: control.glyphAt(index)
+                implicitWidth: glyph !== "" ? (control.compact ? 30 : 34) : label.implicitWidth + (control.compact ? 18 : 24)
                 height: row.height
                 hoverEnabled: true
                 focusPolicy: Qt.NoFocus
@@ -92,16 +95,31 @@ FocusScope {
                 Accessible.name: label.text
                 Accessible.checked: chosen
                 onClicked: control.choose(index)
-                contentItem: Label {
-                    id: label
-                    text: control.labelAt(segment.index)
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                    font.pixelSize: control.compact ? 12 : 13
-                    font.weight: segment.chosen ? Font.DemiBold : Font.Medium
-                    color: segment.chosen ? control.palette.windowText
-                         : segment.hovered ? Ui.mix(control.palette.mid, control.palette.windowText, 0.5) : control.palette.mid
+                ToolTip.visible: glyph !== "" && hovered
+                ToolTip.text: control.labelAt(index)
+                ToolTip.delay: 600
+                contentItem: Item {
+                    Glyph {
+                        anchors.centerIn: parent
+                        visible: segment.glyph !== ""
+                        width: 16
+                        height: 16
+                        path: segment.glyph
+                        color: label.color
+                    }
+                    Label {
+                        id: label
+                        anchors.fill: parent
+                        visible: segment.glyph === ""
+                        text: control.labelAt(segment.index)
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        elide: Text.ElideRight
+                        font.pixelSize: control.compact ? 12 : 13
+                        font.weight: segment.chosen ? Font.DemiBold : Font.Medium
+                        color: segment.chosen ? control.palette.windowText
+                             : segment.hovered ? Ui.mix(control.palette.mid, control.palette.windowText, 0.5) : control.palette.mid
+                    }
                 }
                 background: null
             }

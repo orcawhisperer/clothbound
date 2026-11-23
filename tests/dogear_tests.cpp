@@ -59,6 +59,7 @@
 #include "bookscheme.h"
 #include "booksearch.h"
 #include "library.h"
+#include "libraryfinder.h"
 #include "marks.h"
 #include "reader.h"
 #include "epubbook.h"
@@ -1050,7 +1051,7 @@ private slots:
         QCOMPARE(reader.chapter(), 1);
         QCOMPARE(reader.chapterTitle(), QString("Notes"));
         reader.close();
-        QCOMPARE(library.record(id).position, QString(R"({"chapter":1,"offset":3,"snippet":"note"})"));
+        QCOMPARE(library.record(id).position, QString(R"({"chapter":1,"offset":3,"snippet":"note","title":"Notes"})"));
     }
 
 
@@ -4983,6 +4984,93 @@ private slots:
 
     // --- Round 4 regression tests: Library / Marks / CLI -------------------
 
+    void libraryFinderOffersFoldersWithBooks() {
+        QTemporaryDir dir;
+        const QString home = dir.path();
+        // ~/Books holds three books (one too deep to count), Documents one,
+        // Downloads none, and ~/Library is already watched.
+        for (const QString &path : {"Books/a.epub", "Books/Wells/b.EPUB", "Books/c.pdf", "Books/1/2/3/4/5/deep.epub",
+                                    "Books/notes.txt", "Documents/d.epub", "Downloads/e.zip", "Library/f.epub"}) {
+            QVERIFY(QDir().mkpath(QFileInfo(home + "/" + path).absolutePath()));
+            write(home + "/" + path, "x");
+        }
+        const QStringList places = LibraryFinder::candidates(home, home + "/Documents", home + "/Downloads");
+        QVERIFY(places.contains(home + "/Books"));
+        QVERIFY(!places.contains(home + "/books") || QFileInfo(home + "/books").exists());
+        QCOMPARE(LibraryFinder::countBooks(home + "/Books"), 3);
+        QCOMPARE(LibraryFinder::countBooks(home + "/Books", 4, 2), 2);
+
+        const QVariantList found = LibraryFinder::search(places + QStringList{home + "/Library"},
+                                                         {home + "/Library"}, home);
+        QCOMPARE(found.size(), 2);
+        QCOMPARE(found[0].toMap().value("label").toString(), QStringLiteral("~/Books"));
+        QCOMPARE(found[0].toMap().value("count").toInt(), 3);
+        QCOMPARE(found[1].toMap().value("label").toString(), QStringLiteral("~/Documents"));
+        // A folder already watched, or one inside it, is never offered again.
+        QCOMPARE(LibraryFinder::search(places, {home + "/Books"}, home).size(), 1);
+        QCOMPARE(LibraryFinder::label("/srv/books", home), QStringLiteral("/srv/books"));
+    }
+
+    void libraryShelvesWantToReadListeningAndChapter() {
+        QTemporaryDir dir;
+        const QString dataDir = dir.filePath("data");
+        QVERIFY(QDir().mkpath(dataDir));
+        // Four books written straight into a fresh library, then read back.
+        {
+            Library seed(dataDir, dir.filePath("cache"));
+            QVERIFY2(seed.open(), qPrintable(seed.errorString()));
+            QSqlQuery insert(seed.database());
+            for (int id = 1; id <= 4; ++id)
+                QVERIFY(insert.exec(QStringLiteral("INSERT INTO books (id, path, format, title, sort_title, work_key, added_at) "
+                                                   "VALUES (%1, '/b/%1.epub', 'epub', 'Book %1', 'book %1', 'w%1', 100)")
+                                        .arg(id)));
+            // Book 2 is under way in Chapter III; book 3 is finished.
+            QVERIFY(insert.exec(QStringLiteral("UPDATE books SET opened_at = 500, progress = 0.2, position = "
+                                               "'{\"chapter\":3,\"offset\":10,\"title\":\"Chapter III\"}' WHERE id = 2")));
+            QVERIFY(insert.exec(QStringLiteral("UPDATE books SET opened_at = 400, finished_at = 600, "
+                                               "fingerprint = 'fp3' WHERE id = 3")));
+            // Back to a version 3 library, as an existing install has it.
+            QVERIFY(insert.exec(QStringLiteral("ALTER TABLE books DROP COLUMN want_at")));
+            QVERIFY(insert.exec(QStringLiteral("ALTER TABLE books DROP COLUMN listened_at")));
+            QVERIFY(insert.exec(QStringLiteral("PRAGMA user_version = 3")));
+        }
+        Library library(dataDir, dir.filePath("cache"));
+        QVERIFY2(library.open(), qPrintable(library.errorString()));
+        QCOMPARE(library.schemaVersion(), 4);
+        QCOMPARE(library.bookCount(), 4);
+        QCOMPARE(library.record(3).title, QStringLiteral("Book 3"));
+
+        library.setWantToRead(1, true);
+        library.setWantToRead(3, true);  // finished books never sit on Want to read
+        library.markListened(2);
+        library.markListened(2);
+        const QVariantMap counts = library.shelfCounts();
+        QCOMPARE(counts.value("all").toInt(), 4);
+        QCOMPARE(counts.value("reading").toInt(), 1);
+        QCOMPARE(counts.value("finished").toInt(), 1);
+        QCOMPARE(counts.value("want").toInt(), 1);
+        QCOMPARE(counts.value("listening").toInt(), 1);
+        QCOMPARE(library.book(1).value("wantToRead").toBool(), true);
+        QCOMPARE(library.book(3).value("wantToRead").toBool(), false);
+        QCOMPARE(library.book(2).value("chapterTitle").toString(), QStringLiteral("Chapter III"));
+        QCOMPARE(library.book(1).value("chapterTitle").toString(), QString());
+
+        library.works()->setStatusFilter(QStringLiteral("want"));
+        QTRY_COMPARE(library.works()->rowCount(), 1);
+        QCOMPARE(library.works()->get(0).value("bookId").toInt(), 1);
+        library.works()->setStatusFilter(QStringLiteral("listening"));
+        QTRY_COMPARE(library.works()->rowCount(), 1);
+        QCOMPARE(library.works()->get(0).value("bookId").toInt(), 2);
+
+        // Kept across a restart.
+        Library reopened(dataDir, dir.filePath("cache"));
+        QVERIFY(reopened.open());
+        QVERIFY(reopened.record(1).wantAt > 0);
+        QVERIFY(reopened.record(2).listenedAt > 0);
+        reopened.setWantToRead(1, false);
+        QCOMPARE(reopened.shelfCounts().value("want").toInt(), 0);
+    }
+
     void librarySchemaMigrationsCollectionsStatsAndSeriesSort() {
         QTemporaryDir dir;
         const QString dataDir = dir.filePath("data");
@@ -5031,12 +5119,14 @@ private slots:
         }
         QSqlDatabase::removeDatabase(QStringLiteral("legacy-v0"));
 
-        // Opening migrates v0 -> v1 -> v2 -> v3 cleanly while preserving legacy rows.
+        // Opening migrates v0 -> v1 -> v2 -> v3 -> v4 cleanly while preserving legacy rows.
         {
             Library migrated(dataDir, cacheDir);
             QVERIFY2(migrated.open(), qPrintable(migrated.errorString()));
-            QCOMPARE(migrated.schemaVersion(), 3);
+            QCOMPARE(migrated.schemaVersion(), 4);
             QCOMPARE(migrated.record(1).title, QStringLiteral("Legacy Book"));
+            QCOMPARE(migrated.record(1).wantAt, qint64(0));
+            QCOMPARE(migrated.record(1).listenedAt, qint64(0));
 
             auto hasCol = [&](const QString &table, const QString &col) {
                 QSqlQuery info(migrated.database());
@@ -5064,7 +5154,7 @@ private slots:
         QTemporaryDir freshDir;
         Library library(freshDir.filePath("data"), freshDir.filePath("cache"));
         QVERIFY(library.open());
-        QCOMPARE(library.schemaVersion(), 3);
+        QCOMPARE(library.schemaVersion(), 4);
 
         auto makeSeriesEpub = [&](const QString &fileName, const QString &title, const QString &author,
                                   const QString &series, double index) {

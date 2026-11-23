@@ -9,6 +9,7 @@ PKGCONFIG += libsecret-1
 INCLUDEPATH += ../src
 
 HEADERS += \
+    ../src/libraryfinder.h \
     ../src/ai.h \
     ../src/aiservices.h \
     ../src/aiusage.h \
@@ -61,6 +62,7 @@ HEADERS += \
     testbooks.h
 
 SOURCES += \
+    ../src/libraryfinder.cpp \
     dogear_tests.cpp \
     ../src/aiservices.cpp \
     ../src/aiusage.cpp \

@@ -246,6 +246,12 @@ bool WorksModel::passesFilters(const BookRecord &book) const {
         } else if (m_statusFilter == QLatin1String("finished")) {
             if (book.finishedAt <= 0)
                 return false;
+        } else if (m_statusFilter == QLatin1String("want")) {
+            if (book.wantAt <= 0 || book.finishedAt > 0)
+                return false;
+        } else if (m_statusFilter == QLatin1String("listening")) {
+            if (book.listenedAt <= 0)
+                return false;
         }
     }
     if (!m_formatFilter.isEmpty() && book.format.compare(m_formatFilter, Qt::CaseInsensitive) != 0)

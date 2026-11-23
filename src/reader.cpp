@@ -513,7 +513,9 @@ void Reader::relocated(const QVariantMap &location) {
 void Reader::savePosition() {
     if (!m_bookId)
         return;
-    const QJsonObject position{{"chapter", m_chapter}, {"offset", double(m_offset)}, {"snippet", m_snippet}};
+    // The chapter's name rides along, for the library's Continue card.
+    const QJsonObject position{{"chapter", m_chapter}, {"offset", double(m_offset)}, {"snippet", m_snippet},
+                               {"title", chapterTitle()}};
     m_library->savePosition(m_bookId, QString::fromUtf8(QJsonDocument(position).toJson(QJsonDocument::Compact)),
                             m_progress);
     if (m_atEnd && m_library->record(m_bookId).finishedAt == 0)
