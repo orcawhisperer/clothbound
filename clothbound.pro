@@ -65,7 +65,8 @@ HEADERS += \
     src/ai/localmodels.h \
     src/ai/localsetup.h \
     src/ai/passageindex.h \
-    src/ai/sseparser.h
+    src/ai/sseparser.h \
+    src/mcp/mcpserver.h
 
 SOURCES += \
     src/app/cli.cpp \
@@ -113,6 +114,7 @@ SOURCES += \
     src/ai/localmodels.cpp \
     src/ai/localsetup.cpp \
     src/ai/passageindex.cpp \
-    src/ai/sseparser.cpp
+    src/ai/sseparser.cpp \
+    src/mcp/mcpserver.cpp
 
 RESOURCES += src/resources.qrc src/prompts.qrc
