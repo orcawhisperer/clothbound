@@ -73,10 +73,13 @@ Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library 
         }
         const bool more = m_queued + 1 < m_clips.size() || m_requested.size() > m_loadedChapters.size() ||
                           nextChapterAfter(m_lastChapter) >= 0;
-        if (!more)
+        if (!more) {
             stop();
-        else if (m_wanted)
-            setBuffering(true);
+        } else if (m_wanted) {
+            pump();
+            if (m_active && m_wanted && m_player->drainedOut())
+                setBuffering(true);
+        }
     });
     m_directionsTimer.setSingleShot(true);
     connect(&m_directionsTimer, &QTimer::timeout, this, &Narration::pump);
@@ -932,6 +935,7 @@ qint64 Narration::durationUs() const {
 }
 
 void Narration::sleepIn(int minutes) {
+    const bool wasChapterEnd = m_sleepAtChapterEnd;
     m_sleepAtChapterEnd = false;
     if (minutes <= 0) {
         m_sleepTimer.stop();
@@ -943,6 +947,8 @@ void Narration::sleepIn(int minutes) {
         m_sleepTick.start();
     }
     emit sleepChanged();
+    if (wasChapterEnd && m_active && m_wanted)
+        pump();
 }
 
 void Narration::sleepAtEndOfChapter() {
