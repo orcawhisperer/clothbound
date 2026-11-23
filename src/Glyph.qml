@@ -6,7 +6,7 @@ Item {
     id: glyph
 
     property string path
-    property color color: theme.ink1
+    property color color: palette.windowText
     property real stroke: 1.8
 
     implicitWidth: 20

@@ -3,6 +3,7 @@ import QtQuick.Controls
 
 import "Icons.js" as Icons
 import "Ui.js" as Ui
+import "Themes.js" as Themes
 
 // What to do with words on the page: over a selection, highlight it in a
 // color, add a note, copy it, or listen from there; over a highlight, change
@@ -24,7 +25,7 @@ Rectangle {
     signal remove()
 
     readonly property var colors: ["yellow", "green", "blue", "pink"]
-    readonly property var swatches: ({ yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" })
+    readonly property var swatches: Themes.swatches
 
     property var anchorRect: null
     property var anchorArea: null

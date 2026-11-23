@@ -4,6 +4,7 @@ import QtQuick.Layouts
 
 import "Icons.js" as Icons
 import "Ui.js" as Ui
+import "Themes.js" as Themes
 
 // Everything marked in the book: highlights, notes, and bookmarks, in the
 // book's order, by chapter. One goes to its place; all of them can be
@@ -52,7 +53,7 @@ FocusScope {
                    qsTr("Undo"), () => marks.undo())
     }
 
-    readonly property var swatches: ({ yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" })
+    readonly property var swatches: Themes.swatches
 
     Keys.onEscapePressed: close()
 

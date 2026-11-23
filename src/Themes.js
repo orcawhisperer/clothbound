@@ -15,6 +15,9 @@ function css(color) {
     return "rgba(" + Math.round(c.r * 255) + "," + Math.round(c.g * 255) + "," + Math.round(c.b * 255) + "," + c.a.toFixed(3) + ")"
 }
 
+// The four highlight colours, the one place they are defined.
+var swatches = { yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" }
+
 function palette(id, theme) {
     var p
     if (id === "paper")
@@ -31,10 +34,10 @@ function palette(id, theme) {
     p.id = order.indexOf(id) >= 0 ? id : "omarchy"
     p.selection = css(tint(p.link, p.dark ? 0.38 : 0.26))
     p.search = css(tint(p.dark ? "#f5c542" : "#ffcc00", p.dark ? 0.32 : 0.4))
-    p.markYellow = css(tint("#f2c94c", p.dark ? 0.34 : 0.45))
-    p.markGreen = css(tint("#6fcf97", p.dark ? 0.3 : 0.4))
-    p.markBlue = css(tint("#56ccf2", p.dark ? 0.3 : 0.38))
-    p.markPink = css(tint("#f78fb3", p.dark ? 0.32 : 0.4))
+    p.markYellow = css(tint(swatches.yellow, p.dark ? 0.34 : 0.45))
+    p.markGreen = css(tint(swatches.green, p.dark ? 0.3 : 0.4))
+    p.markBlue = css(tint(swatches.blue, p.dark ? 0.3 : 0.38))
+    p.markPink = css(tint(swatches.pink, p.dark ? 0.32 : 0.4))
     p.found = css(tint(p.dark ? "#ff9f0a" : "#ff8c00", p.dark ? 0.7 : 0.6))
     p.speaking = css(tint(p.link, p.dark ? 0.26 : 0.18))
     p.border = css(tint(p.fg, 0.14))

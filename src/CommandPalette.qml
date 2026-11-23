@@ -33,7 +33,7 @@ FocusScope {
     readonly property string listIcon: "M8 6.5 H20 M8 12 H20 M8 17.5 H20 M4 6.5 H5 M4 12 H5 M4 17.5 H5"
     readonly property string gridIcon: "M4.5 4.5 H10.5 V10.5 H4.5 Z M13.5 4.5 H19.5 V10.5 H13.5 Z M4.5 13.5 H10.5 V19.5 H4.5 Z M13.5 13.5 H19.5 V19.5 H13.5 Z"
     readonly property string refreshIcon: "M19 12 A7 7 0 1 1 16.95 7.05 M19 4.5 V8.5 H15"
-    readonly property var swatches: ({ yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" })
+    readonly property var swatches: Themes.swatches
 
     function show() {
         cachedBooks = library.allBooks()

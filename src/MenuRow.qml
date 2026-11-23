@@ -9,20 +9,22 @@ AbstractButton {
     id: row
 
     property string hint
+    // Kept for older callers; the reading theme now arrives as the palette.
     property var look: null
 
-    readonly property color inkColor: look ? (look.fg || look.ink || theme.ink1) : theme.ink1
-    readonly property color mutedColor: look ? (look.muted || theme.ink3) : theme.ink3
-    readonly property color accentColor: look ? (look.link || theme.accentInk) : theme.accentInk
+    readonly property color inkColor: palette.windowText
+    readonly property color mutedColor: palette.mid
+    readonly property color accentColor: palette.link
 
     width: parent ? parent.width : 200
-    implicitHeight: 34
+    implicitHeight: 30
     hoverEnabled: true
     focusPolicy: Qt.NoFocus
+    Accessible.name: text
 
     background: Rectangle {
         radius: Math.min(6, theme.radius)
-        color: row.hovered ? Ui.tint(row.inkColor, 0.08) : "transparent"
+        color: row.pressed ? Ui.tint(row.inkColor, 0.12) : row.hovered ? Ui.tint(row.inkColor, 0.07) : "transparent"
     }
     contentItem: Item {
         Glyph {
@@ -30,8 +32,8 @@ AbstractButton {
             anchors.left: parent.left
             anchors.leftMargin: 8
             anchors.verticalCenter: parent.verticalCenter
-            width: 16
-            height: 16
+            width: 14
+            height: 14
             stroke: 2.2
             path: Icons.check
             color: row.accentColor
@@ -39,23 +41,24 @@ AbstractButton {
         }
         Label {
             anchors.left: parent.left
-            anchors.leftMargin: 32
+            anchors.leftMargin: 28
             anchors.right: hintLabel.left
+            anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
             text: row.text
             color: row.inkColor
             font.pixelSize: 13
+            font.weight: row.checked ? Font.Medium : Font.Normal
             elide: Text.ElideRight
         }
-        Label {
+        KeyHint {
             id: hintLabel
             anchors.right: parent.right
-            anchors.rightMargin: 10
+            anchors.rightMargin: 8
             anchors.verticalCenter: parent.verticalCenter
             text: row.hint
-            color: row.mutedColor
-            font.pixelSize: 12
-            font.family: "monospace"
+            visible: row.hint !== ""
+            width: visible ? implicitWidth : 0
         }
     }
 }

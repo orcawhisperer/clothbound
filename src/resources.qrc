@@ -1,6 +1,13 @@
 <RCC>
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
+        <file alias="KeyHint.qml">KeyHint.qml</file>
+        <file alias="Segmented.qml">Segmented.qml</file>
+        <file alias="Badge.qml">Badge.qml</file>
+        <file alias="Skeleton.qml">Skeleton.qml</file>
+        <file alias="OptionCard.qml">OptionCard.qml</file>
+        <file alias="SidePanel.qml">SidePanel.qml</file>
+        <file alias="Sheet.qml">Sheet.qml</file>
         <file alias="LibraryView.qml">LibraryView.qml</file>
         <file alias="ListenBar.qml">ListenBar.qml</file>
         <file alias="VoicePanel.qml">VoicePanel.qml</file>
