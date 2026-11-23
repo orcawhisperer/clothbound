@@ -274,7 +274,38 @@ QVariantMap VoiceCatalog::voice(const QString &id) const {
     for (const Ai::Voice &voice : m_voices)
         if (voice.id == id)
             return toMap(voice);
+    for (const Ai::Voice &voice : m_studioVoices)
+        if (voice.id == id)
+            return toMap(voice);
     return {};
+}
+
+QVariantList VoiceCatalog::studioVoices() const {
+    QVariantList out;
+    for (const Ai::Voice &voice : m_studioVoices)
+        out.append(toMap(voice));
+    return out;
+}
+
+void VoiceCatalog::loadStudioVoices() {
+    Ai::SpeechSynthesizer *studio = m_ai->speechFor(QStringLiteral("studio:"));
+    if (!studio) {
+        m_studioVoices.clear();
+        emit studioChanged();
+        return;
+    }
+    Ai::Reply *reply = studio->listVoices(QString());
+    connect(reply, &Ai::Reply::finished, this, [this, reply] {
+        reply->deleteLater();
+        m_studioVoices.clear();
+        for (Ai::Voice voice : reply->voices()) {
+            voice.id = QStringLiteral("studio:") + voice.id;
+            if (voice.description.isEmpty())
+                voice.description = tr("Studio voice, made on this computer");
+            m_studioVoices.append(voice);
+        }
+        emit studioChanged();
+    });
 }
 
 int VoiceCatalog::startPreview(const QString &voiceId) {

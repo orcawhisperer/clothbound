@@ -1190,6 +1190,51 @@ private slots:
         QCOMPARE(reply->error().kind, Ai::Error::Offline);
     }
 
+    // A Studio voice is the local server's, and its audio arrives at the
+    // player's rate whatever the server speaks at.
+    void studioVoicesSpeak() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        services.setLocalModels(&local);
+        QVERIFY(!services.speechFor("studio:af_heart"));
+        FakeServer server;
+        LocalModels::Server where;
+        where.kind = LocalModels::Generic;
+        where.url = QUrl(server.origin());
+        local.configure(where, {}, {}, "kokoro");
+        QVERIFY(services.speechFor("studio:af_heart") == local.speech());
+        QCOMPARE(services.providerFor("studio:af_heart")->id(), QString("local"));
+        QVERIFY(AiServices::isOnThisComputer("studio:af_heart"));
+        QVERIFY(!local.supportsStyle());
+        QVERIFY(LocalModels::takesInstructions("Qwen3-TTS-12Hz-1.7B-CustomVoice"));
+        // A second of silence at 22.05 kHz.
+        QByteArray wav = "RIFF";
+        const int samples = 22050;
+        auto le32 = [](int v) { return QByteArray::fromRawData(reinterpret_cast<const char *>(&v), 4); };
+        auto le16 = [](short v) { return QByteArray::fromRawData(reinterpret_cast<const char *>(&v), 2); };
+        wav += le32(36 + samples * 2) + "WAVEfmt " + le32(16) + le16(1) + le16(1) + le32(22050) + le32(44100) +
+               le16(2) + le16(16) + "data" + le32(samples * 2) + QByteArray(samples * 2, '\0');
+        server.responses.append({200, "audio/wav", wav});
+        Ai::SpeechRequest request;
+        request.text = "Hello.";
+        request.voice = "studio:af_heart";
+        Ai::Reply *reply = services.speechFor(request.voice)->synthesize(request);
+        QSignalSpy finished(reply, &Ai::Reply::finished);
+        QVERIFY(finished.wait(3000));
+        QVERIFY2(!reply->error(), qPrintable(reply->error().message));
+        QCOMPARE(reply->sampleRate(), 24000);
+        QVERIFY(qAbs(reply->audio().size() / 2 - 24000) < 50);
+        const QJsonObject body = QJsonDocument::fromJson(server.requests.first().body).object();
+        QCOMPARE(server.requests.first().path, QByteArray("/v1/audio/speech"));
+        QCOMPARE(body["voice"].toString(), QString("af_heart"));
+        QCOMPARE(body["model"].toString(), QString("kokoro"));
+    }
+
     // Servers are told apart by how they answer, not by their port.
     void serversAreFound() {
         FakeServer ollama;

@@ -90,11 +90,11 @@ ColumnLayout {
                 Layout.fillWidth: true
                 Rectangle {
                     width: 10; height: 10; radius: 5
-                    color: ai.hasLocal ? theme.colors.green : theme.textTertiary
+                    color: (ai.localUrl !== "") ? theme.colors.green : theme.textTertiary
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: ai.hasLocal ? qsTr("%1 at %2").arg(ai.localName).arg(ai.localUrl.replace("http://", ""))
+                    text: (ai.localUrl !== "") ? qsTr("%1 at %2").arg(ai.localName).arg(ai.localUrl.replace("http://", ""))
                                       : ai.findingLocal ? qsTr("Looking for model servers on this computer…")
                                       : qsTr("No model on this computer yet")
                     color: theme.text
@@ -103,7 +103,7 @@ ColumnLayout {
                 }
                 BusyIndicator { visible: ai.findingLocal; running: visible; implicitWidth: 20; implicitHeight: 20 }
                 TextButton {
-                    text: ai.localServers.length || ai.hasLocal ? qsTr("Find again") : qsTr("Find")
+                    text: ai.localServers.length || (ai.localUrl !== "") ? qsTr("Find again") : qsTr("Find")
                     enabled: !ai.findingLocal
                     onClicked: ai.findLocal(section.address)
                 }
@@ -111,7 +111,7 @@ ColumnLayout {
             // The models in use, changeable.
             GridLayout {
                 Layout.fillWidth: true
-                visible: ai.hasLocal
+                visible: (ai.localUrl !== "")
                 columns: 2
                 columnSpacing: 10
                 rowSpacing: 4
@@ -135,6 +135,18 @@ ColumnLayout {
                     model: parent.server ? parent.server.textModels : []
                     currentIndex: model.indexOf(ai.localTextModel)
                     onActivated: (index) => ai.useLocal(parent.server.kind, ai.localUrl, model[index], ai.localEmbeddingModel, ai.localSpeechModel)
+                }
+                Label {
+                    visible: !!parent.server && parent.server.speechModels.length > 0
+                    text: qsTr("Voices"); color: theme.textSecondary; font.pixelSize: 13
+                }
+                ComboBox {
+                    Layout.fillWidth: true
+                    visible: !!parent.server && parent.server.speechModels.length > 0
+                    model: parent.server ? [qsTr("None")].concat(parent.server.speechModels) : []
+                    currentIndex: Math.max(0, model.indexOf(ai.localSpeechModel))
+                    onActivated: (index) => ai.useLocal(parent.server.kind, ai.localUrl, ai.localTextModel,
+                                                         ai.localEmbeddingModel, index === 0 ? "" : model[index])
                 }
                 Label { text: qsTr("Search"); color: theme.textSecondary; font.pixelSize: 13 }
                 Label {
@@ -170,19 +182,19 @@ ColumnLayout {
                     }
                     TextButton {
                         text: qsTr("Use")
-                        enabled: modelData.textModels.length > 0
-                        onClicked: ai.useLocal(modelData.kind, modelData.url, modelData.textModels[0],
-                                               modelData.embeddingModels[0] || "", "")
+                        enabled: modelData.textModels.length > 0 || modelData.speechModels.length > 0
+                        onClicked: ai.useLocal(modelData.kind, modelData.url, modelData.textModels[0] || "",
+                                               modelData.embeddingModels[0] || "", modelData.speechModels[0] || "")
                     }
                 }
             }
             Note {
-                visible: !ai.hasLocal && !ai.findingLocal
+                visible: !(ai.localUrl !== "") && !ai.findingLocal
                 text: qsTr("Dogear uses a model server you run yourself: Ollama, llama.cpp, LM Studio, MLX or vLLM. Start one with a model, then Find. Nothing is downloaded by Dogear.")
             }
             RowLayout {
                 Layout.fillWidth: true
-                visible: !ai.hasLocal
+                visible: !(ai.localUrl !== "")
                 spacing: 8
                 Rectangle {
                     Layout.fillWidth: true
@@ -214,7 +226,7 @@ ColumnLayout {
                 }
             }
             TextButton {
-                visible: ai.hasLocal
+                visible: (ai.localUrl !== "")
                 text: qsTr("Stop using it")
                 onClicked: ai.forgetLocal()
             }

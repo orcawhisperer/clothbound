@@ -66,7 +66,7 @@ QVariantMap Download::estimate(int first, int last) const {
     const QList<int> chapters = chaptersBetween(first, last);
     for (int chapter : chapters)
         minutes += estimatedMinutes(chapter);
-    const bool local = AiServices::isBuiltinVoice(m_narration->voice());
+    const bool local = AiServices::isOnThisComputer(m_narration->voice());
     return {{"chapters", chapters.size()},
             {"minutes", minutes},
             {"local", local},
@@ -94,7 +94,7 @@ void Download::start(int first, int last) {
     m_voice = m_narration->voice();
     m_performance = m_narration->performance();
     m_economy = m_narration->economy();
-    m_local = AiServices::isBuiltinVoice(m_voice);
+    m_local = AiServices::isOnThisComputer(m_voice);
     m_flex = !m_local;
     m_active = true;
     m_paused = false;

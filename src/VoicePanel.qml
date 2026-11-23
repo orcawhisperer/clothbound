@@ -33,7 +33,10 @@ FocusScope {
     function show() {
         open = true
         query = ""
-        source = builtinVoice || (!ai.hasKey && voicePacks.supported) ? "builtin" : "gemini"
+        source = (narration.voice || "").startsWith("studio:") ? "studio"
+               : builtinVoice || (!ai.hasKey && voicePacks.supported) ? "builtin" : "gemini"
+        if (ai.localSpeechModel !== "")
+            voices.loadStudioVoices()
         voices.refresh()
         sampleWanted()
         forceActiveFocus()
@@ -542,9 +545,10 @@ FocusScope {
                 Layout.fillWidth: true
                 Layout.topMargin: 6
                 spacing: 8
-                visible: voicePacks.supported
+                visible: voicePacks.supported || ai.localSpeechModel !== ""
                 Choice {
                     Layout.preferredWidth: 1
+                    visible: voicePacks.supported
                     text: qsTr("On this computer")
                     selected: panel.source === "builtin"
                     onClicked: panel.source = "builtin"
@@ -555,11 +559,37 @@ FocusScope {
                     selected: panel.source === "gemini"
                     onClicked: panel.source = "gemini"
                 }
+                Choice {
+                    Layout.preferredWidth: 1
+                    visible: ai.localSpeechModel !== ""
+                    text: qsTr("Studio")
+                    selected: panel.source === "studio"
+                    onClicked: { panel.source = "studio"; voices.loadStudioVoices() }
+                }
             }
             Note {
                 visible: voicePacks.supported
                 text: panel.source === "builtin" ? qsTr("Free, private, and offline. Plainer than Gemini's voices, and without styles.")
+                    : panel.source === "studio" ? qsTr("Made by %1 on this computer with %2: free and private.").arg(ai.localName).arg(ai.localSpeechModel)
                     : qsTr("The most natural voices, with styles; they use your own Gemini key.")
+            }
+
+            // The Studio server's voices.
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: panel.source === "studio"
+                spacing: 2
+                Repeater {
+                    model: voices.studioVoices
+                    delegate: VoiceRow {
+                        required property var modelData
+                        voice: modelData
+                    }
+                }
+                Note {
+                    visible: voices.studioVoices.length === 0
+                    text: qsTr("The server lists no voices. It may need a moment, or a voice name set up on its side.")
+                }
             }
 
             // The voices made here.
@@ -571,7 +601,7 @@ FocusScope {
             ColumnLayout {
                 id: geminiSide
                 Layout.fillWidth: true
-                visible: panel.source === "gemini" || !voicePacks.supported
+                visible: panel.source === "gemini" || (!voicePacks.supported && panel.source !== "studio")
                 spacing: 6
 
                 // Without a key, a way to add one.

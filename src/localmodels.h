@@ -80,6 +80,13 @@ public:
     // Embedding models that want their queries marked (Qwen3-Embedding,
     // EmbeddingGemma, nomic) get the mark they were trained with.
     static QString queryText(const QString &model, const QString &text);
+    // Speech models that read instructions on how to speak (Qwen3-TTS's
+    // instruct models, gpt-4o-mini-tts-style servers), so styles work.
+    static bool takesInstructions(const QString &model) {
+        const QString name = model.toLower();
+        return name.contains(QLatin1String("qwen3-tts")) || name.contains(QLatin1String("qwen3_tts")) ||
+               name.contains(QLatin1String("instruct")) || name.contains(QLatin1String("gpt-4o"));
+    }
 
 private:
     QNetworkReply *send(const QByteArray &method, const QString &path, const QJsonObject &body = {});

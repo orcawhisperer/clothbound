@@ -213,6 +213,7 @@ void AiServices::setLocalModels(LocalModels *local) {
         server.url = QUrl(url);
         local->configure(server, s.value(QStringLiteral("local/text")).toString(),
                          s.value(QStringLiteral("local/embedding")).toString(), s.value(QStringLiteral("local/speech")).toString());
+        local->setSpeechVoices({}, LocalModels::takesInstructions(local->speechModelName(false)));
     }
     emit routingChanged();
 }
@@ -358,6 +359,7 @@ void AiServices::useLocal(const QString &kind, const QString &url, const QString
     server.kind = LocalModels::kindFromId(kind);
     server.url = QUrl(url);
     m_localModels->configure(server, textModel, embeddingModel, speechModel);
+    m_localModels->setSpeechVoices({}, LocalModels::takesInstructions(speechModel));
     emit routingChanged();
     emit changed();
 }
@@ -369,4 +371,20 @@ void AiServices::forgetLocal() {
         m_localModels->configure({}, {});
     emit routingChanged();
     emit changed();
+}
+
+Ai::Provider *AiServices::providerFor(const QString &voice) const {
+    if (isBuiltinVoice(voice) && m_local)
+        return m_local;
+    if (isStudioVoice(voice) && m_localModels)
+        return m_localModels;
+    return m_provider;
+}
+
+Ai::SpeechSynthesizer *AiServices::speechFor(const QString &voice) const {
+    if (isBuiltinVoice(voice))
+        return m_local ? m_local->speech() : nullptr;
+    if (isStudioVoice(voice))
+        return m_localModels ? m_localModels->speech() : nullptr;
+    return speech();
 }

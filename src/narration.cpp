@@ -226,6 +226,9 @@ void Narration::start(int chapter, qint64 offset) {
         if (AiServices::isBuiltinVoice(m_voice)) {
             setProblem(tr("This built-in voice isn't downloaded yet. Choose it again in the Narrator panel (V)."));
             emit voiceMissing();
+        } else if (AiServices::isStudioVoice(m_voice)) {
+            setProblem(tr("This Studio voice needs its model server running on this computer, chosen in Intelligence (✦)."));
+            emit voiceMissing();
         } else {
             setProblem(m_ai->describe(int(Ai::Error::NoKey)));
             emit needsKey();
@@ -357,7 +360,7 @@ void Narration::pump() {
         working += clip.state == Clip::Working && clip.reply ? 1 : 0;
     const int from = qMax(0, m_current);
     qint64 wait = -1;
-    const bool local = AiServices::isBuiltinVoice(m_voice);
+    const bool local = AiServices::isOnThisComputer(m_voice);
     const int ahead = local ? (m_holdSamples > 0 ? 64 : 8) : 4;
     for (int i = from; i < m_clips.size() && i < from + ahead; ++i) {
         Clip &clip = m_clips[i];

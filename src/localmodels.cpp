@@ -1,6 +1,7 @@
 #include "localmodels.h"
 
 #include "gemini.h"
+#include "speech.h"
 #include "sseparser.h"
 
 #include <QJsonArray>
@@ -194,8 +195,16 @@ private:
         }
         case Speech: {
             int rate = 24000;
-            const QByteArray pcm = GeminiProvider::pcmFromWav(m_body, &rate);
-            m_sampleRate = rate;
+            QByteArray pcm = GeminiProvider::pcmFromWav(m_body, &rate);
+            // The player's rate: servers speak at 22.05, 24 or 44.1 kHz.
+            if (rate != 24000 && rate > 0 && !pcm.isEmpty()) {
+                QVector<float> samples(pcm.size() / 2);
+                const auto *data = reinterpret_cast<const qint16 *>(pcm.constData());
+                for (qsizetype i = 0; i < samples.size(); ++i)
+                    samples[i] = data[i] / 32768.0f;
+                pcm = Speech::pcm16(Speech::resample(samples, rate, 24000));
+            }
+            m_sampleRate = 24000;
             addAudio(pcm);
             finish(pcm.isEmpty() ? Ai::Error{Ai::Error::Invalid, QStringLiteral("No audio came back.")} : Ai::Error{});
             return;

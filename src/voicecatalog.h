@@ -28,6 +28,8 @@ class VoiceCatalog : public QObject {
     Q_PROPERTY(QVariantMap proposal READ proposal NOTIFY castingChanged)
     Q_PROPERTY(QVariantMap designed READ designed NOTIFY castingChanged)
     Q_PROPERTY(QString castingProblem READ castingProblem NOTIFY castingChanged)
+    // The voices of the Studio model server on this computer, as maps.
+    Q_PROPERTY(QVariantList studioVoices READ studioVoices NOTIFY studioChanged)
 
 public:
     VoiceCatalog(AiServices *ai, AudioCache *cache, Reader *reader, const QString &databaseConnection,
@@ -73,6 +75,9 @@ public:
     Q_INVOKABLE void resetCasting();
     // Deletes a designed voice from the provider, for good.
     Q_INVOKABLE void forget(const QString &voiceId);
+    QVariantList studioVoices() const;
+    // Asks the Studio server which voices it has.
+    Q_INVOKABLE void loadStudioVoices();
 
     void setVoices(const QList<Ai::Voice> &voices);
     static QVariantMap toMap(const Ai::Voice &voice);
@@ -82,6 +87,7 @@ signals:
     void changed();
     void previewChanged();
     void castingChanged();
+    void studioChanged();
 
 private:
     void load();
@@ -97,6 +103,7 @@ private:
     QString m_connection;
     QString m_cacheFile;
     QList<Ai::Voice> m_voices;
+    QList<Ai::Voice> m_studioVoices;
     QDateTime m_fetched;
     bool m_loading = false;
     QString m_problem;

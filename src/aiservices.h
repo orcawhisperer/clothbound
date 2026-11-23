@@ -59,15 +59,14 @@ public:
     // Built-in voices (made on this computer) beside the cloud provider.
     void setLocalSpeech(Ai::Provider *local) { m_local = local; }
     static bool isBuiltinVoice(const QString &voice) { return voice.startsWith(QStringLiteral("builtin:")); }
-    // Who speaks in a voice: the built-in voices for theirs, the cloud for the rest.
-    Ai::Provider *providerFor(const QString &voice) const {
-        return isBuiltinVoice(voice) && m_local ? m_local : m_provider;
-    }
-    Ai::SpeechSynthesizer *speechFor(const QString &voice) const {
-        if (isBuiltinVoice(voice))
-            return m_local ? m_local->speech() : nullptr;
-        return speech();
-    }
+    // A Studio voice: made by the model server on this computer.
+    static bool isStudioVoice(const QString &voice) { return voice.startsWith(QStringLiteral("studio:")); }
+    // Made here (free, one at a time): built-in and Studio voices.
+    static bool isOnThisComputer(const QString &voice) { return isBuiltinVoice(voice) || isStudioVoice(voice); }
+    // Who speaks in a voice: the built-in voices for theirs, the local
+    // server for Studio ones, the cloud for the rest.
+    Ai::Provider *providerFor(const QString &voice) const;
+    Ai::SpeechSynthesizer *speechFor(const QString &voice) const;
     Q_INVOKABLE bool canSpeakWith(const QString &voice) const {
         const Ai::SpeechSynthesizer *speaker = speechFor(voice);
         return speaker && speaker->canSpeak(voice);
