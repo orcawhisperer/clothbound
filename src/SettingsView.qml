@@ -66,6 +66,7 @@ FocusScope {
     // --- The pages -------------------------------------------------------
     Rectangle {
         id: side
+        anchors.left: parent.left
         width: 220
         height: parent.height
         color: theme.sidebar
@@ -73,7 +74,8 @@ FocusScope {
 
         AbstractButton {
             id: back
-            x: 10
+            anchors.left: parent.left
+            anchors.leftMargin: 10
             y: 12
             height: 30
             width: backRow.implicitWidth + 16
@@ -89,7 +91,8 @@ FocusScope {
                 Row {
                     id: backRow
                     anchors.verticalCenter: parent.verticalCenter
-                    x: 6
+                    anchors.left: parent.left
+                    anchors.leftMargin: 6
                     spacing: 4
                     Glyph { anchors.verticalCenter: parent.verticalCenter; width: 14; height: 14; stroke: 2; path: Icons.chevronLeft; color: theme.ink2 }
                     Label { anchors.verticalCenter: parent.verticalCenter; text: qsTr("Back"); color: theme.ink2; font.pixelSize: 13 }
@@ -100,7 +103,8 @@ FocusScope {
             ToolTip.delay: 600
         }
         Label {
-            x: 18
+            anchors.left: parent.left
+            anchors.leftMargin: 18
             y: 56
             text: qsTr("Settings")
             color: theme.ink1
@@ -108,7 +112,8 @@ FocusScope {
             font.weight: Font.DemiBold
         }
         Column {
-            x: 8
+            anchors.left: parent.left
+            anchors.leftMargin: 8
             y: 96
             width: parent.width - 16
             spacing: 1
@@ -137,7 +142,8 @@ FocusScope {
                     contentItem: Item {
                         Glyph {
                             id: icon
-                            x: 9
+                            anchors.left: parent.left
+                            anchors.leftMargin: 9
                             anchors.verticalCenter: parent.verticalCenter
                             width: 16
                             height: 16

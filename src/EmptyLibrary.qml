@@ -72,7 +72,8 @@ Column {
         contentItem: Item {
             Rectangle {
                 id: folderTile
-                x: 16
+                anchors.left: parent.left
+                anchors.leftMargin: 16
                 anchors.verticalCenter: parent.verticalCenter
                 width: 40
                 height: 40
