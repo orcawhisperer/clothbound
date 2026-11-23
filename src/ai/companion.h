@@ -64,6 +64,16 @@ class Companion : public QObject {
     // Where the answer was made, in a few words.
     Q_PROPERTY(QString where READ where NOTIFY changed)
     Q_PROPERTY(bool whereLocal READ whereLocal NOTIFY changed)
+    // Adaptive Story ("fiction") vs. Study ("study") mode per book.
+    Q_PROPERTY(QString readingMode READ readingMode WRITE setReadingMode NOTIFY readingModeChanged)
+    Q_PROPERTY(bool studyMode READ studyMode NOTIFY readingModeChanged)
+    // Smart AI scope: "upto" (spoiler-free), "book" (whole document), or "shelf" (multi-document).
+    Q_PROPERTY(QString scope READ scope WRITE setScope NOTIFY scopeChanged)
+    Q_PROPERTY(QString shelfLabel READ shelfLabel NOTIFY scopeChanged)
+    // Pending visual snip attached to the Ask composer (trusted local PNG data URI).
+    Q_PROPERTY(QString pendingSnipUrl READ pendingSnipUrl NOTIFY pendingSnipChanged)
+    Q_PROPERTY(int pendingSnipPage READ pendingSnipPage NOTIFY pendingSnipChanged)
+    Q_PROPERTY(bool hasPendingSnip READ hasPendingSnip NOTIFY pendingSnipChanged)
 
 public:
     struct Chapter {
@@ -72,6 +82,8 @@ public:
         QString text;
     };
     struct Citation {
+        int bookId = 0;
+        QString bookTitle;
         int chapter = 0;
         qint64 offset = 0;
         QString label;
@@ -83,6 +95,7 @@ public:
         QList<Citation> sources;
         QString provenance;
         bool local = false;
+        QString snipDataUrl;
     };
 
     Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent = nullptr);
@@ -120,6 +133,15 @@ public:
     QString pendingSetupLabel() const;
     QString where() const { return m_where; }
     bool whereLocal() const { return m_whereLocal; }
+    QString readingMode() const { return m_readingMode; }
+    void setReadingMode(const QString &mode);
+    bool studyMode() const { return m_readingMode == QLatin1String("study"); }
+    QString scope() const { return m_scope; }
+    void setScope(const QString &scope);
+    QString shelfLabel() const { return m_shelfLabel; }
+    QString pendingSnipUrl() const { return m_pendingSnipUrl; }
+    int pendingSnipPage() const { return m_pendingSnipPage; }
+    bool hasPendingSnip() const { return !m_pendingSnipPng.isEmpty(); }
 
     // A word, as used at (chapter, offset).
     Q_INVOKABLE void define(const QString &word, int chapter, qint64 offset);
@@ -130,6 +152,11 @@ public:
     Q_INVOKABLE void retranslate();
     // About the book so far; follow-ups keep the conversation.
     Q_INVOKABLE void ask(const QString &question);
+    // Visual snip entry point: action is "explain", "latex", "table", or "ask".
+    Q_INVOKABLE void askAboutSnipBase64(const QString &base64Png, const QString &action, const QString &prompt = {},
+                                        int page = -1);
+    Q_INVOKABLE void clearPendingSnip();
+    Q_INVOKABLE void activateCitation(int bookId, int chapter, qint64 offset = 0, const QString &quote = {});
     Q_INVOKABLE void newConversation();
     Q_INVOKABLE void recap();
     Q_INVOKABLE void refreshRecap();
@@ -145,13 +172,21 @@ public:
     Q_INVOKABLE QVariantMap askEstimate() const;
     // Spoiler-safe, zero-cost starter prompts derived from what the reader has reached.
     Q_INVOKABLE QStringList suggestions() const;
-    // Strips Markdown image embeds and raw <img> tags before rendering LLM prose.
+    // Strips Markdown image embeds and raw <img> tags, and converts offline LaTeX math to rich HTML.
     Q_INVOKABLE QString sanitizeMarkdown(const QString &text) const { return cleanMarkdown(text); }
+    Q_INVOKABLE bool hasMath(const QString &text) const;
+    Q_INVOKABLE QString formatDisplayHtml(const QString &text, const QString &mathBlockBg = {}) const;
 
     // The book's text up to (chapter, offset), from its file (any thread).
     // When `limit > 0`, reads backward from `chapter` and stops once enough text is gathered.
     static QList<Chapter> textUpTo(const QString &path, const QString &format, int chapter, qint64 offset,
                                    qint64 limit = -1, std::shared_ptr<std::atomic_bool> cancel = {});
+    // The entire book's text from chapter/page 0 to the end (any thread).
+    static QList<Chapter> textOfBook(const QString &path, const QString &format, qint64 limit = -1,
+                                     std::shared_ptr<std::atomic_bool> cancel = {});
+    // Auto-detects "study" vs "fiction" from format, title, TOC entries, and opening text.
+    static QString detectReadingMode(const QString &format, const QString &title, const QStringList &tocTitles,
+                                     const QString &sampleText);
     // At most `limit` characters, the latest kept, with chapter headings.
     static QString joined(const QList<Chapter> &chapters, qint64 limit);
     static QString cleanMarkdown(const QString &text);
@@ -167,6 +202,11 @@ signals:
     void targetLanguageChanged();
     void recapChanged();
     void selectionChanged();
+    void readingModeChanged();
+    void scopeChanged();
+    void pendingSnipChanged();
+    void openAskRequested();
+    void openBookPassage(int bookId, int chapter, const QString &quote);
 
 private:
     struct Action {
@@ -174,10 +214,23 @@ private:
         QString text;
         int chapter = 0;
         qint64 offset = 0;
+        QByteArray snipPng;
+        QString snipAction;
+    };
+    struct ShelfBook {
+        int id = 0;
+        QString title;
+        QString format;
+        QString path;
     };
 
     void ensureTables();
     void loadBookState(int bookId);
+    QString loadSavedReadingMode(int bookId) const;
+    void saveReadingMode(int bookId, const QString &mode);
+    QString detectCurrentBookMode() const;
+    QList<ShelfBook> shelfBooksFor(int bookId, QString *labelOut = nullptr) const;
+    void refreshShelfLabel();
     void saveConversation(int bookId);
     void loadConversation(int bookId);
     bool loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qint64 pageStart, bool requireSameChapter);
@@ -193,8 +246,13 @@ private:
     void flushStreamedAnswer();
     void executeAction(const Action &action);
     qint64 soFarCharsEstimate() const;
+    qint64 wholeBookCharsEstimate() const;
     // Reads the book up to the reader's place on a worker thread, then `then`.
     void readSoFar(int chapter, qint64 offset, qint64 limit, std::function<void(const QList<Chapter> &)> then);
+    // Reads the entire book on a worker thread, then `then`.
+    void readWholeBook(qint64 limit, std::function<void(const QList<Chapter> &)> then);
+    void askShelf(const QString &asked);
+    void sendSnipRequest(const QByteArray &pngBytes, const QString &action, const QString &prompt, int page);
     void run(const QString &feature, const Ai::TextRequest &request, std::function<void(Ai::Reply *)> done = nullptr);
     bool checkBudget(const QString &feature, qint64 charsEstimate, bool fast, qint64 outputTokens = 400);
     qint64 localCharBudget(const QString &feature, bool fast, qint64 fallbackChars, double charsPerToken = 3.0) const;
@@ -205,6 +263,7 @@ private:
     QString formatProvenance(const Ai::Provider *provider, const Ai::Reply *reply) const;
     void runRecap(bool forceRefresh);
     void runWhosWho(bool forceRefresh);
+    bool wholeBookStudyActive() const { return studyMode() && m_scope != QLatin1String("upto"); }
 
     AiServices *m_ai;
     Reader *m_reader;
@@ -240,6 +299,12 @@ private:
     bool m_problemIsConfig = false;
     QString m_where;
     bool m_whereLocal = false;
+    QString m_readingMode = QStringLiteral("fiction");
+    QString m_scope = QStringLiteral("upto");
+    QString m_shelfLabel;
+    QByteArray m_pendingSnipPng;
+    QString m_pendingSnipUrl;
+    int m_pendingSnipPage = -1;
     QString m_targetLanguage;
     QString m_lastTranslateText;
     int m_lastTranslateChapter = 0;

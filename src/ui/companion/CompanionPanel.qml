@@ -89,7 +89,9 @@ FocusScope {
         if (which === "recap") {
             if (!ai.hasKey && !ai.hasLocal && !companion.recapLoaded)
                 return
-            if (!companion.recapLoaded || companion.recapChapter !== reader.chapter || companion.problem !== "")
+            const wholeStudy = companion.studyMode && companion.scope !== "upto"
+            const stale = wholeStudy ? (companion.recapChapter !== -1) : (companion.recapChapter !== reader.chapter)
+            if (!companion.recapLoaded || stale || companion.problem !== "")
                 companion.recap()
         } else if (which === "whoswho") {
             if (!ai.hasKey && !ai.hasLocal && !companion.peopleLoaded)
@@ -98,6 +100,29 @@ FocusScope {
         } else if (which === "ask") {
             focusComposer()
         }
+    }
+    function isMathSymbolBadge(name) {
+        const s = String(name || "").trim()
+        return companion.studyMode && s.length > 0 && s.length <= 4
+    }
+    function hasNonAsciiSymbol(name) {
+        return /[^\x00-\x7F]/.test(String(name || ""))
+    }
+    function renderProse(text) {
+        if (!text)
+            return ""
+        return companion.hasMath(text) ? companion.formatDisplayHtml(text, theme.fill) : companion.sanitizeMarkdown(text)
+    }
+    function proseFormat(text) {
+        return text && companion.hasMath(text) ? TextEdit.RichText : TextEdit.MarkdownText
+    }
+    function jumpOrOpenCitation(cite) {
+        if (!cite)
+            return
+        if (cite.bookId && cite.bookId > 0 && cite.bookId !== reader.bookId)
+            companion.activateCitation(cite.bookId, cite.chapter || 0, cite.offset || 0, cite.excerpt || "")
+        else
+            panel.jumpRequested(cite.chapter || 0, cite.offset || 0)
     }
     function placeLabel(chapter) {
         const ch = chapter >= 0 ? chapter : reader.chapter
@@ -170,7 +195,8 @@ FocusScope {
         Qt.callLater(talk.scrollToBottom)
     }
     function send() {
-        if (question.text.trim() === "" || companion.busy)
+        const hasText = question.text.trim() !== ""
+        if ((!hasText && !companion.hasPendingSnip) || companion.busy)
             return
         if (!ai.hasKey && !ai.hasLocal) {
             companionChoice.notNow = false
@@ -178,7 +204,12 @@ FocusScope {
         }
         const asked = question.text
         question.text = ""
-        sendText(asked)
+        clearConfirmOpen = false
+        if (panel.tab !== "ask")
+            panel.tab = "ask"
+        talk.stickToBottom = true
+        companion.ask(asked)
+        Qt.callLater(talk.scrollToBottom)
     }
     function askAboutSelection() {
         const subj = activeSelectionSubject.trim()
@@ -265,12 +296,37 @@ FocusScope {
     readonly property var tryPrompts: {
         void(reader.bookId); void(reader.chapter); void(reader.chapterTitle)
         void(companion.conversation); void(companion.people); void(companion.peopleLoaded)
+        void(companion.readingMode); void(companion.scope)
         return panel.open ? companion.suggestions() : []
     }
     readonly property var askEstimateInfo: {
         void(reader.chapter); void(reader.pageEnd); void(reader.progress)
         void(ai.preset); void(ai.localUrl); void(ai.localTextModel); void(ai.hasKey); void(ai.overrideCount)
+        void(companion.scope); void(companion.hasPendingSnip)
         return panel.open ? companion.askEstimate() : ({})
+    }
+    readonly property string effectiveTrustScope: {
+        if (panel.tab === "ask")
+            return companion.scope
+        if (companion.studyMode && companion.scope !== "upto")
+            return "book"
+        return "upto"
+    }
+    readonly property string trustScopeText: {
+        if (effectiveTrustScope === "shelf")
+            return companion.shelfLabel !== "" ? qsTr("Shelf · %1").arg(companion.shelfLabel) : qsTr("Across your library")
+        if (effectiveTrustScope === "book")
+            return qsTr("Whole document")
+        return qsTr("Up to page (%1%). Never ahead.").arg(Math.round(reader.progress * 100))
+    }
+    readonly property string trustScopeTooltip: {
+        if (effectiveTrustScope === "shelf")
+            return companion.shelfLabel !== ""
+                ? qsTr("Searches and cites passages across books in %1.").arg(companion.shelfLabel)
+                : qsTr("Searches and cites passages across your library.")
+        if (effectiveTrustScope === "book")
+            return qsTr("Reads the whole document, including proofs, results, and appendices.")
+        return qsTr("Knows the book up to your page (%1%). Never ahead.").arg(Math.round(reader.progress * 100))
     }
 
     // Seamless handoff straight from first-run onboarding into the user's pending question or tab.
@@ -311,6 +367,13 @@ FocusScope {
         function onBusyChanged() {
             if (!companion.busy && companion.feature === "ask" && talk.stickToBottom)
                 Qt.callLater(talk.scrollToBottom)
+        }
+        function onReadingModeChanged() {
+            if (companion.studyMode && panel.tab === "pictures")
+                panel.tab = "ask"
+        }
+        function onOpenAskRequested() {
+            panel.show("ask")
         }
     }
 
@@ -611,7 +674,7 @@ FocusScope {
         anchors.fill: parent
         spacing: 0
 
-        // --- Header block (title, provenance pill, segmented tabs, spoiler shield) ---
+        // --- Header block (title, Story|Study pill, segmented tabs, trust/scope & provider) ---
         ColumnLayout {
             Layout.fillWidth: true
             Layout.topMargin: 14
@@ -632,19 +695,77 @@ FocusScope {
                     font.weight: Font.DemiBold
                     elide: Text.ElideRight
                 }
-                ProviderPill {
+                // Quiet, compact Story | Study mode switcher pill in the Companion header.
+                Rectangle {
+                    id: modePill
                     visible: !panel.choosing
-                    where: panel.headerWhere
-                    text: panel.headerWhereLabel
-                    interactive: true
-                    onClicked: panel.openIntelligenceSettings()
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 450
-                    ToolTip.text: {
-                        const base = panel.tab === "pictures"
-                            ? (illustrator.available && illustrator.budgetOk ? illustrator.where : illustrator.unavailableReason)
-                            : ai.whereFor(panel.routeFeature)
-                        return base ? qsTr("%1 · Open Intelligence settings").arg(base) : qsTr("Open Intelligence settings")
+                    implicitHeight: 24
+                    implicitWidth: modeRow.implicitWidth + 4
+                    radius: Ui.radius(12, theme.radius)
+                    color: Ui.tint(theme.ink1, 0.06)
+
+                    Rectangle {
+                        x: companion.studyMode ? (2 + storyBtn.width) : 2
+                        y: 2
+                        width: companion.studyMode ? studyBtn.width : storyBtn.width
+                        height: parent.height - 4
+                        radius: Ui.radius(10, theme.radius)
+                        color: Ui.tint(theme.ink1, 0.14)
+                        Behavior on x { enabled: !theme.reducedMotion; NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                        Behavior on width { enabled: !theme.reducedMotion; NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+                    }
+                    Row {
+                        id: modeRow
+                        x: 2
+                        height: parent.height
+                        AbstractButton {
+                            id: storyBtn
+                            height: parent.height
+                            implicitWidth: storyLbl.implicitWidth + 14
+                            hoverEnabled: true
+                            focusPolicy: Qt.TabFocus
+                            Accessible.name: qsTr("Story mode")
+                            Accessible.checked: !companion.studyMode
+                            onClicked: companion.readingMode = "fiction"
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 500
+                            ToolTip.text: qsTr("Story mode · spoiler-free reading, recaps & characters")
+                            background: null
+                            contentItem: Label {
+                                id: storyLbl
+                                text: qsTr("Story")
+                                color: !companion.studyMode ? theme.ink1 : (storyBtn.hovered ? theme.ink2 : theme.ink3)
+                                font.pixelSize: 11
+                                font.weight: !companion.studyMode ? Font.Medium : Font.Normal
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                        AbstractButton {
+                            id: studyBtn
+                            height: parent.height
+                            implicitWidth: studyLbl.implicitWidth + 14
+                            hoverEnabled: true
+                            focusPolicy: Qt.TabFocus
+                            Accessible.name: qsTr("Study mode")
+                            Accessible.checked: companion.studyMode
+                            onClicked: companion.readingMode = "study"
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 500
+                            ToolTip.text: qsTr("Study mode · whole document, structured brief & notation glossary")
+                            background: null
+                            contentItem: Label {
+                                id: studyLbl
+                                text: qsTr("Study")
+                                color: companion.studyMode ? theme.ink1 : (studyBtn.hovered ? theme.ink2 : theme.ink3)
+                                font.pixelSize: 11
+                                font.weight: companion.studyMode ? Font.Medium : Font.Normal
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
                     }
                 }
                 IconButton {
@@ -716,8 +837,14 @@ FocusScope {
                 Layout.preferredHeight: 30
                 compact: true
                 model: {
-                    const tabs = [{ value: "ask", label: qsTr("Ask") }, { value: "recap", label: qsTr("Previously") },
-                                  { value: "whoswho", label: qsTr("Who's who") }, { value: "pictures", label: qsTr("Pictures") }]
+                    const tabs = companion.studyMode
+                        ? [{ value: "ask", label: qsTr("Ask") },
+                           { value: "recap", label: qsTr("Brief") },
+                           { value: "whoswho", label: qsTr("Glossary") }]
+                        : [{ value: "ask", label: qsTr("Ask") },
+                           { value: "recap", label: qsTr("Previously") },
+                           { value: "whoswho", label: qsTr("Who's who") },
+                           { value: "pictures", label: qsTr("Pictures") }]
                     if (panel.selectionFeature)
                         tabs.push({ value: "selection", label: panel.featureName })
                     return tabs
@@ -726,18 +853,44 @@ FocusScope {
                 onActivated: (value) => panel.showTab(value)
             }
 
-            // The spoiler shield: what the companion may know of the book.
+            // Honest scope / spoiler-shield line + quiet provider routing pill.
             RowLayout {
                 visible: !panel.choosing
                 Layout.fillWidth: true
-                spacing: 8
-                Glyph { Layout.preferredWidth: 14; Layout.preferredHeight: 14; stroke: 1.9; path: Icons.shieldCheck; color: theme.positive }
+                spacing: 6
+                Glyph {
+                    Layout.preferredWidth: 14
+                    Layout.preferredHeight: 14
+                    stroke: 1.9
+                    path: panel.effectiveTrustScope === "shelf" ? Icons.books
+                        : panel.effectiveTrustScope === "book" ? Icons.bookOpen
+                        : Icons.shieldCheck
+                    color: panel.effectiveTrustScope === "upto" ? theme.positive : theme.accentInk
+                }
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("Knows the book up to your page (%1%). Never ahead.").arg(Math.round(reader.progress * 100))
+                    text: panel.trustScopeText
                     color: theme.ink3
                     font.pixelSize: 12
                     elide: Text.ElideRight
+                    HoverHandler { id: trustHover }
+                    ToolTip.visible: trustHover.hovered
+                    ToolTip.delay: 450
+                    ToolTip.text: panel.trustScopeTooltip
+                }
+                ProviderPill {
+                    where: panel.headerWhere
+                    text: panel.headerWhereLabel
+                    interactive: true
+                    onClicked: panel.openIntelligenceSettings()
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 450
+                    ToolTip.text: {
+                        const base = panel.tab === "pictures"
+                            ? (illustrator.available && illustrator.budgetOk ? illustrator.where : illustrator.unavailableReason)
+                            : ai.whereFor(panel.routeFeature)
+                        return base ? qsTr("%1 · Open Intelligence settings").arg(base) : qsTr("Open Intelligence settings")
+                    }
                 }
             }
         }
@@ -820,7 +973,13 @@ FocusScope {
                         Layout.fillWidth: true
                         visible: !(companionChoice.notNow && !ai.hasKey && !ai.hasLocal)
                                  && companion.conversation.length === 0 && !(companion.feature === "ask" && companion.busy)
-                        text: qsTr("Ask anything about the book so far: who someone is, why something happened, or what a phrase means. Nothing past your page is read.")
+                        text: companion.scope === "shelf"
+                              ? qsTr("Synthesize ideas, compare methods, and trace citations across documents on this shelf.")
+                              : companion.scope === "book"
+                              ? (companion.studyMode
+                                 ? qsTr("Ask about equations, proofs, methods, or findings anywhere in this document — or snip any figure or formula.")
+                                 : qsTr("Ask anything across the entire book, including later chapters and appendices."))
+                              : qsTr("Ask anything about the book so far: who someone is, why something happened, or what a phrase means. Nothing past your page is read.")
                         color: theme.ink3
                         font.pixelSize: 13
                         wrapMode: Text.Wrap
@@ -834,6 +993,7 @@ FocusScope {
                             required property var modelData
                             required property int index
                             property bool copied: false
+                            readonly property bool hasUserSnip: !!turnBox.modelData.fromUser && !!turnBox.modelData.snipUrl && turnBox.modelData.snipUrl !== ""
                             Layout.fillWidth: true
                             spacing: 10
 
@@ -843,7 +1003,8 @@ FocusScope {
                                 onTriggered: turnBox.copied = false
                             }
 
-                            // User bubble (neutral 8%, right-aligned, max 280px) or Assistant reply (Inter 13px).
+                            // User bubble (neutral 8%, right-aligned, max 280px, optional local snip thumbnail)
+                            // or Assistant reply (Inter 13px with offline math support).
                             Item {
                                 Layout.fillWidth: true
                                 implicitHeight: bubbleRect.implicitHeight
@@ -858,27 +1019,64 @@ FocusScope {
                                     id: bubbleRect
                                     readonly property real maxBubbleW: Math.min(280, parent.width * 0.88)
                                     width: turnBox.modelData.fromUser
-                                           ? Math.min(maxBubbleW, Math.max(48, Math.ceil(userMetrics.advanceWidth) + 26))
+                                           ? (turnBox.hasUserSnip
+                                              ? maxBubbleW
+                                              : Math.min(maxBubbleW, Math.max(48, Math.ceil(userMetrics.advanceWidth) + 26)))
                                            : parent.width
                                     x: turnBox.modelData.fromUser ? Math.max(0, parent.width - width) : 0
-                                    implicitHeight: said.implicitHeight + (turnBox.modelData.fromUser ? 18 : 0)
+                                    implicitHeight: bubbleContent.implicitHeight + (turnBox.modelData.fromUser ? 18 : 0)
                                     height: implicitHeight
                                     radius: Ui.radius(12, theme.radius)
                                     color: turnBox.modelData.fromUser ? Ui.tint(theme.ink1, 0.08) : "transparent"
 
-                                    TextEdit {
-                                        id: said
+                                    Column {
+                                        id: bubbleContent
                                         x: turnBox.modelData.fromUser ? 12 : 0
                                         y: turnBox.modelData.fromUser ? 9 : 0
                                         width: parent.width - (turnBox.modelData.fromUser ? 24 : 0)
-                                        text: turnBox.modelData.fromUser ? turnBox.modelData.text : companion.sanitizeMarkdown(turnBox.modelData.text)
-                                        readOnly: true
-                                        selectByMouse: true
-                                        wrapMode: Text.Wrap
-                                        textFormat: turnBox.modelData.fromUser ? TextEdit.PlainText : TextEdit.MarkdownText
-                                        color: turnBox.modelData.fromUser ? theme.ink1 : theme.ink2
-                                        selectionColor: theme.accentSoft
-                                        font.pixelSize: 13
+                                        spacing: 8
+
+                                        // Trusted local user-snipped thumbnail (strictly from local snip attachment, never LLM Markdown).
+                                        Rectangle {
+                                            visible: turnBox.hasUserSnip
+                                            width: parent.width
+                                            height: visible
+                                                    ? (snipThumb.implicitWidth > 0 && snipThumb.implicitHeight > 0
+                                                       ? Math.min(136, Math.max(56, Math.round((width - 8) * snipThumb.implicitHeight / snipThumb.implicitWidth) + 8))
+                                                       : 84)
+                                                    : 0
+                                            radius: Ui.radius(8, theme.radius)
+                                            color: theme.drawer
+                                            border.width: 1
+                                            border.color: theme.hairline
+                                            clip: true
+
+                                            Image {
+                                                id: snipThumb
+                                                anchors.fill: parent
+                                                anchors.margins: 4
+                                                source: turnBox.hasUserSnip ? turnBox.modelData.snipUrl : ""
+                                                fillMode: Image.PreserveAspectFit
+                                                smooth: true
+                                            }
+                                        }
+
+                                        TextEdit {
+                                            id: said
+                                            width: parent.width
+                                            text: turnBox.modelData.fromUser
+                                                  ? turnBox.modelData.text
+                                                  : panel.renderProse(turnBox.modelData.text)
+                                            readOnly: true
+                                            selectByMouse: true
+                                            wrapMode: Text.Wrap
+                                            textFormat: turnBox.modelData.fromUser
+                                                        ? TextEdit.PlainText
+                                                        : panel.proseFormat(turnBox.modelData.text)
+                                            color: turnBox.modelData.fromUser ? theme.ink1 : theme.ink2
+                                            selectionColor: theme.accentSoft
+                                            font.pixelSize: 13
+                                        }
                                     }
                                 }
                             }
@@ -892,8 +1090,10 @@ FocusScope {
                                     delegate: JumpChip {
                                         required property var modelData
                                         text: modelData.label || panel.placeLabel(modelData.chapter)
-                                        tipText: modelData.excerpt || ""
-                                        onClicked: panel.jumpRequested(modelData.chapter, modelData.offset || 0)
+                                        tipText: modelData.bookTitle
+                                                 ? (modelData.bookTitle + (modelData.excerpt ? " — " + modelData.excerpt : ""))
+                                                 : (modelData.excerpt || "")
+                                        onClicked: panel.jumpOrOpenCitation(modelData)
                                     }
                                 }
                             }
@@ -947,8 +1147,8 @@ FocusScope {
                         readOnly: true
                         selectByMouse: true
                         wrapMode: Text.Wrap
-                        textFormat: TextEdit.MarkdownText
-                        text: companion.sanitizeMarkdown(companion.answer)
+                        textFormat: panel.proseFormat(companion.answer)
+                        text: panel.renderProse(companion.answer)
                         color: theme.ink2
                         selectionColor: theme.accentSoft
                         font.pixelSize: 13
@@ -962,8 +1162,10 @@ FocusScope {
                             delegate: JumpChip {
                                 required property var modelData
                                 text: modelData.label || panel.placeLabel(modelData.chapter)
-                                tipText: modelData.excerpt || ""
-                                onClicked: panel.jumpRequested(modelData.chapter, modelData.offset || 0)
+                                tipText: modelData.bookTitle
+                                         ? (modelData.bookTitle + (modelData.excerpt ? " — " + modelData.excerpt : ""))
+                                         : (modelData.excerpt || "")
+                                onClicked: panel.jumpOrOpenCitation(modelData)
                             }
                         }
                     }
@@ -1116,14 +1318,14 @@ FocusScope {
                     return ""
                 }
 
-                // Recap header: "WHERE YOU LEFT OFF · 3 DAYS AGO" + chapter & progress.
+                // Recap / Study Brief header.
                 ColumnLayout {
                     Layout.fillWidth: true
                     visible: proseColumn.isRecap
                     spacing: 3
                     Label {
                         Layout.fillWidth: true
-                        text: panel.leftOffLabel()
+                        text: companion.studyMode ? qsTr("Study brief") : panel.leftOffLabel()
                         color: theme.ink4
                         font.pixelSize: 11
                         font.weight: Font.DemiBold
@@ -1132,7 +1334,9 @@ FocusScope {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("%1 · %2%").arg(panel.placeLabel(reader.chapter)).arg(Math.round(reader.progress * 100))
+                        text: companion.studyMode && companion.scope !== "upto"
+                              ? (reader.title ? qsTr("Whole document · %1").arg(reader.title) : qsTr("Whole document"))
+                              : qsTr("%1 · %2%").arg(panel.placeLabel(reader.chapter)).arg(Math.round(reader.progress * 100))
                         color: theme.ink2
                         font.pixelSize: 13
                         font.weight: Font.Medium
@@ -1206,7 +1410,7 @@ FocusScope {
                     }
                 }
 
-                // Clean re-trigger prompt if user stopped Recap before it finished.
+                // Clean re-trigger prompt if user stopped Recap/Brief before it finished.
                 ColumnLayout {
                     Layout.fillWidth: true
                     visible: proseColumn.isRecap && (ai.hasKey || ai.hasLocal)
@@ -1214,7 +1418,9 @@ FocusScope {
                     spacing: 10
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("Catch up on the story so far without reading ahead of your page.")
+                        text: companion.studyMode
+                              ? qsTr("Distill core claims, methodology, key findings, and limitations from this document.")
+                              : qsTr("Catch up on the story so far without reading ahead of your page.")
                         color: theme.ink3
                         font.pixelSize: 13
                         wrapMode: Text.Wrap
@@ -1223,7 +1429,7 @@ FocusScope {
                     TextButton {
                         size: "compact"
                         primary: true
-                        text: qsTr("Write recap")
+                        text: companion.studyMode ? qsTr("Write brief") : qsTr("Write recap")
                         onClicked: companion.recap()
                     }
                 }
@@ -1235,7 +1441,8 @@ FocusScope {
 
                 Prose {
                     visible: proseColumn.displayAnswer !== ""
-                    text: companion.sanitizeMarkdown(proseColumn.displayAnswer)
+                    textFormat: panel.proseFormat(proseColumn.displayAnswer)
+                    text: panel.renderProse(proseColumn.displayAnswer)
                 }
                 Working { active: proseColumn.tabBusy }
                 ErrorCard {
@@ -1249,9 +1456,11 @@ FocusScope {
                 ProvenanceRow {
                     visible: !proseColumn.tabBusy && proseColumn.displayAnswer !== "" && proseColumn.displayWhere !== ""
                     local: proseColumn.displayWhereLocal
-                    text: proseColumn.isRecap && companion.recapChapter >= 0 && companion.recapChapter !== reader.chapter
-                          ? qsTr("Up to %1 · %2").arg(panel.placeLabel(companion.recapChapter)).arg(proseColumn.displayWhere)
-                          : proseColumn.displayWhere
+                    text: proseColumn.isRecap && companion.studyMode && companion.recapChapter < 0
+                          ? qsTr("Whole document · %1").arg(proseColumn.displayWhere)
+                          : (proseColumn.isRecap && companion.recapChapter >= 0 && companion.recapChapter !== reader.chapter
+                             ? qsTr("Up to %1 · %2").arg(panel.placeLabel(companion.recapChapter)).arg(proseColumn.displayWhere)
+                             : proseColumn.displayWhere)
                 }
 
                 Flow {
@@ -1278,7 +1487,9 @@ FocusScope {
                         text: qsTr("Save as note")
                         onClicked: {
                             const quote = proseColumn.isRecap
-                                ? qsTr("Previously… (%1)").arg(panel.placeLabel(reader.chapter))
+                                ? (companion.studyMode
+                                   ? qsTr("Study brief (%1)").arg(reader.title || panel.placeLabel(reader.chapter))
+                                   : qsTr("Previously… (%1)").arg(panel.placeLabel(reader.chapter)))
                                 : (panel.activeSelectionSubject || panel.placeLabel(reader.chapter))
                             panel.saveAsNote(quote, proseColumn.displayAnswer)
                         }
@@ -1779,7 +1990,9 @@ FocusScope {
                     spacing: 8
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("No named characters found up to %1.").arg(panel.placeLabel(reader.chapter))
+                        text: companion.studyMode
+                              ? qsTr("No symbols, acronyms, or glossary terms found yet.")
+                              : qsTr("No named characters found up to %1.").arg(panel.placeLabel(reader.chapter))
                         color: theme.ink3
                         font.pixelSize: 13
                         wrapMode: Text.Wrap
@@ -1801,7 +2014,9 @@ FocusScope {
                     spacing: 10
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("Build a spoiler-free cast list of everyone introduced up to %1.").arg(panel.placeLabel(reader.chapter))
+                        text: companion.studyMode
+                              ? qsTr("Extract mathematical symbols, acronyms, and key terms with jump links to where each is first defined.")
+                              : qsTr("Build a spoiler-free cast list of everyone introduced up to %1.").arg(panel.placeLabel(reader.chapter))
                         color: theme.ink3
                         font.pixelSize: 13
                         wrapMode: Text.Wrap
@@ -1810,7 +2025,7 @@ FocusScope {
                     TextButton {
                         size: "compact"
                         primary: true
-                        text: qsTr("Scan characters")
+                        text: companion.studyMode ? qsTr("Build glossary") : qsTr("Scan characters")
                         onClicked: companion.whosWho()
                     }
                 }
@@ -1824,9 +2039,11 @@ FocusScope {
                     spacing: 8
                     ProvenanceRow {
                         local: companion.peopleWhereLocal
+                        readonly property bool isWholeDoc: companion.studyMode && companion.peopleChapter < 0
                         readonly property string place: panel.placeLabel(companion.peopleChapter >= 0 ? companion.peopleChapter : reader.chapter)
-                        text: companion.peopleWhere ? qsTr("Up to %1 · %2").arg(place).arg(companion.peopleWhere)
-                                                    : qsTr("Up to %1").arg(place)
+                        text: isWholeDoc
+                              ? (companion.peopleWhere ? qsTr("Whole document · %1").arg(companion.peopleWhere) : qsTr("Whole document"))
+                              : (companion.peopleWhere ? qsTr("Up to %1 · %2").arg(place).arg(companion.peopleWhere) : qsTr("Up to %1").arg(place))
                     }
                     TextButton {
                         size: "compact"
@@ -1841,6 +2058,8 @@ FocusScope {
                 id: personItem
                 required property var modelData
                 required property int index
+                readonly property bool symbolBadge: panel.isMathSymbolBadge(personItem.modelData.name)
+                readonly property bool serifSymbol: symbolBadge && panel.hasNonAsciiSymbol(personItem.modelData.name)
                 width: ListView.view.width
                 spacing: 0
 
@@ -1856,14 +2075,22 @@ FocusScope {
                         Layout.alignment: Qt.AlignTop
                         Layout.preferredWidth: 32
                         Layout.preferredHeight: 32
-                        radius: 16
+                        radius: companion.studyMode ? Ui.radius(8, theme.radius) : 16
                         color: panel.personTint(personItem.modelData.name)
                         Label {
                             anchors.centerIn: parent
-                            text: panel.personInitials(personItem.modelData.name)
+                            width: parent.width - 4
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                            text: personItem.symbolBadge
+                                  ? String(personItem.modelData.name || "").trim()
+                                  : panel.personInitials(personItem.modelData.name)
                             color: theme.ink1
-                            font.pixelSize: 11
-                            font.weight: Font.DemiBold
+                            font.family: personItem.serifSymbol ? "Literata" : Qt.application.font.family
+                            font.italic: personItem.serifSymbol
+                            font.pixelSize: personItem.serifSymbol ? 15
+                                          : (personItem.symbolBadge && String(personItem.modelData.name || "").trim().length >= 3 ? 9 : 11)
+                            font.weight: personItem.serifSymbol ? Font.Medium : Font.DemiBold
                         }
                     }
 
@@ -1880,7 +2107,10 @@ FocusScope {
                         }
                         Label {
                             Layout.fillWidth: true
-                            text: personItem.modelData.who
+                            readonly property string defRaw: personItem.modelData.who || ""
+                            readonly property bool defMath: companion.hasMath(defRaw)
+                            textFormat: defMath ? Text.RichText : Text.PlainText
+                            text: defMath ? companion.formatDisplayHtml(defRaw, theme.fill) : defRaw
                             color: theme.ink3
                             font.pixelSize: 13
                             wrapMode: Text.Wrap
@@ -1889,15 +2119,17 @@ FocusScope {
                         JumpChip {
                             Layout.topMargin: 3
                             visible: personItem.modelData.chapterIndex !== undefined && personItem.modelData.chapterIndex >= 0
-                            text: qsTr("First seen: %1").arg(personItem.modelData.chapter || panel.placeLabel(personItem.modelData.chapterIndex))
-                            tipText: qsTr("Jump to first appearance")
+                            text: (companion.studyMode ? qsTr("First defined: %1") : qsTr("First seen: %1"))
+                                  .arg(personItem.modelData.chapter || panel.placeLabel(personItem.modelData.chapterIndex))
+                            tipText: companion.studyMode ? qsTr("Jump to where this first appears") : qsTr("Jump to first appearance")
                             onClicked: panel.jumpRequested(personItem.modelData.chapterIndex, personItem.modelData.offset || 0)
                         }
                         Label {
                             Layout.fillWidth: true
                             visible: !(personItem.modelData.chapterIndex !== undefined && personItem.modelData.chapterIndex >= 0)
                                      && !!personItem.modelData.chapter
-                            text: qsTr("First seen: %1").arg(personItem.modelData.chapter || "")
+                            text: (companion.studyMode ? qsTr("First defined: %1") : qsTr("First seen: %1"))
+                                  .arg(personItem.modelData.chapter || "")
                             color: theme.ink4
                             font.pixelSize: 11
                         }
@@ -1927,19 +2159,94 @@ FocusScope {
             Layout.fillWidth: true
             Layout.leftMargin: 16
             Layout.rightMargin: 16
-            Layout.topMargin: 12
-            Layout.bottomMargin: 16
-            spacing: 6
+            Layout.topMargin: 10
+            Layout.bottomMargin: 14
+            spacing: 7
+
+            // Sleek, minimal 3-option scope pill in the Ask tab.
+            Segmented {
+                visible: panel.tab === "ask"
+                Layout.fillWidth: true
+                Layout.preferredHeight: 26
+                compact: true
+                model: [
+                    { value: "upto", label: qsTr("Up to here") },
+                    { value: "book", label: qsTr("Whole book") },
+                    { value: "shelf", label: qsTr("This shelf") }
+                ]
+                current: companion.scope
+                onActivated: (value) => companion.scope = value
+            }
+
+            // Quiet pending visual snip attachment bar when waiting for a custom question.
+            Rectangle {
+                visible: companion.hasPendingSnip
+                Layout.fillWidth: true
+                implicitHeight: pendingSnipRow.implicitHeight + 12
+                radius: Ui.radius(9, theme.radius)
+                color: Ui.tint(theme.ink1, 0.04)
+                border.width: 1
+                border.color: theme.hairline
+                RowLayout {
+                    id: pendingSnipRow
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 6
+                    anchors.topMargin: 6
+                    anchors.bottomMargin: 6
+                    spacing: 8
+                    Rectangle {
+                        Layout.preferredWidth: 44
+                        Layout.preferredHeight: 32
+                        radius: Ui.radius(5, theme.radius)
+                        color: theme.drawer
+                        border.width: 1
+                        border.color: theme.hairline
+                        clip: true
+                        Image {
+                            anchors.fill: parent
+                            anchors.margins: 2
+                            source: companion.pendingSnipUrl
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: companion.pendingSnipPage >= 0
+                              ? qsTr("Snipped region · %1").arg(panel.placeLabel(companion.pendingSnipPage))
+                              : qsTr("Snipped region attached")
+                        color: theme.ink2
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                        elide: Text.ElideRight
+                    }
+                    IconButton {
+                        implicitWidth: 24
+                        implicitHeight: 24
+                        glyph: Icons.close
+                        tone: theme.ink3
+                        tip: qsTr("Remove snipped image")
+                        onClicked: companion.clearPendingSnip()
+                    }
+                }
+            }
 
             // Quiet pre-send cost transparency line while composing.
             ProvenanceRow {
-                visible: question.text.trim() !== "" && !!panel.askEstimateInfo.where && (ai.hasKey || ai.hasLocal)
+                visible: (question.text.trim() !== "" || companion.hasPendingSnip) && !!panel.askEstimateInfo.where && (ai.hasKey || ai.hasLocal)
                 local: !!panel.askEstimateInfo.local
                 text: !panel.askEstimateInfo.where ? ""
                     : panel.askEstimateInfo.local
-                      ? qsTr("%1 · passages found in the book so far").arg(panel.askEstimateInfo.where)
-                      : qsTr("%1 · about %Ln words · %2", "", panel.askEstimateInfo.words)
-                            .arg(panel.askEstimateInfo.where).arg(panel.formatCents(panel.askEstimateInfo.cost))
+                      ? (companion.scope === "shelf"
+                         ? qsTr("%1 · passages across this shelf").arg(panel.askEstimateInfo.where)
+                         : companion.scope === "book"
+                         ? qsTr("%1 · passages across the whole book").arg(panel.askEstimateInfo.where)
+                         : qsTr("%1 · passages found in the book so far").arg(panel.askEstimateInfo.where))
+                      : (companion.scope === "shelf"
+                         ? qsTr("%1 · matching passages across this shelf · %2").arg(panel.askEstimateInfo.where).arg(panel.formatCents(panel.askEstimateInfo.cost))
+                         : qsTr("%1 · about %Ln words · %2", "", panel.askEstimateInfo.words)
+                               .arg(panel.askEstimateInfo.where).arg(panel.formatCents(panel.askEstimateInfo.cost)))
             }
 
             Rectangle {
@@ -2006,6 +2313,12 @@ FocusScope {
                                 visible: question.text === ""
                                 text: (!ai.hasKey && !ai.hasLocal)
                                       ? qsTr("Set up a model to ask about the book…")
+                                      : companion.hasPendingSnip
+                                      ? qsTr("Ask about this snipped region…")
+                                      : companion.scope === "shelf"
+                                      ? (companion.shelfLabel !== "" ? qsTr("Ask across %1…").arg(companion.shelfLabel) : qsTr("Ask across this shelf…"))
+                                      : companion.scope === "book"
+                                      ? (companion.studyMode ? qsTr("Ask about this document…") : qsTr("Ask about the whole book…"))
                                       : qsTr("Ask about the book so far…")
                                 color: theme.ink4
                                 font: question.font
@@ -2024,7 +2337,7 @@ FocusScope {
                         implicitHeight: 28
                         hoverEnabled: true
                         focusPolicy: Qt.TabFocus
-                        enabled: stopping || (question.text.trim() !== "" && !companion.busy)
+                        enabled: stopping || ((question.text.trim() !== "" || companion.hasPendingSnip) && !companion.busy)
                         opacity: enabled ? 1 : 0.35
                         Accessible.name: stopping ? qsTr("Stop") : qsTr("Ask")
                         onClicked: stopping ? companion.stop() : panel.send()

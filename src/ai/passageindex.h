@@ -5,6 +5,7 @@
 #include <QMutex>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <functional>
 #include <memory>
@@ -70,13 +71,15 @@ public:
         qint64 end = 0;
         double score = 0;
     };
-    // Every stored passage vector for `model`, in every book, ranked by
-    // closeness to `asked`: the best `count` at or above `minCosine`.
+    // Every stored passage vector for `model`, in every book (or only `bookIds`
+    // when non-empty), ranked by closeness to `asked`: the best `count` at or above `minCosine`.
     static QList<LibraryHit> rankLibrary(const QString &dbPath, const QString &model, const QList<float> &asked,
-                                         int count, double minCosine = minSemanticScore);
-    // Searches every book prepared for the current embedder (only the
-    // question is embedded); `done` gets the hits, or none without one.
-    void searchLibrary(const QString &query, int count, std::function<void(const QList<LibraryHit> &)> done);
+                                         int count, double minCosine = minSemanticScore,
+                                         const QSet<int> &bookIds = {});
+    // Searches every book prepared for the current embedder (or only `bookIds` when non-empty;
+    // only the question is embedded); `done` gets the hits, or none without one.
+    void searchLibrary(const QString &query, int count, std::function<void(const QList<LibraryHit> &)> done,
+                       const QSet<int> &bookIds = {});
     // How many books have passages with vectors for the current embedder.
     int booksPrepared() const;
     void cancel();
@@ -112,6 +115,8 @@ private:
     std::function<void(const QString &)> m_done;
     QPointer<Ai::Reply> m_reply;
     QPointer<Ai::Reply> m_searchReply;
+    QPointer<Ai::Reply> m_libraryReply;
     int m_generation = 0;
     int m_searchGeneration = 0;
+    int m_libraryGeneration = 0;
 };
