@@ -66,6 +66,7 @@ FocusScope {
     readonly property alias marksPanel: marksPanel
     readonly property alias companionPanel: companionPanel
     readonly property alias noteEditor: noteEditor
+    readonly property alias pdfSurface: pdfSurface
     // Companion docks beside the page on wide screens without a blocking scrim (04_companion).
     readonly property bool companionDocked: companionPanel.open && view.width >= 860
     readonly property real companionDockWidth: companionDocked ? Math.min(384, companionPanel.width) : 0
@@ -236,6 +237,8 @@ FocusScope {
         decoratedChapter = -1
         jumpPillVisible = false
         lightbox.close()
+        pdfSurface.cancelSnip()
+        pdfSurface.closePeek()
         js("clothbound.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
            + JSON.stringify(style()) + ")")
     }
@@ -248,6 +251,8 @@ FocusScope {
         listenOffer.open = false
         closePanels()
         lightbox.close()
+        pdfSurface.cancelSnip()
+        pdfSurface.closePeek()
         jumpPillVisible = false
         selectionBar.visible = false
         view.selection = ({})
@@ -257,6 +262,25 @@ FocusScope {
             pdfSurface.clearSelection()
         else if (surfaceReady && web)
             js("clothbound.close()")
+    }
+    function toggleSnipMode() {
+        if (!pdf || !reader.open)
+            return
+        const next = !pdfSurface.snipMode
+        if (next) {
+            selectionBar.visible = false
+            chromeShown = false
+        }
+        pdfSurface.snipMode = next
+        if (!next)
+            focusPage()
+    }
+    function copyCitation(style) {
+        const text = reader.formatCitation(style)
+        if (text === "")
+            return
+        reader.copyText(text)
+        toast.show(style === "bibtex" ? qsTr("Copied BibTeX") : qsTr("Copied APA"))
     }
     // Turning pages by hand while listening leaves the voice where it is;
     // "Back to the voice" brings the page back to it.
@@ -335,6 +359,16 @@ FocusScope {
         // Close ListenOffer on Esc without cancelling an active voice download.
         if (listenOffer.open) {
             listenOffer.open = false
+            focusPage()
+            return
+        }
+        if (pdf && pdfSurface.snipMode) {
+            pdfSurface.cancelSnip()
+            focusPage()
+            return
+        }
+        if (pdf && pdfSurface.peekOpen) {
+            pdfSurface.closePeek()
             focusPage()
             return
         }
@@ -798,6 +832,7 @@ FocusScope {
         else if (key === "b" || key === "B") toggleBookmark()
         else if (key === "m" || key === "M") showMarks()
         else if (key === "c" || key === "C") showCompanion("ask")
+        else if ((key === "x" || key === "X") && pdf) toggleSnipMode()
         else if (key === "v" || key === "V") showVoices()
         else if (key === "/") searchBar.show()
         else if (key === "n" && bookSearch.count > 0) searchBar.next()
@@ -850,6 +885,14 @@ FocusScope {
                     return
                 pageMenu.place = place
                 pageMenu.popup(pdfSurface, x, y)
+            }
+            onSnipActionTriggered: (action, base64Png, pageIndex, prompt) => {
+                view.showCompanion("ask")
+                if (typeof companion.askAboutSnipBase64 === "function") {
+                    companion.askAboutSnipBase64(base64Png, action, prompt || "", pageIndex)
+                } else {
+                    toast.show(qsTr("Snip captured (p. %1)").arg(pageIndex + 1))
+                }
             }
         }
 
@@ -927,7 +970,8 @@ FocusScope {
             id: pointerWatch
             onPointChanged: {
                 const px = point.position.x, py = point.position.y
-                if (readingStage.lastPointerX >= 0 && !view.modalPanelOpen && !narration.active && !lightbox.open) {
+                if (readingStage.lastPointerX >= 0 && !view.modalPanelOpen && !narration.active && !lightbox.open
+                    && !(view.pdf && (pdfSurface.snipMode || pdfSurface.peekOpen))) {
                     const dist = Math.hypot(px - readingStage.lastPointerX, py - readingStage.lastPointerY)
                     if (dist >= 6)
                         view.showChrome()
@@ -1017,6 +1061,117 @@ FocusScope {
                     active: contents.open
                     tip: qsTr("Contents (T)")
                     onClicked: contents.open ? contents.close() : view.showContents()
+                }
+
+                // Quiet detected DOI / arXiv pill for academic PDFs: one click copies BibTeX / APA.
+                AbstractButton {
+                    id: citeBadge
+                    visible: reader.open && (reader.detectedDoi !== "" || reader.detectedArxiv !== "")
+                    anchors.verticalCenter: parent.verticalCenter
+                    implicitHeight: 26
+                    implicitWidth: Math.min(180, citeBadgeRow.implicitWidth + 16)
+                    hoverEnabled: true
+                    focusPolicy: Qt.NoFocus
+                    Accessible.name: qsTr("Copy citation")
+                    onClicked: citeMenu.popup(citeBadge, 0, citeBadge.height + 6)
+                    background: Rectangle {
+                        radius: Ui.radius(13, theme.radius)
+                        color: citeBadge.pressed || citeMenu.opened ? Ui.tint(view.look.link, 0.16)
+                             : citeBadge.hovered ? Ui.tint(view.look.fg, 0.09) : Ui.tint(view.look.fg, 0.05)
+                        border.width: 1
+                        border.color: citeMenu.opened ? Ui.tint(view.look.link, 0.45) : view.look.line
+                    }
+                    contentItem: Item {
+                        Row {
+                            id: citeBadgeRow
+                            anchors.centerIn: parent
+                            spacing: 5
+                            Glyph {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 12
+                                height: 12
+                                stroke: 1.9
+                                path: Icons.copy
+                                color: citeMenu.opened ? view.look.link : view.look.muted
+                            }
+                            Label {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: reader.detectedArxiv !== "" ? reader.detectedArxiv : ("DOI " + reader.detectedDoi)
+                                textFormat: Text.PlainText
+                                color: view.look.inkSoft || view.look.fg
+                                font.pixelSize: 12
+                                font.weight: Font.Medium
+                                font.features: ({ "tnum": 1 })
+                                elide: Text.ElideRight
+                                width: Math.min(implicitWidth, 146)
+                            }
+                        }
+                    }
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                    ToolTip.visible: hovered && !citeMenu.opened
+                    ToolTip.text: qsTr("Copy citation (BibTeX / APA)")
+                    ToolTip.delay: 500
+                }
+            }
+
+            Menu {
+                id: citeMenu
+                topPadding: 6
+                bottomPadding: 6
+                background: Rectangle {
+                    implicitWidth: 248
+                    radius: Math.min(10, theme.radius)
+                    color: view.look.popover
+                    border.color: view.look.line
+                    Rectangle {
+                        z: -1
+                        anchors.fill: parent
+                        anchors.topMargin: 4
+                        anchors.bottomMargin: -4
+                        radius: parent.radius
+                        color: "black"
+                        opacity: view.look.dark ? 0.35 : 0.12
+                    }
+                }
+                MenuItem {
+                    text: qsTr("Copy BibTeX")
+                    onTriggered: view.copyCitation("bibtex")
+                }
+                MenuItem {
+                    text: qsTr("Copy APA")
+                    onTriggered: view.copyCitation("apa")
+                }
+                MenuSeparator { visible: reader.detectedDoi !== "" || reader.detectedArxiv !== "" }
+                MenuItem {
+                    visible: reader.detectedDoi !== ""
+                    height: visible ? implicitHeight : 0
+                    text: qsTr("Copy DOI")
+                    onTriggered: {
+                        reader.copyText(reader.detectedDoi)
+                        toast.show(qsTr("Copied DOI"))
+                    }
+                }
+                MenuItem {
+                    visible: reader.detectedArxiv !== ""
+                    height: visible ? implicitHeight : 0
+                    text: qsTr("Copy %1").arg(reader.detectedArxiv)
+                    onTriggered: {
+                        reader.copyText(reader.detectedArxiv)
+                        toast.show(qsTr("Copied arXiv ID"))
+                    }
+                }
+                MenuSeparator { visible: reader.detectedDoi !== "" || reader.detectedArxiv !== "" }
+                MenuItem {
+                    visible: reader.detectedDoi !== ""
+                    height: visible ? implicitHeight : 0
+                    text: qsTr("Open on doi.org")
+                    onTriggered: reader.openExternal("https://doi.org/" + reader.detectedDoi)
+                }
+                MenuItem {
+                    visible: reader.detectedArxiv !== ""
+                    height: visible ? implicitHeight : 0
+                    text: qsTr("Open on arXiv")
+                    onTriggered: reader.openExternal("https://arxiv.org/abs/" + reader.detectedArxiv.replace(/^arXiv:/i, ""))
                 }
             }
 
@@ -1127,6 +1282,17 @@ FocusScope {
                         tip: narration.active ? qsTr("Stop listening (⇧P)") : qsTr("Listen (P)")
                         onClicked: view.listen()
                     }
+                }
+                IconButton {
+                    visible: reader.isPdf
+                    implicitWidth: 32
+                    implicitHeight: 30
+                    tabFocusable: false
+                    look: view.look
+                    glyph: "M4 8.5 V5.5 Q4 4 5.5 4 H8.5 M15.5 4 H18.5 Q20 4 20 5.5 V8.5 M20 15.5 V18.5 Q20 20 18.5 20 H15.5 M8.5 20 H5.5 Q4 20 4 18.5 V15.5 M12 9 V15 M9 12 H15"
+                    active: pdfSurface.snipMode
+                    tip: qsTr("Snip region (X)")
+                    onClicked: view.toggleSnipMode()
                 }
                 IconButton {
                     implicitWidth: 32
@@ -1800,7 +1966,7 @@ FocusScope {
         onTriggered: {
             if (!chromeHover.hovered && !scrubberHover.hovered && !progressScrubber.dragging
                 && !view.propBool(listenBar, "menuOpen") && !listenOffer.open
-                && !readerMore.opened && !pageMenu.opened && !selectionBar.visible && !keysStrip.wanted)
+                && !readerMore.opened && !citeMenu.opened && !pageMenu.opened && !selectionBar.visible && !keysStrip.wanted)
                 view.chromeShown = false
         }
     }
@@ -1967,6 +2133,21 @@ FocusScope {
                 else
                     illustrator.illustrate("", pageMenu.place.chapter, pageMenu.place.offset + 600)
             }
+        }
+        MenuSeparator {}
+        MenuItem {
+            visible: view.pdf
+            height: visible ? implicitHeight : 0
+            text: qsTr("Snip region…") + "\tX"
+            onTriggered: view.toggleSnipMode()
+        }
+        MenuItem {
+            text: qsTr("Copy BibTeX")
+            onTriggered: view.copyCitation("bibtex")
+        }
+        MenuItem {
+            text: qsTr("Copy APA")
+            onTriggered: view.copyCitation("apa")
         }
         MenuSeparator {}
         MenuItem {
@@ -2289,11 +2470,12 @@ FocusScope {
 
     // --- Keys ----------------------------------------------------------------
     readonly property bool modalOpen: win.helpVisible || settingsView.open || welcome.open || (typeof commandPalette !== "undefined" && commandPalette.open)
-    readonly property bool keys: reader.open && visible && !modalPanelOpen && !modalOpen && !win.typing && !lightbox.open
+    readonly property bool keys: reader.open && visible && !modalPanelOpen && !modalOpen && !win.typing && !lightbox.open && !(pdf && pdfSurface.snipMode)
     // Listening keys work with a panel open too, unless a field is taking typing.
     readonly property bool typing: win.typing
     readonly property bool listenKeys: reader.open && visible && !modalOpen && !win.typing && !lightbox.open
     Shortcut { sequence: "C"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: companionPanel.open ? companionPanel.close() : view.showCompanion("ask") }
+    Shortcut { sequence: "X"; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && view.pdf && !view.modalPanelOpen && !view.modalOpen && !win.typing && !lightbox.open; onActivated: view.toggleSnipMode() }
     Shortcut { sequence: "Right"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.prev() : view.next() }
     Shortcut { sequence: "Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.next() : view.prev() }
     Shortcut { sequences: ["PgDown", "L", "J", "Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.next() }
