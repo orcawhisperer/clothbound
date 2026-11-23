@@ -106,9 +106,11 @@ if command -v xvfb-run >/dev/null 2>&1; then
 else
     platform=offscreen
     launch() { "$@"; }
-    echo "bin/shot: no xvfb-run, so book pages render blank (install xorg-server-xvfb)" >&2
+    [ -n "${DOGEAR_SHOT_QUIET:-}" ] || echo "bin/shot: no xvfb-run, so book pages render blank (install xorg-server-xvfb)" >&2
 fi
-launch env -u GEMINI_API_KEY -u WAYLAND_DISPLAY HOME="$home" XDG_CONFIG_HOME="$home/.config" \
+# A private session bus, so a shot can never reach the real keyring (your
+# Gemini key, and through it your own voices) or other running apps.
+launch dbus-run-session -- env -u GEMINI_API_KEY -u WAYLAND_DISPLAY HOME="$home" XDG_CONFIG_HOME="$home/.config" \
     XDG_DATA_HOME="$home/.local/share" XDG_CACHE_HOME="$home/.cache" XDG_RUNTIME_DIR="$home/runtime" \
     QT_QPA_PLATFORM="$platform" QT_FORCE_STDERR_LOGGING=1 QT_SCALE_FACTOR=1 \
     "$APP" --screenshot "$OUT/$name.png" --run "win.width=${size%x*}; win.height=${size#*x}" "$@" \

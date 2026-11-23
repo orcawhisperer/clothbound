@@ -16,6 +16,8 @@ TEXT="readerLoader.item.goTo({chapter: 6, instant: true})"
 R="readerLoader.item"
 
 failed=0
+export DOGEAR_SHOT_QUIET=1
+command -v xvfb-run >/dev/null 2>&1 || echo "bin/shots: no xvfb-run, so book pages render blank (install xorg-server-xvfb)" >&2
 shoot() {
     name="$1"; shift
     "$SHOT" "$prefix-$name" "$@" >/dev/null || { echo "FAILED: $prefix-$name (see build/shots/$prefix-$name.log)" >&2; failed=1; }
