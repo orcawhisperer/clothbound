@@ -1,0 +1,124 @@
+#!/bin/sh
+# A screenshot of Dogear as someone would see it, taken offscreen in a
+# throwaway profile so it never touches your library, theme or settings.
+#
+#   bin/shot <name> [--theme <omarchy-theme>|none] [--lang <code>] [--radius <px>]
+#            [--size WxH] [--empty] [--first-run] [--keep-warnings] [-- <app args, e.g. --run "...">]
+#
+# The PNG lands in build/shots/<name>.png. The run fails when QML prints a
+# warning, so a screen that looks right but logs errors doesn't pass.
+#
+# The profile holds a dozen books from DOGEAR_SHOT_BOOKS (a folder of EPUBs
+# and PDFs), added once and reused; --empty starts with no books instead.
+# The welcome and What's new are marked as seen unless --first-run is given.
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+APP="$ROOT/build/dogear"
+OUT="$ROOT/build/shots"
+THEMES="${OMARCHY_PATH:-/usr/share/omarchy}/themes"
+
+[ $# -ge 1 ] || { sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+name="$1"; shift
+theme="tokyo-night"; lang="en"; radius=""; size="1280x800"; empty=0; keep=0; first=0
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --theme) theme="$2"; shift 2 ;;
+        --lang) lang="$2"; shift 2 ;;
+        --radius) radius="$2"; shift 2 ;;
+        --size) size="$2"; shift 2 ;;
+        --empty) empty=1; shift ;;
+        --first-run) first=1; shift ;;
+        --keep-warnings) keep=1; shift ;;
+        --) shift; break ;;
+        *) echo "bin/shot: unknown option $1" >&2; exit 2 ;;
+    esac
+done
+[ -x "$APP" ] || { echo "bin/shot: build first (bin/build)" >&2; exit 1; }
+mkdir -p "$OUT"
+
+# Each run gets a fresh home with the chosen Omarchy theme and language; the
+# seeded library database is copied in so runs can't affect each other.
+home="$(mktemp -d "${TMPDIR:-/tmp}/dogear-shot.XXXXXX")"
+trap 'rm -rf "$home"' EXIT INT TERM
+mkdir -p "$home/.config/omarchy" "$home/.local/state/omarchy/current/theme" \
+         "$home/.local/share" "$home/.cache" "$home/runtime"
+chmod 700 "$home/runtime"
+printf '%s\n' "$lang" > "$home/.config/omarchy/language"
+if [ "$theme" != "none" ]; then
+    [ -f "$THEMES/$theme/colors.toml" ] || { echo "bin/shot: no Omarchy theme '$theme'" >&2; exit 2; }
+    cp "$THEMES/$theme/colors.toml" "$home/.local/state/omarchy/current/theme/colors.toml"
+fi
+
+seed="$OUT/.seed"
+if [ "$empty" -eq 0 ]; then
+    if [ ! -d "$seed/data/dogear" ]; then
+        books="${DOGEAR_SHOT_BOOKS:-}"
+        [ -n "$books" ] && [ -d "$books" ] || {
+            echo "bin/shot: set DOGEAR_SHOT_BOOKS to a folder of books to seed the profile once" >&2; exit 1; }
+        mkdir -p "$seed/data" "$seed/config" "$seed/cache"
+        list="$(mktemp)"
+        find "$books" -maxdepth 1 -type f \( -iname '*.epub' -o -iname '*.pdf' \) | sort | head -n 14 > "$list"
+        while IFS= read -r book; do
+            XDG_DATA_HOME="$seed/data" XDG_CONFIG_HOME="$seed/config" XDG_CACHE_HOME="$seed/cache" \
+                HOME="$home" "$APP" add "$book" >/dev/null
+        done < "$list"
+        rm -f "$list"
+    fi
+    cp -r "$seed/data/." "$home/.local/share/"
+    cp -r "$seed/config/." "$home/.config/"
+    cp -r "$seed/cache/." "$home/.cache/" 2>/dev/null || true
+fi
+
+if [ "$first" -eq 0 ]; then
+    mkdir -p "$home/.config/dogear"
+    version="$("$APP" --version | awk '{print $NF}')"
+    printf '[onboarding]\nwelcomed=true\nversion=%s\n' "$version" >> "$home/.config/dogear/settings.ini"
+fi
+
+# A fake Hyprland socket answering the rounding query, when asked for corners.
+if [ -n "$radius" ]; then
+    sig="shot"
+    mkdir -p "$home/runtime/hypr/$sig"
+    python3 -I - "$home/runtime/hypr/$sig/.socket.sock" "$radius" <<'EOF' &
+import json, os, socket, sys
+path, radius = sys.argv[1], int(sys.argv[2])
+server = socket.socket(socket.AF_UNIX); server.bind(path); server.listen(4)
+while True:
+    conn, _ = server.accept(); conn.recv(1024)
+    conn.sendall(json.dumps({"option": "decoration:rounding", "int": radius, "set": True}).encode()); conn.close()
+EOF
+    fake=$!
+    trap 'kill $fake 2>/dev/null; rm -rf "$home"' EXIT INT TERM
+    export HYPRLAND_INSTANCE_SIGNATURE="$sig"
+else
+    unset HYPRLAND_INSTANCE_SIGNATURE 2>/dev/null || true
+fi
+
+log="$OUT/$name.log"
+status=0
+# The book page is drawn by QtWebEngine, which needs a GL display: under
+# Xvfb (xorg-server-xvfb) shots include it; the plain offscreen platform
+# renders everything except the page text.
+if command -v xvfb-run >/dev/null 2>&1; then
+    platform=xcb
+    launch() { xvfb-run -a -s "-screen 0 ${size}x24" "$@"; }
+else
+    platform=offscreen
+    launch() { "$@"; }
+    echo "bin/shot: no xvfb-run, so book pages render blank (install xorg-server-xvfb)" >&2
+fi
+launch env -u GEMINI_API_KEY -u WAYLAND_DISPLAY HOME="$home" XDG_CONFIG_HOME="$home/.config" \
+    XDG_DATA_HOME="$home/.local/share" XDG_CACHE_HOME="$home/.cache" XDG_RUNTIME_DIR="$home/runtime" \
+    QT_QPA_PLATFORM="$platform" QT_FORCE_STDERR_LOGGING=1 QT_SCALE_FACTOR=1 \
+    "$APP" --screenshot "$OUT/$name.png" --run "win.width=${size%x*}; win.height=${size#*x}" "$@" \
+    > "$log" 2>&1 || status=$?
+
+# QML warnings name their file: qrc:/X.qml:12:5: ...
+warnings="$(grep -E 'qrc:/[^ ]+\.(qml|js)(:[0-9]+)+' "$log" || true)"
+if [ -n "$warnings" ]; then
+    echo "$warnings" >&2
+    [ "$keep" -eq 1 ] || status=1
+fi
+[ "$status" -eq 0 ] && echo "$OUT/$name.png"
+exit "$status"
