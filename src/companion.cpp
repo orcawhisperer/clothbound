@@ -14,6 +14,7 @@
 #include <QPdfDocument>
 #include <QPdfSelection>
 #include <QProcess>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QThreadPool>
 
@@ -487,8 +488,14 @@ void Companion::whosWho() {
             if (result.isEmpty())
                 result = QJsonDocument::fromJson(reply->text().toUtf8()).object();
             m_people.clear();
-            for (const QJsonValue &value : result.value(QStringLiteral("people")).toArray())
-                m_people.append(value.toObject().toVariantMap());
+            // Names as the book prints them, without its note markers ("Filby*").
+            static const QRegularExpression marker(QStringLiteral("[*†‡§¹²³⁴⁵⁶⁷⁸⁹⁰]+(?=\\s|$)"));
+            for (const QJsonValue &value : result.value(QStringLiteral("people")).toArray()) {
+                QVariantMap person = value.toObject().toVariantMap();
+                for (const char *field : {"name", "also"})
+                    person[QLatin1String(field)] = person.value(QLatin1String(field)).toString().remove(marker).trimmed();
+                m_people.append(person);
+            }
             m_peopleKey = key;
             m_answer.clear();
         });
