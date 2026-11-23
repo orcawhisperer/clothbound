@@ -7,21 +7,24 @@ import "Icons.js" as Icons
 import "Themes.js" as Themes
 import "Ui.js" as Ui
 
-// Spotlight-grade Ctrl+K Command Palette: fuzzy search across all books,
-// current book chapters, cross-book highlights & notes, and quick actions.
+// Go anywhere (Ctrl+K): 680 px spotlight palette with Everything / This book
+// scope switcher (Tab), cross-book full-text and meaning search with Literata
+// italic quotes, highlights & notes, and query-aware Do actions (07_command_palette).
 FocusScope {
     id: cmdPalette
 
     property bool open: false
     property bool reading: false
-    property string currentTheme: "omarchy"
+    property string currentTheme: "paper"
     property string viewMode: "grid"
+    property string scope: "all"
 
     signal openBook(int bookId)
     signal jumpChapter(int chapter, string fragment)
     signal jumpMark(int bookId, int chapter, var offset)
     signal jumpTarget(var target)
     signal triggerAction(string actionId)
+    signal askCompanion(string question)
     signal closed()
 
     property var results: []
@@ -29,15 +32,25 @@ FocusScope {
     property var cachedMarks: []
     property int selectedIndex: 0
 
-    readonly property string statsIcon: "M5 19.5 V13 M10 19.5 V8.5 M15 19.5 V11 M20 19.5 V5.5"
-    readonly property string listIcon: "M8 6.5 H20 M8 12 H20 M8 17.5 H20 M4 6.5 H5 M4 12 H5 M4 17.5 H5"
-    readonly property string gridIcon: "M4.5 4.5 H10.5 V10.5 H4.5 Z M13.5 4.5 H19.5 V10.5 H13.5 Z M4.5 13.5 H10.5 V19.5 H4.5 Z M13.5 13.5 H19.5 V19.5 H13.5 Z"
+    readonly property int scopedBookId: reading ? reader.bookId : library.lastOpenedBook()
+    readonly property bool canScopeBook: scopedBookId > 0
+    readonly property string scopedBookTitle: {
+        if (reading && reader.title !== "")
+            return reader.title
+        if (scopedBookId > 0) {
+            const b = library.book(scopedBookId)
+            return b.title || ""
+        }
+        return ""
+    }
     readonly property string refreshIcon: "M19 12 A7 7 0 1 1 16.95 7.05 M19 4.5 V8.5 H15"
     readonly property var swatches: Themes.swatches
 
     function show() {
         cachedBooks = library.allBooks()
         cachedMarks = marks.searchAll("", 30)
+        scope = "all"
+        meaningQuery = ""
         input.text = ""
         open = true
         rebuild()
@@ -49,6 +62,7 @@ FocusScope {
         input.text = text
         input.cursorPosition = text.length
         rebuild()
+        meaningDebounce.restart()
     }
 
     function close() {
@@ -56,7 +70,26 @@ FocusScope {
             return
         open = false
         searchDebounce.stop()
+        meaningDebounce.stop()
         closed()
+    }
+
+    function toggleScope() {
+        if (!canScopeBook)
+            return
+        scope = scope === "all" ? "book" : "all"
+        rebuild()
+    }
+
+    function chapterLabel(book, chapterIdx) {
+        if (reading && book && book.id === reader.bookId) {
+            const title = reader.titleOfChapter(chapterIdx)
+            if (title !== "")
+                return title
+        }
+        if (book && book.format === "pdf")
+            return qsTr("Page %1").arg(chapterIdx + 1)
+        return qsTr("Chapter %1").arg(chapterIdx + 1)
     }
 
     function norm(s) {
@@ -74,7 +107,6 @@ FocusScope {
         const s = norm(secondary)
         const full = s !== "" ? (p + " " + s) : p
 
-        // Exact prefix / word-start / substring on primary.
         const pIdx = p.indexOf(q)
         if (pIdx === 0)
             return 1000 - p.length * 0.2
@@ -86,7 +118,6 @@ FocusScope {
         if (sIdx >= 0)
             return (sIdx === 0 ? 640 : 540) - sIdx * 0.5
 
-        // Multi-token AND match across primary + secondary.
         const tokens = q.split(/\s+/).filter(t => t.length > 0)
         if (tokens.length > 1) {
             let tokenScore = 0
@@ -107,7 +138,6 @@ FocusScope {
                 return 320 + tokenScore
         }
 
-        // Subsequence fuzzy match (e.g. "tm" -> "The Time Machine").
         let qi = 0
         let score = 0
         let consecutive = 0
@@ -124,6 +154,12 @@ FocusScope {
         return qi === q.length ? score : -1
     }
 
+    function voiceSubtitle() {
+        const name = narration.voiceName !== "" ? narration.voiceName : qsTr("Read aloud")
+        const where = narration.voice.startsWith("local:") ? qsTr("on this computer") : qsTr("Gemini")
+        return narration.voiceName !== "" ? (name + " · " + where) : name
+    }
+
     function buildActions() {
         const list = []
         if (reading) {
@@ -136,7 +172,7 @@ FocusScope {
             list.push({ id: "companion-prev", title: qsTr("Companion: Previously…"), subtitle: qsTr("Recap the story up to your page"), hint: "", glyph: Icons.sparkle })
             list.push({ id: "companion-people", title: qsTr("Companion: Who's who"), subtitle: qsTr("Characters and places so far"), hint: "", glyph: Icons.sparkle })
             list.push({ id: "voices", title: qsTr("Voice & narration panel"), subtitle: qsTr("Narrator, style, full cast, audiobook"), hint: "V", glyph: Icons.headphones })
-            list.push({ id: "listen", title: narration.active ? qsTr("Stop listening") : qsTr("Listen from this page"), subtitle: qsTr("Read aloud"), hint: "P", glyph: Icons.play })
+            list.push({ id: "listen", title: narration.active ? qsTr("Stop listening") : qsTr("Listen from here"), subtitle: voiceSubtitle(), hint: "P", glyph: Icons.headphones })
             list.push({ id: "appearance", title: qsTr("Typography & appearance"), subtitle: qsTr("Typeface, spacing, margins, layout"), hint: "A", glyph: Icons.book })
             list.push({ id: "toggle-theme", title: qsTr("Cycle reading theme"), subtitle: Themes.name(currentTheme), hint: "D", glyph: Icons.sun })
             if (marks.count > 0) {
@@ -151,17 +187,77 @@ FocusScope {
             list.push({ id: "add-books", title: qsTr("Add individual books…"), subtitle: qsTr("Pick EPUB or PDF files"), hint: "", glyph: Icons.plus })
             list.push({ id: "manage-folders", title: qsTr("Manage watched folders…"), subtitle: qsTr("%1 watched").arg(library.folders.length), hint: "", glyph: Icons.folder })
             list.push({ id: "rescan", title: qsTr("Rescan library"), subtitle: qsTr("Check watched folders for new or moved books"), hint: "", glyph: refreshIcon })
-            list.push({ id: "toggle-view", title: viewMode === "grid" ? qsTr("Switch to list view") : qsTr("Switch to cover grid"), subtitle: qsTr("Library layout"), hint: "V", glyph: viewMode === "grid" ? listIcon : gridIcon })
+            list.push({ id: "toggle-view", title: viewMode === "grid" ? qsTr("Switch to list view") : qsTr("Switch to cover grid"), subtitle: qsTr("Library layout"), hint: "V", glyph: viewMode === "grid" ? Icons.list : Icons.grid })
             list.push({ id: "cycle-sort", title: qsTr("Cycle sort order"), subtitle: qsTr("Recent, title, author, series, added, progress"), hint: "S", glyph: Icons.sort })
             list.push({ id: "toggle-grouping", title: library.works.grouped ? qsTr("Show every edition separately") : qsTr("Group editions together"), subtitle: qsTr("Edition grouping"), hint: "G", glyph: Icons.books })
             list.push({ id: "toggle-theme", title: qsTr("Cycle reading theme"), subtitle: Themes.name(currentTheme), hint: "", glyph: Icons.sun })
         }
-        list.push({ id: "stats", title: qsTr("Reading stats & insights"), subtitle: qsTr("Reading time, streak, and finished books"), hint: "", glyph: statsIcon })
+        list.push({ id: "stats", title: qsTr("Reading stats & insights"), subtitle: qsTr("Reading time, streak, and finished books"), hint: "", glyph: Icons.stats })
         list.push({ id: "ai-settings", title: qsTr("Intelligence settings"), subtitle: qsTr("Gemini, local models, budget"), hint: "Ctrl+,", glyph: Icons.sparkle })
         list.push({ id: "fullscreen", title: qsTr("Toggle full screen"), subtitle: "", hint: "F", glyph: Icons.fullscreen })
         list.push({ id: "help", title: qsTr("Keyboard shortcuts"), subtitle: qsTr("View all keys"), hint: "?", glyph: Icons.keyboard })
         list.push({ id: "quit", title: qsTr("Quit Dogear"), subtitle: "", hint: "Q", glyph: Icons.close })
         return list
+    }
+
+    function appendActions(out, mode, q) {
+        const actions = buildActions()
+        const matchedActions = []
+        for (let i = 0; i < actions.length; ++i) {
+            const a = actions[i]
+            const score = fuzzyScore(q, a.title, a.subtitle + " " + a.id)
+            if (score >= 0)
+                matchedActions.push({ score: score, order: i, item: a })
+        }
+        if (q !== "")
+            matchedActions.sort((a, b) => b.score - a.score || a.order - b.order)
+
+        // Dynamic query-aware Do actions (07_command_palette.html).
+        let hasListen = false
+        if (mode === "all" && q.length >= 2 && scopedBookId > 0) {
+            out.push({
+                kind: "ask",
+                section: qsTr("Do"),
+                question: q,
+                title: qsTr("Ask the companion: “%1”").arg(q),
+                subtitle: scopedBookTitle !== ""
+                          ? qsTr("About %1, up to your page").arg(scopedBookTitle)
+                          : qsTr("About your book, up to your page"),
+                hint: "C",
+                glyph: Icons.sparkle,
+                quote: false,
+            })
+        }
+
+        const actionCap = mode === "actions" ? 25 : (q === "" ? 7 : 4)
+        for (let i = 0; i < Math.min(actionCap, matchedActions.length); ++i) {
+            const a = matchedActions[i].item
+            if (a.id === "listen")
+                hasListen = true
+            out.push({
+                kind: "action",
+                section: qsTr("Do"),
+                actionId: a.id,
+                title: a.title,
+                subtitle: a.subtitle,
+                hint: a.hint,
+                glyph: a.glyph,
+                quote: false,
+            })
+        }
+
+        if (mode === "all" && q.length >= 2 && scopedBookId > 0 && !hasListen) {
+            out.push({
+                kind: "action",
+                section: qsTr("Do"),
+                actionId: "listen",
+                title: qsTr("Listen from here"),
+                subtitle: voiceSubtitle(),
+                hint: "P",
+                glyph: Icons.headphones,
+                quote: false,
+            })
+        }
     }
 
     function rebuild() {
@@ -179,9 +275,10 @@ FocusScope {
             q = raw.slice(1).trim()
         }
 
+        const bookOnly = scope === "book" && scopedBookId > 0
         const out = []
 
-        // Instant direct jump when reading and user types a percentage or page label.
+        // Direct jump when reading and user types a percentage or printed page.
         if (reading && mode === "all" && q !== "") {
             const pctMatch = q.match(/^(\d+(?:[.,]\d+)?)\s*%$/)
             if (pctMatch) {
@@ -193,9 +290,10 @@ FocusScope {
                         section: qsTr("Jump"),
                         title: qsTr("Go to %1%").arg(pctMatch[1]),
                         subtitle: reader.titleOfChapter(target.chapter) || reader.title,
-                        hint: "↵",
+                        hint: "",
                         glyph: Icons.page,
                         target: target,
+                        quote: false,
                     })
                 }
             } else if (reader.hasPageList && /^(?:p(?:age)?\.?\s*)?([ivxlcdm]+|\d+)$/i.test(q)) {
@@ -207,42 +305,21 @@ FocusScope {
                         section: qsTr("Jump"),
                         title: qsTr("Go to page %1").arg(lbl),
                         subtitle: reader.titleOfChapter(target.chapter) || reader.title,
-                        hint: "↵",
+                        hint: "",
                         glyph: Icons.page,
                         target: target,
+                        quote: false,
                     })
                 }
             }
         }
 
-        // 1. Actions
-        if (mode === "all" || mode === "actions") {
-            const actions = buildActions()
-            const matchedActions = []
-            for (let i = 0; i < actions.length; ++i) {
-                const a = actions[i]
-                const score = fuzzyScore(q, a.title, a.subtitle + " " + a.id)
-                if (score >= 0)
-                    matchedActions.push({ score: score, order: i, item: a })
-            }
-            if (q !== "")
-                matchedActions.sort((a, b) => b.score - a.score || a.order - b.order)
-            const actionCap = mode === "actions" ? 25 : (q === "" ? 7 : 6)
-            for (let i = 0; i < Math.min(actionCap, matchedActions.length); ++i) {
-                const a = matchedActions[i].item
-                out.push({
-                    kind: "action",
-                    section: qsTr("Do"),
-                    actionId: a.id,
-                    title: a.title,
-                    subtitle: a.subtitle,
-                    hint: a.hint,
-                    glyph: a.glyph,
-                })
-            }
-        }
+        // Empty query or explicit `>` puts Do actions first; active queries
+        // prioritize Books / Passages / Meaning ahead of Do (07_command_palette).
+        if (mode === "actions" || (mode === "all" && q === ""))
+            appendActions(out, mode, q)
 
-        // 2. Current book TOC chapters when reading
+        // Current book TOC chapters when reading.
         if (reading && (mode === "all" || mode === "chapters")) {
             const toc = reader.contents || []
             const matchedChapters = []
@@ -256,7 +333,7 @@ FocusScope {
             }
             if (q !== "")
                 matchedChapters.sort((a, b) => b.score - a.score || a.order - b.order)
-            const chapCap = mode === "chapters" ? 40 : (q === "" ? 5 : 8)
+            const chapCap = mode === "chapters" ? 40 : (q === "" ? 5 : 6)
             for (let i = 0; i < Math.min(chapCap, matchedChapters.length); ++i) {
                 const entry = matchedChapters[i].entry
                 out.push({
@@ -269,12 +346,13 @@ FocusScope {
                     chapter: entry.chapter,
                     fragment: entry.fragment || "",
                     depth: entry.depth || 0,
+                    quote: false,
                 })
             }
         }
 
-        // 3. All books in library
-        if (mode === "all") {
+        // Books in library (skipped when scoped to "This book").
+        if (mode === "all" && !bookOnly) {
             const matchedBooks = []
             for (let i = 0; i < cachedBooks.length; ++i) {
                 const b = cachedBooks[i]
@@ -285,7 +363,7 @@ FocusScope {
             }
             if (q !== "")
                 matchedBooks.sort((a, b) => b.score - a.score || a.order - b.order)
-            const bookCap = q === "" ? 6 : 10
+            const bookCap = q === "" ? 6 : 6
             for (let i = 0; i < Math.min(bookCap, matchedBooks.length); ++i) {
                 const b = matchedBooks[i].book
                 const parts = []
@@ -307,35 +385,44 @@ FocusScope {
                     glyph: Icons.book,
                     cover: b.cover || "",
                     author: b.author || "",
+                    bookTitle: b.title || "",
+                    quote: false,
                 })
             }
         }
 
-        // The words of every book, from the library index.
+        // Full-text passages from the library index ("In your books" / "In this book").
         if (mode === "all" && q.length >= 3 && libraryIndex.available) {
-            const found = libraryIndex.search(q, 6)
+            const found = libraryIndex.search(q, 6, bookOnly ? scopedBookId : 0)
             for (const hit of found) {
                 const book = library.book(hit.bookId)
                 if (!book.id)
                     continue
+                const snip = (hit.snippet || "").replace(/[‹›]/g, "")
                 out.push({
                     kind: "text",
-                    section: qsTr("In your books"),
+                    section: bookOnly ? qsTr("In this book") : qsTr("In your books"),
                     bookId: hit.bookId,
                     chapter: hit.chapter,
                     offset: hit.offset,
-                    title: hit.snippet.replace(/[‹›]/g, ""),
-                    subtitle: book.title,
-                    hint: hit.bookId === reader.bookId && reading ? qsTr("Here") : "",
+                    title: book.title + " · " + chapterLabel(book, hit.chapter),
+                    subtitle: snip !== "" ? qsTr("“%1”").arg(snip) : "",
+                    hint: "",
                     glyph: Icons.search,
+                    cover: book.cover || "",
+                    author: book.author || "",
+                    bookTitle: book.title || "",
+                    quote: true,
                 })
             }
         }
 
-        // Passages close in meaning, from every book prepared for it.
+        // Passages close in meaning ("By meaning").
         if (mode === "all" && q.length >= 3 && q === meaningQuery) {
             const shown = out.filter(r => r.kind === "text").map(r => r.bookId + ":" + r.chapter)
             for (const hit of bookSearch.libraryResults) {
+                if (bookOnly && hit.bookId !== scopedBookId)
+                    continue
                 if (shown.indexOf(hit.bookId + ":" + hit.chapter) >= 0)
                     continue
                 const book = library.book(hit.bookId)
@@ -348,21 +435,25 @@ FocusScope {
                     bookId: hit.bookId,
                     chapter: hit.chapter,
                     offset: hit.start,
-                    title: text + "…",
-                    subtitle: book.title,
+                    title: book.title + " · " + chapterLabel(book, hit.chapter),
+                    subtitle: qsTr("“%1…”").arg(text),
                     hint: "",
                     glyph: Icons.sparkle,
+                    cover: book.cover || "",
+                    author: book.author || "",
+                    bookTitle: book.title || "",
+                    quote: true,
                 })
             }
         }
 
-        // 4. Cross-book & current-book highlights and notes
+        // Cross-book or single-book highlights and notes.
         if (mode === "all" || mode === "marks") {
-            const hits = q === "" ? cachedMarks : marks.searchAll(q, mode === "marks" ? 30 : 8)
-            const markCap = mode === "marks" ? 30 : (q === "" ? 4 : 8)
+            const rawHits = q === "" ? cachedMarks : marks.searchAll(q, mode === "marks" ? 30 : 12)
+            const hits = bookOnly ? rawHits.filter(m => m.bookId === scopedBookId) : rawHits
+            const markCap = mode === "marks" ? 30 : (q === "" ? 4 : 6)
             for (let i = 0; i < Math.min(markCap, hits.length); ++i) {
                 const m = hits[i]
-                const primaryText = m.note && m.note !== "" ? m.note : m.text
                 const subParts = []
                 if (m.bookTitle)
                     subParts.push(m.bookTitle)
@@ -372,7 +463,7 @@ FocusScope {
                     subParts.push("“" + m.text.slice(0, 60) + (m.text.length > 60 ? "…" : "") + "”")
                 out.push({
                     kind: "mark",
-                    section: qsTr("Highlights & Notes"),
+                    section: qsTr("Highlights & notes"),
                     bookId: m.bookId,
                     chapter: m.chapter,
                     offset: m.start,
@@ -380,11 +471,16 @@ FocusScope {
                     color: m.color || "yellow",
                     title: m.kind === "bookmark" ? m.text : (m.note !== "" ? m.note : "“" + m.text + "”"),
                     subtitle: subParts.join(" · "),
-                    hint: m.bookId === reader.bookId && reading ? qsTr("Here") : "",
+                    hint: "",
                     glyph: m.kind === "bookmark" ? Icons.bookmark : Icons.pen,
+                    quote: false,
                 })
             }
         }
+
+        // For non-empty general queries, place contextual Do actions at the foot.
+        if (mode === "all" && q !== "")
+            appendActions(out, mode, q)
 
         results = out
         selectedIndex = out.length > 0 ? 0 : -1
@@ -396,7 +492,9 @@ FocusScope {
             return
         const item = results[idx]
         close()
-        if (item.kind === "action")
+        if (item.kind === "ask")
+            askCompanion(item.question)
+        else if (item.kind === "action")
             triggerAction(item.actionId)
         else if (item.kind === "book")
             openBook(item.bookId)
@@ -421,8 +519,7 @@ FocusScope {
         interval: 45
         onTriggered: { cmdPalette.rebuild(); meaningDebounce.restart() }
     }
-    // Search by meaning across the library asks the embedder, so it waits
-    // for a pause in typing.
+    // Search by meaning waits briefly for a pause in typing.
     property string meaningQuery: ""
     Timer {
         id: meaningDebounce
@@ -442,9 +539,9 @@ FocusScope {
 
     visible: opacity > 0
     opacity: open ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+    Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
 
-    // Claim Escape / arrows / Return / Ctrl+K ahead of reader ApplicationShortcuts.
+    // Claim Escape / arrows / Return / Tab / Ctrl+K ahead of ApplicationShortcuts.
     Keys.onShortcutOverride: (event) => {
         if (!cmdPalette.open)
             return
@@ -461,10 +558,16 @@ FocusScope {
         if (event.key === Qt.Key_Escape || ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_K)) {
             cmdPalette.close()
             event.accepted = true
-        } else if (event.key === Qt.Key_Down || event.key === Qt.Key_Tab || ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_N)) {
+        } else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+            if (cmdPalette.canScopeBook)
+                cmdPalette.toggleScope()
+            else
+                cmdPalette.moveSelection(event.key === Qt.Key_Tab ? 1 : -1)
+            event.accepted = true
+        } else if (event.key === Qt.Key_Down || ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_N)) {
             cmdPalette.moveSelection(1)
             event.accepted = true
-        } else if (event.key === Qt.Key_Up || event.key === Qt.Key_Backtab || ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_P)) {
+        } else if (event.key === Qt.Key_Up || ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_P)) {
             cmdPalette.moveSelection(-1)
             event.accepted = true
         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
@@ -476,7 +579,7 @@ FocusScope {
     // Scrim
     Rectangle {
         anchors.fill: parent
-        color: Ui.tint("black", theme.light ? 0.25 : 0.56)
+        color: theme.scrim
         MouseArea {
             anchors.fill: parent
             acceptedButtons: Qt.AllButtons
@@ -485,298 +588,349 @@ FocusScope {
         }
     }
 
-    // Spotlight modal card
-    Rectangle {
-        id: card
+    // 680 px Spotlight dialog card with soft elevation shadow.
+    Item {
+        id: cardFrame
         anchors.horizontalCenter: parent.horizontalCenter
-        y: Math.max(44, Math.min(120, parent.height * 0.13))
-        width: Math.min(parent.width - 48, 640)
+        y: Math.max(44, Math.min(112, parent.height * 0.14))
+        width: Math.min(parent.width - 48, 680)
         height: Math.min(parent.height - y - 40, header.height + 1 + bodyHeight + footer.height + 1)
         readonly property real bodyHeight: cmdPalette.results.length > 0
-            ? Math.min(Math.max(list.contentHeight, 56), Math.max(200, cmdPalette.height * 0.52))
+            ? Math.min(Math.max(list.contentHeight, 60), Math.max(220, cmdPalette.height * 0.54))
             : 84
-        radius: Math.min(14, theme.radius + 2)
-        color: theme.raised
-        border.width: 1
-        border.color: Ui.tint(theme.ink1, theme.light ? 0.14 : 0.16)
-        clip: true
-        scale: cmdPalette.open ? 1.0 : 0.97
-        Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+        scale: cmdPalette.open || theme.reducedMotion ? 1.0 : 0.98
+        Behavior on scale {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: 160; easing.type: Easing.OutQuart }
+        }
 
-        MouseArea {
+        // Deep floating shadow (0 30px 90px rgba(0,0,0,0.6)).
+        Rectangle {
             anchors.fill: parent
-            acceptedButtons: Qt.AllButtons
-            onPressed: input.forceActiveFocus()
-            onWheel: (wheel) => wheel.accepted = true
-        }
-
-        // Top search input row
-        RowLayout {
-            id: header
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 54
-            spacing: 10
-
-            Glyph {
-                Layout.leftMargin: 18
-                Layout.preferredWidth: 19
-                Layout.preferredHeight: 19
-                path: Icons.search
-                color: theme.accentInk
-            }
-
-            TextInput {
-                id: input
-                Layout.fillWidth: true
-                Layout.alignment: Qt.AlignVCenter
-                color: theme.ink1
-                selectionColor: Ui.tint(theme.accent, 0.35)
-                selectedTextColor: theme.ink1
-                font.pixelSize: 16
-                clip: true
-                selectByMouse: true
-                onTextEdited: searchDebounce.restart()
-
-                Label {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: parent.width
-                    visible: input.text === ""
-                    text: cmdPalette.reading
-                        ? qsTr("Jump to book, chapter, note, or action…")
-                        : qsTr("Search books, notes, or actions…")
-                    color: theme.ink3
-                    font.pixelSize: 16
-                    elide: Text.ElideRight
-                }
-            }
-
-            IconButton {
-                visible: input.text !== ""
-                Layout.preferredWidth: 30
-                Layout.preferredHeight: 30
-                glyph: Icons.close
-                tone: theme.ink2
-                onClicked: {
-                    input.text = ""
-                    cmdPalette.rebuild()
-                    input.forceActiveFocus()
-                }
-            }
-
-            Label {
-                Layout.rightMargin: 16
-                text: "Esc"
-                color: theme.ink3
-                font.pixelSize: 11
-                font.family: "monospace"
-                leftPadding: 6
-                rightPadding: 6
-                topPadding: 3
-                bottomPadding: 3
-                background: Rectangle {
-                    radius: 4
-                    color: Ui.tint(theme.ink1, 0.06)
-                    border.width: 1
-                    border.color: Ui.tint(theme.ink1, 0.1)
-                }
-            }
+            anchors.topMargin: 18
+            anchors.margins: -8
+            radius: card.radius > 0 ? card.radius + 8 : 0
+            color: theme.shadow
+            opacity: 0.55
         }
 
         Rectangle {
-            id: topDivider
-            anchors.top: header.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 1
-            color: Ui.tint(theme.ink1, 0.08)
-        }
-
-        // Empty query-no-match state
-        Label {
-            anchors.top: topDivider.bottom
-            anchors.bottom: bottomDivider.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-            visible: cmdPalette.results.length === 0
-            text: qsTr("No matching books, notes, or commands")
-            color: theme.ink2
-            font.pixelSize: 14
-        }
-
-        // Results list
-        ListView {
-            id: list
-            anchors.top: topDivider.bottom
-            anchors.bottom: bottomDivider.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.leftMargin: 6
-            anchors.rightMargin: 6
-            topMargin: 6
-            bottomMargin: 6
+            id: card
+            anchors.fill: parent
+            radius: Ui.radius(14, theme.radius)
+            color: theme.raised
+            border.width: 1
+            border.color: Ui.tint(theme.ink1, 0.10)
             clip: true
-            visible: cmdPalette.results.length > 0
-            boundsBehavior: Flickable.StopAtBounds
-            model: cmdPalette.results
-            currentIndex: cmdPalette.selectedIndex
-            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            delegate: Column {
-                id: rowItem
-                required property var modelData
-                required property int index
-                readonly property bool showSection: index === 0 || cmdPalette.results[index - 1].section !== modelData.section
-                readonly property bool selected: index === cmdPalette.selectedIndex
-                width: list.width
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onPressed: input.forceActiveFocus()
+                onWheel: (wheel) => wheel.accepted = true
+            }
+
+            // Top 56 px search input row with Everything | This book scope tabs.
+            RowLayout {
+                id: header
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 56
+                spacing: 12
+
+                Glyph {
+                    Layout.leftMargin: 18
+                    Layout.preferredWidth: 18
+                    Layout.preferredHeight: 18
+                    stroke: 2
+                    path: Icons.search
+                    color: theme.ink3
+                }
+
+                TextInput {
+                    id: input
+                    Layout.fillWidth: true
+                    Layout.alignment: Qt.AlignVCenter
+                    color: theme.ink1
+                    selectionColor: Ui.tint(theme.accent, 0.35)
+                    selectedTextColor: theme.ink1
+                    font.pixelSize: 17
+                    clip: true
+                    selectByMouse: true
+                    Accessible.role: Accessible.EditableText
+                    Accessible.name: qsTr("Search everything")
+                    onTextEdited: searchDebounce.restart()
+
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: parent.width
+                        visible: input.text === ""
+                        text: cmdPalette.reading
+                            ? qsTr("Jump to book, passage, chapter, or action…")
+                            : qsTr("Search books, passages, notes, or actions…")
+                        color: theme.ink4
+                        font.pixelSize: 17
+                        elide: Text.ElideRight
+                    }
+                }
+
+                IconButton {
+                    visible: input.text !== ""
+                    Layout.preferredWidth: 26
+                    Layout.preferredHeight: 26
+                    tabFocusable: false
+                    glyph: Icons.close
+                    tone: theme.ink3
+                    tip: qsTr("Clear")
+                    onClicked: {
+                        input.text = ""
+                        cmdPalette.rebuild()
+                        input.forceActiveFocus()
+                    }
+                }
+
+                Segmented {
+                    visible: cmdPalette.canScopeBook
+                    Layout.rightMargin: 16
+                    compact: true
+                    model: [
+                        { value: "all", label: qsTr("Everything") },
+                        { value: "book", label: qsTr("This book") }
+                    ]
+                    current: cmdPalette.scope
+                    onActivated: (v) => {
+                        cmdPalette.scope = v
+                        cmdPalette.rebuild()
+                        input.forceActiveFocus()
+                    }
+                }
+            }
+
+            Rectangle {
+                id: topDivider
+                anchors.top: header.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 1
+                color: Ui.tint(theme.ink1, 0.07)
+            }
+
+            // Empty query-no-match state
+            Label {
+                anchors.top: topDivider.bottom
+                anchors.bottom: bottomDivider.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                visible: cmdPalette.results.length === 0
+                text: qsTr("No matching books, passages, or actions")
+                color: theme.ink3
+                font.pixelSize: 13
+            }
+
+            // Results list
+            ListView {
+                id: list
+                anchors.top: topDivider.bottom
+                anchors.bottom: bottomDivider.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.leftMargin: 8
+                anchors.rightMargin: 8
+                topMargin: 4
+                bottomMargin: 8
+                clip: true
+                visible: cmdPalette.results.length > 0
+                boundsBehavior: Flickable.StopAtBounds
+                model: cmdPalette.results
+                currentIndex: cmdPalette.selectedIndex
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                delegate: Column {
+                    id: rowItem
+                    required property var modelData
+                    required property int index
+                    readonly property bool showSection: index === 0 || cmdPalette.results[index - 1].section !== modelData.section
+                    readonly property bool selected: index === cmdPalette.selectedIndex
+                    readonly property bool isBookOrPassage: modelData.kind === "book" || modelData.kind === "text"
+                    readonly property bool isHighlight: modelData.kind === "mark" && modelData.markKind === "highlight"
+                    readonly property string badgeText: selected ? qsTr("Enter") : (modelData.hint || "")
+                    width: list.width
+
+                    // Sentence-case 11/600 section heading (07_command_palette).
+                    Label {
+                        visible: rowItem.showSection
+                        width: parent.width
+                        leftPadding: 10
+                        rightPadding: 10
+                        topPadding: rowItem.index === 0 ? 6 : 12
+                        bottomPadding: 4
+                        text: rowItem.modelData.section
+                        color: theme.ink4
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: 0.22
+                    }
+
+                    Rectangle {
+                        id: rowBg
+                        width: parent.width
+                        height: (rowItem.modelData.subtitle || "") !== "" ? 46 : 38
+                        radius: Ui.radius(8, theme.radius)
+                        color: rowItem.selected ? Ui.tint(theme.accent, theme.light ? 0.14 : 0.16)
+                             : rowHover.hovered ? Ui.tint(theme.ink1, 0.05) : "transparent"
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 12
+
+                            // Leading 26×26 rounded tile: cover, highlight swatch, or tinted action glyph.
+                            Item {
+                                Layout.preferredWidth: 26
+                                Layout.preferredHeight: 26
+                                Layout.alignment: Qt.AlignVCenter
+
+                                CoverImage {
+                                    anchors.fill: parent
+                                    visible: rowItem.isBookOrPassage
+                                    radius: Ui.radius(6, theme.radius)
+                                    source: rowItem.modelData.cover || ""
+                                    title: rowItem.modelData.bookTitle || rowItem.modelData.title || ""
+                                    author: rowItem.modelData.author || ""
+                                }
+
+                                Rectangle {
+                                    anchors.fill: parent
+                                    visible: !rowItem.isBookOrPassage
+                                    radius: Ui.radius(6, theme.radius)
+                                    color: Ui.tint(theme.ink1, 0.08)
+
+                                    Rectangle {
+                                        anchors.centerIn: parent
+                                        visible: rowItem.isHighlight
+                                        width: 4
+                                        height: 16
+                                        radius: 2
+                                        color: cmdPalette.swatches[rowItem.modelData.color] || cmdPalette.swatches.yellow
+                                    }
+
+                                    Glyph {
+                                        anchors.centerIn: parent
+                                        visible: !rowItem.isHighlight
+                                        width: 14
+                                        height: 14
+                                        path: rowItem.modelData.glyph || Icons.book
+                                        color: (rowItem.modelData.kind === "action" || rowItem.modelData.kind === "ask" || rowItem.selected)
+                                               ? theme.accentInk : theme.ink2
+                                    }
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.alignment: Qt.AlignVCenter
+                                spacing: 2
+
+                                Label {
+                                    id: rowTitle
+                                    Layout.fillWidth: true
+                                    text: rowItem.modelData.title || ""
+                                    textFormat: Text.PlainText
+                                    color: theme.ink1
+                                    font.pixelSize: 13
+                                    font.weight: Font.Medium
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: (rowItem.modelData.subtitle || "") !== ""
+                                    text: rowItem.modelData.subtitle || ""
+                                    textFormat: Text.PlainText
+                                    color: theme.ink3
+                                    font.family: rowItem.modelData.quote ? "Literata" : rowTitle.font.family
+                                    font.italic: !!rowItem.modelData.quote
+                                    font.pixelSize: 12
+                                    elide: Text.ElideRight
+                                }
+                            }
+
+                            KeyHint {
+                                visible: rowItem.badgeText !== ""
+                                Layout.alignment: Qt.AlignVCenter
+                                text: rowItem.badgeText
+                            }
+                        }
+
+                        HoverHandler {
+                            id: rowHover
+                            cursorShape: Qt.PointingHandCursor
+                            onHoveredChanged: if (hovered) cmdPalette.selectedIndex = rowItem.index
+                        }
+                        TapHandler {
+                            onTapped: cmdPalette.activate(rowItem.index)
+                        }
+                    }
+                }
+            }
+
+            Rectangle {
+                id: bottomDivider
+                anchors.bottom: footer.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 1
+                color: Ui.tint(theme.ink1, 0.07)
+            }
+
+            // 38 px footer with bold key hints and calm scope tagline.
+            RowLayout {
+                id: footer
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 38
+                spacing: 16
+
+                Row {
+                    Layout.leftMargin: 18
+                    spacing: 16
+
+                    Row {
+                        spacing: 4
+                        Label { text: "↑ ↓"; color: theme.ink2; font.pixelSize: 11; font.weight: Font.DemiBold }
+                        Label { text: qsTr("move"); color: theme.ink4; font.pixelSize: 11 }
+                    }
+                    Row {
+                        spacing: 4
+                        Label { text: qsTr("Enter"); color: theme.ink2; font.pixelSize: 11; font.weight: Font.DemiBold }
+                        Label { text: qsTr("open"); color: theme.ink4; font.pixelSize: 11 }
+                    }
+                    Row {
+                        visible: cmdPalette.canScopeBook
+                        spacing: 4
+                        Label { text: qsTr("Tab"); color: theme.ink2; font.pixelSize: 11; font.weight: Font.DemiBold }
+                        Label {
+                            text: cmdPalette.scope === "book" ? qsTr("everything") : qsTr("this book")
+                            color: theme.ink4
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+
+                Item { Layout.fillWidth: true }
 
                 Label {
-                    visible: rowItem.showSection
-                    width: parent.width
-                    leftPadding: 12
-                    rightPadding: 12
-                    topPadding: rowItem.index === 0 ? 4 : 10
-                    bottomPadding: 4
-                    text: rowItem.modelData.section
-                    color: theme.ink3
+                    Layout.rightMargin: 18
+                    text: qsTr("Books, passages, your notes, and anything Dogear can do")
+                    color: theme.ink4
                     font.pixelSize: 11
-                    font.weight: Font.DemiBold
-                    font.capitalization: Font.AllUppercase
-                    font.letterSpacing: 0.7
+                    elide: Text.ElideRight
+                    Layout.maximumWidth: card.width * 0.52
                 }
-
-                Rectangle {
-                    id: rowBg
-                    width: parent.width
-                    height: 46
-                    radius: Math.min(8, theme.radius)
-                    color: rowItem.selected ? Ui.tint(theme.accent, theme.light ? 0.16 : 0.22)
-                         : rowHover.hovered ? Ui.tint(theme.ink1, 0.06) : "transparent"
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 12
-                        anchors.rightMargin: 12
-                        spacing: 12
-
-                        // Leading visual: book cover, highlight color bar, or line glyph
-                        Item {
-                            Layout.preferredWidth: 26
-                            Layout.preferredHeight: 32
-                            Layout.alignment: Qt.AlignVCenter
-
-                            CoverImage {
-                                anchors.centerIn: parent
-                                visible: rowItem.modelData.kind === "book"
-                                width: 22
-                                height: 32
-                                source: rowItem.modelData.cover || ""
-                                title: rowItem.modelData.title || ""
-                                author: rowItem.modelData.author || ""
-                            }
-
-                            Rectangle {
-                                anchors.centerIn: parent
-                                visible: rowItem.modelData.kind === "mark" && rowItem.modelData.markKind === "highlight"
-                                width: 4
-                                height: 22
-                                radius: 2
-                                color: cmdPalette.swatches[rowItem.modelData.color] || cmdPalette.swatches.yellow
-                            }
-
-                            Glyph {
-                                anchors.centerIn: parent
-                                visible: rowItem.modelData.kind !== "book" &&
-                                         !(rowItem.modelData.kind === "mark" && rowItem.modelData.markKind === "highlight")
-                                width: 18
-                                height: 18
-                                path: rowItem.modelData.glyph || Icons.book
-                                color: rowItem.selected ? theme.accentInk : theme.ink2
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            Layout.alignment: Qt.AlignVCenter
-                            spacing: 1
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: rowItem.modelData.title || ""
-                                textFormat: Text.PlainText
-                                color: theme.ink1
-                                font.pixelSize: 14
-                                font.weight: rowItem.selected ? Font.DemiBold : Font.Normal
-                                elide: Text.ElideRight
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                visible: (rowItem.modelData.subtitle || "") !== ""
-                                text: rowItem.modelData.subtitle || ""
-                                textFormat: Text.PlainText
-                                color: theme.ink2
-                                font.pixelSize: 12
-                                elide: Text.ElideRight
-                            }
-                        }
-
-                        Label {
-                            visible: (rowItem.modelData.hint || "") !== ""
-                            Layout.alignment: Qt.AlignVCenter
-                            text: rowItem.modelData.hint || ""
-                            color: rowItem.selected ? theme.accentInk : theme.ink3
-                            font.pixelSize: 11
-                            font.family: "monospace"
-                        }
-                    }
-
-                    HoverHandler {
-                        id: rowHover
-                        cursorShape: Qt.PointingHandCursor
-                        onHoveredChanged: if (hovered) cmdPalette.selectedIndex = rowItem.index
-                    }
-                    TapHandler {
-                        onTapped: cmdPalette.activate(rowItem.index)
-                    }
-                }
-            }
-        }
-
-        Rectangle {
-            id: bottomDivider
-            anchors.bottom: footer.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 1
-            color: Ui.tint(theme.ink1, 0.08)
-        }
-
-        // Footer hints
-        RowLayout {
-            id: footer
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 32
-            spacing: 12
-
-            Label {
-                Layout.leftMargin: 16
-                Layout.fillWidth: true
-                text: qsTr("↑ ↓ navigate · ↵ select · > actions · @ notes")
-                color: theme.ink3
-                font.pixelSize: 11
-                elide: Text.ElideRight
-            }
-            Label {
-                Layout.rightMargin: 16
-                text: "Ctrl+K"
-                color: theme.ink3
-                font.pixelSize: 11
-                font.family: "monospace"
             }
         }
     }

@@ -183,11 +183,13 @@ bool Library::open() {
     loadFolders();
     loadBooks();
     loadCollections();
+    loadAudioBadges();
     QSqlQuery speed(db);
     speed.exec(QStringLiteral("SELECT value FROM meta WHERE key = 'chars_per_minute'"));
     if (speed.next() && speed.value(0).toDouble() > 0)
         m_charsPerMinute = speed.value(0).toDouble();
     m_works->setCollections(m_collectionBooks);
+    m_works->setAudioSets(m_downloadedBooks, m_audiobookBooks);
     m_works->setBooks(m_books);
     return true;
 }
@@ -395,6 +397,29 @@ void Library::loadCollections() {
 
 void Library::syncWorksCollections() {
     m_works->setCollections(m_collectionBooks);
+}
+
+void Library::loadAudioBadges() {
+    m_downloadedBooks.clear();
+    m_audiobookBooks.clear();
+    if (!database().isOpen())
+        return;
+    QSqlQuery q(database());
+    if (!q.exec(QStringLiteral("SELECT book_id, key, value FROM book_settings "
+                               "WHERE key IN ('audio_downloaded', 'audiobook_saved')")))
+        return;
+    while (q.next()) {
+        const int bookId = q.value(0).toInt();
+        const QString key = q.value(1).toString();
+        const QString val = q.value(2).toString().trimmed().toLower();
+        const bool truthy = !val.isEmpty() && val != QLatin1String("0") && val != QLatin1String("false");
+        if (!truthy)
+            continue;
+        if (key == QLatin1String("audio_downloaded"))
+            m_downloadedBooks.insert(bookId);
+        else if (key == QLatin1String("audiobook_saved"))
+            m_audiobookBooks.insert(bookId);
+    }
 }
 
 void Library::loadFolders() {
@@ -612,6 +637,18 @@ void Library::rescan() {
     emit scanningChanged();
     emit scanProgressChanged();
     m_scanner->scan(m_folders, loose, known);
+}
+
+void Library::cancelScan() {
+    if (!m_scanning)
+        return;
+    m_scanner->cancel();
+    m_flush.stop();
+    flushPending();
+    m_queuedFiles.clear();
+    m_scanning = false;
+    emit scanningChanged();
+    emit scanProgressChanged();
 }
 
 void Library::markListed(const QStringList &paths, const QStringList &folders) {
@@ -873,7 +910,10 @@ QVariantMap Library::toMap(const BookRecord &r) const {
         {"collectionIds", colIds},
         {"wantToRead", r.wantAt > 0 && r.finishedAt == 0},
         {"listening", r.listenedAt > 0},
+        {"downloaded", m_downloadedBooks.contains(r.id)},
+        {"hasAudiobook", m_audiobookBooks.contains(r.id)},
         {"chapterTitle", chapterTitleOf(r)},
+        {"snippet", snippetOf(r)},
     };
 }
 
@@ -882,6 +922,30 @@ QString Library::chapterTitleOf(const BookRecord &r) {
     if (r.position.isEmpty())
         return {};
     return QJsonDocument::fromJson(r.position.toUtf8()).object().value(QStringLiteral("title")).toString();
+}
+
+// A short quote from the last-read page, saved alongside the position.
+QString Library::snippetOf(const BookRecord &r) {
+    if (r.position.isEmpty())
+        return {};
+    return QJsonDocument::fromJson(r.position.toUtf8())
+        .object()
+        .value(QStringLiteral("snippet"))
+        .toString()
+        .simplified();
+}
+
+void Library::enrichBookMap(QVariantMap &map, int id) const {
+    int highlights = 0;
+    if (database().isOpen()) {
+        QSqlQuery q(database());
+        q.prepare(QStringLiteral("SELECT COUNT(*) FROM annotations WHERE book_id = ? AND kind = 'highlight'"));
+        q.addBindValue(id);
+        if (q.exec() && q.next())
+            highlights = q.value(0).toInt();
+    }
+    map.insert(QStringLiteral("highlightCount"), highlights);
+    map.insert(QStringLiteral("voiceName"), bookSetting(id, QStringLiteral("voiceName")));
 }
 
 void Library::setWantToRead(int id, bool want) {
@@ -917,11 +981,13 @@ void Library::markListened(int id) {
 // How many books each shelf of the sidebar holds: visible books only, a
 // work's editions counted once each as the grid shows them ungrouped.
 QVariantMap Library::shelfCounts() const {
-    int all = 0, reading = 0, want = 0, finished = 0, listening = 0;
+    int all = 0, reading = 0, want = 0, finished = 0, listening = 0, pdf = 0, downloaded = 0, audiobooks = 0;
     for (const auto &r : std::as_const(m_books)) {
         if (!r.visible())
             continue;
         ++all;
+        if (r.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0)
+            ++pdf;
         if (r.finishedAt > 0)
             ++finished;
         else if (r.openedAt > 0)
@@ -930,12 +996,27 @@ QVariantMap Library::shelfCounts() const {
             ++want;
         if (r.listenedAt > 0)
             ++listening;
+        if (m_downloadedBooks.contains(r.id))
+            ++downloaded;
+        if (m_audiobookBooks.contains(r.id))
+            ++audiobooks;
     }
-    return {{"all", all}, {"reading", reading}, {"want", want}, {"finished", finished}, {"listening", listening}};
+    return {{"all", all},
+            {"reading", reading},
+            {"want", want},
+            {"finished", finished},
+            {"listening", listening},
+            {"pdf", pdf},
+            {"downloaded", downloaded},
+            {"audiobooks", audiobooks}};
 }
 
 QVariantMap Library::book(int id) const {
-    return m_books.contains(id) ? toMap(m_books.value(id)) : QVariantMap();
+    if (!m_books.contains(id))
+        return {};
+    QVariantMap map = toMap(m_books.value(id));
+    enrichBookMap(map, id);
+    return map;
 }
 
 QVariantList Library::allBooks() const {
@@ -1260,8 +1341,11 @@ QVariantList Library::continueReading() const {
     std::sort(found.begin(), found.end(),
               [](const BookRecord &a, const BookRecord &b) { return a.openedAt > b.openedAt; });
     QVariantList list;
-    for (const auto &record : found.mid(0, 8))
-        list.append(toMap(record));
+    for (const auto &record : found.mid(0, 8)) {
+        QVariantMap map = toMap(record);
+        enrichBookMap(map, record.id);
+        list.append(map);
+    }
     return list;
 }
 
@@ -1453,7 +1537,36 @@ void Library::setBookSetting(int id, const QString &key, const QString &value) {
     query.addBindValue(key);
     // An empty setting is "", never NULL (which the table refuses).
     query.addBindValue(value.isNull() ? QStringLiteral("") : value);
-    exec(query);
+    if (!exec(query))
+        return;
+    const QString norm = value.trimmed().toLower();
+    const bool truthy = !norm.isEmpty() && norm != QLatin1String("0") && norm != QLatin1String("false");
+    if (key == QLatin1String("audio_downloaded")) {
+        const bool had = m_downloadedBooks.contains(id);
+        if (truthy != had) {
+            if (truthy)
+                m_downloadedBooks.insert(id);
+            else
+                m_downloadedBooks.remove(id);
+            m_works->setAudioSets(m_downloadedBooks, m_audiobookBooks);
+            emit bookChanged(id);
+            changed();
+        }
+    } else if (key == QLatin1String("audiobook_saved")) {
+        const bool had = m_audiobookBooks.contains(id);
+        if (truthy != had) {
+            if (truthy)
+                m_audiobookBooks.insert(id);
+            else
+                m_audiobookBooks.remove(id);
+            m_works->setAudioSets(m_downloadedBooks, m_audiobookBooks);
+            emit bookChanged(id);
+            changed();
+        }
+    } else if (key == QLatin1String("voiceName")) {
+        emit bookChanged(id);
+        changed();
+    }
 }
 
 QList<int> Library::chapterLengths(int id) const {

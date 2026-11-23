@@ -231,16 +231,24 @@ void LibraryIndex::rebuild() {
     update(m_last);
 }
 
-QVariantList LibraryIndex::search(const QString &query, int limit) const {
+QVariantList LibraryIndex::search(const QString &query, int limit, int bookId) const {
     QVariantList results;
     const QString match = matchExpression(query);
     if (!m_available || match.isEmpty())
         return results;
     QSqlQuery q(QSqlDatabase::database(m_connection));
-    q.prepare(QStringLiteral("SELECT book, chapter, snippet(chapter_text, 0, '‹', '›', '…', 14), body "
-                             "FROM chapter_text WHERE chapter_text MATCH ? ORDER BY rank LIMIT ?"));
-    q.addBindValue(match);
-    q.addBindValue(qMax(1, limit));
+    if (bookId > 0) {
+        q.prepare(QStringLiteral("SELECT book, chapter, snippet(chapter_text, 0, '‹', '›', '…', 14), body "
+                                 "FROM chapter_text WHERE chapter_text MATCH ? AND book = ? ORDER BY rank LIMIT ?"));
+        q.addBindValue(match);
+        q.addBindValue(bookId);
+        q.addBindValue(qMax(1, limit));
+    } else {
+        q.prepare(QStringLiteral("SELECT book, chapter, snippet(chapter_text, 0, '‹', '›', '…', 14), body "
+                                 "FROM chapter_text WHERE chapter_text MATCH ? ORDER BY rank LIMIT ?"));
+        q.addBindValue(match);
+        q.addBindValue(qMax(1, limit));
+    }
     if (!q.exec())
         return results;
     // The first word searched for, to find where in the chapter to open.

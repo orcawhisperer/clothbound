@@ -4,8 +4,9 @@ import QtQuick.Controls
 import "Icons.js" as Icons
 import "Ui.js" as Ui
 
-// One work in the library grid: its cover (stacked when there are several
-// editions), how far it's read, and its title.
+// One work in the library grid: its 2:3 cover (stacked when there are several
+// editions), subtle top-right PDF / finished badges, single-line title, and a
+// calm tabular status/meta line underneath (01_library.html).
 Item {
     id: card
 
@@ -23,10 +24,13 @@ Item {
     required property string problem
     required property string series
     required property real seriesIndex
+    required property int pages
+    required property bool wantToRead
+    required property bool listening
 
     readonly property bool current: GridView.isCurrentItem
     readonly property bool focused: current && GridView.view.activeFocus
-    readonly property real pad: 14
+    readonly property real pad: 12
 
     signal activated()
     signal detailsRequested()
@@ -40,16 +44,19 @@ Item {
         y: card.pad
         width: card.width - 2 * card.pad
         height: width * 1.5
-        scale: hover.hovered ? 1.025 : 1
-        Behavior on scale { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        scale: hover.hovered ? 1.02 : 1
+        Behavior on scale {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+        }
 
         // Further editions, as covers stacked behind.
         Repeater {
             model: Math.min(card.editions - 1, 2)
             Rectangle {
                 required property int index
-                x: art.box.x + 6 * (index + 1)
-                y: art.box.y - 6 * (index + 1)
+                x: art.box.x + 5 * (index + 1)
+                y: art.box.y - 5 * (index + 1)
                 width: art.box.width
                 height: art.box.height
                 radius: art.radius
@@ -59,15 +66,15 @@ Item {
             }
         }
 
-        // A hard shadow, as Omarchy's apps draw them.
+        // Grounded book shadow.
         Rectangle {
             x: art.box.x
-            y: art.box.y + 5
+            y: art.box.y + 6
             width: art.box.width
             height: art.box.height
             radius: art.radius
             color: "black"
-            opacity: theme.light ? 0.16 : 0.38
+            opacity: theme.light ? 0.16 : 0.42
         }
 
         CoverImage {
@@ -78,73 +85,74 @@ Item {
             author: card.author
         }
 
-        // How far it's read, along the bottom of the cover.
-        Item {
-            visible: card.progress > 0.005 && !card.finished
-            x: art.box.x
-            y: art.box.y + art.box.height - 4
-            width: art.box.width
-            height: 4
-            Rectangle { anchors.fill: parent; color: "black"; opacity: 0.45 }
-            Rectangle { width: parent.width * card.progress; height: parent.height; color: theme.accent }
-        }
-
+        // Top-right Finished badge: quiet 18×18 translucent circle with check.
         Rectangle {
+            id: finishedBadge
             visible: card.finished
-            x: art.box.x + art.box.width - width - 6
-            y: art.box.y + 6
-            width: 22
-            height: 22
-            radius: 11
-            color: theme.accent
+            x: art.box.x + art.box.width - width - 8
+            y: art.box.y + 8
+            width: 18
+            height: 18
+            radius: 9
+            color: Qt.rgba(0, 0, 0, 0.55)
+            Accessible.name: qsTr("Finished")
             Glyph {
                 anchors.centerIn: parent
-                width: 14
-                height: 14
-                stroke: 2.4
+                width: 10
+                height: 10
+                stroke: 2.8
                 path: Icons.check
-                color: theme.accentForeground
+                color: "#F2F2F3"
             }
         }
 
+        // Top-right PDF badge (shifts left beside the finished check if both show).
         Label {
             visible: card.format === "pdf"
-            x: art.box.x + 6
-            y: art.box.y + art.box.height - height - 10
+            x: art.box.x + art.box.width - width - (card.finished ? 30 : 8)
+            y: art.box.y + 8
             text: "PDF"
             font.pixelSize: 9
             font.weight: Font.Bold
-            font.letterSpacing: 0.6
-            color: "white"
+            font.letterSpacing: 0.4
+            color: "#F2F2F3"
             leftPadding: 5
             rightPadding: 5
             topPadding: 2
             bottomPadding: 2
-            background: Rectangle { radius: Math.min(3, theme.radius); color: "black"; opacity: 0.55 }
+            background: Rectangle {
+                radius: Ui.radius(4, theme.radius)
+                color: Qt.rgba(0, 0, 0, 0.55)
+            }
         }
 
+        // Top-left series number badge (preserved Dogear feature).
         Label {
             visible: card.series !== "" && card.seriesIndex > 0
-            x: art.box.x + 6
-            y: art.box.y + 6
+            x: art.box.x + 8
+            y: art.box.y + 8
             text: "#" + (Math.floor(card.seriesIndex) === card.seriesIndex ? Math.floor(card.seriesIndex) : card.seriesIndex)
             font.pixelSize: 10
             font.weight: Font.DemiBold
-            color: "white"
+            color: "#F2F2F3"
             leftPadding: 6
             rightPadding: 6
             topPadding: 2
             bottomPadding: 2
-            background: Rectangle { radius: Math.min(4, theme.radius); color: "black"; opacity: 0.6 }
+            background: Rectangle {
+                radius: Ui.radius(4, theme.radius)
+                color: Qt.rgba(0, 0, 0, 0.58)
+            }
         }
 
+        // Keyboard focus ring around the cover.
         Rectangle {
             visible: card.focused
-            x: art.box.x - 5
-            y: art.box.y - 5
-            width: art.box.width + 10
-            height: art.box.height + 10
-            radius: art.radius + (art.radius > 0 ? 4 : 0)
+            x: art.box.x - 4
+            y: art.box.y - 4
+            width: art.box.width + 8
+            height: art.box.height + 8
+            radius: Ui.radius(art.radius + 4, theme.radius)
             color: "transparent"
             border.width: 2
             border.color: theme.accent
@@ -156,7 +164,7 @@ Item {
         anchors.topMargin: 10
         x: card.pad
         width: coverArea.width
-        spacing: 2
+        spacing: 3
 
         Label {
             width: parent.width
@@ -164,19 +172,35 @@ Item {
             textFormat: Text.PlainText
             color: card.problem !== "" ? theme.ink3 : theme.ink1
             font.pixelSize: 13
-            font.weight: Font.DemiBold
-            wrapMode: Text.Wrap
-            maximumLineCount: 2
+            font.weight: Font.Medium
+            maximumLineCount: 1
             elide: Text.ElideRight
-            lineHeight: 1.1
         }
         Label {
             width: parent.width
-            text: card.problem !== "" ? card.problem
-                : card.editions > 1 ? qsTr("%n editions", "", card.editions) : card.author
+            text: {
+                const _lang = translator.language
+                if (card.problem !== "")
+                    return card.problem
+                if (card.editions > 1)
+                    return qsTr("%n editions", "", card.editions)
+                if (card.finished)
+                    return qsTr("Finished")
+                if (card.progress > 0.005) {
+                    const pct = Math.round(card.progress * 100).toLocaleString(Qt.locale(), "f", 0)
+                    return card.listening ? qsTr("%1% · listening").arg(pct) : qsTr("%1%").arg(pct)
+                }
+                if (card.wantToRead)
+                    return qsTr("Want to read")
+                if (card.format === "pdf" && card.pages > 0)
+                    return qsTr("PDF · %n pages", "", card.pages)
+                return card.author !== "" ? card.author : qsTr("New")
+            }
             textFormat: Text.PlainText
-            color: card.editions > 1 && card.problem === "" ? theme.accentInk : theme.ink2
+            color: card.problem !== "" ? theme.danger
+                 : card.editions > 1 ? theme.accentInk : theme.ink4
             font.pixelSize: 12
+            font.features: ({ "tnum": 1 })
             elide: Text.ElideRight
         }
     }

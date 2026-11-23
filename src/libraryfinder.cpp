@@ -32,21 +32,28 @@ QStringList LibraryFinder::candidates(const QString &home, const QString &docume
     return unique;
 }
 
-int LibraryFinder::countBooks(const QString &folder, int depth, int cap) {
+LibraryFinder::FormatCounts LibraryFinder::countByFormat(const QString &folder, int depth, int cap) {
+    FormatCounts counts;
     const QDir root(folder);
     if (!root.exists())
-        return 0;
+        return counts;
     const int rootDepth = QDir::cleanPath(root.absolutePath()).count('/');
-    int count = 0;
     QDirIterator it(root.absolutePath(), {"*.epub", "*.EPUB", "*.pdf", "*.PDF"}, QDir::Files | QDir::Readable,
                     QDirIterator::Subdirectories);
-    while (it.hasNext() && count < cap) {
+    while (it.hasNext() && counts.total() < cap) {
         const QString path = it.next();
         if (QDir::cleanPath(QFileInfo(path).absolutePath()).count('/') - rootDepth >= depth)
             continue;
-        ++count;
+        if (path.endsWith(QLatin1String(".pdf"), Qt::CaseInsensitive))
+            ++counts.pdf;
+        else
+            ++counts.epub;
     }
-    return count;
+    return counts;
+}
+
+int LibraryFinder::countBooks(const QString &folder, int depth, int cap) {
+    return countByFormat(folder, depth, cap).total();
 }
 
 QString LibraryFinder::label(const QString &path, const QString &home) {
@@ -61,18 +68,27 @@ QVariantList LibraryFinder::search(const QStringList &candidates, const QStringL
         const QString a = QFileInfo(path).canonicalFilePath(), b = QFileInfo(folder).canonicalFilePath();
         return !a.isEmpty() && !b.isEmpty() && (a == b || a.startsWith(b + '/') || b.startsWith(a + '/'));
     };
-    struct Hit { QString path; int count; };
+    struct Hit {
+        QString path;
+        FormatCounts counts;
+    };
     QList<Hit> hits;
     for (const QString &candidate : candidates) {
         if (std::any_of(watched.cbegin(), watched.cend(), [&](const QString &w) { return inside(candidate, w); }))
             continue;
-        if (const int count = countBooks(candidate))
-            hits.append({candidate, count});
+        const FormatCounts counts = countByFormat(candidate);
+        if (counts.total() > 0)
+            hits.append({candidate, counts});
     }
-    std::stable_sort(hits.begin(), hits.end(), [](const Hit &a, const Hit &b) { return a.count > b.count; });
+    std::stable_sort(hits.begin(), hits.end(),
+                     [](const Hit &a, const Hit &b) { return a.counts.total() > b.counts.total(); });
     QVariantList list;
     for (const Hit &hit : std::as_const(hits))
-        list.append(QVariantMap{{"path", hit.path}, {"label", label(hit.path, home)}, {"count", hit.count}});
+        list.append(QVariantMap{{"path", hit.path},
+                                {"label", label(hit.path, home)},
+                                {"count", hit.counts.total()},
+                                {"epubCount", hit.counts.epub},
+                                {"pdfCount", hit.counts.pdf}});
     return list;
 }
 

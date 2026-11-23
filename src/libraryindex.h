@@ -44,8 +44,8 @@ public:
     // read in, books no longer listed are dropped.
     void update(const QList<Source> &books);
     // [{bookId, chapter, offset, snippet}], best first; the snippet marks the
-    // matched words with ‹ and ›.
-    Q_INVOKABLE QVariantList search(const QString &query, int limit = 8) const;
+    // matched words with ‹ and ›. Pass `bookId > 0` to scope to one book.
+    Q_INVOKABLE QVariantList search(const QString &query, int limit = 8, int bookId = 0) const;
     Q_INVOKABLE void rebuild();
     // The text of a chapter between two offsets, for showing a passage.
     Q_INVOKABLE QString passage(int bookId, int chapter, qint64 start, qint64 end) const;
