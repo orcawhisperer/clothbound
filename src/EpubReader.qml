@@ -535,6 +535,11 @@ FocusScope {
         chromeShown = true
         chromeTimer.restart()
     }
+    function triggerPageTurnSound(direction) {
+        if (view.settings && view.settings.pageTurnSound && !narration.playing
+            && typeof reader.playPageTurn === "function")
+            reader.playPageTurn(direction)
+    }
 
     // Typography and theme changes reach the page together, once.
     Timer {
@@ -546,6 +551,7 @@ FocusScope {
     Connections {
         target: reader
         function onAppearanceChanged() { styleTimer.restart() }
+        function onPageTurnRequested(direction) { view.triggerPageTurnSound(direction) }
         function onJumpRecorded(label) {
             view.jumpPillLabel = label
             view.jumpPillVisible = true
@@ -565,6 +571,7 @@ FocusScope {
         function onMarginsChanged() { styleTimer.restart() }
         function onJustifyChanged() { styleTimer.restart() }
         function onHyphenateChanged() { styleTimer.restart() }
+        function onDropCapChanged() { styleTimer.restart() }
         function onLayoutChanged() { styleTimer.restart() }
         function onAnimateChanged() { styleTimer.restart() }
         function onPublisherChanged() { styleTimer.restart() }
@@ -811,6 +818,10 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: view.look.bg
+        Behavior on color {
+            enabled: !theme.reducedMotion
+            ColorAnimation { duration: 200; easing.type: Easing.OutCubic }
+        }
     }
 
     // The reading stage: fills the window normally, and shrinks cleanly by the
@@ -930,12 +941,17 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
+            anchors.topMargin: theme.reducedMotion ? 0 : Math.round((1 - chromeProgress) * -6)
             height: 48
-            opacity: view.chromeShown ? 1 : 0
-            visible: opacity > 0.01
-            Behavior on opacity {
-                NumberAnimation { duration: theme.reducedMotion ? 80 : 180; easing.type: Easing.OutCubic }
+            property real chromeProgress: view.chromeShown ? 1 : 0
+            Behavior on chromeProgress {
+                NumberAnimation {
+                    duration: theme.reducedMotion ? 80 : (view.chromeShown ? 200 : 160)
+                    easing.type: view.chromeShown ? Easing.OutCubic : Easing.OutQuad
+                }
             }
+            opacity: chromeProgress
+            visible: chromeProgress > 0.01
             HoverHandler { id: chromeHover }
 
             Row {
@@ -1139,12 +1155,14 @@ FocusScope {
             id: followVoicePill
             z: 3
             anchors.top: parent.top
-            anchors.topMargin: 24
+            anchors.topMargin: 24 - (theme.reducedMotion ? 0 : Math.round((1 - opacity) * 6))
             anchors.horizontalCenter: parent.horizontalCenter
             readonly property bool shown: narration.active && !view.chromeShown
             opacity: shown ? 1 : 0
             visible: opacity > 0.01
-            Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 80 : 160 } }
+            Behavior on opacity {
+                NumberAnimation { duration: theme.reducedMotion ? 80 : 180; easing.type: Easing.OutCubic }
+            }
             implicitHeight: 30
             implicitWidth: followPillRow.implicitWidth + 22
             hoverEnabled: true
@@ -1193,14 +1211,18 @@ FocusScope {
             anchors.bottom: parent.bottom
             anchors.leftMargin: view.footerInset
             anchors.rightMargin: view.footerInset
-            anchors.bottomMargin: 24
+            anchors.bottomMargin: 24 - (theme.reducedMotion ? 0 : Math.round((1 - footerProgress) * 8))
             height: footerCol.implicitHeight
             readonly property bool shown: view.chromeShown && !narration.active && !keysStrip.wanted
-            opacity: shown ? 1 : 0
-            visible: opacity > 0.01
-            Behavior on opacity {
-                NumberAnimation { duration: theme.reducedMotion ? 80 : 180; easing.type: Easing.OutCubic }
+            property real footerProgress: shown ? 1 : 0
+            Behavior on footerProgress {
+                NumberAnimation {
+                    duration: theme.reducedMotion ? 80 : (bottomFooter.shown ? 200 : 160)
+                    easing.type: bottomFooter.shown ? Easing.OutCubic : Easing.OutQuad
+                }
             }
+            opacity: footerProgress
+            visible: footerProgress > 0.01
             HoverHandler { id: scrubberHover }
 
             Column {
@@ -1734,17 +1756,29 @@ FocusScope {
     // the wheel does nothing there, and a click outside closes what's open
     // (a note being written is never thrown away by a stray click; docked
     // Companion leaves the reading stage interactive).
-    Rectangle {
+    Item {
         id: scrim
         z: 8
         anchors.fill: parent
-        visible: view.modalPanelOpen
-        // VoicePanel provides its own modal scrim; dim the page for GoToBox and NoteEditor.
-        color: (noteEditor.open || goTo.open)
-             ? (view.look.dark ? Qt.rgba(6 / 255, 6 / 255, 8 / 255, 0.50) : Qt.rgba(24 / 255, 20 / 255, 14 / 255, 0.42))
-             : "transparent"
+        readonly property bool dimmed: noteEditor.open || goTo.open
+        property real dimOpacity: dimmed ? 1 : 0
+        Behavior on dimOpacity {
+            NumberAnimation {
+                duration: theme.reducedMotion ? 90 : (scrim.dimmed ? 200 : 150)
+                easing.type: scrim.dimmed ? Easing.OutCubic : Easing.OutQuad
+            }
+        }
+        visible: view.modalPanelOpen || dimOpacity > 0.01
+        Rectangle {
+            anchors.fill: parent
+            opacity: scrim.dimOpacity
+            color: view.look.dark
+                 ? Qt.rgba(6 / 255, 6 / 255, 8 / 255, 0.50)
+                 : Qt.rgba(24 / 255, 20 / 255, 14 / 255, 0.42)
+        }
         MouseArea {
             anchors.fill: parent
+            enabled: view.modalPanelOpen
             acceptedButtons: Qt.AllButtons
             hoverEnabled: true
             onPressed: (mouse) => {
@@ -1996,11 +2030,21 @@ FocusScope {
         property string source: ""
         property string caption: ""
         property real zoom: 1.0
+        Behavior on zoom {
+            enabled: !theme.reducedMotion && lightbox.open
+            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+        }
         property real panX: 0
         property real panY: 0
-        visible: opacity > 0.01
-        opacity: open ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: 160 } }
+        property real reveal: open ? 1 : 0
+        Behavior on reveal {
+            NumberAnimation {
+                duration: theme.reducedMotion ? 90 : (lightbox.open ? 220 : 160)
+                easing.type: lightbox.open ? Easing.OutCubic : Easing.OutQuad
+            }
+        }
+        visible: reveal > 0.01
+        opacity: reveal
 
         function openImage(src, cap) {
             if (!src || src === "")
@@ -2106,12 +2150,12 @@ FocusScope {
             anchors.verticalCenterOffset: lightbox.panY
             width: Math.max(120, lightbox.width - 96)
             height: Math.max(120, lightbox.height - (lightbox.caption !== "" ? 156 : 112))
-            source: lightbox.open ? lightbox.source : ""
+            source: lightbox.visible ? lightbox.source : ""
             fillMode: Image.PreserveAspectFit
             asynchronous: true
             smooth: true
             mipmap: true
-            scale: lightbox.zoom
+            scale: lightbox.zoom * (theme.reducedMotion ? 1.0 : (0.94 + 0.06 * lightbox.reveal))
         }
 
         // Top-right floating zoom & close controls.
@@ -2242,10 +2286,10 @@ FocusScope {
 
     // --- Keys ----------------------------------------------------------------
     readonly property bool modalOpen: win.helpVisible || settingsView.open || welcome.open || (typeof commandPalette !== "undefined" && commandPalette.open)
-    readonly property bool keys: visible && !modalPanelOpen && !modalOpen && !win.typing && !lightbox.open
+    readonly property bool keys: reader.open && visible && !modalPanelOpen && !modalOpen && !win.typing && !lightbox.open
     // Listening keys work with a panel open too, unless a field is taking typing.
     readonly property bool typing: win.typing
-    readonly property bool listenKeys: visible && !modalOpen && !win.typing && !lightbox.open
+    readonly property bool listenKeys: reader.open && visible && !modalOpen && !win.typing && !lightbox.open
     Shortcut { sequence: "C"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: companionPanel.open ? companionPanel.close() : view.showCompanion("ask") }
     Shortcut { sequence: "Right"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.prev() : view.next() }
     Shortcut { sequence: "Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.next() : view.prev() }
@@ -2263,16 +2307,16 @@ FocusScope {
     Shortcut { sequence: "B"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.toggleBookmark() }
     Shortcut { sequence: "M"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showMarks() }
     Shortcut { sequences: [StandardKey.Redo]; context: Qt.ApplicationShortcut; enabled: view.keys && marks.canRedo; onActivated: marks.redo() }
-    Shortcut { sequences: [StandardKey.Copy]; context: Qt.ApplicationShortcut; enabled: view.visible && view.pdf && !!pdfSurface.selection && !view.modalOpen && !win.typing; onActivated: { reader.copyText(pdfSurface.selection.text); toast.show(qsTr("Copied")) } }
+    Shortcut { sequences: [StandardKey.Copy]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && view.pdf && !!pdfSurface.selection && !view.modalOpen && !win.typing; onActivated: { reader.copyText(pdfSurface.selection.text); toast.show(qsTr("Copied")) } }
     Shortcut { sequences: ["/", StandardKey.Find]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: searchBar.show() }
     Shortcut { sequence: "N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.next() }
     Shortcut { sequence: "Shift+N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.previous() }
     Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.cycleTheme() }
-    Shortcut { sequences: ["+", "=", "Ctrl++", "Ctrl+="]; context: Qt.ApplicationShortcut; enabled: view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0.05) }
-    Shortcut { sequences: ["-", "Ctrl+-"]; context: Qt.ApplicationShortcut; enabled: view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(-0.05) }
-    Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0) }
+    Shortcut { sequences: ["+", "=", "Ctrl++", "Ctrl+="]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0.05) }
+    Shortcut { sequences: ["-", "Ctrl+-"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(-0.05) }
+    Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0) }
     Shortcut { sequence: "Tab"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
-    Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: view.visible && !view.modalOpen; onActivated: view.dismiss() }
+    Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen; onActivated: view.dismiss() }
     // Listening.
     // P listens from the page in view, then pauses and goes on; ⇧P stops.
     Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.listenKeys; onActivated: narration.active ? narration.toggle() : view.listen() }

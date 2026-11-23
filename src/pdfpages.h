@@ -4,11 +4,13 @@
 #include <QColor>
 #include <QHash>
 #include <QImage>
+#include <QList>
 #include <QMutex>
 #include <QQuickAsyncImageProvider>
 #include <QRectF>
 #include <QSet>
 #include <QThreadPool>
+#include <atomic>
 #include <memory>
 
 class PdfBook;
@@ -24,6 +26,9 @@ public:
 
     static void add(const QString &token, std::shared_ptr<PdfBook> book);
     static void remove(const QString &token);
+    static void prefetch(const QString &token, const QList<int> &pages, const QSize &requestedSize,
+                         const QString &colorQuery);
+    static void cancelPrefetch();
 
     QQuickImageResponse *requestImageResponse(const QString &id, const QSize &requestedSize) override;
 
@@ -43,6 +48,9 @@ public:
 
 private:
     friend class PageResponse;
+    friend class PrefetchTask;
+    static QString makeCacheKey(const QString &id, const QSize &requestedSize);
+    static QSize renderSizeFor(const QSizeF &points, const QSize &requestedSize);
     static QString pathFor(const QString &token);
     static QImage cached(const QString &key);
     static void storeCached(const QString &token, const QString &key, const QImage &image);
@@ -51,6 +59,8 @@ private:
     std::shared_ptr<WorkerState> m_worker;
 
     static QMutex s_mutex;
+    static PdfPages *s_instance;
+    static std::atomic<quint64> s_prefetchGen;
     static QHash<QString, QString> s_paths;
     static QCache<QString, QImage> s_cache;
     static QHash<QString, QSet<QString>> s_tokenKeys;

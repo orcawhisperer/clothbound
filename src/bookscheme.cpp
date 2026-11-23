@@ -28,11 +28,19 @@ public:
 const QMultiMap<QByteArray, QByteArray> &bookHeaders() {
     static const QMultiMap<QByteArray, QByteArray> headers{
         {"X-Content-Type-Options", "nosniff"},
+        {"Cache-Control", "private, max-age=3600"},
         {"Content-Security-Policy",
          "default-src 'self' data: blob:; script-src 'none'; object-src 'none'; "
          "base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'; "
          "style-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob:; "
          "font-src 'self' data: blob:; media-src 'self' data: blob:"},
+    };
+    return headers;
+}
+
+const QMultiMap<QByteArray, QByteArray> &appHeaders() {
+    static const QMultiMap<QByteArray, QByteArray> headers{
+        {"Cache-Control", "private, max-age=86400"},
     };
     return headers;
 }
@@ -139,6 +147,7 @@ BookScheme::ResolvedResource BookScheme::resolveRequest(const QUrl &url, const Q
         result.ok = true;
         result.mimeType = file.second;
         result.data = source.readAll();
+        result.headers = appHeaders();
         return result;
     }
 

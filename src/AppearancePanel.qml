@@ -50,10 +50,19 @@ SidePanel {
         implicitHeight: 30
         hoverEnabled: true
         focusPolicy: Qt.TabFocus
+        scale: pressed && !theme.reducedMotion ? 0.98 : 1.0
+        Behavior on scale {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: 100; easing.type: Easing.OutCubic }
+        }
         background: Rectangle {
             radius: Ui.radius(7, theme.radius)
             color: choice.selected ? Ui.tint(panel.look.link, 0.18)
                  : choice.hovered ? Ui.tint(panel.look.fg, 0.08) : Ui.tint(panel.look.fg, 0.04)
+            Behavior on color {
+                enabled: !theme.reducedMotion
+                ColorAnimation { duration: 130; easing.type: Easing.OutCubic }
+            }
             border.width: choice.selected ? 1.5 : 0
             border.color: panel.look.link
             Rectangle {
@@ -133,12 +142,22 @@ SidePanel {
                         Accessible.name: Themes.name(modelData)
                         Accessible.checked: selected
                         onClicked: panel.update("theme", modelData)
+                        scale: pressed && !theme.reducedMotion ? 0.975 : 1.0
+                        Behavior on scale {
+                            enabled: !theme.reducedMotion
+                            NumberAnimation { duration: 110; easing.type: Easing.OutCubic }
+                        }
                         background: Rectangle {
                             radius: Ui.radius(10, theme.radius)
                             color: swatch.colors.bg
                             border.width: swatch.selected ? 2 : 1
                             border.color: swatch.selected ? panel.look.link
+                                        : swatch.hovered ? (swatch.colors.dark ? Qt.rgba(1, 1, 1, 0.24) : Qt.rgba(0, 0, 0, 0.24))
                                         : (swatch.colors.dark ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(0, 0, 0, 0.10))
+                            Behavior on border.color {
+                                enabled: !theme.reducedMotion
+                                ColorAnimation { duration: 140; easing.type: Easing.OutCubic }
+                            }
                             Rectangle {
                                 anchors.fill: parent
                                 anchors.margins: -3
@@ -187,12 +206,22 @@ SidePanel {
                 Accessible.name: qsTr("Match desktop (Omarchy)")
                 Accessible.checked: selected
                 onClicked: panel.update("theme", "omarchy")
+                scale: pressed && !theme.reducedMotion ? 0.985 : 1.0
+                Behavior on scale {
+                    enabled: !theme.reducedMotion
+                    NumberAnimation { duration: 110; easing.type: Easing.OutCubic }
+                }
                 background: Rectangle {
                     radius: Ui.radius(8, theme.radius)
                     color: omarchySwatch.colors.bg
                     border.width: omarchySwatch.selected ? 2 : 1
                     border.color: omarchySwatch.selected ? panel.look.link
+                                : omarchySwatch.hovered ? (omarchySwatch.colors.dark ? Qt.rgba(1, 1, 1, 0.24) : Qt.rgba(0, 0, 0, 0.24))
                                 : (omarchySwatch.colors.dark ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(0, 0, 0, 0.10))
+                    Behavior on border.color {
+                        enabled: !theme.reducedMotion
+                        ColorAnimation { duration: 140; easing.type: Easing.OutCubic }
+                    }
                     Rectangle {
                         anchors.fill: parent
                         anchors.margins: -3

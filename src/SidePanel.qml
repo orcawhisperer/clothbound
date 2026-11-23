@@ -31,26 +31,28 @@ FocusScope {
     function close() { if (!open) return; open = false; closed() }
 
     width: 384
+    property real slideProgress: open ? 1 : 0
+    Behavior on slideProgress {
+        NumberAnimation {
+            duration: theme.reducedMotion ? 110 : (panel.open ? 260 : 210)
+            easing.type: panel.open ? Easing.OutQuint : Easing.OutCubic
+        }
+    }
+    readonly property real travel: width + 24
     x: theme.reducedMotion
-       ? (leftEdge ? 0 : parent.width - width)
-       : (leftEdge ? (open ? 0 : -width - 24) : (open ? parent.width - width : parent.width + 24))
-    Behavior on x {
-        enabled: !theme.reducedMotion
-        NumberAnimation { duration: 350; easing.type: Easing.OutQuart }
-    }
-    opacity: theme.reducedMotion ? (open ? 1 : 0) : 1
-    Behavior on opacity {
-        enabled: theme.reducedMotion
-        NumberAnimation { duration: 150 }
-    }
-    visible: theme.reducedMotion ? opacity > 0 : (leftEdge ? x > -width - 20 : x < parent.width + 20)
+       ? (leftEdge ? 0 : (parent ? parent.width - width : 0))
+       : (leftEdge ? -travel * (1 - slideProgress)
+                   : (parent ? parent.width - width + travel * (1 - slideProgress) : 0))
+    opacity: theme.reducedMotion ? slideProgress : Math.min(1, slideProgress * 2.5)
+    visible: slideProgress > 0.005
     Keys.onEscapePressed: close()
 
-    // A soft shadow toward the page.
+    // A soft shadow toward the page, fading smoothly with drawer travel.
     Rectangle {
         x: panel.leftEdge ? parent.width : -width
         width: 18
         height: parent.height
+        opacity: panel.slideProgress
         gradient: Gradient {
             orientation: Gradient.Horizontal
             GradientStop { position: panel.leftEdge ? 0 : 1; color: Ui.tint("#000000", theme.light ? 0.08 : 0.28) }
