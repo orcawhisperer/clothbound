@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="prompts/director.md">prompts/director.md</file>
+        <file alias="prompts/casting.md">prompts/casting.md</file>
+    </qresource>
+</RCC>

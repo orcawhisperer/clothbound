@@ -9,6 +9,7 @@
 #include "cli.h"
 #include "library.h"
 #include "narration.h"
+#include "voicecatalog.h"
 #include "portalfilepicker.h"
 #include "reader.h"
 #include "theme.h"
@@ -156,6 +157,8 @@ int main(int argc, char *argv[]) {
     AudioCache audioCache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/audio"),
                           library.database().connectionName());
     Narration narration(&ai, &audioCache, &reader, &library);
+    VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
+                        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/voices.json"));
     // A book named on the command line joins the library (it may live
     // anywhere) and opens.
     int bookToOpen = 0;
@@ -178,6 +181,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("reader", &reader);
     engine.rootContext()->setContextProperty("ai", &ai);
     engine.rootContext()->setContextProperty("narration", &narration);
+    engine.rootContext()->setContextProperty("voices", &voices);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);
     engine.rootContext()->setContextProperty("debugMode", qEnvironmentVariableIsSet("DOGEAR_DEBUG"));

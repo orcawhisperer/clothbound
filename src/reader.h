@@ -55,6 +55,9 @@ public:
     QVariantList contents() const { return m_contents; }
     QVariantList chapterMarks() const;
     QVariantMap startPosition() const { return m_startPosition; }
+    // Some of the book's text from a chapter on, past short pages (a title
+    // page, the contents), up to `maxChars`: what the book sounds like.
+    Q_INVOKABLE QString passageFrom(int chapter, int maxChars = 4000) const;
     bool hasPageList() const { return m_hasPageList; }
     int chapter() const { return m_chapter; }
     int chapterCount() const { return int(m_chapterTitles.size()); }

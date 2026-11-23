@@ -1147,6 +1147,36 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 })
         },
 
+        // A few sentences from the page in view: how a voice would read
+        // this book. A paragraph that begins on the page is preferred to one
+        // carried over from the page before.
+        sampleText() {
+            if (!state.index)
+                return ''
+            const blocks = blocksOf(chapterDocument()).filter(b => b.kind === 'text' && b.text.trim().length > 60)
+            const from = state.location ? state.location.offset : 0
+            const block = blocks.find(b => b.start >= from) || blocks.find(b => b.end > from) || blocks[0]
+            if (!block)
+                return ''
+            let text = ''
+            for (let i = 0; i < block.text.length; ++i) {
+                const at = block.start + i
+                if (!block.skips.some(([start, end]) => at >= start && at < end))
+                    text += block.text[i]
+            }
+            text = text.replace(/\s+/g, ' ').trim()
+            if (text.length <= 320)
+                return text
+            let end = -1
+            for (const match of text.matchAll(/[.!?\u2026]['"\u2019\u201d)\]]*(?=\s)/g)) {
+                const stop = match.index + match[0].length
+                if (stop > 320)
+                    break
+                end = stop
+            }
+            return end > 60 ? text.slice(0, end) : text.slice(0, text.lastIndexOf(' ', 320)) + '\u2026'
+        },
+
         // The selected text, for copying from the window.
         selectedText() {
             const selection = state.index ? chapterDocument().getSelection() : null

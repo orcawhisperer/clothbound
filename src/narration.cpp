@@ -11,7 +11,6 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QProcess>
 #include <QSettings>
 #include <QStandardPaths>
 #include <cmath>
@@ -71,9 +70,15 @@ Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library 
         emit sleepChanged();
     });
     connect(m_reader, &Reader::speakable, this, &Narration::addBlocks);
+    // The open book's narrator and style are known before listening starts,
+    // so they can be shown and changed.
     connect(m_reader, &Reader::bookChanged, this, [this] {
         if (m_active && m_reader->bookId() != m_bookId)
             stop();
+        if (!m_active && m_reader->bookId() > 0) {
+            m_bookId = m_reader->bookId();
+            loadVoice();
+        }
     });
 
     QSettings s = settings();
@@ -433,10 +438,8 @@ void Narration::decode(int index, const QString &file) {
     Clip &clip = m_clips[index];
     clip.state = Clip::Working;
     trace(QStringLiteral("cached #%1").arg(index));
-    auto *ffmpeg = new QProcess(this);
     const QString key = clip.key;
-    connect(ffmpeg, &QProcess::finished, this, [this, ffmpeg, key](int code, QProcess::ExitStatus status) {
-        ffmpeg->deleteLater();
+    m_cache->decode(file, sampleRate, this, [this, key](const QByteArray &pcm, bool ok) {
         int i = -1;
         for (int c = 0; c < m_clips.size(); ++c)
             if (m_clips[c].key == key && m_clips[c].state == Clip::Working && !m_clips[c].reply) {
@@ -446,14 +449,14 @@ void Narration::decode(int index, const QString &file) {
         if (i < 0)
             return;
         Clip &clip = m_clips[i];
-        if (code != 0 || status != QProcess::NormalExit) {
+        if (!ok) {
             // A damaged cache entry is made again.
             clip.state = Clip::Waiting;
             clip.key.clear();
             pump();
             return;
         }
-        clip.pcm = ffmpeg->readAllStandardOutput();
+        clip.pcm = pcm;
         clip.samples = clip.pcm.size() / 2;
         clip.state = Clip::Complete;
         if (clip.queued) {
@@ -462,9 +465,6 @@ void Narration::decode(int index, const QString &file) {
         }
         pump();
     });
-    ffmpeg->start(QStandardPaths::findExecutable(QStringLiteral("ffmpeg")),
-                  {"-hide_banner", "-loglevel", "error", "-i", file, "-f", "s16le", "-ac", "1", "-ar",
-                   QString::number(sampleRate), "pipe:1"});
 }
 
 qint64 Narration::expectedSamples(const Clip &clip) const {

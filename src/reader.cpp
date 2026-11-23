@@ -354,3 +354,17 @@ void Reader::log(const QString &message) {
     if (qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
         fprintf(stderr, "reader: %s\n", qPrintable(message));
 }
+
+QString Reader::passageFrom(int chapter, int maxChars) const {
+    if (!m_book)
+        return {};
+    QString text;
+    const QVariantList spine = m_manifest.value(QStringLiteral("spine")).toList();
+    for (int i = qMax(0, chapter); i < spine.size() && text.size() < maxChars; ++i) {
+        const QString words = m_book->chapterText(i).simplified();
+        if (words.size() < 1200)
+            continue;
+        text += words.left(maxChars - text.size()) + QStringLiteral("\n\n");
+    }
+    return text.trimmed();
+}

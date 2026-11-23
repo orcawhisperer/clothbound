@@ -24,7 +24,7 @@ struct Usage {
 };
 
 struct Error {
-    enum Kind { None, NoKey, BadKey, Limited, Budget, Offline, Refused, Server, Unsupported, Cancelled, Invalid };
+    enum Kind { None, NoKey, BadKey, Limited, Budget, Offline, Refused, Server, Unsupported, Cancelled, Invalid, NotFound };
     Kind kind = None;
     QString message;
     int retryAfterSeconds = 0;

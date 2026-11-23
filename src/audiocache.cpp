@@ -124,6 +124,35 @@ void AudioCache::store(const QString &key, const QByteArray &pcm, int sampleRate
     ffmpeg->start();
 }
 
+void AudioCache::decode(const QString &file, int sampleRate, QObject *context,
+                        std::function<void(const QByteArray &, bool)> done) {
+    if (file.endsWith(QStringLiteral(".wav"))) {
+        QFile wav(file);
+        QByteArray bytes = wav.open(QIODevice::ReadOnly) ? wav.readAll() : QByteArray();
+        // A WAV this cache wrote: a 44-byte header, then the samples.
+        done(bytes.size() > 44 ? bytes.mid(44) : QByteArray(), bytes.size() > 44);
+        return;
+    }
+    if (m_ffmpeg.isEmpty()) {
+        done({}, false);
+        return;
+    }
+    auto *ffmpeg = new QProcess(context);
+    QObject::connect(ffmpeg, &QProcess::finished, context, [ffmpeg, done](int code, QProcess::ExitStatus status) {
+        ffmpeg->deleteLater();
+        const bool ok = code == 0 && status == QProcess::NormalExit;
+        done(ok ? ffmpeg->readAllStandardOutput() : QByteArray(), ok);
+    });
+    QObject::connect(ffmpeg, &QProcess::errorOccurred, context, [ffmpeg, done](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart)
+            return;
+        ffmpeg->deleteLater();
+        done({}, false);
+    });
+    ffmpeg->start(m_ffmpeg, {"-hide_banner", "-loglevel", "error", "-i", file, "-f", "s16le", "-ac", "1", "-ar",
+                             QString::number(sampleRate), "pipe:1"});
+}
+
 double AudioCache::megabytes() const {
     QSqlQuery query(QSqlDatabase::database(m_connection));
     query.exec(QStringLiteral("SELECT COALESCE(SUM(bytes), 0) FROM audio_clips"));

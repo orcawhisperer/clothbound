@@ -32,6 +32,7 @@ HEADERS += \
     ../src/pdfbook.h \
     ../src/theme.h \
     ../src/translator.h \
+    ../src/voicecatalog.h \
     ../src/ziparchive.h \
     testbooks.h
 
@@ -57,4 +58,7 @@ SOURCES += \
     ../src/pdfbook.cpp \
     ../src/theme.cpp \
     ../src/translator.cpp \
+    ../src/voicecatalog.cpp \
     ../src/ziparchive.cpp
+
+RESOURCES += ../src/prompts.qrc

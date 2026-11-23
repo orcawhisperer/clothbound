@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <functional>
 #include <QString>
 
 // Narration already made, kept so no passage is ever paid for twice: Opus
@@ -22,6 +23,10 @@ public:
     // A director's answer for a chapter, kept with the audio it shapes: a
     // chapter heard again is read the same way, and found in the cache.
     QString directions(const QString &key);
+    // Reads a kept clip back as 16-bit mono PCM at `sampleRate`, off the UI
+    // thread; `done` runs in `context`'s thread with ok false if it failed.
+    void decode(const QString &file, int sampleRate, QObject *context,
+                std::function<void(const QByteArray &pcm, bool ok)> done);
     void storeDirections(const QString &key, const QString &json);
     double megabytes() const;
     Q_INVOKABLE void clear();

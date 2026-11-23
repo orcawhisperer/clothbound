@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QNetworkReply>
 #include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 #include <cmath>
 #include <QtTest>
@@ -30,6 +31,7 @@
 #include "testbooks.h"
 #include "theme.h"
 #include "translator.h"
+#include "voicecatalog.h"
 #include "ziparchive.h"
 
 class DogearTests : public QObject {
@@ -72,6 +74,43 @@ private:
             data[i] = char(data[i] ^ key[i % 16]);
         return data;
     }
+
+    static Ai::Voice makeVoice(const QString &id, const QString &language, const QString &persona,
+                               const QString &accent = {}, const QString &description = {}) {
+        Ai::Voice voice;
+        voice.id = id;
+        voice.name = id.contains('-') ? QStringLiteral("Storyteller 1") : id;
+        voice.language = language;
+        voice.persona = persona;
+        voice.accent = accent;
+        voice.description = description;
+        voice.gender = "male";
+        voice.pitch = "low";
+        return voice;
+    }
+
+    struct VoiceRig {
+        QTemporaryDir dir;
+        Library library{dir.filePath("data"), dir.filePath("cache")};
+        BookScheme scheme;
+        Reader reader{&library, &scheme};
+        FakeServer server;
+        GeminiProvider gemini{nullptr, server.endpoint()};
+        MemoryKeyStore keys;
+        std::unique_ptr<AiServices> services;
+        std::unique_ptr<AudioCache> cache;
+        std::unique_ptr<VoiceCatalog> catalog;
+        VoiceRig() {
+            qunsetenv("GEMINI_API_KEY");
+            qputenv("DOGEAR_MUTE", "1");
+            library.open();
+            keys.save("gemini", "test-key");
+            services = std::make_unique<AiServices>(&gemini, &keys, library.database().connectionName());
+            cache = std::make_unique<AudioCache>(dir.filePath("audio"), library.database().connectionName());
+            catalog = std::make_unique<VoiceCatalog>(services.get(), cache.get(), &reader,
+                                                     library.database().connectionName(), dir.filePath("voices.json"));
+        }
+    };
 
 private slots:
 
@@ -914,6 +953,153 @@ private slots:
         services.forgetKey();
         QVERIFY(keys.load("gemini").isEmpty());
         QVERIFY(!services.hasKey());
+    }
+
+    // --- Voices --------------------------------------------------------
+
+    void voicesSuggestNarratorsForTheBook() {
+        VoiceRig rig;
+        const QString narrator = "Storyteller & Narrator (Nature Documentary Narrator)";
+        Ai::Voice designed = makeVoice("voice_abc", "en-GB", {});
+        designed.designed = true;
+        designed.name = "Victorian Gentleman";
+        designed.prompt = "A measured English gentleman.";
+        designed.expires = QDateTime::currentDateTime().addYears(1);
+        rig.catalog->setVoices({
+            makeVoice("en-us-storyteller-1", "en-US", narrator, "East Coast"),
+            makeVoice("en-us-storyteller-2", "en-US", narrator, "Texan"),
+            makeVoice("en-us-tutor-1", "en-US", "Educational Tutor", "Midwest"),
+            makeVoice("en-gb-storyteller-4", "en-GB", narrator, "Bristol English",
+                      "56-year-old Nature Documentary Narrator from Bristol. Speaks with a Bristol English accent. "
+                      "Currently in a bookstore. Voice is deep, velvety, and unhurried."),
+            makeVoice("en-au-storyteller-1", "en-AU", narrator, "Sydney English"),
+            makeVoice("de-de-storyteller-1", "de-DE", narrator, "Berlin German"),
+            makeVoice("sulafat", "en-US", "Storyteller & Narrator", {},
+                      "Warm, inviting, and comforting voice. Recommended for onboarding screens."),
+            makeVoice("puck", "en-US", "Companion & Peer"),
+            designed,
+        });
+
+        // The book's region first, then one from each other region in turn,
+        // then the classic narrators; never a voice that isn't a narrator.
+        QVariantList offered = rig.catalog->suggestions("en-GB");
+        QStringList ids;
+        for (const QVariant &voice : offered)
+            ids.append(voice.toMap().value("id").toString());
+        QCOMPARE(ids.first(), QString("en-gb-storyteller-4"));
+        QVERIFY(ids.indexOf("en-us-storyteller-2") > ids.indexOf("en-au-storyteller-1"));
+        QCOMPARE(ids.last(), QString("sulafat"));
+        QVERIFY(!ids.contains("en-us-tutor-1") && !ids.contains("puck") && !ids.contains("de-de-storyteller-1"));
+        QVERIFY(!ids.contains("voice_abc"));
+        // Another language: its narrators, and the classic voices.
+        offered = rig.catalog->suggestions("de");
+        QCOMPARE(offered.size(), 2);
+        QCOMPARE(offered[0].toMap().value("id").toString(), QString("de-de-storyteller-1"));
+
+        // A voice is told apart by its accent; its summary is how it sounds.
+        const QVariantMap bristol = rig.catalog->voice("en-gb-storyteller-4");
+        QCOMPARE(bristol.value("title").toString(), QString("Bristol English"));
+        QCOMPARE(bristol.value("age").toInt(), 56);
+        QCOMPARE(bristol.value("summary").toString(), QString("Voice is deep, velvety, and unhurried."));
+        QCOMPARE(bristol.value("kind").toString(), QString("library"));
+        QCOMPARE(rig.catalog->voice("sulafat").value("summary").toString(), QString("Warm, inviting, and comforting voice."));
+        QCOMPARE(rig.catalog->voice("sulafat").value("kind").toString(), QString("classic"));
+
+        // Search finds any word about a voice, narrators first.
+        QCOMPARE(rig.catalog->search("bristol", {}).size(), 1);
+        QCOMPARE(rig.catalog->search("east coast", {}).value(0).toMap().value("id").toString(), QString("en-us-storyteller-1"));
+        QCOMPARE(rig.catalog->search("storyteller", "de").size(), 2);  // German, and Sulafat
+        QCOMPARE(rig.catalog->search("measured gentleman", {}).value(0).toMap().value("id").toString(), QString("voice_abc"));
+
+        const QVariantList yours = rig.catalog->designedVoices();
+        QCOMPARE(yours.size(), 1);
+        QCOMPARE(yours[0].toMap().value("summary").toString(), QString("A measured English gentleman."));
+        QCOMPARE(yours[0].toMap().value("kind").toString(), QString("designed"));
+    }
+
+    void voicesAreKeptForADay() {
+        VoiceRig rig;
+        rig.server.responses = {{200, "application/json", fixture("voices.json")}};
+        QSignalSpy changed(rig.catalog.get(), &VoiceCatalog::changed);
+        rig.catalog->refresh();
+        QTRY_VERIFY(!rig.catalog->loading() && rig.catalog->count() > 0);
+        const int count = rig.catalog->count();
+        // Fresh: no second request.
+        rig.catalog->refresh();
+        QVERIFY(!rig.catalog->loading());
+        QCOMPARE(rig.server.requests.size(), 1);
+        QVERIFY(rig.server.requests[0].path.startsWith("/v1beta/voices?"));
+        // A new start finds the list kept.
+        VoiceCatalog again(rig.services.get(), rig.cache.get(), &rig.reader, rig.library.database().connectionName(),
+                           rig.dir.filePath("voices.json"));
+        QCOMPARE(again.count(), count);
+        QCOMPARE(again.voice("achernar").value("name").toString(), QString("Achernar"));
+    }
+
+    void voicesCastADesignedNarrator() {
+        VoiceRig rig;
+        auto castingReply = [this](const QString &name) {
+            QJsonObject reply = QJsonDocument::fromJson(fixture("text-unary.json")).object();
+            QJsonArray steps = reply["steps"].toArray();
+            QJsonObject output = steps.last().toObject();
+            const QJsonObject proposal{{"name", name},
+                                       {"description", "A warm, measured English baritone in his fifties."},
+                                       {"gender", "male"},
+                                       {"language", "en-GB"}};
+            output["content"] = QJsonArray{QJsonObject{{"type", "text"},
+                                                       {"text", QString::fromUtf8(QJsonDocument(proposal).toJson())}}};
+            steps.replace(steps.size() - 1, output);
+            reply["steps"] = steps;
+            return QJsonDocument(reply).toJson();
+        };
+        rig.server.responses = {{200, "application/json", castingReply("Victorian Gentleman")},
+                                {200, "application/json", fixture("voice-design.json")}};
+
+        rig.catalog->cast("It was a dark and stormy night.");
+        QCOMPARE(rig.catalog->casting(), QString("thinking"));
+        QTRY_COMPARE(rig.catalog->casting(), QString("proposed"));
+        QCOMPARE(rig.catalog->proposal().value("name").toString(), QString("Victorian Gentleman"));
+        QCOMPARE(rig.catalog->proposal().value("gender").toString(), QString("male"));
+        QCOMPARE(rig.catalog->proposal().value("language").toString(), QString("en-GB"));
+        const QJsonObject asked = QJsonDocument::fromJson(rig.server.requests[0].body).object();
+        QVERIFY(QJsonDocument(asked).toJson().contains("You cast the narrator"));
+        QVERIFY(QJsonDocument(asked).toJson().contains("It was a dark and stormy night."));
+        QVERIFY(QJsonDocument(asked).toJson().contains("\"female\""));
+
+        rig.catalog->design(rig.catalog->proposal());
+        QCOMPARE(rig.catalog->casting(), QString("designing"));
+        QTRY_COMPARE(rig.catalog->casting(), QString("designed"));
+        QCOMPARE(rig.catalog->designed().value("id").toString(), QString("voice_jtlkz7mcspcr"));
+        const QJsonObject designed = QJsonDocument::fromJson(rig.server.requests[1].body).object();
+        QCOMPARE(rig.server.requests[1].path, QByteArray("/v1beta/voices"));
+        QVERIFY(designed.value("store").toBool());
+        QCOMPARE(designed.value("voice").toObject().value("prompted").toObject().value("input").toString(),
+                 QString("A warm, measured English baritone in his fifties."));
+        QCOMPARE(rig.catalog->designedVoices().value(0).toMap().value("id").toString(), QString("voice_jtlkz7mcspcr"));
+        QSqlQuery remembered(rig.library.database());
+        QVERIFY(remembered.exec("SELECT name, description FROM designed_voices"));
+        QVERIFY(remembered.next());
+        QCOMPARE(remembered.value(0).toString(), QString("Victorian Gentleman"));
+        // Its sample plays at once.
+        QCOMPARE(rig.catalog->previewing(), QString("voice_jtlkz7mcspcr"));
+
+        // Another idea differs from the ones already offered.
+        rig.server.responses = {{200, "application/json", castingReply("Brisk Raconteur")}};
+        rig.catalog->cast("It was a dark and stormy night.");
+        QTRY_COMPARE(rig.catalog->casting(), QString("proposed"));
+        QVERIFY(rig.server.requests[2].body.contains("Earlier proposals"));
+        QVERIFY(rig.server.requests[2].body.contains("A warm, measured English baritone"));
+
+        // Deleting is for good, on the provider and here.
+        rig.server.responses = {{200, "application/json", "{}"}};
+        rig.catalog->forget("voice_jtlkz7mcspcr");
+        QTRY_VERIFY(rig.catalog->voice("voice_jtlkz7mcspcr").isEmpty());
+        QCOMPARE(rig.server.requests[3].method, QByteArray("DELETE"));
+        QCOMPARE(rig.server.requests[3].path, QByteArray("/v1beta/voices/voice_jtlkz7mcspcr"));
+        QSqlQuery gone(rig.library.database());
+        QVERIFY(gone.exec("SELECT COUNT(*) FROM designed_voices"));
+        QVERIFY(gone.next());
+        QCOMPARE(gone.value(0).toInt(), 0);
     }
 
     // --- Names ---------------------------------------------------------

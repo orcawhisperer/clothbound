@@ -162,6 +162,8 @@ QString AiServices::describe(int errorKind, const QString &detail) const {
         return tr("%1 can't do this.").arg(providerName());
     case Ai::Error::Cancelled:
         return tr("Cancelled.");
+    case Ai::Error::NotFound:
+        return tr("Gemini no longer has this. A voice that isn't used for a year is let go.");
     case Ai::Error::Invalid:
         return detail.isEmpty() ? tr("Gemini couldn't handle this request.")
                                 : tr("Gemini couldn't handle this request: %1").arg(detail);

@@ -17,7 +17,9 @@ FocusScope {
 
     property var settings
     readonly property var look: Themes.palette(settings.theme, theme)
-    readonly property bool panelOpen: contents.open || appearance.open || goTo.open
+    // For driving the panel from outside (and from tests).
+    readonly property alias voicePanel: voicePanel
+    readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open
     property bool chromeShown: false
     property bool surfaceReady: false
     property bool listening: false
@@ -89,6 +91,7 @@ FocusScope {
         contents.close()
         appearance.close()
         goTo.close()
+        voicePanel.close()
     }
     function dismiss() {
         if (panelOpen) {
@@ -110,6 +113,11 @@ FocusScope {
     }
     function showContents() { contents.show() }
     function showAppearance() { appearance.show() }
+    function showVoices() {
+        contents.close()
+        appearance.close()
+        voicePanel.show()
+    }
     function showChrome() {
         chromeShown = true
         chromeTimer.restart()
@@ -469,13 +477,17 @@ FocusScope {
 
     ListenBar {
         id: listenBar
-        anchors.horizontalCenter: parent.horizontalCenter
+        // Centered in the room the side panels leave.
+        readonly property real leftInset: contents.open ? contents.width : 0
+        readonly property real rightInset: voicePanel.open ? voicePanel.width : appearance.open ? appearance.width : 0
+        x: leftInset + (parent.width - leftInset - rightInset - width) / 2
+        Behavior on x { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
         y: narration.active ? parent.height - height - (view.chromeShown ? 84 : 14) : parent.height + 10
         Behavior on y { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
         visible: y < parent.height
         look: view.look
         onFollowRequested: narration.following = true
-        onVoiceRequested: toast.show(qsTr("Voices are coming next"))
+        onVoiceRequested: voicePanel.open ? voicePanel.close() : view.showVoices()
     }
 
     ContentsPanel {
@@ -483,6 +495,17 @@ FocusScope {
         height: parent.height
         look: view.look
         onChosen: (chapter, fragment) => view.goTo({ chapter: chapter, fragment: fragment, instant: true })
+    }
+
+    VoicePanel {
+        id: voicePanel
+        height: parent.height
+        look: view.look
+        onSampleWanted: view.js("dogear.sampleText()", function(text) {
+            voicePanel.sample = text || ""
+            if (debugMode)
+                console.log("voice sample:", voicePanel.sample)
+        })
     }
 
     AppearancePanel {
@@ -518,6 +541,7 @@ FocusScope {
     Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: view.visible && !win.helpVisible; onActivated: view.dismiss() }
     // Listening.
     Shortcut { sequence: "L"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.listen() }
+    Shortcut { sequence: "V"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showVoices() }
     Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.toggle() }
     Shortcut { sequence: ","; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.previousParagraph() }
     Shortcut { sequence: "."; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.nextParagraph() }

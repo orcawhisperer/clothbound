@@ -38,6 +38,7 @@ HEADERS += \
     src/sseparser.h \
     src/theme.h \
     src/translator.h \
+    src/voicecatalog.h \
     src/ziparchive.h
 
 SOURCES += \
@@ -65,6 +66,7 @@ SOURCES += \
     src/sseparser.cpp \
     src/theme.cpp \
     src/translator.cpp \
+    src/voicecatalog.cpp \
     src/ziparchive.cpp
 
-RESOURCES += src/resources.qrc
+RESOURCES += src/resources.qrc src/prompts.qrc

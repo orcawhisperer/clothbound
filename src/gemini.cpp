@@ -352,6 +352,8 @@ Ai::Error GeminiProvider::parseError(int status, const QByteArray &body, int net
         result.kind = Ai::Error::Limited;
     } else if (status == 403) {
         result.kind = Ai::Error::Refused;
+    } else if (status == 404) {
+        result.kind = Ai::Error::NotFound;
     } else if (status >= 500) {
         result.kind = Ai::Error::Server;
     } else {
