@@ -5,6 +5,7 @@
 
 #include <QHash>
 #include <QObject>
+#include <QSet>
 #include <QSqlDatabase>
 #include <QTimer>
 #include <QUrl>
@@ -23,6 +24,8 @@ class Library : public QObject {
     Q_PROPERTY(QVariantList continueReading READ continueReading NOTIFY booksChanged)
     Q_PROPERTY(int bookCount READ bookCount NOTIFY booksChanged)
     Q_PROPERTY(QStringList folders READ folders NOTIFY foldersChanged)
+    Q_PROPERTY(QVariantList collections READ collections NOTIFY collectionsChanged)
+    Q_PROPERTY(QVariantMap readingStats READ readingStats NOTIFY readingStatsChanged)
     Q_PROPERTY(bool scanning READ scanning NOTIFY scanningChanged)
     Q_PROPERTY(int scanDone READ scanDone NOTIFY scanProgressChanged)
     Q_PROPERTY(int scanTotal READ scanTotal NOTIFY scanProgressChanged)
@@ -33,6 +36,7 @@ public:
     ~Library() override;
 
     bool open();
+    int schemaVersion() const;
     QString errorString() const { return m_error; }
     QString coverDirectory() const { return m_coverDirectory; }
 
@@ -55,6 +59,7 @@ public:
     int addBookFile(const QString &path);
 
     Q_INVOKABLE QVariantMap book(int id) const;
+    Q_INVOKABLE QVariantList allBooks() const;
     Q_INVOKABLE QVariantList editions(const QString &workKey) const;
     Q_INVOKABLE void setFinished(int id, bool finished);
     Q_INVOKABLE void setHidden(int id, bool hidden);
@@ -63,6 +68,20 @@ public:
     Q_INVOKABLE int lastOpenedBook() const;
     // Minutes to read what's left of a book at the reader's own pace.
     Q_INVOKABLE int minutesLeft(int id) const;
+
+    // User collections / shelves.
+    Q_INVOKABLE QVariantList collections() const;
+    Q_INVOKABLE int createCollection(const QString &name);
+    Q_INVOKABLE bool renameCollection(int id, const QString &name);
+    Q_INVOKABLE bool deleteCollection(int id);
+    Q_INVOKABLE bool addToCollection(int bookId, int collectionId);
+    Q_INVOKABLE bool removeFromCollection(int bookId, int collectionId);
+    Q_INVOKABLE QVariantList collectionsForBook(int bookId) const;
+    Q_INVOKABLE bool isInCollection(int bookId, int collectionId) const;
+
+    // Reading stats and insights from reading_days and books.
+    Q_INVOKABLE QVariantMap readingStats() const;
+    Q_INVOKABLE QVariantMap bookReadingStats(int id) const;
 
     BookRecord record(int id) const { return m_books.value(id); }
     int idForPath(const QString &path) const;
@@ -85,6 +104,8 @@ signals:
     void booksChanged();
     void bookChanged(int id);
     void foldersChanged();
+    void collectionsChanged();
+    void readingStatsChanged();
     void scanningChanged();
     void scanProgressChanged();
     void readingSpeedChanged();
@@ -98,10 +119,17 @@ private:
         QString fingerprint;
         bool updated = false;
     };
+    struct CollectionRecord {
+        int id = 0;
+        QString name;
+        qint64 createdAt = 0;
+    };
 
     bool migrate();
     void loadBooks();
     void loadFolders();
+    void loadCollections();
+    void syncWorksCollections();
     bool storeInDb(const ScannedBook &book, QList<StagedBook> &staged);
     void applyStaged(const QList<StagedBook> &staged);
     bool writeChapterLengths(QSqlDatabase &db, int id, const QList<int> &lengths, qint64 *totalOut = nullptr);
@@ -118,6 +146,9 @@ private:
     QHash<int, BookRecord> m_books;
     QHash<QString, int> m_pathToId;
     QHash<int, QString> m_fingerprints;
+    QHash<int, CollectionRecord> m_collections;
+    QHash<int, QSet<int>> m_collectionBooks;
+    QHash<int, QSet<int>> m_bookCollections;
     QStringList m_folders;
     QStringList m_queuedFiles;
     Scanner *m_scanner = nullptr;

@@ -21,6 +21,8 @@ Item {
     required property bool finished
     required property string format
     required property string problem
+    required property string series
+    required property real seriesIndex
 
     readonly property bool current: GridView.isCurrentItem
     readonly property bool focused: current && GridView.view.activeFocus
@@ -119,6 +121,21 @@ Item {
             topPadding: 2
             bottomPadding: 2
             background: Rectangle { radius: Math.min(3, theme.radius); color: "black"; opacity: 0.55 }
+        }
+
+        Label {
+            visible: card.series !== "" && card.seriesIndex > 0
+            x: art.box.x + 6
+            y: art.box.y + 6
+            text: "#" + (Math.floor(card.seriesIndex) === card.seriesIndex ? Math.floor(card.seriesIndex) : card.seriesIndex)
+            font.pixelSize: 10
+            font.weight: Font.DemiBold
+            color: "white"
+            leftPadding: 6
+            rightPadding: 6
+            topPadding: 2
+            bottomPadding: 2
+            background: Rectangle { radius: Math.min(4, theme.radius); color: "black"; opacity: 0.6 }
         }
 
         Rectangle {

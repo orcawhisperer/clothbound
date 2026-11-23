@@ -22,7 +22,12 @@ QHash<int, QByteArray> WorksModel::roleNames() const {
             {FormatRole, "format"},
             {ProblemRole, "problem"},
             {YearRole, "year"},
-            {OpenedRole, "opened"}};
+            {OpenedRole, "opened"},
+            {SeriesRole, "series"},
+            {SeriesIndexRole, "seriesIndex"},
+            {MinutesLeftRole, "minutesLeft"},
+            {SecondsReadRole, "secondsRead"},
+            {AddedAtRole, "addedAt"}};
 }
 
 QVariant WorksModel::data(const QModelIndex &index, int role) const {
@@ -57,6 +62,16 @@ QVariant WorksModel::data(const QModelIndex &index, int role) const {
         return book.year;
     case OpenedRole:
         return book.openedAt > 0;
+    case SeriesRole:
+        return book.series;
+    case SeriesIndexRole:
+        return book.seriesIndex;
+    case MinutesLeftRole:
+        return m_library->minutesLeft(book.id);
+    case SecondsReadRole:
+        return double(book.secondsRead);
+    case AddedAtRole:
+        return double(book.addedAt);
     }
     return {};
 }
@@ -99,25 +114,104 @@ void WorksModel::setGrouped(bool grouped) {
     rebuild();
 }
 
+void WorksModel::setStatusFilter(const QString &status) {
+    const QString normalized = (status == QLatin1String("all")) ? QString() : status.trimmed().toLower();
+    if (normalized == m_statusFilter)
+        return;
+    m_statusFilter = normalized;
+    emit statusFilterChanged();
+    emit filtersChanged();
+    rebuild();
+}
+
+void WorksModel::setFormatFilter(const QString &format) {
+    const QString normalized = (format == QLatin1String("all")) ? QString() : format.trimmed().toLower();
+    if (normalized == m_formatFilter)
+        return;
+    m_formatFilter = normalized;
+    emit formatFilterChanged();
+    emit filtersChanged();
+    rebuild();
+}
+
+void WorksModel::setSeriesFilter(const QString &series) {
+    const QString normalized = series.trimmed();
+    if (normalized == m_seriesFilter)
+        return;
+    m_seriesFilter = normalized;
+    emit seriesFilterChanged();
+    emit filtersChanged();
+    rebuild();
+}
+
+void WorksModel::setCollectionId(int id) {
+    const int normalized = qMax(0, id);
+    if (normalized == m_collectionId)
+        return;
+    m_collectionId = normalized;
+    emit collectionIdChanged();
+    emit filtersChanged();
+    rebuild();
+}
+
+bool WorksModel::hasActiveFilters() const {
+    return !m_statusFilter.isEmpty() || !m_formatFilter.isEmpty() || !m_seriesFilter.isEmpty() || m_collectionId > 0;
+}
+
+void WorksModel::clearFilters() {
+    const bool statusChanged = !m_statusFilter.isEmpty();
+    const bool formatChanged = !m_formatFilter.isEmpty();
+    const bool seriesChanged = !m_seriesFilter.isEmpty();
+    const bool colChanged = m_collectionId > 0;
+    if (!statusChanged && !formatChanged && !seriesChanged && !colChanged)
+        return;
+    m_statusFilter.clear();
+    m_formatFilter.clear();
+    m_seriesFilter.clear();
+    m_collectionId = 0;
+    if (statusChanged)
+        emit statusFilterChanged();
+    if (formatChanged)
+        emit formatFilterChanged();
+    if (seriesChanged)
+        emit seriesFilterChanged();
+    if (colChanged)
+        emit collectionIdChanged();
+    emit filtersChanged();
+    rebuild();
+}
+
 void WorksModel::setBooks(const QHash<int, BookRecord> &books) {
     m_books = books;
     m_searchable.clear();
     m_searchable.reserve(m_books.size());
     for (auto it = m_books.cbegin(); it != m_books.cend(); ++it)
         m_searchable.insert(it.key(), searchableFor(*it));
+    rebuildSeriesList();
     rebuild();
+}
+
+void WorksModel::setCollections(const QHash<int, QSet<int>> &collectionBooks) {
+    m_collectionBooks = collectionBooks;
+    if (m_collectionId > 0)
+        rebuild();
 }
 
 void WorksModel::updateBook(const BookRecord &book) {
     const auto oldIt = m_books.constFind(book.id);
     const bool existed = oldIt != m_books.cend();
     const QString searchKey = searchableFor(book);
+    const bool seriesChanged = !existed || oldIt->series != book.series || oldIt->seriesIndex != book.seriesIndex;
     const bool shapeChanged = !existed || oldIt->visible() != book.visible() || oldIt->workKey != book.workKey ||
                               oldIt->openedAt != book.openedAt || oldIt->addedAt != book.addedAt ||
                               oldIt->finishedAt != book.finishedAt || m_sort == QLatin1String("progress") ||
+                              (m_sort == QLatin1String("series") && seriesChanged) ||
+                              !m_statusFilter.isEmpty() || !m_seriesFilter.isEmpty() ||
                               m_searchable.value(book.id) != searchKey;
     m_books.insert(book.id, book);
     m_searchable.insert(book.id, searchKey);
+    if (seriesChanged)
+        rebuildSeriesList();
     if (!shapeChanged) {
         const int row = m_bookRow.value(book.id, -1);
         if (row >= 0 && row < m_works.size())
@@ -125,6 +219,51 @@ void WorksModel::updateBook(const BookRecord &book) {
         return;
     }
     rebuild();
+}
+
+void WorksModel::rebuildSeriesList() {
+    QSet<QString> unique;
+    for (const auto &book : std::as_const(m_books))
+        if (book.visible() && !book.series.trimmed().isEmpty())
+            unique.insert(book.series.trimmed());
+    QStringList list(unique.cbegin(), unique.cend());
+    std::sort(list.begin(), list.end(),
+              [](const QString &a, const QString &b) { return a.localeAwareCompare(b) < 0; });
+    if (list != m_seriesList) {
+        m_seriesList = list;
+        emit seriesListChanged();
+    }
+}
+
+bool WorksModel::passesFilters(const BookRecord &book) const {
+    if (!m_statusFilter.isEmpty()) {
+        if (m_statusFilter == QLatin1String("reading")) {
+            if (book.finishedAt > 0 || book.openedAt <= 0)
+                return false;
+        } else if (m_statusFilter == QLatin1String("unread")) {
+            if (book.finishedAt > 0 || book.openedAt > 0)
+                return false;
+        } else if (m_statusFilter == QLatin1String("finished")) {
+            if (book.finishedAt <= 0)
+                return false;
+        }
+    }
+    if (!m_formatFilter.isEmpty() && book.format.compare(m_formatFilter, Qt::CaseInsensitive) != 0)
+        return false;
+    if (!m_seriesFilter.isEmpty()) {
+        if (m_seriesFilter == QLatin1String("*")) {
+            if (book.series.trimmed().isEmpty())
+                return false;
+        } else if (book.series.trimmed().compare(m_seriesFilter, Qt::CaseInsensitive) != 0) {
+            return false;
+        }
+    }
+    if (m_collectionId > 0) {
+        const auto it = m_collectionBooks.constFind(m_collectionId);
+        if (it == m_collectionBooks.cend() || !it->contains(book.id))
+            return false;
+    }
+    return true;
 }
 
 QString WorksModel::searchable(const QString &text) {
@@ -157,7 +296,7 @@ void WorksModel::rebuild() {
     QHash<QString, Work> groups;
     QStringList order;
     for (const auto &book : std::as_const(m_books)) {
-        if (!book.visible())
+        if (!book.visible() || !passesFilters(book))
             continue;
         const QString key = m_grouped && !book.workKey.isEmpty() ? book.workKey
                                                                   : QStringLiteral("book:%1").arg(book.id);
@@ -202,6 +341,31 @@ void WorksModel::rebuild() {
         std::sort(works.begin(), works.end(), [&](const Work &a, const Work &b) {
             const int c = m_books[a.representative].sortAuthor.localeAwareCompare(m_books[b.representative].sortAuthor);
             return c != 0 ? c < 0 : byTitle(a, b);
+        });
+    } else if (m_sort == "series") {
+        std::sort(works.begin(), works.end(), [&](const Work &a, const Work &b) {
+            const BookRecord &ba = m_books[a.representative];
+            const BookRecord &bb = m_books[b.representative];
+            const QString sa = ba.series.trimmed();
+            const QString sb = bb.series.trimmed();
+            const bool hasA = !sa.isEmpty();
+            const bool hasB = !sb.isEmpty();
+            if (hasA != hasB)
+                return hasA;
+            if (hasA) {
+                const int sc = sa.localeAwareCompare(sb);
+                if (sc != 0)
+                    return sc < 0;
+                const bool idxA = ba.seriesIndex > 0;
+                const bool idxB = bb.seriesIndex > 0;
+                if (idxA != idxB)
+                    return idxA;
+                if (ba.seriesIndex != bb.seriesIndex)
+                    return ba.seriesIndex < bb.seriesIndex;
+                return byTitle(a, b);
+            }
+            const int ac = ba.sortAuthor.localeAwareCompare(bb.sortAuthor);
+            return ac != 0 ? ac < 0 : byTitle(a, b);
         });
     } else if (m_sort == "added") {
         std::sort(works.begin(), works.end(), [&](const Work &a, const Work &b) {

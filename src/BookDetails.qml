@@ -18,7 +18,10 @@ FocusScope {
 
     readonly property var book: bookId > 0 && revision >= 0 ? library.book(bookId) : ({})
     readonly property var editions: workKey !== "" && revision >= 0 ? library.editions(workKey) : []
+    readonly property var bookStats: bookId > 0 && revision >= 0 ? library.bookReadingStats(bookId) : ({})
+    readonly property var allCollections: revision >= 0 ? library.collections : []
     property int revision: 0
+    property bool addingShelf: false
 
     signal read(int bookId)
     signal closed()
@@ -26,12 +29,16 @@ FocusScope {
     function show(id, key) {
         bookId = id
         workKey = key
+        addingShelf = false
+        newShelfInput.text = ""
+        flick.contentY = 0
         open = true
         forceActiveFocus()
     }
     function close() {
         if (!open)
             return
+        addingShelf = false
         open = false
         closed()
     }
@@ -44,18 +51,53 @@ FocusScope {
                 at = i
         bookId = editions[Math.max(0, Math.min(editions.length - 1, at + delta))].id
     }
+    function formatReadDuration(seconds) {
+        const mins = Math.round((seconds || 0) / 60)
+        if (seconds <= 0)
+            return ""
+        if (mins < 1)
+            return qsTr("Under 1 min")
+        return Format.duration(mins)
+    }
+    function createAndAssignShelf() {
+        const name = newShelfInput.text.trim()
+        if (name === "" || details.bookId <= 0)
+            return
+        const colId = library.createCollection(name)
+        if (colId > 0)
+            library.addToCollection(details.bookId, colId)
+        newShelfInput.text = ""
+        addingShelf = false
+        details.forceActiveFocus()
+    }
 
     Connections {
         target: library
         function onBooksChanged() { details.revision++ }
+        function onBookChanged(id) { if (id === details.bookId) details.revision++ }
+        function onCollectionsChanged() { details.revision++ }
+        function onReadingStatsChanged() { details.revision++ }
     }
 
     visible: open || panel.x < width
-    Keys.onEscapePressed: close()
-    Keys.onReturnPressed: read(bookId)
-    Keys.onEnterPressed: read(bookId)
-    Keys.onUpPressed: step(-1)
-    Keys.onDownPressed: step(1)
+    Keys.onEscapePressed: {
+        if (addingShelf) {
+            addingShelf = false
+            details.forceActiveFocus()
+        } else {
+            close()
+        }
+    }
+    Keys.onReturnPressed: {
+        if (!addingShelf && (details.book.problem || "") === "")
+            read(bookId)
+    }
+    Keys.onEnterPressed: {
+        if (!addingShelf && (details.book.problem || "") === "")
+            read(bookId)
+    }
+    Keys.onUpPressed: if (!addingShelf) step(-1)
+    Keys.onDownPressed: if (!addingShelf) step(1)
 
     // A scrim over the grid; clicking it closes the panel.
     Rectangle {
@@ -78,20 +120,60 @@ FocusScope {
         // Clicks inside the panel stay inside it.
         TapHandler {}
 
-        IconButton {
+        // Pinned top header so the close button never collides with scrolled text.
+        Rectangle {
+            id: panelHeader
             anchors.top: parent.top
+            anchors.left: parent.left
             anchors.right: parent.right
-            anchors.margins: 12
-            z: 2
-            glyph: Icons.close
-            tip: qsTr("Close (Esc)")
-            onClicked: details.close()
+            height: 52
+            z: 3
+            color: theme.background
+
+            Label {
+                anchors.left: parent.left
+                anchors.leftMargin: 32
+                anchors.right: closeBtn.left
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                text: details.book.title || ""
+                textFormat: Text.PlainText
+                color: theme.text
+                font.family: "Literata"
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+                elide: Text.ElideRight
+                opacity: flick.contentY > 280 ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 150 } }
+            }
+
+            IconButton {
+                id: closeBtn
+                anchors.right: parent.right
+                anchors.rightMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                glyph: Icons.close
+                tip: qsTr("Close (Esc)")
+                onClicked: details.close()
+            }
+
+            Rectangle {
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
+                height: 1
+                color: Ui.tint(theme.text, flick.contentY > 4 ? 0.08 : 0)
+                Behavior on color { ColorAnimation { duration: 140 } }
+            }
         }
 
         Flickable {
             id: flick
-            anchors.fill: parent
-            contentHeight: content.implicitHeight + 64
+            anchors.top: panelHeader.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            contentHeight: content.implicitHeight + 48
             boundsBehavior: Flickable.StopAtBounds
             clip: true
             ScrollBar.vertical: ScrollBar {}
@@ -99,7 +181,7 @@ FocusScope {
             ColumnLayout {
                 id: content
                 x: 32
-                y: 40
+                y: 12
                 width: panel.width - 64
                 spacing: 6
 
@@ -176,10 +258,13 @@ FocusScope {
                     enabled: (details.book.problem || "") === ""
                     glyph: Icons.book
                     hint: "↵"
-                    text: details.book.finished ? qsTr("Read again")
-                        : (details.book.progress || 0) > 0.005
-                          ? qsTr("Continue reading · %1%").arg(Math.round(details.book.progress * 100).toLocaleString(Qt.locale(translator.language), 'f', 0))
-                          : qsTr("Read")
+                    text: {
+                        const _lang = translator.language
+                        return details.book.finished ? qsTr("Read again")
+                            : (details.book.progress || 0) > 0.005
+                              ? qsTr("Continue reading · %1%").arg(Math.round(details.book.progress * 100).toLocaleString(Qt.locale(), 'f', 0))
+                              : qsTr("Read")
+                    }
                     onClicked: details.read(details.bookId)
                 }
 
@@ -205,8 +290,11 @@ FocusScope {
 
                     Fact { text: qsTr("Format") }
                     Value {
-                        text: (details.book.format || "").toUpperCase() + " · "
-                              + Format.size(details.book.size || 0, Qt.locale(translator.language))
+                        text: {
+                            const _lang = translator.language
+                            return (details.book.format || "").toUpperCase() + " · "
+                                   + Format.size(details.book.size || 0, Qt.locale())
+                        }
                     }
 
                     Fact { text: qsTr("Length"); visible: lengthValue.text !== "" }
@@ -230,6 +318,36 @@ FocusScope {
                         text: (details.book.minutesLeft || 0) > 0 && translator.language !== "" ? qsTr("About %1").arg(Format.duration(details.book.minutesLeft)) : ""
                     }
 
+                    Fact { text: qsTr("Time read"); visible: readTimeValue.text !== "" }
+                    Value {
+                        id: readTimeValue
+                        visible: text !== ""
+                        text: {
+                            const sec = details.book.secondsRead || 0
+                            if (sec <= 0)
+                                return ""
+                            const base = details.formatReadDuration(sec)
+                            const days = details.bookStats.daysRead || 0
+                            if (days > 0)
+                                return base + " · " + qsTr("%n days", "", days)
+                            return base
+                        }
+                    }
+
+                    Fact { text: qsTr("Last read"); visible: lastReadValue.text !== "" }
+                    Value {
+                        id: lastReadValue
+                        visible: text !== ""
+                        text: {
+                            const _lang = translator.language
+                            const day = details.bookStats.lastDay || ""
+                            if (day === "")
+                                return ""
+                            const d = Date.fromLocaleString(Qt.locale("C"), day, "yyyy-MM-dd")
+                            return isNaN(d.getTime()) ? day : d.toLocaleDateString(Qt.locale(), Locale.ShortFormat)
+                        }
+                    }
+
                     Fact { text: qsTr("Language"); visible: languageValue.text !== "" }
                     Value {
                         id: languageValue
@@ -241,7 +359,148 @@ FocusScope {
                     Value { visible: text !== ""; text: details.book.isbn || "" }
 
                     Fact { text: qsTr("Series"); visible: (details.book.series || "") !== "" }
-                    Value { visible: text !== ""; text: details.book.series || "" }
+                    Value {
+                        visible: text !== ""
+                        text: {
+                            const s = details.book.series || ""
+                            const idx = details.book.seriesIndex || 0
+                            if (s === "")
+                                return ""
+                            return idx > 0 ? (s + " · #" + (Math.floor(idx) === idx ? Math.floor(idx) : idx)) : s
+                        }
+                    }
+                }
+
+                // Collections / shelves membership
+                Label {
+                    Layout.topMargin: 18
+                    text: qsTr("Shelves")
+                    color: theme.text
+                    font.pixelSize: 15
+                    font.weight: Font.DemiBold
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    Repeater {
+                        model: details.allCollections
+                        delegate: AbstractButton {
+                            id: shelfPill
+                            required property var modelData
+                            readonly property bool member: details.revision >= 0 && library.isInCollection(details.bookId, modelData.id)
+                            implicitHeight: 30
+                            implicitWidth: shelfPillRow.implicitWidth + 20
+                            hoverEnabled: true
+                            focusPolicy: Qt.NoFocus
+                            onClicked: {
+                                if (member)
+                                    library.removeFromCollection(details.bookId, modelData.id)
+                                else
+                                    library.addToCollection(details.bookId, modelData.id)
+                            }
+                            background: Rectangle {
+                                radius: Math.min(15, theme.radius + 6)
+                                color: shelfPill.member ? Ui.tint(theme.accent, 0.2)
+                                     : shelfPill.hovered ? Ui.tint(theme.text, 0.08) : Ui.tint(theme.text, 0.04)
+                                border.width: 1
+                                border.color: shelfPill.member ? theme.accent : Ui.tint(theme.text, 0.1)
+                            }
+                            contentItem: Item {
+                                Row {
+                                    id: shelfPillRow
+                                    anchors.centerIn: parent
+                                    spacing: 5
+                                    Glyph {
+                                        visible: shelfPill.member
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 13
+                                        height: 13
+                                        stroke: 2.3
+                                        path: Icons.check
+                                        color: theme.accent
+                                    }
+                                    Label {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: shelfPill.modelData.name
+                                        textFormat: Text.PlainText
+                                        color: theme.text
+                                        font.pixelSize: 12
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    AbstractButton {
+                        id: addShelfBtn
+                        visible: !details.addingShelf
+                        implicitHeight: 30
+                        implicitWidth: addShelfLabel.implicitWidth + 20
+                        hoverEnabled: true
+                        focusPolicy: Qt.NoFocus
+                        onClicked: {
+                            details.addingShelf = true
+                            newShelfInput.forceActiveFocus()
+                        }
+                        background: Rectangle {
+                            radius: Math.min(15, theme.radius + 6)
+                            color: addShelfBtn.hovered ? Ui.tint(theme.text, 0.08) : "transparent"
+                            border.width: 1
+                            border.color: Ui.tint(theme.text, 0.14)
+                        }
+                        contentItem: Label {
+                            id: addShelfLabel
+                            text: qsTr("+ New shelf")
+                            color: theme.textSecondary
+                            font.pixelSize: 12
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: details.addingShelf
+                    spacing: 6
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 34
+                        radius: Math.min(8, theme.radius)
+                        color: Ui.tint(theme.text, 0.06)
+                        border.width: 1.5
+                        border.color: theme.accent
+                        TextInput {
+                            id: newShelfInput
+                            anchors.fill: parent
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            verticalAlignment: TextInput.AlignVCenter
+                            color: theme.text
+                            font.pixelSize: 13
+                            selectByMouse: true
+                            Keys.onReturnPressed: details.createAndAssignShelf()
+                            Keys.onEnterPressed: details.createAndAssignShelf()
+                            Keys.onEscapePressed: {
+                                details.addingShelf = false
+                                details.forceActiveFocus()
+                            }
+                            Text {
+                                anchors.fill: parent
+                                verticalAlignment: Text.AlignVCenter
+                                visible: newShelfInput.text === ""
+                                text: qsTr("Shelf name…")
+                                color: theme.textTertiary
+                                font: newShelfInput.font
+                            }
+                        }
+                    }
+                    TextButton {
+                        primary: true
+                        text: qsTr("Add")
+                        enabled: newShelfInput.text.trim() !== ""
+                        onClicked: details.createAndAssignShelf()
+                    }
                 }
 
                 // Editions of the same work, to choose between.
@@ -320,7 +579,10 @@ FocusScope {
                         HoverHandler { id: editionHover; cursorShape: Qt.PointingHandCursor }
                         TapHandler {
                             onTapped: details.bookId = edition.modelData.id
-                            onDoubleTapped: details.read(edition.modelData.id)
+                            onDoubleTapped: {
+                                if ((edition.modelData.problem || "") === "")
+                                    details.read(edition.modelData.id)
+                            }
                         }
                     }
                 }

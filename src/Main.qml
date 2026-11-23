@@ -6,12 +6,13 @@ import Qt.labs.platform as Platform
 import QtQuick.Layouts
 
 import "Icons.js" as Icons
+import "Themes.js" as Themes
 import "Ui.js" as Ui
 
 ApplicationWindow {
     id: win
-    width: 1280
-    height: 840
+    width: Math.max(minimumWidth, windowSettings.width)
+    height: Math.max(minimumHeight, windowSettings.height)
     minimumWidth: 720
     minimumHeight: 480
     visible: true
@@ -22,10 +23,49 @@ ApplicationWindow {
     Material.accent: theme.accent
     Material.roundedScale: theme.radius
 
+    property bool geometryReady: false
+    property var pendingJump: null
+
+    function saveWindowGeometry() {
+        if (!geometryReady)
+            return
+        if (visibility === Window.Maximized) {
+            windowSettings.maximized = true
+        } else if (visibility === Window.Windowed) {
+            windowSettings.maximized = false
+            if (width >= minimumWidth)
+                windowSettings.width = width
+            if (height >= minimumHeight)
+                windowSettings.height = height
+        }
+    }
+    onWidthChanged: if (geometryReady && visibility === Window.Windowed) geometryTimer.restart()
+    onHeightChanged: if (geometryReady && visibility === Window.Windowed) geometryTimer.restart()
+    onVisibilityChanged: if (geometryReady) saveWindowGeometry()
+    Timer {
+        id: geometryTimer
+        interval: 250
+        onTriggered: win.saveWindowGeometry()
+    }
+
+    Component.onCompleted: {
+        // Restore persisted library preferences.
+        const validSorts = ["recent", "title", "author", "series", "added", "progress"]
+        if (validSorts.indexOf(librarySettings.sortOrder) >= 0)
+            library.works.sortOrder = librarySettings.sortOrder
+        library.works.grouped = librarySettings.grouped
+        if (librarySettings.viewMode === "list" || librarySettings.viewMode === "grid")
+            libraryView.viewMode = librarySettings.viewMode
+        if (windowSettings.maximized)
+            win.visibility = Window.Maximized
+        geometryReady = true
+    }
+
     // Closing the window while a book is read aloud leaves the voice reading:
     // Dogear waits in the bar's tray until it's shown again, or the reading
     // ends. Closed otherwise, it quits.
     onClosing: (close) => {
+        win.saveWindowGeometry()
         if (narration.active) {
             close.accepted = false
             win.listenInBackground()
@@ -89,10 +129,12 @@ ApplicationWindow {
 
     property bool helpVisible: false
     readonly property bool readerOpen: reader.open
-    // Letters are text while any editable field has focus, not global shortcuts.
-    readonly property bool typing: libraryView.typing
+    // Letters are text while any editable field or command palette has focus, not global shortcuts.
+    readonly property bool typing: libraryView.typing || commandPalette.open
                                    || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined && !activeFocusItem.readOnly)
     readonly property bool overlayOpen: helpVisible || libraryView.menuOpen || aiSettings.open || welcome.open
+                                        || commandPalette.open || libraryView.foldersOpen || libraryView.statsOpen
+                                        || libraryView.collectionDialogOpen
     readonly property bool libraryKeys: !readerOpen && !typing && !overlayOpen && !libraryView.detailsOpen
 
     function openBook(bookId) {
@@ -112,6 +154,7 @@ ApplicationWindow {
         readerLoader.active = true
     }
     function closeBook() {
+        pendingJump = null
         const id = reader.bookId
         if (readerLoader.item)
             readerLoader.item.closeBook()
@@ -121,22 +164,145 @@ ApplicationWindow {
     function toggleFullScreen() {
         visibility = visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
     }
+    function jumpToMark(bookId, chapter, offset) {
+        if (readerOpen && reader.bookId === bookId && readerLoader.item) {
+            readerLoader.item.goTo({ chapter: chapter, offset: offset, instant: true })
+            return
+        }
+        pendingJump = { bookId: bookId, chapter: chapter, offset: offset }
+        openBook(bookId)
+        if (reader.open && reader.bookId === bookId && reader.format === "pdf") {
+            Qt.callLater(flushPendingJump)
+        }
+    }
+    function flushPendingJump() {
+        if (!pendingJump || !reader.open || reader.bookId !== pendingJump.bookId || !readerLoader.item)
+            return
+        const target = pendingJump
+        pendingJump = null
+        readerLoader.item.goTo({ chapter: target.chapter, offset: target.offset, instant: true })
+    }
+    function runPaletteAction(actionId) {
+        if (actionId === "add-folder") {
+            picker.chooseFolders()
+        } else if (actionId === "add-books") {
+            picker.chooseBooks()
+        } else if (actionId === "manage-folders") {
+            if (readerOpen)
+                closeBook()
+            libraryView.openFolders()
+        } else if (actionId === "rescan") {
+            library.rescan()
+            toast.show(qsTr("Scanning library…"))
+        } else if (actionId === "stats") {
+            if (readerOpen)
+                closeBook()
+            libraryView.openStats()
+        } else if (actionId === "toggle-view") {
+            if (!readerOpen)
+                libraryView.toggleViewMode()
+        } else if (actionId === "cycle-sort") {
+            if (!readerOpen)
+                libraryView.cycleSort()
+        } else if (actionId === "toggle-grouping") {
+            if (!readerOpen)
+                libraryView.toggleGrouping()
+        } else if (actionId === "continue-reading") {
+            const last = library.lastOpenedBook()
+            if (last > 0)
+                openBook(last)
+        } else if (actionId === "toggle-theme") {
+            if (readerOpen && readerLoader.item) {
+                readerLoader.item.cycleTheme()
+            } else {
+                const order = Themes.order
+                readingSettings.theme = order[(order.indexOf(readingSettings.theme) + 1) % order.length]
+                toast.show(qsTr("%1 theme").arg(Themes.name(readingSettings.theme)))
+            }
+        } else if (actionId === "ai-settings") {
+            aiSettings.open ? aiSettings.close() : aiSettings.show()
+        } else if (actionId === "fullscreen") {
+            toggleFullScreen()
+        } else if (actionId === "help") {
+            helpVisible = !helpVisible
+        } else if (actionId === "quit") {
+            saveWindowGeometry()
+            Qt.quit()
+        } else if (readerOpen && readerLoader.item) {
+            if (actionId === "search-book") {
+                readerLoader.item.searchBar.show()
+            } else if (actionId === "go-to") {
+                Qt.callLater(() => { if (readerLoader.item) readerLoader.item.pageKey("g", 0) })
+            } else if (actionId === "contents") {
+                readerLoader.item.showContents()
+            } else if (actionId === "appearance") {
+                readerLoader.item.showAppearance()
+            } else if (actionId === "marks") {
+                readerLoader.item.showMarks()
+            } else if (actionId === "bookmark") {
+                readerLoader.item.toggleBookmark()
+            } else if (actionId === "companion-ask") {
+                readerLoader.item.showCompanion("ask")
+            } else if (actionId === "companion-prev") {
+                readerLoader.item.showCompanion("recap")
+                if (companion.feature !== "recap" || companion.problem !== "")
+                    companion.recap()
+            } else if (actionId === "companion-people") {
+                readerLoader.item.showCompanion("whoswho")
+                companion.whosWho()
+            } else if (actionId === "voices") {
+                readerLoader.item.showVoices()
+            } else if (actionId === "listen") {
+                readerLoader.item.listen()
+            } else if (actionId === "export-notes-file") {
+                const saved = marks.exportMarkdownToFile("", reader.title, reader.author, "obsidian")
+                if (saved !== "")
+                    toast.show(qsTr("Saved notes to %1").arg(saved))
+                else
+                    toast.show(qsTr("Could not save notes"))
+            } else if (actionId === "copy-notes") {
+                reader.copyText(marks.markdown(reader.title, reader.author))
+                toast.show(qsTr("Your marks are copied"))
+            } else if (actionId === "close-book") {
+                closeBook()
+            }
+        }
+    }
+
+    Connections {
+        target: reader
+        function onLocationChanged() {
+            if (win.pendingJump && reader.relocationSeq > 0)
+                win.flushPendingJump()
+        }
+    }
 
     // --- Everywhere ------------------------------------------------------
+    Shortcut { sequence: "Ctrl+K"; context: Qt.ApplicationShortcut; onActivated: commandPalette.open ? commandPalette.close() : commandPalette.show() }
     Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: win.helpVisible = !win.helpVisible }
-    Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: Qt.quit() }
+    Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: { win.saveWindowGeometry(); Qt.quit() } }
     Shortcut { sequences: ["F", "F11"]; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: win.toggleFullScreen() }
     Shortcut {
         sequence: "Esc"
         context: Qt.ApplicationShortcut
         enabled: win.helpVisible || welcome.open || aiSettings.open || libraryView.detailsOpen
+                 || libraryView.foldersOpen || libraryView.statsOpen || libraryView.collectionDialogOpen
+                 || commandPalette.open
         onActivated: {
             if (win.helpVisible)
                 win.helpVisible = false
+            else if (commandPalette.open)
+                commandPalette.close()
             else if (welcome.open)
                 welcome.close()
             else if (aiSettings.open)
                 aiSettings.close()
+            else if (libraryView.collectionDialogOpen)
+                libraryView.closeCollectionDialog()
+            else if (libraryView.statsOpen)
+                libraryView.closeStats()
+            else if (libraryView.foldersOpen)
+                libraryView.closeFolders()
             else
                 libraryView.closeDetails()
         }
@@ -162,10 +328,11 @@ ApplicationWindow {
 
     // --- Library ---------------------------------------------------------
     Shortcut { sequence: "/"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.focusSearch() }
-    Shortcut { sequence: "Ctrl+F"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen; onActivated: libraryView.focusSearch() }
+    Shortcut { sequence: "Ctrl+F"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && !commandPalette.open; onActivated: libraryView.focusSearch() }
     Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: picker.chooseFolders() }
     Shortcut { sequence: "S"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys && library.bookCount > 0; onActivated: libraryView.cycleSort() }
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys && library.bookCount > 0; onActivated: libraryView.toggleGrouping() }
+    Shortcut { sequence: "V"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys && library.bookCount > 0; onActivated: libraryView.toggleViewMode() }
     Shortcut { sequence: "I"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.showDetails(libraryView.currentRow) }
     Shortcut { sequence: "H"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.moveSelection("left") }
     Shortcut { sequence: "L"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.moveSelection("right") }
@@ -270,6 +437,32 @@ ApplicationWindow {
             }
         }
 
+        CommandPalette {
+            id: commandPalette
+            anchors.fill: parent
+            z: 59
+            reading: win.readerOpen
+            currentTheme: readingSettings.theme
+            viewMode: libraryView.viewMode
+            onOpenBook: (bookId) => win.openBook(bookId)
+            onJumpChapter: (chapter, fragment) => {
+                if (win.readerOpen && readerLoader.item)
+                    readerLoader.item.goTo({ chapter: chapter, fragment: fragment, instant: true })
+            }
+            onJumpMark: (bookId, chapter, offset) => win.jumpToMark(bookId, chapter, offset)
+            onJumpTarget: (target) => {
+                if (win.readerOpen && readerLoader.item)
+                    readerLoader.item.goTo(target)
+            }
+            onTriggerAction: (actionId) => win.runPaletteAction(actionId)
+            onClosed: {
+                if (win.readerOpen && readerLoader.item)
+                    readerLoader.item.focusPage()
+                else
+                    libraryView.focusGrid()
+            }
+        }
+
         HelpOverlay {
             anchors.fill: parent
             visible: win.helpVisible
@@ -277,6 +470,35 @@ ApplicationWindow {
             z: 60
             onDismissed: win.helpVisible = false
         }
+    }
+
+    // Window geometry persisted across sessions.
+    Settings {
+        id: windowSettings
+        location: settingsUrl
+        category: "window"
+        property int width: 1280
+        property int height: 840
+        property bool maximized: false
+    }
+
+    // Library view preferences persisted across sessions.
+    Settings {
+        id: librarySettings
+        location: settingsUrl
+        category: "library"
+        property string sortOrder: "recent"
+        property bool grouped: true
+        property string viewMode: "grid"
+    }
+    Connections {
+        target: library.works
+        function onSortOrderChanged() { if (win.geometryReady) librarySettings.sortOrder = library.works.sortOrder }
+        function onGroupedChanged() { if (win.geometryReady) librarySettings.grouped = library.works.grouped }
+    }
+    Connections {
+        target: libraryView
+        function onViewModeChanged() { if (win.geometryReady) librarySettings.viewMode = libraryView.viewMode }
     }
 
     // What the reader has been shown: the welcome, the version they last
