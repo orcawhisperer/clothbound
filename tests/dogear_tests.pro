@@ -26,6 +26,7 @@ HEADERS += \
     ../src/booksearch.h \
     ../src/library.h \
     ../src/librarymodel.h \
+    ../src/marks.h \
     ../src/reader.h \
     ../src/scanner.h \
     ../src/epubbook.h \
@@ -53,6 +54,7 @@ SOURCES += \
     ../src/booksearch.cpp \
     ../src/library.cpp \
     ../src/librarymodel.cpp \
+    ../src/marks.cpp \
     ../src/reader.cpp \
     ../src/scanner.cpp \
     ../src/epubbook.cpp \

@@ -20,7 +20,10 @@ FocusScope {
     // For driving the panel from outside (and from tests).
     readonly property alias voicePanel: voicePanel
     readonly property alias searchBar: searchBar
+    readonly property alias marksPanel: marksPanel
+    readonly property alias noteEditor: noteEditor
     readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
+                                     || marksPanel.open || noteEditor.open
     property bool chromeShown: false
     property bool surfaceReady: false
     property bool listening: false
@@ -93,12 +96,19 @@ FocusScope {
         appearance.close()
         goTo.close()
         voicePanel.close()
+        marksPanel.close()
+        noteEditor.close()
         if (searchBar.editing)
             searchBar.close()
     }
     function dismiss() {
         if (panelOpen) {
             closePanels()
+            return
+        }
+        if (selectionBar.visible) {
+            selectionBar.visible = false
+            js("dogear.clearSelection()")
             return
         }
         if (searchBar.open) {
@@ -124,6 +134,8 @@ FocusScope {
     // gone to.
     property int foundChapter: -1
     function markFound() {
+        if (!surfaceReady || !reader.open)
+            return
         foundChapter = reader.chapter
         const hit = bookSearch.current >= 0 ? bookSearch.results[bookSearch.current] : null
         const current = hit && hit.chapter === reader.chapter ? { start: hit.start, end: hit.end } : null
@@ -140,17 +152,73 @@ FocusScope {
         target: bookSearch
         function onChanged() { view.markFound() }
     }
+    // Highlights and search hits are drawn on each chapter as it's shown.
+    property int decoratedChapter: -1
+    function decorate() {
+        if (surfaceReady && reader.open)
+            js("dogear.marks(" + JSON.stringify(marks.highlightsIn(reader.chapter)) + ")")
+    }
     Connections {
         target: reader
         function onLocationChanged() {
-            if ((bookSearch.count > 0 || view.foundChapter >= 0) && reader.chapter !== view.foundChapter)
-                view.markFound()
+            selectionBar.visible = false
+            if (reader.chapter !== view.decoratedChapter) {
+                view.decoratedChapter = reader.chapter
+                view.decorate()
+                if (bookSearch.count > 0 || view.foundChapter >= 0)
+                    view.markFound()
+            }
+        }
+        function onBookChanged() { view.decoratedChapter = -1 }
+        function onSelected(selection) {
+            if (selection && selection.text) {
+                selectionBar.forMark = false
+                selectionBar.target = selection
+                selectionBar.place(view.mapRect(selection), view)
+                selectionBar.visible = true
+            } else if (!selectionBar.forMark) {
+                selectionBar.visible = false
+            }
+        }
+        function onMarkChosen(id, rect) {
+            selectionBar.forMark = true
+            selectionBar.target = marks.mark(id)
+            selectionBar.place(view.mapRect(rect), view)
+            selectionBar.visible = true
+        }
+    }
+    Connections {
+        target: marks
+        function onChanged() { view.decorate() }
+    }
+    function mapRect(rect) {
+        const at = web.mapToItem(view, rect.x, rect.y)
+        return { x: at.x, y: at.y, width: rect.width, height: rect.height }
+    }
+
+    // B: a bookmark on the page in view, or off it again.
+    readonly property int pageBookmark: marks.count >= 0 && reader.open
+        ? marks.bookmarkBetween(reader.chapter, reader.pageStart, Math.max(reader.pageEnd, reader.pageStart + 1)) : 0
+    function toggleBookmark() {
+        if (pageBookmark) {
+            marks.remove(pageBookmark)
+            toast.show(qsTr("Bookmark removed"), qsTr("Undo"), () => marks.undo())
+        } else {
+            marks.addBookmark(reader.chapter, reader.pageStart, reader.snippet, reader.titleOfChapter(reader.chapter))
+            toast.show(qsTr("Bookmarked"))
         }
     }
 
+    function showMarks() {
+        contents.close()
+        appearance.close()
+        voicePanel.close()
+        marksPanel.show()
+    }
     function showVoices() {
         contents.close()
         appearance.close()
+        marksPanel.close()
         voicePanel.show()
     }
     function showChrome() {
@@ -448,6 +516,20 @@ FocusScope {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 6
             IconButton {
+                glyph: Icons.bookmark
+                tone: view.look.fg
+                active: view.pageBookmark > 0
+                tip: view.pageBookmark ? qsTr("Remove the bookmark (B)") : qsTr("Bookmark this page (B)")
+                onClicked: view.toggleBookmark()
+            }
+            IconButton {
+                glyph: Icons.pen
+                tone: view.look.fg
+                active: marksPanel.open
+                tip: qsTr("Highlights, notes, and bookmarks (M)")
+                onClicked: marksPanel.open ? marksPanel.close() : view.showMarks()
+            }
+            IconButton {
                 glyph: Icons.headphones
                 tone: view.look.fg
                 active: narration.active
@@ -526,7 +608,8 @@ FocusScope {
         id: listenBar
         // Centered in the room the side panels leave.
         readonly property real leftInset: contents.open ? contents.width : 0
-        readonly property real rightInset: voicePanel.open ? voicePanel.width : appearance.open ? appearance.width : 0
+        readonly property real rightInset: voicePanel.open ? voicePanel.width : marksPanel.open ? marksPanel.width
+                                         : appearance.open ? appearance.width : 0
         x: leftInset + (parent.width - leftInset - rightInset - width) / 2
         Behavior on x { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
         y: narration.active ? parent.height - height - (view.chromeShown ? 84 : 14) : parent.height + 10
@@ -562,6 +645,92 @@ FocusScope {
         settings: view.settings
     }
 
+    // The bookmark's ribbon, hanging from the top of a marked page.
+    Item {
+        id: ribbon
+        anchors.right: parent.right
+        anchors.rightMargin: 46
+        width: 18
+        height: 30
+        y: view.pageBookmark ? 0 : -height - 2
+        Behavior on y { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        Canvas {
+            anchors.fill: parent
+            property color fill: view.look.link
+            onFillChanged: requestPaint()
+            onPaint: {
+                const g = getContext("2d")
+                g.reset()
+                g.fillStyle = fill
+                g.beginPath()
+                g.moveTo(0, 0)
+                g.lineTo(width, 0)
+                g.lineTo(width, height)
+                g.lineTo(width / 2, height - 7)
+                g.lineTo(0, height)
+                g.closePath()
+                g.fill()
+            }
+        }
+    }
+
+    SelectionBar {
+        id: selectionBar
+        visible: false
+        z: 6
+        look: view.look
+        onHighlight: (color) => {
+            if (forMark) {
+                marks.setColor(target.id, color)
+            } else {
+                marks.addHighlight(target.chapter, target.start, target.end, target.text, color,
+                                   reader.titleOfChapter(target.chapter))
+                view.js("dogear.clearSelection()")
+            }
+            visible = false
+        }
+        onNote: {
+            const id = forMark ? target.id
+                : marks.addHighlight(target.chapter, target.start, target.end, target.text, "yellow",
+                                     reader.titleOfChapter(target.chapter))
+            if (!forMark)
+                view.js("dogear.clearSelection()")
+            visible = false
+            noteEditor.show(id)
+        }
+        onCopy: {
+            reader.copyText(target.text)
+            if (!forMark)
+                view.js("dogear.clearSelection()")
+            visible = false
+            toast.show(qsTr("Copied"))
+        }
+        onListen: {
+            view.js("dogear.clearSelection()")
+            visible = false
+            narration.start(target.chapter, target.start)
+        }
+        onRemove: {
+            marks.remove(target.id)
+            visible = false
+            toast.show(qsTr("Highlight removed"), qsTr("Undo"), () => marks.undo())
+        }
+    }
+
+    NoteEditor {
+        id: noteEditor
+        anchors.centerIn: parent
+        z: 7
+        look: view.look
+    }
+
+    MarksPanel {
+        id: marksPanel
+        height: parent.height
+        look: view.look
+        onChosen: (chapter, offset) => view.goTo({ chapter: chapter, offset: offset, instant: true })
+    }
+
     SearchBar {
         id: searchBar
         anchors.horizontalCenter: parent.horizontalCenter
@@ -589,6 +758,9 @@ FocusScope {
     Shortcut { sequence: "T"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: contents.show() }
     Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: appearance.show() }
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: goTo.show() }
+    Shortcut { sequence: "B"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.toggleBookmark() }
+    Shortcut { sequence: "M"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showMarks() }
+    Shortcut { sequences: [StandardKey.Redo]; context: Qt.ApplicationShortcut; enabled: view.keys && marks.canRedo; onActivated: marks.redo() }
     Shortcut { sequences: ["/", StandardKey.Find]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: searchBar.show() }
     Shortcut { sequence: "N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.next() }
     Shortcut { sequence: "Shift+N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.previous() }

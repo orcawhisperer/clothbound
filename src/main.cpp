@@ -13,6 +13,7 @@
 #include "mpris.h"
 #include "download.h"
 #include "booksearch.h"
+#include "marks.h"
 #include "portalfilepicker.h"
 #include "reader.h"
 #include "theme.h"
@@ -164,6 +165,8 @@ int main(int argc, char *argv[]) {
     Mpris mpris(&narration, &reader, &library);
     Download download(&ai, &audioCache, &reader, &narration);
     BookSearch bookSearch(&reader);
+    Marks marks(&library);
+    QObject::connect(&reader, &Reader::bookChanged, &marks, [&marks, &reader] { marks.setBook(reader.bookId()); });
     VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
                         QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/voices.json"));
     // A book named on the command line joins the library (it may live
@@ -191,6 +194,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("voices", &voices);
     engine.rootContext()->setContextProperty("download", &download);
     engine.rootContext()->setContextProperty("bookSearch", &bookSearch);
+    engine.rootContext()->setContextProperty("marks", &marks);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);
     engine.rootContext()->setContextProperty("debugMode", qEnvironmentVariableIsSet("DOGEAR_DEBUG"));

@@ -36,6 +36,10 @@ class Reader : public QObject {
     Q_PROPERTY(int pages READ pages NOTIFY locationChanged)
     Q_PROPERTY(double progress READ progress NOTIFY locationChanged)
     Q_PROPERTY(QString pageLabel READ pageLabel NOTIFY locationChanged)
+    // Where the page in view starts and ends in its chapter, and its first words.
+    Q_PROPERTY(qint64 pageStart READ pageStart NOTIFY locationChanged)
+    Q_PROPERTY(qint64 pageEnd READ pageEnd NOTIFY locationChanged)
+    Q_PROPERTY(QString snippet READ snippet NOTIFY locationChanged)
     Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY locationChanged)
     Q_PROPERTY(int minutesLeftInBook READ minutesLeftInBook NOTIFY locationChanged)
     Q_PROPERTY(bool atStart READ atStart NOTIFY locationChanged)
@@ -51,6 +55,9 @@ public:
     QString title() const { return m_title; }
     QString author() const { return m_author; }
     QString language() const { return m_language; }
+    qint64 pageStart() const { return m_offset; }
+    qint64 pageEnd() const { return m_pageEnd; }
+    QString snippet() const { return m_snippet; }
     // The open book's file.
     QString bookPath() const;
     QVariantMap manifest() const { return m_manifest; }
@@ -62,6 +69,7 @@ public:
     Q_INVOKABLE QString passageFrom(int chapter, int maxChars = 4000) const;
     // How many characters of text a chapter has.
     Q_INVOKABLE qint64 charactersIn(int chapter) const { return m_lengths.value(chapter); }
+    Q_INVOKABLE void copyText(const QString &text) const;
     bool hasPageList() const { return m_hasPageList; }
     int chapter() const { return m_chapter; }
     int chapterCount() const { return int(m_chapterTitles.size()); }
@@ -95,6 +103,9 @@ public:
     Q_INVOKABLE void log(const QString &message);
     // A chapter's blocks to read aloud, as JSON from the surface.
     Q_INVOKABLE void speakableReady(int chapter, const QString &blocks) { emit speakable(chapter, blocks); }
+    // What the reader has selected on the page ({} when nothing is).
+    Q_INVOKABLE void selectionChanged(const QVariantMap &selection) { emit selected(selection); }
+    Q_INVOKABLE void markClicked(int id, const QVariantMap &rect) { emit markChosen(id, rect); }
 
     // Progress through the whole book at a chapter and an offset in it.
     double fractionAt(int chapter, qint64 offset) const;
@@ -109,6 +120,8 @@ signals:
     void key(const QString &key, int modifiers);
     void failed(const QString &message);
     void speakable(int chapter, const QString &blocks);
+    void selected(const QVariantMap &selection);
+    void markChosen(int id, const QVariantMap &rect);
 
 private:
     void savePosition();
@@ -119,6 +132,7 @@ private:
     Library *m_library;
     BookScheme *m_scheme;
     std::shared_ptr<EpubBook> m_book;
+    qint64 m_pageEnd = 0;
     QString m_token;
     int m_bookId = 0;
     QString m_format;

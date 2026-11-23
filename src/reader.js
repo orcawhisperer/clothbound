@@ -115,6 +115,11 @@ a { text-decoration: none !important; }
 ::selection { background: ${t.selection}; }
 ::highlight(dg-search) { background-color: ${t.search}; }
 ::highlight(dg-found) { background-color: ${t.found}; }
+::highlight(dg-mark-yellow) { background-color: ${t.markYellow}; }
+::highlight(dg-mark-green) { background-color: ${t.markGreen}; }
+::highlight(dg-mark-blue) { background-color: ${t.markBlue}; }
+::highlight(dg-mark-pink) { background-color: ${t.markPink}; }
+::highlight(dg-noted) { text-decoration: underline dotted ${t.link}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
 ::highlight(dg-speaking) { background-color: ${t.speaking}; }
 img, svg, video { max-width: 100% !important; object-fit: contain; break-inside: avoid; }
 img { height: auto; }
@@ -369,12 +374,26 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
 
     // The first character shown on the current screen.
     function firstVisibleOffset() {
+        const g = state.geometry
+        const found = firstOffsetPast(rect => g.scroll ? rect.bottom > 1 : rect.right > 1)
+        return found === null ? 0 : found
+    }
+
+    // The first character of the next screen: where this one ends.
+    function nextPageOffset() {
+        const g = state.geometry
+        const found = firstOffsetPast(rect => g.scroll ? rect.top > g.height - 1 : rect.left > g.width - 1)
+        return found === null ? state.index.length : found
+    }
+
+    // The first character, in the text's order, whose box is past a line on
+    // the screen; null when none is.
+    function firstOffsetPast(past) {
         const nodes = state.index.nodes
         if (!nodes.length)
-            return 0
-        const g = state.geometry
+            return null
         const range = chapterDocument().createRange()
-        const past = rect => g.scroll ? rect.bottom > 1 : rect.right > 1
+        let any = false
         const nodeIsPast = entry => {
             range.selectNodeContents(entry.node)
             const rects = range.getClientRects()
@@ -393,6 +412,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             if (verdict === null)
                 verdict = false
             if (verdict) {
+                any = true
                 found = middle
                 high = middle - 1
             } else {
@@ -424,7 +444,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                     return offsetOf(entry.node, first)
             }
         }
-        return offsetOf(nodes[found].node, 0) || 0
+        return any ? offsetOf(nodes[found].node, 0) || 0 : null
     }
 
     // A saved offset, checked against the text it pointed at, so a place
@@ -569,6 +589,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         state.location = {
             chapter: state.chapter,
             offset,
+            end: nextPageOffset(),
             snippet: state.index.text.substr(offset, 48),
             page: state.page,
             pages: state.pages,
@@ -597,6 +618,19 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         await settle(doc)
         state.index = buildIndex(doc)
         measure()
+        restoreDecorations()
+    }
+
+    // A chapter's highlights, search hits and spoken sentence, drawn again
+    // after it's laid out anew; a different chapter starts with none.
+    function restoreDecorations() {
+        if (state.decorated !== state.chapter) {
+            state.decorations = {}
+            state.decorated = state.chapter
+            return
+        }
+        for (const [name, spans] of Object.entries(state.decorations || {}))
+            api.highlight(name, spans)
     }
 
     // Shows a place: {chapter, offset/snippet, fragment, pageLabel, end, fraction}.
@@ -818,8 +852,43 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             follow(anchor)
             return
         }
+        const mark = markAtPoint(doc, event.clientX, event.clientY)
+        if (mark) {
+            event.preventDefault()
+            const range = rangeFor(mark.start, mark.end)
+            const rect = range ? range.getBoundingClientRect() : { left: event.clientX, top: event.clientY, width: 0, height: 0 }
+            const frameRect = frame().getBoundingClientRect()
+            if (state.bridge)
+                state.bridge.markClicked(mark.id, { x: frameRect.left + rect.left, y: frameRect.top + rect.top,
+                                                    width: rect.width, height: rect.height })
+            return
+        }
         const fraction = event.clientX / state.geometry.width
         tap(fraction)
+    }
+
+    // The highlight under a point, if any.
+    function markAtPoint(doc, x, y) {
+        if (!state.marks || !state.marks.length)
+            return null
+        let node = null, index = 0
+        if (doc.caretPositionFromPoint) {
+            const position = doc.caretPositionFromPoint(x, y)
+            if (position) {
+                node = position.offsetNode
+                index = position.offset
+            }
+        } else if (doc.caretRangeFromPoint) {
+            const range = doc.caretRangeFromPoint(x, y)
+            if (range) {
+                node = range.startContainer
+                index = range.startOffset
+            }
+        }
+        const offset = node ? offsetOf(node, index) : null
+        if (offset === null)
+            return null
+        return state.marks.find(span => offset >= span.start && offset < span.end) || null
     }
 
     function tap(fraction) {
@@ -1105,6 +1174,13 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         // Marks spans of the chapter's text: [{start, end}] under a name
         // styled in the typography (dg-search, dg-speaking).
         highlight(name, spans) {
+            // Kept, so the chapter laid out again (a new size, hyphens) gets
+            // its highlights back.
+            if (state.decorated !== state.chapter) {
+                state.decorations = {}
+                state.decorated = state.chapter
+            }
+            state.decorations[name] = spans || []
             const view = frame().contentWindow
             if (!state.index || !view || !view.CSS || !view.CSS.highlights)
                 return
@@ -1117,6 +1193,21 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             } else {
                 view.CSS.highlights.delete(name)
             }
+        },
+
+        // The chapter's highlights, each in its color; those with notes are
+        // underlined too. A click on one is reported, not taken as a turn.
+        marks(spans) {
+            state.marks = spans || []
+            for (const color of ['yellow', 'green', 'blue', 'pink'])
+                api.highlight('dg-mark-' + color, state.marks.filter(span => span.color === color))
+            api.highlight('dg-noted', state.marks.filter(span => span.noted))
+        },
+
+        clearSelection() {
+            const selection = state.index ? chapterDocument().getSelection() : null
+            if (selection)
+                selection.removeAllRanges()
         },
 
         // Search hits in the chapter shown, and the one gone to.

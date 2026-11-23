@@ -68,7 +68,22 @@ ApplicationWindow {
                 libraryView.closeDetails()
         }
     }
-    Shortcut { sequences: [StandardKey.Undo]; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: toast.runAction() }
+    // Ctrl+Z undoes what a toast offers to; otherwise, while reading, the
+    // last change to the book's marks.
+    Shortcut {
+        sequences: [StandardKey.Undo]
+        context: Qt.ApplicationShortcut
+        enabled: !win.typing
+        onActivated: {
+            if (toast.runAction())
+                return
+            if (readerLoader.item && readerLoader.item.visible && marks.canUndo) {
+                const what = marks.undoText
+                marks.undo()
+                toast.show(qsTr("Undid: %1").arg(what))
+            }
+        }
+    }
     Shortcut { sequences: ["Ctrl+,"]; context: Qt.ApplicationShortcut; onActivated: aiSettings.open ? aiSettings.close() : aiSettings.show() }
     function showAiSettings() { aiSettings.show() }
 

@@ -23,6 +23,7 @@
 #include "bookscheme.h"
 #include "booksearch.h"
 #include "library.h"
+#include "marks.h"
 #include "reader.h"
 #include "epubbook.h"
 #include "htmltokenizer.h"
@@ -755,6 +756,70 @@ private slots:
         QCOMPARE(library.record(id).position, QString(R"({"chapter":1,"offset":3,"snippet":"note"})"));
     }
 
+
+    // --- Marks ---------------------------------------------------------
+
+    void marksAreKeptAndUndone() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        QVERIFY(TestBooks::write(dir.filePath("book.epub"), TestBooks::epub2(png(20, 30))));
+        const int book = library.addBookFile(dir.filePath("book.epub"));
+        Marks marks(&library);
+        marks.setBook(book);
+        QCOMPARE(marks.count(), 0);
+
+        const int later = marks.addHighlight(1, 50, 60, "a later  passage", "green", "Notes");
+        const int earlier = marks.addHighlight(0, 10, 20, "an earlier one", "", "Chapter One");
+        const int bookmark = marks.addBookmark(0, 5, "The lamp", "Chapter One");
+        QVERIFY(later && earlier && bookmark);
+        // In the book's order, whatever order they were made in.
+        QCOMPARE(marks.data(marks.index(0), Marks::IdRole).toInt(), bookmark);
+        QCOMPARE(marks.data(marks.index(1), Marks::IdRole).toInt(), earlier);
+        QCOMPARE(marks.data(marks.index(2), Marks::IdRole).toInt(), later);
+        QCOMPARE(marks.mark(earlier).value("color").toString(), QString("yellow"));
+        QCOMPARE(marks.mark(later).value("text").toString(), QString("a later passage"));
+
+        QCOMPARE(marks.highlightAt(0, 15), earlier);
+        QCOMPARE(marks.highlightAt(0, 25), 0);
+        QCOMPARE(marks.bookmarkBetween(0, 0, 100), bookmark);
+        QCOMPARE(marks.bookmarkBetween(0, 6, 100), 0);
+        QCOMPARE(marks.highlightsIn(0).size(), 1);
+
+        marks.setNote(earlier, "  Remember this.  ");
+        QCOMPARE(marks.mark(earlier).value("note").toString(), QString("Remember this."));
+        QVERIFY(marks.highlightsIn(0).value(0).toMap().value("noted").toBool());
+        marks.setColor(earlier, "pink");
+
+        // Undo takes back each step, newest first; redo puts it back.
+        QVERIFY(marks.canUndo());
+        marks.undo();
+        QCOMPARE(marks.mark(earlier).value("color").toString(), QString("yellow"));
+        marks.undo();
+        QVERIFY(marks.mark(earlier).value("note").toString().isEmpty());
+        marks.redo();
+        QCOMPARE(marks.mark(earlier).value("note").toString(), QString("Remember this."));
+
+        // A mark taken away comes back with its note, and its id.
+        marks.remove(earlier);
+        QCOMPARE(marks.count(), 2);
+        marks.undo();
+        QCOMPARE(marks.count(), 3);
+        QCOMPARE(marks.mark(earlier).value("note").toString(), QString("Remember this."));
+
+        // Kept in the library: a new look at the book finds them.
+        Marks again(&library);
+        again.setBook(book);
+        QCOMPARE(again.count(), 3);
+        QCOMPARE(again.mark(earlier).value("note").toString(), QString("Remember this."));
+        QVERIFY(!again.canUndo());
+
+        const QString notes = marks.markdown("The Lantern Keeper", "Ada Marsh");
+        QVERIFY(notes.startsWith("# The Lantern Keeper\n"));
+        QVERIFY(notes.contains("## Chapter One"));
+        QVERIFY(notes.contains("> an earlier one\n\nRemember this."));
+        QVERIFY(notes.indexOf("## Chapter One") < notes.indexOf("## Notes"));
+    }
 
     // --- Search --------------------------------------------------------
 

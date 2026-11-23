@@ -29,6 +29,7 @@ HEADERS += \
     src/keystore.h \
     src/library.h \
     src/librarymodel.h \
+    src/marks.h \
     src/narration.h \
     src/director.h \
     src/download.h \
@@ -60,6 +61,7 @@ SOURCES += \
     src/keystore.cpp \
     src/library.cpp \
     src/librarymodel.cpp \
+    src/marks.cpp \
     src/narration.cpp \
     src/director.cpp \
     src/download.cpp \

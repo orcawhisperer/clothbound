@@ -4,7 +4,9 @@
 #include "epubbook.h"
 #include "library.h"
 
+#include <QClipboard>
 #include <QFutureWatcher>
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUrl>
@@ -298,6 +300,7 @@ void Reader::relocated(const QVariantMap &location) {
     m_chapter = location.value("chapter").toInt();
     m_offset = qMax<qint64>(0, location.value("offset").toLongLong());
     m_snippet = location.value("snippet").toString();
+    m_pageEnd = qMax(m_offset, location.value("end", m_offset).toLongLong());
     m_page = location.value("page").toInt();
     m_pages = qMax(1, location.value("pages").toInt());
     m_pageLabel = location.value("pageLabel").toString();
@@ -370,3 +373,8 @@ QString Reader::passageFrom(int chapter, int maxChars) const {
 }
 
 QString Reader::bookPath() const { return m_book ? m_book->filePath() : QString(); }
+
+void Reader::copyText(const QString &text) const {
+    if (QClipboard *clipboard = QGuiApplication::clipboard())
+        clipboard->setText(text);
+}
