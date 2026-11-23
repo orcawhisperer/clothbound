@@ -28,7 +28,7 @@ Rectangle {
     height: 52
     radius: Math.min(26, Math.max(theme.radius, 10))
     color: look.popover
-    border.color: look.border
+    border.color: look.line
 
     // A soft shadow so the bar floats over the page.
     Rectangle {
@@ -309,7 +309,7 @@ Rectangle {
                     background: Rectangle {
                         radius: Math.min(10, theme.radius)
                         color: bar.look.popover
-                        border.color: bar.look.border
+                        border.color: bar.look.line
                     }
                     contentItem: Column {
                         spacing: 2

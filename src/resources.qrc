@@ -58,6 +58,7 @@
         <file alias="reader.js">reader.js</file>
         <file alias="reader.css">reader.css</file>
         <file alias="hyphenation.js">hyphenation.js</file>
+        <file alias="dropcap.js">dropcap.js</file>
         <file alias="hyphenation/hyph-en-us.pat.txt">hyphenation/hyph-en-us.pat.txt</file>
         <file alias="hyphenation/hyph-en-us.hyp.txt">hyphenation/hyph-en-us.hyp.txt</file>
         <file alias="dogear.svg">../pkgbuild/dogear.svg</file>

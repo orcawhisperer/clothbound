@@ -58,7 +58,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: panel.look.popover
-        Rectangle { width: 1; height: parent.height; color: panel.look.border }
+        Rectangle { width: 1; height: parent.height; color: panel.look.line }
     }
     // The panel keeps its clicks and the wheel: nothing falls through to the page.
     MouseArea {
@@ -186,7 +186,7 @@ FocusScope {
                             radius: Math.min(8, theme.radius)
                             color: swatch.colors.bg
                             border.width: swatch.selected ? 2 : 1
-                            border.color: swatch.selected ? panel.look.link : panel.look.border
+                            border.color: swatch.selected ? panel.look.link : panel.look.line
                         }
                         contentItem: Column {
                             spacing: 2
@@ -477,6 +477,14 @@ FocusScope {
             }
             Toggle {
                 visible: !panel.pdf
+                enabled: !panel.settings.publisher
+                opacity: enabled ? 1 : 0.45
+                text: qsTr("Drop caps")
+                checked: panel.settings.dropCap
+                onToggled: (on) => panel.update("dropCap", on)
+            }
+            Toggle {
+                visible: !panel.pdf
                 text: qsTr("Animate page turns")
                 checked: panel.settings.animate
                 onToggled: (on) => panel.update("animate", on)
@@ -500,7 +508,7 @@ FocusScope {
                 Layout.topMargin: 6
                 Layout.bottomMargin: 2
                 Layout.preferredHeight: 1
-                color: panel.look.border
+                color: panel.look.line
             }
             Toggle {
                 text: qsTr("Custom settings for this book")

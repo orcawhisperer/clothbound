@@ -112,7 +112,7 @@ FocusScope {
                 + (bar.expanded && note.visible ? note.height + 8 : 0)
         radius: Math.min(12, theme.radius)
         color: bar.look.popover
-        border.color: bar.look.border
+        border.color: bar.look.line
         clip: true
 
         // Keep clicks and wheel inside the card from dismissing it via the scrim.

@@ -44,7 +44,7 @@ Rectangle {
     height: 44
     radius: Math.min(10, theme.radius)
     color: look.popover
-    border.color: look.border
+    border.color: look.line
 
     // Keep clicks on padding or dividers from turning the page underneath.
     MouseArea {
@@ -103,7 +103,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             width: 1
             height: 22
-            color: bar.look.border
+            color: bar.look.line
         }
 
         IconButton {
@@ -125,7 +125,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             width: 1
             height: 22
-            color: bar.look.border
+            color: bar.look.line
         }
         IconButton {
             anchors.verticalCenter: parent.verticalCenter

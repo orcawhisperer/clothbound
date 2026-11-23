@@ -21,13 +21,13 @@ var swatches = { yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f
 function palette(id, theme) {
     var p
     if (id === "paper")
-        p = { bg: "#fbfaf6", fg: "#23211d", link: "#8a5a12", muted: "#6f6a60", popover: "#ffffff", dark: false }
+        p = { bg: "#f6f1e7", fg: "#26221d", link: "#8a5a12", muted: "#6b655a", popover: "#fdfaf3", dark: false }
     else if (id === "sepia")
-        p = { bg: "#f3e9d6", fg: "#46382a", link: "#8b4f1d", muted: "#7b6a55", popover: "#fbf4e6", dark: false }
+        p = { bg: "#eedfc4", fg: "#3a2e1f", link: "#86491a", muted: "#6e5d46", popover: "#f6ead3", dark: false }
     else if (id === "dusk")
-        p = { bg: "#1e1f24", fg: "#d6d2c9", link: "#d8a75b", muted: "#97928a", popover: "#2a2b31", dark: true }
+        p = { bg: "#1e1d1b", fg: "#dcd5c8", link: "#d8a75b", muted: "#9a9384", popover: "#2a2926", dark: true }
     else if (id === "night")
-        p = { bg: "#000000", fg: "#b6b3ad", link: "#c99b4f", muted: "#78756f", popover: "#151515", dark: true }
+        p = { bg: "#0e0e0f", fg: "#c9c9cc", link: "#c99b4f", muted: "#86868c", popover: "#19191b", dark: true }
     else
         p = { bg: theme.ground, fg: theme.ink2, link: theme.accentInk, muted: theme.ink3,
               popover: theme.raised, dark: !theme.light }
@@ -41,6 +41,8 @@ function palette(id, theme) {
     p.found = css(tint(p.dark ? "#ff9f0a" : "#ff8c00", p.dark ? 0.7 : 0.6))
     p.speaking = css(tint(p.link, p.dark ? 0.26 : 0.18))
     p.border = css(tint(p.fg, 0.14))
+    // The same edge as a QML colour: QML can't read CSS's rgba() strings.
+    p.line = tint(p.fg, 0.14)
     return p
 }
 

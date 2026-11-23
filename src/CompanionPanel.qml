@@ -85,7 +85,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: panel.look.popover
-        Rectangle { width: 1; height: parent.height; color: panel.look.border }
+        Rectangle { width: 1; height: parent.height; color: panel.look.line }
     }
     MouseArea {
         anchors.fill: parent
@@ -692,7 +692,7 @@ FocusScope {
                     Layout.preferredHeight: 108
                     radius: Math.min(8, theme.radius)
                     color: Ui.tint(panel.look.fg, 0.05)
-                    border.color: panel.look.border
+                    border.color: panel.look.line
                     ColumnLayout {
                         anchors.centerIn: parent
                         spacing: 4

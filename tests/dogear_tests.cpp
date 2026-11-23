@@ -5671,6 +5671,39 @@ private slots:
         QVERIFY(!qml.contains(QStringLiteral("strongTrigger")));
     }
 
+    void dropCapOpensTheFirstRealParagraph() {
+        const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
+        if (node.isEmpty())
+            QSKIP("node executable not available");
+        const QString script = QStringLiteral(R"JS(
+const assert = require('assert');
+const DropCap = require(process.argv[1]);
+const long = 'The Time Traveller (for so it will be convenient to speak of him) was expounding a recondite matter to us. His grey eyes shone.';
+// The first long paragraph of running text, past an epigraph and a short line.
+assert.strictEqual(DropCap.choose([
+    { text: 'To my friends.', excluded: false },
+    { text: long, excluded: true },
+    { text: 'Short.', excluded: false },
+    { text: long, excluded: false },
+]), 3);
+// Opening quotes are skipped over; a digit or a CJK character means none.
+assert.strictEqual(DropCap.choose([{ text: '“' + long, excluded: false }]), 0);
+assert.strictEqual(DropCap.choose([{ text: '1854. ' + long, excluded: false }]), -1);
+assert.strictEqual(DropCap.choose([{ text: '吾輩は猫である。'.repeat(20), excluded: false }]), -1);
+// Cyrillic and Greek have capitals.
+assert.strictEqual(DropCap.choose([{ text: 'Все счастливые семьи похожи друг на друга. '.repeat(4), excluded: false }]), 0);
+// Nothing long enough near the top: no drop cap.
+assert.strictEqual(DropCap.choose(Array(10).fill({ text: 'A line of verse.', excluded: false }).concat([{ text: long }])), -1);
+assert.strictEqual(DropCap.choose([]), -1);
+console.log('ok');
+)JS");
+        QProcess process;
+        process.start(node, {"-e", script, QFINDTESTDATA("../src/dropcap.js")});
+        QVERIFY(process.waitForFinished(15000));
+        QVERIFY2(process.exitCode() == 0, process.readAllStandardError().constData());
+        QCOMPARE(process.readAllStandardOutput().trimmed(), QByteArray("ok"));
+    }
+
     void readerJsSuppressesNudgeRelayoutAndAllowsRealResize() {
         const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
         if (node.isEmpty())

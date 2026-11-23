@@ -18,12 +18,34 @@ T.MenuItem {
     font.pixelSize: 13
     opacity: enabled ? 1 : 0.45
 
-    contentItem: Text {
-        text: control.text
-        font: control.font
-        color: control.highlighted ? control.palette.highlightedText : control.palette.windowText
-        elide: Text.ElideRight
-        verticalAlignment: Text.AlignVCenter
+    // "Contents\tT": the part after a tab is the item's key, set apart.
+    readonly property string label: text.split("\t")[0]
+    readonly property string key: text.indexOf("\t") >= 0 ? text.split("\t")[1] : ""
+
+    contentItem: Item {
+        implicitWidth: labelText.implicitWidth + (keyText.visible ? keyText.implicitWidth + 24 : 0)
+        implicitHeight: labelText.implicitHeight
+        Text {
+            id: labelText
+            anchors.left: parent.left
+            anchors.right: keyText.visible ? keyText.left : parent.right
+            anchors.rightMargin: keyText.visible ? 16 : 0
+            anchors.verticalCenter: parent.verticalCenter
+            text: control.label
+            font: control.font
+            color: control.highlighted ? control.palette.highlightedText : control.palette.windowText
+            elide: Text.ElideRight
+        }
+        Text {
+            id: keyText
+            visible: control.key !== ""
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            text: control.key
+            font.pixelSize: 12
+            font.family: control.font.family
+            color: control.highlighted ? control.palette.highlightedText : control.palette.mid
+        }
     }
 
     indicator: Shape {
