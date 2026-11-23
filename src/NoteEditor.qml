@@ -47,7 +47,7 @@ FocusScope {
         anchors.fill: parent
         radius: Math.min(12, theme.radius)
         color: editor.look.popover
-        border.color: editor.look.border
+        border.color: editor.look.line
     }
 
     ColumnLayout {

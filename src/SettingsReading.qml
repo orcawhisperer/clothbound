@@ -119,6 +119,12 @@ ColumnLayout {
             title: qsTr("Hyphenate")
             Switch { checked: readingSettings.hyphenate; onToggled: readingSettings.hyphenate = checked }
         }
+        Rectangle { Layout.fillWidth: true; height: 1; color: theme.hairline }
+        SettingsRow {
+            title: qsTr("Drop caps")
+            description: qsTr("A large initial opens each chapter.")
+            Switch { checked: readingSettings.dropCap; onToggled: readingSettings.dropCap = checked }
+        }
     }
 
     SettingsCard {

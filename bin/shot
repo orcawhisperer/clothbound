@@ -3,7 +3,8 @@
 # throwaway profile so it never touches your library, theme or settings.
 #
 #   bin/shot <name> [--theme <omarchy-theme>|none] [--lang <code>] [--radius <px>]
-#            [--size WxH] [--empty] [--found] [--first-run] [--keep-warnings] [-- <app args, e.g. --run "...">]
+#            [--size WxH] [--empty] [--found] [--first-run] [--setting group/key=value]
+#            [--keep-warnings] [-- <app args, e.g. --run "...">]
 #
 # The PNG lands in build/shots/<name>.png. The run fails when QML prints a
 # warning, so a screen that looks right but logs errors doesn't pass.
@@ -22,7 +23,7 @@ THEMES="${OMARCHY_PATH:-/usr/share/omarchy}/themes"
 
 [ $# -ge 1 ] || { sed -n '5,14p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 name="$1"; shift
-theme="tokyo-night"; lang="en"; radius=""; size="1280x800"; empty=0; keep=0; first=0; found=0
+theme="tokyo-night"; lang="en"; radius=""; size="1280x800"; empty=0; keep=0; first=0; found=0; settings=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --theme) theme="$2"; shift 2 ;;
@@ -32,6 +33,8 @@ while [ $# -gt 0 ]; do
         --empty) empty=1; shift ;;
         --first-run) first=1; shift ;;
         --found) found=1; shift ;;
+        --setting) settings="$settings
+$2"; shift 2 ;;
         --keep-warnings) keep=1; shift ;;
         --) shift; break ;;
         *) echo "bin/shot: unknown option $1" >&2; exit 2 ;;
@@ -94,6 +97,15 @@ if [ "$first" -eq 0 ]; then
     mkdir -p "$home/.config/dogear"
     version="$("$APP" --version | awk '{print $NF}')"
     printf '[onboarding]\nwelcomed=true\nversion=%s\n' "$version" >> "$home/.config/dogear/settings.ini"
+fi
+
+# Extra settings, as group/key=value lines, appended to settings.ini.
+if [ -n "$settings" ]; then
+    mkdir -p "$home/.config/dogear"
+    printf '%s\n' "$settings" | while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        printf '[%s]\n%s\n' "${line%%/*}" "${line#*/}" >> "$home/.config/dogear/settings.ini"
+    done
 fi
 
 # A fake Hyprland socket answering the rounding query, when asked for corners.

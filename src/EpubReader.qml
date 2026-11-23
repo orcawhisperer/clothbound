@@ -33,6 +33,7 @@ FocusScope {
         readonly property string margins: String(pick("margins", view.settings.margins))
         readonly property bool justify: !!pick("justify", view.settings.justify)
         readonly property bool hyphenate: !!pick("hyphenate", view.settings.hyphenate)
+        readonly property bool dropCap: !!pick("dropCap", view.settings.dropCap)
         readonly property string layout: String(pick("layout", view.settings.layout))
         readonly property bool animate: !!pick("animate", view.settings.animate)
         readonly property bool publisher: !!pick("publisher", view.settings.publisher)
@@ -111,6 +112,7 @@ FocusScope {
             margins: activeSettings.margins,
             justify: activeSettings.justify,
             hyphenate: activeSettings.hyphenate,
+            dropCap: activeSettings.dropCap,
             layout: activeSettings.layout,
             animate: activeSettings.animate,
             publisher: activeSettings.publisher,
@@ -180,6 +182,7 @@ FocusScope {
             measure: margins[1],
             justify: activeSettings.justify,
             hyphenate: activeSettings.hyphenate,
+            dropCap: activeSettings.dropCap,
             layout: activeSettings.layout,
             animate: activeSettings.animate,
             publisher: activeSettings.publisher,
@@ -987,6 +990,85 @@ FocusScope {
         }
     }
 
+    // The first book opened shows the four keys worth knowing, once.
+    Rectangle {
+        id: keysStrip
+        z: 4
+        readonly property bool wanted: onboarding.tips.indexOf("keys") < 0 && reader.open && !view.epubLoading
+                                       && !view.panelOpen && !narration.active && !view.chromeShown
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: wanted ? parent.height - height - 28 : parent.height + 8
+        Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        visible: y < parent.height
+        width: keysRow.implicitWidth + 24
+        height: 44
+        radius: Math.min(12, Math.max(theme.radius, 8))
+        color: view.look.popover
+        border.color: view.look.line
+        Rectangle {
+            z: -1
+            anchors.fill: parent
+            anchors.topMargin: 3
+            anchors.bottomMargin: -3
+            radius: parent.radius
+            color: "black"
+            opacity: view.look.dark ? 0.3 : 0.1
+        }
+        Row {
+            id: keysRow
+            anchors.centerIn: parent
+            spacing: 14
+            Repeater {
+                model: [{ key: qsTr("Space"), what: qsTr("Turn the page") }, { key: "P", what: qsTr("Listen") },
+                        { key: "C", what: qsTr("Companion") }, { key: "?", what: qsTr("All keys") }]
+                delegate: Row {
+                    required property var modelData
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 6
+                    KeyHint { anchors.verticalCenter: parent.verticalCenter; text: modelData.key }
+                    Label { anchors.verticalCenter: parent.verticalCenter; text: modelData.what; color: view.look.fg; font.pixelSize: 12 }
+                }
+            }
+            TextButton {
+                anchors.verticalCenter: parent.verticalCenter
+                height: 28
+                text: qsTr("Got it")
+                onClicked: onboarding.tips = onboarding.tips.concat(["keys"])
+            }
+        }
+    }
+
+    // How far through the book, always: a hairline along the foot of the
+    // page with a tick at each chapter. The scrubber in the chrome moves it.
+    Item {
+        id: progressLine
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 3
+        opacity: view.chromeShown ? 0 : 1
+        Behavior on opacity { NumberAnimation { duration: 160 } }
+        Rectangle { anchors.fill: parent; color: Ui.tint(view.look.fg, 0.07) }
+        Rectangle {
+            width: parent.width * Math.max(0, Math.min(1, reader.progress))
+            height: parent.height
+            color: view.look.link
+            opacity: 0.75
+            Behavior on width { NumberAnimation { duration: 200; easing.type: Easing.OutCubic } }
+        }
+        Repeater {
+            model: reader.chapterMarks
+            delegate: Rectangle {
+                required property real modelData
+                x: progressLine.width * modelData
+                width: 1
+                height: progressLine.height
+                color: view.look.bg
+                opacity: 0.8
+            }
+        }
+    }
+
     // Dismissible jump-back pill shown after TOC, link, scrubber, search,
     // or Companion jumps so returning where you came from is one click away.
     Timer {
@@ -1010,7 +1092,7 @@ FocusScope {
         height: 36
         radius: Math.min(18, Math.max(theme.radius + 4, 8))
         color: view.look.popover
-        border.color: view.look.border
+        border.color: view.look.line
 
         Rectangle {
             z: -1
@@ -1119,96 +1201,102 @@ FocusScope {
         id: chrome
         anchors.left: parent.left
         anchors.right: parent.right
-        height: 60
+        height: 48
         y: view.chromeShown ? 0 : -height - 4
         Behavior on y { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
-        color: view.look.popover
-        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: view.look.border }
+        color: view.look.bg
+        Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: 1; color: view.look.line }
         HoverHandler { id: chromeHover }
 
-        Row {
+        // Back to the library, as words: the way out is never a guess.
+        AbstractButton {
+            id: backButton
             anchors.left: parent.left
-            anchors.leftMargin: 14
+            anchors.leftMargin: 10
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 6
-            IconButton {
-                glyph: Icons.back
-                look: view.look
-                tip: qsTr("Library (Esc)")
-                onClicked: view.closeRequested()
+            height: 30
+            width: backRow.implicitWidth + 16
+            hoverEnabled: true
+            focusPolicy: Qt.NoFocus
+            Accessible.name: qsTr("Library")
+            onClicked: view.closeRequested()
+            background: Rectangle {
+                radius: Math.min(7, theme.radius)
+                color: backButton.pressed ? Ui.tint(view.look.fg, 0.12) : backButton.hovered ? Ui.tint(view.look.fg, 0.07) : "transparent"
             }
-            IconButton {
-                glyph: Icons.contents
-                look: view.look
-                tip: qsTr("Contents (T)")
-                active: contents.open
-                onClicked: contents.open ? contents.close() : view.showContents()
+            contentItem: Item {
+                Row {
+                    id: backRow
+                    x: 6
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 4
+                    Glyph { anchors.verticalCenter: parent.verticalCenter; width: 14; height: 14; stroke: 2; path: Icons.chevronLeft; color: view.look.fg }
+                    Label { anchors.verticalCenter: parent.verticalCenter; text: qsTr("Library"); color: view.look.fg; font.pixelSize: 13; font.weight: Font.Medium }
+                }
             }
+            ToolTip.visible: hovered
+            ToolTip.text: qsTr("Library (Esc)")
+            ToolTip.delay: 600
         }
 
-        Column {
+        // The book, and where in it: "The Time Machine — Chapter I". The
+        // chapter gives way first when the room runs out.
+        Item {
+            id: heading
             anchors.centerIn: parent
-            width: Math.max(0, Math.min(parent.width - 520, 640))
+            readonly property real room: Math.max(0, parent.width - 2 * Math.max(backButton.width + 24, tools.width + 24))
+            readonly property bool showChapter: reader.chapterTitle !== "" && reader.chapterTitle !== reader.title
+            readonly property real chapterRoom: showChapter ? Math.min(chapterLabel.implicitWidth, room * 0.45) : 0
+            width: titleLabel.width + chapterLabel.width
+            height: parent.height
             Label {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
+                id: titleLabel
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth, heading.room - heading.chapterRoom)
                 text: reader.title
                 color: view.look.fg
-                font.pixelSize: 14
+                font.pixelSize: 13
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
             }
             Label {
-                width: parent.width
-                horizontalAlignment: Text.AlignHCenter
-                text: reader.author
+                id: chapterLabel
+                anchors.left: titleLabel.right
+                anchors.verticalCenter: parent.verticalCenter
+                visible: heading.showChapter
+                width: visible ? Math.min(implicitWidth, heading.room - titleLabel.width) : 0
+                text: " — " + reader.chapterTitle
                 color: view.look.muted
-                font.pixelSize: 12
+                font.pixelSize: 13
                 elide: Text.ElideRight
             }
         }
 
         Row {
+            id: tools
             anchors.right: parent.right
-            anchors.rightMargin: 14
+            anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 6
-            IconButton {
-                glyph: Icons.bookmark
-                look: view.look
-                active: view.pageBookmark > 0
-                tip: view.pageBookmark ? qsTr("Remove the bookmark (B)") : qsTr("Bookmark this page (B)")
-                onClicked: view.toggleBookmark()
-            }
-            IconButton {
-                glyph: Icons.pen
-                look: view.look
-                active: marksPanel.open
-                tip: qsTr("Highlights, notes, and bookmarks (M)")
-                onClicked: marksPanel.open ? marksPanel.close() : view.showMarks()
-            }
-            IconButton {
-                glyph: Icons.sparkle
-                look: view.look
-                active: companionPanel.open
-                tip: qsTr("Companion: ask about the book (C)")
-                onClicked: companionPanel.open ? companionPanel.close() : view.showCompanion("ask")
-            }
+            spacing: 2
             IconButton {
                 glyph: Icons.headphones
-                look: view.look
                 active: narration.active
                 tip: narration.active ? qsTr("Stop listening (⇧P)") : qsTr("Listen from this page (P)")
                 onClicked: view.listen()
             }
             IconButton {
-                look: view.look
+                glyph: Icons.sparkle
+                active: companionPanel.open
+                tip: qsTr("Companion (C)")
+                onClicked: companionPanel.open ? companionPanel.close() : view.showCompanion("ask")
+            }
+            IconButton {
                 tip: qsTr("Appearance (A)")
                 active: appearance.open
                 contentItem: Label {
                     text: "Aa"
                     font.family: "Literata"
-                    font.pixelSize: 16
+                    font.pixelSize: 15
                     color: appearance.open ? view.look.link : view.look.fg
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
@@ -1216,11 +1304,23 @@ FocusScope {
                 onClicked: appearance.open ? appearance.close() : view.showAppearance()
             }
             IconButton {
-                glyph: Icons.fullscreen
-                look: view.look
-                tip: qsTr("Full screen (F)")
-                onClicked: win.toggleFullScreen()
+                id: moreButton
+                glyph: Icons.more
+                active: readerMore.opened
+                tip: qsTr("More")
+                onClicked: readerMore.opened ? readerMore.close() : readerMore.popup(moreButton, moreButton.width - readerMore.width, moreButton.height + 6)
             }
+        }
+        Menu {
+            id: readerMore
+            width: 260
+            MenuItem { text: qsTr("Contents") + "\tT"; onTriggered: view.showContents() }
+            MenuItem { text: qsTr("Highlights, notes, and bookmarks") + "\tM"; onTriggered: view.showMarks() }
+            MenuItem { text: (view.pageBookmark ? qsTr("Remove the bookmark") : qsTr("Bookmark this page")) + "\tB"; onTriggered: view.toggleBookmark() }
+            MenuItem { text: qsTr("Search in the book") + "\t/"; onTriggered: searchBar.show() }
+            MenuItem { text: qsTr("Go to a page") + "\tG"; onTriggered: goTo.show() }
+            MenuSeparator {}
+            MenuItem { text: qsTr("Full screen") + "\tF"; onTriggered: win.toggleFullScreen() }
         }
     }
 
@@ -1232,7 +1332,7 @@ FocusScope {
         y: view.chromeShown ? parent.height - height : parent.height + 4
         Behavior on y { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
         color: view.look.popover
-        Rectangle { width: parent.width; height: 1; color: view.look.border }
+        Rectangle { width: parent.width; height: 1; color: view.look.line }
         HoverHandler { id: scrubberHover }
 
         Label {
@@ -1321,31 +1421,50 @@ FocusScope {
         onBookOverrideToggled: (enabled) => view.setBookOverride(enabled)
     }
 
-    // The bookmark's ribbon, hanging from the top of a marked page.
+    // The bookmark is a dog-ear: the page's top corner folded down. Pointing
+    // at the corner shows where it would fold; a click folds or unfolds it.
     Item {
-        id: ribbon
+        id: dogEar
+        z: 3
         anchors.right: parent.right
-        anchors.rightMargin: 46
-        width: 18
-        height: 30
-        y: view.pageBookmark ? 0 : -height - 2
-        Behavior on y { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        y: view.chromeShown ? chrome.height : 0
+        Behavior on y { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+        width: 34
+        height: 34
+        visible: !view.panelOpen || view.pageBookmark > 0
+        property real fold: view.pageBookmark > 0 ? 1 : earHover.hovered ? 0.55 : 0
+        Behavior on fold { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        HoverHandler { id: earHover; cursorShape: Qt.PointingHandCursor }
+        TapHandler { onTapped: view.toggleBookmark() }
+        ToolTip.visible: earHover.hovered
+        ToolTip.text: view.pageBookmark ? qsTr("Remove the bookmark (B)") : qsTr("Bookmark this page (B)")
+        ToolTip.delay: 500
         Canvas {
             anchors.fill: parent
-            property color fill: view.look.link
-            onFillChanged: requestPaint()
+            visible: dogEar.fold > 0.01
+            property real fold: dogEar.fold
+            property color page: view.look.bg
+            property color flap: view.pageBookmark > 0 ? view.look.link : Ui.mix(view.look.bg, view.look.fg, 0.18)
+            property color behind: view.look.dark ? Qt.darker(view.look.bg, 1.6) : Qt.darker(view.look.bg, 1.12)
+            onFoldChanged: requestPaint()
+            onPageChanged: requestPaint()
+            onFlapChanged: requestPaint()
+            onBehindChanged: requestPaint()
             onPaint: {
                 const g = getContext("2d")
                 g.reset()
-                g.fillStyle = fill
-                g.beginPath()
-                g.moveTo(0, 0)
-                g.lineTo(width, 0)
-                g.lineTo(width, height)
-                g.lineTo(width / 2, height - 7)
-                g.lineTo(0, height)
-                g.closePath()
-                g.fill()
+                const s = width * fold
+                const x0 = width - s
+                // The corner folded away shows what's behind the page...
+                g.fillStyle = behind
+                g.beginPath(); g.moveTo(x0, 0); g.lineTo(width, 0); g.lineTo(width, s); g.closePath(); g.fill()
+                // ...and the flap lies on the page, with a soft shadow.
+                g.shadowColor = Qt.rgba(0, 0, 0, 0.25)
+                g.shadowBlur = 4
+                g.shadowOffsetX = -1
+                g.shadowOffsetY = 1
+                g.fillStyle = flap
+                g.beginPath(); g.moveTo(x0, 0); g.lineTo(x0, s); g.lineTo(width, s); g.closePath(); g.fill()
             }
         }
     }
@@ -1365,8 +1484,19 @@ FocusScope {
             }
             visible = false
         }
-        onCompanion: (feature) => {
+        onAskCompanion: (feature) => {
             view.askCompanion(feature, target)
+            visible = false
+        }
+        onDefineHere: {
+            if (!target || !(target.text || target.quote))
+                return
+            const text = target.text || target.quote
+            view.lastCompanionTarget = { chapter: target.chapter, start: target.start, end: target.end, text: text }
+            companion.define(text, target.chapter, target.start)
+        }
+        onMoreInCompanion: {
+            view.showCompanion("selection")
             visible = false
         }
         onNote: {
@@ -1407,7 +1537,7 @@ FocusScope {
             implicitWidth: 230
             radius: Math.min(10, theme.radius)
             color: view.look.popover
-            border.color: view.look.border
+            border.color: view.look.line
             Rectangle {
                 z: -1
                 anchors.fill: parent

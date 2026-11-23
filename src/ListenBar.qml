@@ -25,10 +25,52 @@ Rectangle {
     }
 
     width: Math.max(240, Math.min(parent.width - 48, row.implicitWidth + 28))
-    height: 52
+    height: 56
     radius: Math.min(26, Math.max(theme.radius, 10))
     color: look.popover
-    border.color: look.border
+    border.color: look.line
+
+    // While the pages turn with the voice, a quiet note above the bar says
+    // so for a moment; turning away swaps it for Follow along in the bar.
+    Rectangle {
+        id: followPill
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.top
+        anchors.bottomMargin: 8
+        width: followText.implicitWidth + 30
+        height: 26
+        radius: 13
+        color: bar.look.popover
+        border.color: bar.look.line
+        property bool recent: false
+        opacity: narration.playing && narration.following && recent ? 1 : 0
+        visible: opacity > 0.01
+        Behavior on opacity { NumberAnimation { duration: 220 } }
+        Timer { id: followTimer; interval: 3500; onTriggered: followPill.recent = false }
+        Connections {
+            target: narration
+            function onStateChanged() {
+                if (narration.playing && narration.following && !followPill.wasFollowing) {
+                    followPill.recent = true
+                    followTimer.restart()
+                }
+                followPill.wasFollowing = narration.playing && narration.following
+            }
+        }
+        property bool wasFollowing: false
+        Row {
+            anchors.centerIn: parent
+            spacing: 6
+            Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 6; height: 6; radius: 3; color: bar.look.link }
+            Label {
+                id: followText
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Pages follow the voice")
+                color: bar.look.muted
+                font.pixelSize: 11
+            }
+        }
+    }
 
     // A soft shadow so the bar floats over the page.
     Rectangle {
@@ -156,26 +198,49 @@ Rectangle {
 
             Item { width: 8; height: 1 }
 
-            // The voice and pace.
+            // The voice, and where it is made: on this computer or by Google.
             AbstractButton {
                 id: voiceButton
+                readonly property bool local: narration.voice.startsWith("builtin:")
+                                              || (narration.voice.startsWith("studio:") && ai.localIsLoopback)
                 anchors.verticalCenter: parent.verticalCenter
-                implicitHeight: 36
-                implicitWidth: voiceLabel.implicitWidth + 20
+                implicitHeight: 40
+                implicitWidth: Math.max(voiceLabel.implicitWidth, whereRow.implicitWidth) + 20
                 hoverEnabled: true
                 focusPolicy: Qt.NoFocus
+                Accessible.name: narration.voiceName + ", " + whereLabel.text
                 background: Rectangle {
                     radius: Math.min(8, theme.radius)
                     color: voiceButton.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
                 }
-                contentItem: Label {
-                    id: voiceLabel
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                    text: narration.voiceName
-                    color: bar.look.fg
-                    font.pixelSize: 13
-                    font.weight: Font.DemiBold
+                contentItem: Item {
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 1
+                        Label {
+                            id: voiceLabel
+                            text: narration.voiceName
+                            color: bar.look.fg
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                        }
+                        Row {
+                            id: whereRow
+                            visible: narration.voiceName !== ""
+                            spacing: 5
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 5; height: 5; radius: 2.5
+                                color: voiceButton.local ? theme.positive : theme.cloud
+                            }
+                            Label {
+                                id: whereLabel
+                                text: voiceButton.local ? qsTr("On this computer") : qsTr("Sent to Google")
+                                color: bar.look.muted
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
                 }
                 onClicked: bar.voiceRequested()
                 ToolTip.visible: hovered
@@ -202,7 +267,7 @@ Rectangle {
                     font.pixelSize: 13
                 }
                 onClicked: {
-                    const steps = [1.0, 1.15, 1.3, 1.5, 1.75, 2.0, 0.75, 0.9]
+                    const steps = [1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 0.75, 0.9]
                     const at = steps.findIndex(step => Math.abs(step - narration.rate) < 0.01)
                     narration.rate = steps[(at + 1) % steps.length]
                 }
@@ -221,7 +286,7 @@ Rectangle {
                     : narration.fallbackNotice !== "" ? narration.fallbackNotice
                     : narration.minutesLeftInChapter > 0 && translator.language !== ""
                       ? qsTr("%1 left in chapter").arg(Format.duration(narration.minutesLeftInChapter)) : ""
-                color: narration.problem !== "" ? (theme.colors.orange || "#e5a050") : bar.look.muted
+                color: narration.problem !== "" ? theme.cloud : bar.look.muted
                 font.pixelSize: 12
                 elide: Text.ElideRight
                 width: Math.min(implicitWidth, Math.min(280, Math.max(80, (bar.parent ? bar.parent.width : 900) - 520)))
@@ -309,7 +374,7 @@ Rectangle {
                     background: Rectangle {
                         radius: Math.min(10, theme.radius)
                         color: bar.look.popover
-                        border.color: bar.look.border
+                        border.color: bar.look.line
                     }
                     contentItem: Column {
                         spacing: 2

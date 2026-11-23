@@ -226,6 +226,7 @@ b, strong, th { font-weight: ${boldWeight} !important; }
 h1, h2, h3, h4, h5, h6 { font-weight: ${headingWeight} !important; }
 p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !important; }
 p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
+[data-dg-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; margin-inline-end: 0.06em; }
 [data-dg-flow] { text-align: ${s.justify ? 'justify' : 'start'} !important;
                  ${s.justify && state.hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }` : ''}
 `
@@ -432,10 +433,28 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
             ])
     }
 
+    // A chapter opens with a drop cap, in Dogear's own typography, for
+    // horizontal left-to-right text (DropCap, dropcap.js, picks the paragraph).
+    function markDropCap(doc) {
+        for (const old of doc.querySelectorAll('[data-dg-dropcap]'))
+            old.removeAttribute('data-dg-dropcap')
+        const s = state.style
+        if (s.publisher || s.dropCap === false || state.rtl || state.vertical || typeof DropCap === 'undefined')
+            return
+        const paragraphs = [...doc.querySelectorAll('p[data-dg-flow]')]
+        const index = DropCap.choose(paragraphs.map(p => ({
+            text: p.textContent,
+            excluded: !!p.closest('blockquote, aside, figure, table, nav, header, footer, li, [class*="epigraph" i]'),
+        })))
+        if (index >= 0)
+            paragraphs[index].setAttribute('data-dg-dropcap', '')
+    }
+
     async function prepare(doc) {
         state.hyphenatedNodes = new Map()
         detectDirection(doc)
         markFlow(doc)
+        markDropCap(doc)
         const s = state.style
         state.hyphenation = !s.publisher && s.justify && s.hyphenate && await Hyphenation.load(state.book.language)
         if (state.hyphenation)
@@ -1793,8 +1812,10 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
                 const doc = chapterDocument()
                 const layoutKeys = ['font', 'fontScale', 'fontWeight', 'lineHeight', 'paragraphSpacing',
                                     'margin', 'measure', 'justify', 'hyphenate', 'layout', 'publisher',
-                                    'marginTop', 'marginBottom']
+                                    'marginTop', 'marginBottom', 'dropCap']
                 const layoutChanged = !prev || layoutKeys.some(k => prev[k] !== style[k])
+                if (layoutChanged && (!prev || prev.dropCap !== style.dropCap || prev.publisher !== style.publisher))
+                    markDropCap(doc)
                 if (!layoutChanged) {
                     applyTypography(doc)
                     return

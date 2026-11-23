@@ -510,7 +510,7 @@ Item {
                 anchors.bottom: parent.bottom
                 anchors.left: parent.left
                 width: 1
-                color: surface.look ? surface.look.border : "transparent"
+                color: surface.look ? surface.look.line : "transparent"
             }
 
             // Crisp hairline page border drawn over the sheet edge.
@@ -518,7 +518,7 @@ Item {
                 anchors.fill: parent
                 color: "transparent"
                 border.width: 1
-                border.color: surface.look ? surface.look.border : "transparent"
+                border.color: surface.look ? surface.look.line : "transparent"
             }
         }
 

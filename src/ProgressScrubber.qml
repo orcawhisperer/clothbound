@@ -36,7 +36,7 @@ Item {
         background: Rectangle {
             radius: Math.min(6, theme.radius)
             color: scrubber.look.popover
-            border.color: scrubber.look.border
+            border.color: scrubber.look.line
         }
     }
 

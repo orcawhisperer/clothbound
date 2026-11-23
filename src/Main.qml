@@ -567,10 +567,11 @@ ApplicationWindow {
         property string theme: "omarchy"
         property string font: "Literata"
         property real fontScale: 1.15
-        property real lineHeight: 1.55
+        property real lineHeight: 1.62
         property string margins: "normal"
         property bool justify: true
         property bool hyphenate: true
+        property bool dropCap: true
         property string layout: "auto"
         property bool animate: true
         property bool publisher: false

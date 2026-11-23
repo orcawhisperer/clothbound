@@ -315,7 +315,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: panel.look.popover
-        Rectangle { width: 1; height: parent.height; color: panel.look.border }
+        Rectangle { width: 1; height: parent.height; color: panel.look.line }
     }
     // The panel keeps its clicks and the wheel: nothing falls through to the page.
     MouseArea {
@@ -556,7 +556,7 @@ FocusScope {
         visible: panel.showCastCard
         radius: Math.min(10, theme.radius)
         color: Ui.tint(panel.look.fg, 0.04)
-        border.color: panel.look.border
+        border.color: panel.look.line
         implicitHeight: castColumn.implicitHeight + 20
         ColumnLayout {
             id: castColumn
@@ -739,7 +739,7 @@ FocusScope {
             visible: audiobook.saved !== "" || audiobook.problem !== ""
             radius: Math.min(10, theme.radius)
             color: Ui.tint(panel.look.fg, 0.04)
-            border.color: panel.look.border
+            border.color: panel.look.line
             implicitHeight: m4bCol.implicitHeight + 20
             ColumnLayout {
                 id: m4bCol
@@ -1093,30 +1093,24 @@ FocusScope {
                 }
 
                 // Where the voice comes from: made here, Gemini, or Studio.
-                RowLayout {
+                Segmented {
                     Layout.fillWidth: true
                     Layout.topMargin: 6
-                    spacing: 8
                     visible: voicePacks.supported || ai.localSpeechModel !== ""
-                    Choice {
-                        Layout.preferredWidth: 1
-                        visible: voicePacks.supported
-                        text: qsTr("On this computer")
-                        selected: panel.source === "builtin"
-                        onClicked: panel.source = "builtin"
+                    model: {
+                        const sources = []
+                        if (voicePacks.supported)
+                            sources.push({ value: "builtin", label: qsTr("On this computer") })
+                        sources.push({ value: "gemini", label: qsTr("Gemini") })
+                        if (ai.localSpeechModel !== "")
+                            sources.push({ value: "studio", label: qsTr("Studio") })
+                        return sources
                     }
-                    Choice {
-                        Layout.preferredWidth: 1
-                        text: qsTr("Gemini")
-                        selected: panel.source === "gemini"
-                        onClicked: panel.source = "gemini"
-                    }
-                    Choice {
-                        Layout.preferredWidth: 1
-                        visible: ai.localSpeechModel !== ""
-                        text: qsTr("Studio")
-                        selected: panel.source === "studio"
-                        onClicked: { panel.source = "studio"; voices.loadStudioVoices() }
+                    current: panel.source
+                    onActivated: (value) => {
+                        panel.source = value
+                        if (value === "studio")
+                            voices.loadStudioVoices()
                     }
                 }
                 Note {
@@ -1156,7 +1150,7 @@ FocusScope {
                         visible: panel.source === "gemini" || !voicePacks.supported
                         radius: Math.min(10, theme.radius)
                         color: Ui.tint(panel.look.fg, 0.04)
-                        border.color: panel.look.border
+                        border.color: panel.look.line
                         implicitHeight: economyCol.implicitHeight + 18
                         ColumnLayout {
                             id: economyCol
@@ -1304,7 +1298,7 @@ FocusScope {
                         visible: !ai.hasKey
                         radius: Math.min(10, theme.radius)
                         color: Ui.tint(panel.look.fg, 0.04)
-                        border.color: panel.look.border
+                        border.color: panel.look.line
                         implicitHeight: keyColumn.implicitHeight + 24
                         ColumnLayout {
                             id: keyColumn
@@ -1461,7 +1455,7 @@ FocusScope {
                     visible: voicePacks.supported && panel.source === "builtin" && panel.installedPacks.length > 0
                     radius: Math.min(10, theme.radius)
                     color: Ui.tint(panel.look.fg, 0.04)
-                    border.color: panel.look.border
+                    border.color: panel.look.line
                     implicitHeight: packsCol.implicitHeight + 22
                     ColumnLayout {
                         id: packsCol
@@ -1499,7 +1493,7 @@ FocusScope {
                     Layout.topMargin: 10
                     radius: Math.min(10, theme.radius)
                     color: Ui.tint(panel.look.fg, 0.04)
-                    border.color: panel.look.border
+                    border.color: panel.look.line
                     implicitHeight: cacheRow.implicitHeight + 20
                     RowLayout {
                         id: cacheRow

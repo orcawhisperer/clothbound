@@ -66,7 +66,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: panel.look.popover
-        Rectangle { width: 1; height: parent.height; color: panel.look.border }
+        Rectangle { width: 1; height: parent.height; color: panel.look.line }
     }
     // The panel keeps its clicks and the wheel: nothing falls through to the page.
     MouseArea {

@@ -58,7 +58,7 @@ FocusScope {
         anchors.fill: parent
         radius: Math.min(12, theme.radius)
         color: box.look.popover
-        border.color: box.look.border
+        border.color: box.look.line
         Rectangle {
             z: -1
             anchors.fill: parent

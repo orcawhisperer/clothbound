@@ -1,3 +1,4 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -18,6 +19,13 @@ FocusScope {
 
     signal closed()
     signal jumpRequested(int chapter, int offset)
+
+    Settings {
+        id: companionChoice
+        location: settingsUrl
+        category: "companion"
+        property bool notNow: false
+    }
     signal saveAsNote(string quote, string note)
 
     function show(which) {
@@ -66,6 +74,11 @@ FocusScope {
     }
 
     readonly property bool selectionFeature: ["define", "explain", "translate"].indexOf(companion.feature) >= 0
+    // The routing feature behind the tab shown, for where its answers are made.
+    readonly property string routeFeature: tab === "selection" ? companion.feature : tab
+    // With no key and no model, the panel first asks where the companion
+    // should run, unless the reader said "Not now".
+    readonly property bool choosing: !ai.hasKey && !ai.hasLocal && !companionChoice.notNow
     readonly property string featureName: ({ define: qsTr("Define"), explain: qsTr("Explain"), translate: qsTr("Translate") })[companion.feature] || ""
     readonly property color errorColor: panel.look.dark ? (theme.colors.red || "#ff6b6b") : "#b42318"
 
@@ -85,7 +98,7 @@ FocusScope {
     Rectangle {
         anchors.fill: parent
         color: panel.look.popover
-        Rectangle { width: 1; height: parent.height; color: panel.look.border }
+        Rectangle { width: 1; height: parent.height; color: panel.look.line }
     }
     MouseArea {
         anchors.fill: parent
@@ -103,29 +116,6 @@ FocusScope {
         }
     }
 
-    component Chip: AbstractButton {
-        id: chip
-        property string value
-        implicitHeight: 30
-        implicitWidth: chipLabel.implicitWidth + 22
-        hoverEnabled: true
-        focusPolicy: Qt.NoFocus
-        onClicked: panel.showTab(value)
-        background: Rectangle {
-            radius: Math.min(15, theme.radius + 6)
-            color: panel.tab === chip.value ? Ui.tint(panel.look.link, 0.2) : chip.hovered ? Ui.tint(panel.look.fg, 0.08) : Ui.tint(panel.look.fg, 0.04)
-            border.width: panel.tab === chip.value ? 1 : 0
-            border.color: panel.look.link
-        }
-        contentItem: Label {
-            id: chipLabel
-            text: chip.text
-            color: panel.look.fg
-            font.pixelSize: 12
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
-        }
-    }
     component JumpChip: AbstractButton {
         id: jumpChip
         property string tipText: ""
@@ -189,11 +179,27 @@ FocusScope {
         font.pixelSize: 15
         font.family: "Literata"
     }
+    // Where an answer was made, after a dot: green on this computer, amber
+    // sent to Google.
     component Where: Label {
+        id: whereLabel
+        property bool local: {
+            void(ai.preset); void(ai.overrideCount); void(ai.hasLocal); void(ai.hasKey); void(ai.localUrl)
+            return ai.routeFor(panel.routeFeature) === "local" && ai.localIsLoopback
+        }
         Layout.fillWidth: true
+        leftPadding: text !== "" ? 13 : 0
         color: panel.look.muted
         font.pixelSize: 12
         wrapMode: Text.Wrap
+        Rectangle {
+            visible: whereLabel.text !== ""
+            y: (whereLabel.font.pixelSize * 1.3 - height) / 2 + whereLabel.topPadding
+            width: 6
+            height: 6
+            radius: 3
+            color: whereLabel.local ? theme.positive : theme.cloud
+        }
     }
     component Working: RowLayout {
         property bool active: true
@@ -228,28 +234,63 @@ FocusScope {
 
         RowLayout {
             Layout.fillWidth: true
-            Layout.leftMargin: 22
-            Layout.rightMargin: 14
-            Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: Icons.sparkle; color: panel.look.link }
+            Layout.leftMargin: 20
+            Layout.rightMargin: 12
+            spacing: 8
+            Glyph { Layout.preferredWidth: 16; Layout.preferredHeight: 16; path: Icons.sparkle; color: panel.look.link }
             Label {
                 Layout.fillWidth: true
                 text: qsTr("Companion")
                 color: panel.look.fg
-                font.pixelSize: 18
+                font.pixelSize: 14
                 font.weight: Font.DemiBold
             }
-            IconButton { glyph: Icons.close; tone: panel.look.fg; tip: qsTr("Close (Esc)"); onClicked: panel.close() }
+            IconButton { glyph: Icons.close; tip: qsTr("Close (Esc)"); onClicked: panel.close() }
         }
-        Flow {
+        Segmented {
+            visible: !panel.choosing
             Layout.fillWidth: true
-            Layout.leftMargin: 22
-            Layout.rightMargin: 22
-            spacing: 6
-            Chip { text: qsTr("Ask"); value: "ask" }
-            Chip { text: qsTr("Previously…"); value: "recap" }
-            Chip { text: qsTr("Who's who"); value: "whoswho" }
-            Chip { text: qsTr("Pictures"); value: "pictures" }
-            Chip { visible: panel.selectionFeature; text: panel.featureName; value: "selection" }
+            Layout.leftMargin: 20
+            Layout.rightMargin: 20
+            compact: true
+            model: {
+                const tabs = [{ value: "ask", label: qsTr("Ask") }, { value: "recap", label: qsTr("Previously") },
+                              { value: "whoswho", label: qsTr("Who's who") }, { value: "pictures", label: qsTr("Pictures") }]
+                if (panel.selectionFeature)
+                    tabs.push({ value: "selection", label: panel.featureName })
+                return tabs
+            }
+            current: panel.tab
+            onActivated: (value) => panel.showTab(value)
+        }
+        // The spoiler shield: what the companion may know of the book.
+        RowLayout {
+            visible: !panel.choosing
+            Layout.fillWidth: true
+            Layout.leftMargin: 20
+            Layout.rightMargin: 20
+            spacing: 7
+            Glyph { Layout.preferredWidth: 13; Layout.preferredHeight: 13; stroke: 2; path: Icons.shield; color: theme.positive }
+            Label {
+                Layout.fillWidth: true
+                text: reader.chapterTitle !== ""
+                      ? qsTr("Knows the book up to here · %1").arg(reader.chapterTitle)
+                      : qsTr("Knows the book up to here, and nothing after")
+                color: panel.look.muted
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+        }
+
+        // --- First time: where the companion runs ------------------------
+        CompanionChooser {
+            visible: panel.choosing
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            Layout.leftMargin: 20
+            Layout.rightMargin: 20
+            look: panel.look
+            onNotNow: { companionChoice.notNow = true; panel.close() }
         }
 
         // --- Ask ---------------------------------------------------------
@@ -258,7 +299,7 @@ FocusScope {
             Layout.fillHeight: true
             Layout.leftMargin: 22
             Layout.rightMargin: 22
-            visible: panel.tab === "ask"
+            visible: !panel.choosing && panel.tab === "ask"
             spacing: 10
 
             Flickable {
@@ -389,6 +430,7 @@ FocusScope {
             }
             // What asking sends, and where.
             Where {
+                local: !!estimate.local
                 readonly property var estimate: {
                     void(reader.chapter); void(reader.pageEnd); void(reader.progress)
                     void(ai.preset); void(ai.localUrl); void(ai.localTextModel); void(ai.hasKey)
@@ -478,7 +520,7 @@ FocusScope {
             Layout.fillHeight: true
             Layout.leftMargin: 22
             Layout.rightMargin: 22
-            visible: panel.tab === "recap" || panel.tab === "selection"
+            visible: !panel.choosing && (panel.tab === "recap" || panel.tab === "selection")
             clip: true
             contentHeight: proseColumn.implicitHeight
             boundsBehavior: Flickable.StopAtBounds
@@ -567,7 +609,7 @@ FocusScope {
             Layout.fillHeight: true
             Layout.leftMargin: 22
             Layout.rightMargin: 22
-            visible: panel.tab === "pictures"
+            visible: !panel.choosing && panel.tab === "pictures"
             clip: true
             spacing: 18
             model: illustrator.pictures
@@ -692,7 +734,7 @@ FocusScope {
                     Layout.preferredHeight: 108
                     radius: Math.min(8, theme.radius)
                     color: Ui.tint(panel.look.fg, 0.05)
-                    border.color: panel.look.border
+                    border.color: panel.look.line
                     ColumnLayout {
                         anchors.centerIn: parent
                         spacing: 4
@@ -757,7 +799,7 @@ FocusScope {
             Layout.fillHeight: true
             Layout.leftMargin: 22
             Layout.rightMargin: 22
-            visible: panel.tab === "whoswho"
+            visible: !panel.choosing && panel.tab === "whoswho"
             clip: true
             spacing: 14
             model: companion.people

@@ -2,11 +2,11 @@
    and the note pop-over. The pages themselves are styled from reader.js. */
 
 :root {
-    --dg-bg: #fbfaf6;
-    --dg-fg: #23221f;
-    --dg-link: #8a6a2a;
-    --dg-muted: #6f6b63;
-    --dg-popover: #ffffff;
+    --dg-bg: #f6f1e7;
+    --dg-fg: #26221d;
+    --dg-link: #8a5a12;
+    --dg-muted: #6b655a;
+    --dg-popover: #fdfaf3;
     --dg-border: rgba(0, 0, 0, 0.12);
     --dg-radius: 0px;
 }

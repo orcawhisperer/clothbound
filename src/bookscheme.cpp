@@ -66,6 +66,7 @@ const QHash<QString, QPair<QString, QByteArray>> &appFiles() {
         {"reader.js", {":/reader.js", "text/javascript"}},
         {"reader.css", {":/reader.css", "text/css"}},
         {"hyphenation.js", {":/hyphenation.js", "text/javascript"}},
+        {"dropcap.js", {":/dropcap.js", "text/javascript"}},
         {"hyph-en-us.pat.txt", {":/hyphenation/hyph-en-us.pat.txt", "text/plain"}},
         {"hyph-en-us.hyp.txt", {":/hyphenation/hyph-en-us.hyp.txt", "text/plain"}},
         {"qwebchannel.js", {":/qtwebchannel/qwebchannel.js", "text/javascript"}},
