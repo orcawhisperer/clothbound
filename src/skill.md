@@ -14,6 +14,9 @@ is 1.
 
 - `dogear info <book> [--json]`: title, author, edition (editor, publisher,
   year), language, description, chapters, pages, and the table of contents.
+- `dogear list [--json]`: the books in the library, with reading progress.
+- `dogear notes <book> [--json]`: the user's highlights, notes and bookmarks
+  in a book (named by its file or a few words of its title), as Markdown.
 - `dogear open <book>`: open the book in the reader, where the user left off.
 
 Dogear never changes book files.

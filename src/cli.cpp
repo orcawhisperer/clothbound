@@ -7,6 +7,7 @@
 #include "keystore.h"
 #include "epubbook.h"
 #include "library.h"
+#include "marks.h"
 #include "pdfbook.h"
 
 #include <QCommandLineParser>
@@ -243,6 +244,55 @@ int list(const QStringList &arguments) {
     return 0;
 }
 
+// dogear notes: what the reader marked in a book, as Markdown to keep
+// elsewhere, or as JSON. The book is a file, or a few words of its title.
+int notes(const QStringList &arguments) {
+    Command command("notes", "Print a book's highlights, notes, and bookmarks as Markdown.", "<book>");
+    command.json();
+    command.parser.process(arguments);
+    const QString wanted = command.argument(1);
+    if (wanted.isEmpty())
+        return fail("Name a book: its file, or a few words of its title.");
+    Library library;
+    if (!openLibrary(library))
+        return 1;
+    QList<BookRecord> found;
+    const QFileInfo file(wanted);
+    for (const BookRecord &book : library.records()) {
+        if (file.exists() ? QFileInfo(book.path).canonicalFilePath() == file.canonicalFilePath()
+                          : (book.title + ' ' + book.author).contains(wanted, Qt::CaseInsensitive))
+            found.append(book);
+    }
+    if (found.isEmpty())
+        return fail(QStringLiteral("No book in the library matches “%1”.").arg(wanted));
+    if (found.size() > 1) {
+        QStringList names;
+        for (const BookRecord &book : std::as_const(found))
+            names.append("  " + book.title + (book.editionLine().isEmpty() ? QString() : " (" + book.editionLine() + ")")
+                         + "  " + book.path);
+        return fail(QStringLiteral("“%1” matches %2 books; name one by its file:\n").arg(wanted).arg(found.size())
+                    + names.join('\n'));
+    }
+    const BookRecord &book = found.first();
+    Marks marks(&library);
+    marks.setBook(book.id);
+    if (command.asJson()) {
+        QJsonArray array;
+        for (int row = 0; row < marks.count(); ++row) {
+            const QVariantMap mark = marks.mark(marks.data(marks.index(row), Marks::IdRole).toInt());
+            QJsonObject object = QJsonObject::fromVariantMap(mark);
+            object.insert("created", mark.value("created").toDateTime().toString(Qt::ISODate));
+            array.append(object);
+        }
+        print(QJsonObject{{"book", bookJson(library, book)}, {"marks", array}});
+        return 0;
+    }
+    if (marks.count() == 0)
+        return fail(QStringLiteral("Nothing is marked in “%1” yet.").arg(book.title));
+    fprintf(stdout, "%s", qPrintable(marks.markdown(book.title, book.author)));
+    return 0;
+}
+
 // dogear ai: the reader's Gemini key and what it has cost. The key is read
 // from standard input, so it never appears in the shell's history.
 int ai(const QStringList &arguments) {
@@ -372,12 +422,13 @@ QString cliSummary() {
            "  add <folder-or-book>...         Add books to the library; files are never changed\n"
            "  list                            The books in the library, with reading progress\n"
            "  info <book>                     Metadata and table of contents of an EPUB or PDF\n"
+           "  notes <book>                    A book's highlights, notes and bookmarks, as Markdown\n"
            "  ai [status|key|forget]          Gemini for listening and the companion: key and costs\n"
            "  skill [install]                 Print the skill for coding agents, or install it";
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"add", "list", "info", "ai", "skill", "help"}.contains(word);
+    return QStringList{"add", "list", "info", "notes", "ai", "skill", "help"}.contains(word);
 }
 
 int runCli(const QStringList &arguments) {
@@ -385,6 +436,7 @@ int runCli(const QStringList &arguments) {
     return command == "add"     ? add(arguments)
            : command == "list"  ? list(arguments)
            : command == "info"  ? info(arguments)
+           : command == "notes" ? notes(arguments)
            : command == "ai"    ? ai(arguments)
            : command == "skill" ? skill(arguments)
                                 : help(arguments);
