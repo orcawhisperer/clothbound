@@ -105,6 +105,7 @@ ColumnLayout {
 
         // Live miniature reading page preview.
         Rectangle {
+            id: previewBox
             Layout.fillWidth: true
             implicitHeight: previewCol.implicitHeight + 28
             radius: Ui.radius(10, theme.radius)
@@ -122,6 +123,39 @@ ColumnLayout {
             readonly property int previewWeight: readingSettings.publisher ? 400 : reader.fontWeight
             readonly property int previewAlign: !readingSettings.publisher && readingSettings.justify
                                               ? Text.AlignJustify : Text.AlignLeft
+            readonly property int dropCapWeight: Math.min(700, Math.max(500, previewWeight + 100))
+
+            FontMetrics {
+                id: previewBodyMetrics
+                font.family: previewBox.previewFamily
+                font.pixelSize: previewBox.previewSize
+                font.weight: previewBox.previewWeight
+            }
+
+            readonly property real bodyCapHeight: {
+                void previewBodyMetrics.ascent
+                const h = previewBodyMetrics.tightBoundingRect("T").height
+                return h > 0 ? h : previewSize * 0.72
+            }
+            readonly property real bodyLineStep: Math.max(previewSize, previewBodyMetrics.lineSpacing) * previewLineHeight
+            readonly property int dropCapPixelSize: {
+                // Span cleanly from line 1's cap-top to line 2's baseline.
+                const targetCap = bodyCapHeight + bodyLineStep
+                return Math.max(24, Math.round(targetCap * (previewSize / bodyCapHeight)))
+            }
+
+            FontMetrics {
+                id: previewCapMetrics
+                font.family: previewBox.previewFamily
+                font.pixelSize: previewBox.dropCapPixelSize
+                font.weight: previewBox.dropCapWeight
+            }
+
+            readonly property real dropCapGlyphHeight: {
+                void previewCapMetrics.ascent
+                const h = previewCapMetrics.tightBoundingRect("T").height
+                return h > 0 ? h : dropCapPixelSize * 0.72
+            }
 
             ColumnLayout {
                 id: previewCol
@@ -129,34 +163,39 @@ ColumnLayout {
                 anchors.right: parent.right
                 anchors.top: parent.top
                 anchors.topMargin: 14
-                anchors.leftMargin: parent.sideInset
-                anchors.rightMargin: parent.sideInset
+                anchors.leftMargin: previewBox.sideInset
+                anchors.rightMargin: previewBox.sideInset
                 spacing: readingSettings.publisher ? 6 : Math.round(6 + reader.paragraphSpacing * 10)
 
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 4
+                    spacing: 6
                     Label {
                         visible: !readingSettings.publisher && readingSettings.dropCap
                         Layout.alignment: Qt.AlignTop
-                        Layout.topMargin: -5
+                        Layout.topMargin: Math.round((previewBodyMetrics.ascent - previewBox.bodyCapHeight)
+                                                     - (previewCapMetrics.ascent - previewBox.dropCapGlyphHeight))
+                        Layout.preferredHeight: Math.ceil(previewCapMetrics.ascent + 2)
+                        topPadding: 0
+                        bottomPadding: 0
                         text: "T"
-                        color: page.previewLook.fg
-                        font.family: previewCol.parent.previewFamily
-                        font.pixelSize: Math.round(previewCol.parent.previewSize * 2.35)
-                        font.weight: previewCol.parent.previewWeight
-                        lineHeight: 0.9
+                        color: page.previewLook.accentInk || page.previewLook.link
+                        font.family: previewBox.previewFamily
+                        font.pixelSize: previewBox.dropCapPixelSize
+                        font.weight: previewBox.dropCapWeight
+                        verticalAlignment: Text.AlignTop
                     }
                     Label {
                         Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignTop
                         text: (!readingSettings.publisher && readingSettings.dropCap ? "he" : "The")
                               + qsTr(" book opens calm, clear, and set to your hand. Every line keeps a quiet, unhurried rhythm across the page.")
                         color: page.previewLook.fg
-                        font.family: previewCol.parent.previewFamily
-                        font.pixelSize: previewCol.parent.previewSize
-                        font.weight: previewCol.parent.previewWeight
-                        lineHeight: previewCol.parent.previewLineHeight
-                        horizontalAlignment: previewCol.parent.previewAlign
+                        font.family: previewBox.previewFamily
+                        font.pixelSize: previewBox.previewSize
+                        font.weight: previewBox.previewWeight
+                        lineHeight: previewBox.previewLineHeight
+                        horizontalAlignment: previewBox.previewAlign
                         wrapMode: Text.Wrap
                     }
                 }
@@ -164,11 +203,11 @@ ColumnLayout {
                     Layout.fillWidth: true
                     text: qsTr("Adjust the theme, typeface, spacing, or margins below to see the page respond right away.")
                     color: page.previewLook.muted
-                    font.family: previewCol.parent.previewFamily
-                    font.pixelSize: Math.max(11, previewCol.parent.previewSize - 1)
-                    font.weight: previewCol.parent.previewWeight
-                    lineHeight: previewCol.parent.previewLineHeight
-                    horizontalAlignment: previewCol.parent.previewAlign
+                    font.family: previewBox.previewFamily
+                    font.pixelSize: Math.max(11, previewBox.previewSize - 1)
+                    font.weight: previewBox.previewWeight
+                    lineHeight: previewBox.previewLineHeight
+                    horizontalAlignment: previewBox.previewAlign
                     wrapMode: Text.Wrap
                 }
             }

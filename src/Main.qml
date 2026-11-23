@@ -537,8 +537,16 @@ ApplicationWindow {
             }
         }
 
-        // Above everything, settings included.
-        Toast { id: toast; z: 70 }
+        // Above everything, settings included. Lift cleanly above the reader's
+        // bottom J3 first-book keybar when both appear simultaneously.
+        Toast {
+            id: toast
+            z: 70
+            bottomClearance: win.readerOpen && !settingsView.open && !welcome.open
+                             && !commandPalette.open && !win.helpVisible
+                             && readerLoader.item && readerLoader.item.firstBookTipsActive
+                             ? 116 : 28
+        }
 
         SettingsView {
             id: settingsView

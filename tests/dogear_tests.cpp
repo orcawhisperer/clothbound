@@ -37,6 +37,7 @@
 #include "gemini.h"
 #include "localmodels.h"
 #include "companion.h"
+#include "illustrator.h"
 #include "passageindex.h"
 #include "pdfbook.h"
 #include "pdfpages.h"
@@ -66,6 +67,7 @@
 #include "libraryindex.h"
 #include "marks.h"
 #include "reader.h"
+#include "scanner.h"
 #include "epubbook.h"
 #include "htmltokenizer.h"
 #include "pdfbook.h"
@@ -5086,8 +5088,9 @@ private slots:
         const QString home = dir.path();
         // ~/Books holds three books (one too deep to count), Documents one,
         // Downloads none, and ~/Library is already watched.
-        for (const QString &path : {"Books/a.epub", "Books/Wells/b.EPUB", "Books/c.pdf", "Books/1/2/3/4/5/deep.epub",
+        for (const char *rawPath : {"Books/a.epub", "Books/Wells/b.EPUB", "Books/c.pdf", "Books/1/2/3/4/5/deep.epub",
                                     "Books/notes.txt", "Documents/d.epub", "Downloads/e.zip", "Library/f.epub"}) {
+            const QString path = QString::fromLatin1(rawPath);
             QVERIFY(QDir().mkpath(QFileInfo(home + "/" + path).absolutePath()));
             write(home + "/" + path, "x");
         }
@@ -6879,6 +6882,1286 @@ domReady();
         QVERIFY(qml.contains(QStringLiteral("Layout.maximumWidth: 112")));
         QVERIFY(qml.contains(QStringLiteral("Layout.preferredWidth: 0")));
         QVERIFY(qml.contains(QStringLiteral("Layout.minimumWidth: 0")));
+    }
+
+    void wave2TransitionsDualFramePdfPrefetchAndSfx() {
+        // 1. Dual-frame reader.js Node VM test:
+        //    - zero .shown during src navigation
+        //    - #book-back idle standby pre-warming & 0-load chapter swap reuse
+        //    - backward chapter turn pre-scrolls to last page BEFORE .shown reveal
+        //    - rapid in-chapter turn retargeting mid-flight without snapping/queuing
+        //    - close() resets both frames and clears #viewport.turning
+        const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
+        if (!node.isEmpty()) {
+            const QString readerJsPath = QFINDTESTDATA("../src/reader.js");
+            const QString dualHarness = QStringLiteral(R"JS(
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+let domReady = null;
+
+function makeStyle() {
+    const props = {};
+    return {
+        props, cssText: '', opacity: '', transform: '', backgroundColor: '',
+        willChange: '', colorScheme: '', left: '', top: '', width: '', height: '',
+        setProperty(k, v, prio) { this[k] = v; props[k] = { value: v, prio: prio || '' }; },
+    };
+}
+
+function makeClassList(onAdd) {
+    const set = new Set();
+    return {
+        add(c) { set.add(c); if (onAdd) onAdd(c); },
+        remove(c) { set.delete(c); },
+        contains(c) { return set.has(c); },
+    };
+}
+
+const chapterSpecs = {
+    'dogear://book/1/ch0.xhtml': { pages: 1, text: 'Chapter zero opening words.' },
+    'dogear://book/1/ch1.xhtml': { pages: 3, text: 'Chapter one has three full pages of prose.' },
+    'dogear://book/1/ch2.xhtml': { pages: 2, text: 'Chapter two follows with two pages.' },
+};
+
+function makeChapterDoc(ownerFrame, url) {
+    const spec = chapterSpecs[url] || { pages: 1, text: '' };
+    const styleNodes = new Map();
+    const textNode = { nodeType: 3, data: spec.text, parentElement: null };
+    const bodyEl = {
+        childNodes: [textNode],
+        lastElementChild: {
+            getClientRects() { return [{ left: 0, right: 200, top: 0, bottom: 24, width: 200, height: 24 }]; },
+            getBoundingClientRect() { return { left: 0, right: 200, top: 0, bottom: 24, width: 200, height: 24 }; },
+        },
+    };
+    textNode.parentElement = bodyEl;
+    const docEl = {
+        style: makeStyle(),
+        get scrollWidth() { return spec.pages * (parseFloat(ownerFrame.style.width) || 680); },
+        scrollHeight: 692,
+        scrollLeft: 0,
+        scrollTop: 0,
+        scrollTo(opts) {
+            if (opts && typeof opts.left === 'number') this.scrollLeft = opts.left;
+            if (opts && typeof opts.top === 'number') this.scrollTop = opts.top;
+        },
+        appendChild() {},
+    };
+    return {
+        URL: url,
+        documentElement: docEl,
+        head: { appendChild(el) { styleNodes.set(el.id, el); } },
+        body: bodyEl,
+        scrollingElement: docEl,
+        fonts: { ready: Promise.resolve() },
+        images: [],
+        defaultView: {
+            getComputedStyle() {
+                return { writingMode: 'horizontal-tb', direction: 'ltr', textAlign: 'start', whiteSpace: 'normal' };
+            },
+            CSS: { highlights: new Map() },
+            Highlight: class { constructor(...ranges) { this.ranges = ranges; this.priority = 0; } },
+        },
+        getElementById(id) { return styleNodes.get(id) || null; },
+        createElementNS(_ns, tag) { return { localName: tag, id: '', textContent: '', style: makeStyle() }; },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        addEventListener() {},
+        removeEventListener() {},
+        createTreeWalker() {
+            let done = false;
+            return { nextNode() { if (done) return null; done = true; return textNode; } };
+        },
+        createRange() {
+            return {
+                selectNodeContents() {},
+                setStart() {},
+                setEnd() {},
+                getClientRects() { return [{ left: 10, right: 120, top: 10, bottom: 28, width: 110, height: 18 }]; },
+                getBoundingClientRect() { return { left: 10, right: 120, top: 10, bottom: 28, width: 110, height: 18 }; },
+            };
+        },
+        getSelection() { return { isCollapsed: true, removeAllRanges() {} }; },
+    };
+}
+
+const srcLoads = [];
+const shownEvents = [];
+
+function makeFrame(id) {
+    const f = {
+        id,
+        style: makeStyle(),
+        contentDocument: null,
+        contentWindow: null,
+        onload: null,
+        _src: 'about:blank',
+        _attrs: {},
+        setAttribute(k, v) { this._attrs[k] = v; },
+        removeAttribute(k) { delete this._attrs[k]; },
+        getBoundingClientRect() { return { left: 160, top: 54, width: parseFloat(this.style.width) || 680, height: 692 }; },
+    };
+    f.classList = makeClassList(cls => {
+        if (cls === 'shown') {
+            shownEvents.push({
+                id: f.id,
+                url: f._src,
+                scrollLeft: f.contentDocument ? f.contentDocument.documentElement.scrollLeft : -1,
+            });
+        }
+    });
+    Object.defineProperty(f, 'src', {
+        get() { return this._src; },
+        set(v) {
+            assert.strictEqual(this.classList.contains('shown'), false,
+                `frame #${this.id} must NEVER carry .shown during src assignment (${v})`);
+            this._src = v;
+            if (v && v !== 'about:blank') {
+                srcLoads.push({ id: this.id, url: v });
+                const doc = makeChapterDoc(this, v);
+                this.contentDocument = doc;
+                this.contentWindow = doc.defaultView;
+            } else {
+                this.contentDocument = null;
+                this.contentWindow = null;
+            }
+            const cb = this.onload;
+            if (typeof cb === 'function') {
+                queueMicrotask(() => {
+                    assert.strictEqual(this.classList.contains('shown'), false,
+                        `frame #${this.id} must still hide .shown when onload fires (${v})`);
+                    cb();
+                });
+            }
+        },
+    });
+    return f;
+}
+
+const stageEl = {
+    clientWidth: 1000, clientHeight: 800,
+    addEventListener() {},
+    getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight }; },
+};
+const viewportEl = { style: makeStyle(), classList: makeClassList() };
+const bookFrame = makeFrame('book');
+const backFrame = makeFrame('book-back');
+const overlayEl = { appendChild() {} };
+const docEl = { style: makeStyle() };
+
+const documentMock = {
+    documentElement: docEl,
+    body: { appendChild(el) { return el; } },
+    getElementById(id) {
+        if (id === 'stage') return stageEl;
+        if (id === 'viewport') return viewportEl;
+        if (id === 'book') return bookFrame;
+        if (id === 'book-back') return backFrame;
+        if (id === 'overlay') return overlayEl;
+        return null;
+    },
+    createElement(tag) { return { tagName: tag.toUpperCase(), id: '', style: makeStyle(), setAttribute() {} }; },
+    addEventListener(type, fn) { if (type === 'DOMContentLoaded') domReady = fn; },
+};
+
+let fakeNow = 1000;
+let autoRaf = true;
+let nextRafId = 1;
+const rafQueue = new Map();
+
+function requestAnimationFrame(cb) {
+    const id = nextRafId++;
+    rafQueue.set(id, cb);
+    if (autoRaf) {
+        queueMicrotask(() => {
+            const fn = rafQueue.get(id);
+            if (!fn) return;
+            rafQueue.delete(id);
+            fakeNow += 120;
+            fn(fakeNow);
+        });
+    }
+    return id;
+}
+
+function cancelAnimationFrame(id) { rafQueue.delete(id); }
+
+function stepRaf(deltaMs) {
+    fakeNow += deltaMs;
+    const batch = [...rafQueue.entries()];
+    rafQueue.clear();
+    for (const [, fn] of batch) fn(fakeNow);
+}
+
+let lastLoc = null;
+const turnDirs = [];
+const bridge = {
+    surfaceLoaded() {},
+    relocated(loc) { lastLoc = loc; },
+    notifyPageTurn(dir) { turnDirs.push(dir); },
+    log(msg) { throw new Error('reader.js log error: ' + msg); },
+};
+
+const sandbox = {
+    console, setTimeout, clearTimeout, Promise, URL,
+    performance: { now: () => fakeNow },
+    requestAnimationFrame, cancelAnimationFrame,
+    Node: { TEXT_NODE: 3 },
+    NodeFilter: { SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, FILTER_ACCEPT: 1, FILTER_REJECT: 2 },
+    CSS: { escape: s => s },
+    Hyphenation: { load: async () => false, node() {} },
+    document: documentMock,
+    window: { innerWidth: 1000, innerHeight: 800 },
+    qt: { webChannelTransport: {} },
+    QWebChannel: function(_t, cb) { cb({ objects: { bridge } }); },
+    ResizeObserver: class { observe() {} },
+    matchMedia: () => ({ matches: false }),
+    fetch: async () => ({ ok: true, text: async () => '', headers: { get: () => '' } }),
+};
+sandbox.globalThis = sandbox;
+
+const ctx = vm.createContext(sandbox);
+const dogear = vm.runInContext(source + '\n;dogear;', ctx);
+domReady();
+
+(async () => {
+    const book = {
+        session: 1, base: 'dogear://book/1/', language: 'en', rtl: false,
+        spine: [
+            { href: 'ch0.xhtml', linear: true },
+            { href: 'ch1.xhtml', linear: true },
+            { href: 'ch2.xhtml', linear: true },
+        ],
+        pageTargets: [],
+    };
+    const style = {
+        theme: { bg: '#1e1d1b', fg: '#dcd5c8', link: '#9db8f2', accentInk: '#9db8f2', muted: '#958d80',
+                 popover: '#2a2926', border: 'rgba(255,255,255,0.12)', selection: '#345', search: '#ff0', found: '#fa0',
+                 markYellow: '#ff0', markGreen: '#0f0', markBlue: '#00f', markPink: '#f0f',
+                 speaking: '#345', dark: true },
+        font: 'Literata', fontScale: 1.0, fontWeight: 400, lineHeight: 1.5, paragraphSpacing: 0.0,
+        margin: 0.1, measure: 30, justify: true, hyphenate: false, layout: 'single', singleColumn: false,
+        animate: true, reducedMotion: false, publisher: false, marginTop: 54, marginBottom: 54, radius: 0,
+        listening: false, strings: { goToNote: 'Go', listenFromHere: 'Listen' },
+    };
+
+    await dogear.open(book, { chapter: 0, offset: 0 }, style);
+    assert.strictEqual(lastLoc.chapter, 0);
+    assert.strictEqual(bookFrame.classList.contains('shown'), true);
+    assert.strictEqual(backFrame.classList.contains('shown'), false);
+    assert.strictEqual(srcLoads.length, 1);
+
+    // Wait for 45ms scheduleWarm timer to pre-render ch1 into hidden #book-back.
+    await new Promise(r => setTimeout(r, 90));
+    assert.strictEqual(srcLoads.length, 2, 'standby #book-back should pre-warm ch1');
+    assert.strictEqual(srcLoads[1].id, 'book-back');
+    assert.strictEqual(srcLoads[1].url, 'dogear://book/1/ch1.xhtml');
+    assert.strictEqual(backFrame.classList.contains('shown'), false, 'pre-warmed standby stays hidden');
+
+    // Cross chapter 0 -> chapter 1: reuses warm #book-back with ZERO extra src load.
+    const loadsBeforeSwap = srcLoads.length;
+    await dogear.next();
+    assert.strictEqual(srcLoads.length, loadsBeforeSwap, 'warm chapter swap must not re-navigate src');
+    assert.strictEqual(lastLoc.chapter, 1);
+    assert.strictEqual(lastLoc.page, 0);
+    assert.strictEqual(lastLoc.pages, 3);
+    assert.strictEqual(backFrame.classList.contains('shown'), true, 'swapped #book-back is now active');
+    assert.strictEqual(bookFrame.classList.contains('shown'), false, 'old #book is hidden after swap');
+    assert.strictEqual(viewportEl.classList.contains('turning'), false);
+    assert.deepStrictEqual(turnDirs, [1]);
+
+    // Rapid in-chapter turn retargeting mid-flight (ch1: page 0 -> 1 -> 2).
+    const activeDocEl = backFrame.contentDocument.documentElement;
+    const step = parseFloat(backFrame.style.width);
+    assert.ok(step > 200);
+    autoRaf = false;
+    const p1 = dogear.next();
+    await new Promise(r => setTimeout(r, 10));
+    assert.strictEqual(viewportEl.classList.contains('turning'), true, 'feather mask enabled while turning');
+    stepRaf(65);
+    const midScroll = activeDocEl.scrollLeft;
+    assert.ok(midScroll > 0 && midScroll < step, `expected mid-flight scroll, got ${midScroll}/${step}`);
+
+    // Fire second turn before first finishes: keeps live scroll and retargets cleanly to page 2.
+    const p2 = dogear.next();
+    await new Promise(r => setTimeout(r, 10));
+    assert.strictEqual(activeDocEl.scrollLeft, midScroll, 'retargeting must not snap scroll back before gliding');
+    stepRaf(20);
+    assert.ok(activeDocEl.scrollLeft > midScroll && activeDocEl.scrollLeft < 2 * step);
+    stepRaf(160);
+    await Promise.all([p1, p2]);
+    assert.strictEqual(activeDocEl.scrollLeft, 2 * step);
+    assert.strictEqual(lastLoc.chapter, 1);
+    assert.strictEqual(lastLoc.page, 2);
+    assert.strictEqual(viewportEl.classList.contains('turning'), false, 'feather mask cleared at rest');
+    assert.deepStrictEqual(turnDirs, [1, 1, 1]);
+
+    // Turn forward into ch2 (after standby warms), then backward into 3-page ch1 (end: true).
+    autoRaf = true;
+    await new Promise(r => setTimeout(r, 90));
+    const loadsBeforeCh2 = srcLoads.length;
+    await dogear.next();
+    assert.strictEqual(srcLoads.length, loadsBeforeCh2, 'ch2 should also reuse warm standby');
+    assert.strictEqual(lastLoc.chapter, 2);
+    assert.strictEqual(lastLoc.page, 0);
+
+    // Backward chapter turn: ch1 must be pre-scrolled to its LAST page (2 * step) BEFORE .shown is added.
+    const shownCountBeforePrev = shownEvents.length;
+    await dogear.prev();
+    assert.strictEqual(lastLoc.chapter, 1);
+    assert.strictEqual(lastLoc.page, 2);
+    const ch1Reveal = shownEvents.slice(shownCountBeforePrev).find(e => e.url === 'dogear://book/1/ch1.xhtml');
+    assert.ok(ch1Reveal, 'ch1 reveal should be recorded');
+    assert.strictEqual(ch1Reveal.scrollLeft, 2 * step,
+        `backward turn must pre-scroll to last page (${2 * step}) before adding .shown (saw ${ch1Reveal.scrollLeft})`);
+
+    // close() hides both frames and resets them to about:blank.
+    await dogear.close();
+    assert.strictEqual(bookFrame.classList.contains('shown'), false);
+    assert.strictEqual(backFrame.classList.contains('shown'), false);
+    assert.strictEqual(bookFrame.src, 'about:blank');
+    assert.strictEqual(backFrame.src, 'about:blank');
+    assert.strictEqual(viewportEl.classList.contains('turning'), false);
+    process.exit(0);
+})().catch(err => { console.error(err); process.exit(1); });
+)JS");
+            QProcess proc;
+            proc.start(node, {QStringLiteral("-e"), dualHarness, readerJsPath});
+            QVERIFY2(proc.waitForFinished(10000), "node dual-frame reader.js harness timed out");
+            const QByteArray stderrOut = proc.readAllStandardError();
+            QVERIFY2(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
+                     stderrOut.isEmpty() ? "node dual-frame reader.js harness failed" : stderrOut.constData());
+        }
+
+        // 2. C++ PdfPages::prefetch() cache hit + cancelPrefetch + Reader::playPageTurn(+1/-1) headless & throttle.
+        QTemporaryDir dir;
+        const QString pdfPath = dir.filePath(QStringLiteral("multi.pdf"));
+        {
+            QPdfWriter writer(pdfPath);
+            writer.setPageSize(QPageSize(QSizeF(200, 300), QPageSize::Point));
+            QPainter painter(&writer);
+            for (int p = 0; p < 3; ++p) {
+                if (p > 0)
+                    writer.newPage();
+                painter.fillRect(0, 0, writer.width(), writer.height(), Qt::white);
+                painter.setPen(Qt::black);
+                painter.drawText(80, 200, QStringLiteral("PDF Page %1").arg(p + 1));
+            }
+            painter.end();
+        }
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int pdfId = library.addBookFile(pdfPath);
+        QVERIFY(pdfId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(pdfId));
+        const QString token = reader.pdfSource().mid(QStringLiteral("image://pdf/").size());
+        QVERIFY(!token.isEmpty());
+
+        const QString query = QStringLiteral("?bg=%231e1f24&fg=%23d6d2c9");
+        const QString id1 = token + QStringLiteral("/1") + query;
+        const QString id2 = token + QStringLiteral("/2") + query;
+        const QString key1 = PdfPages::makeCacheKey(id1, QSize(220, 0));
+        const QString key2 = PdfPages::makeCacheKey(id2, QSize(220, 0));
+
+        std::vector<std::unique_ptr<QQuickImageResponse>> responses;
+        {
+            PdfPages pages;
+            QVERIFY(PdfPages::cached(key1).isNull());
+            QVERIFY(PdfPages::cached(key2).isNull());
+
+            reader.pdfPrefetch({1, 2}, 220, query);
+            QTRY_VERIFY_WITH_TIMEOUT(!PdfPages::cached(key1).isNull() && !PdfPages::cached(key2).isNull(), 8000);
+
+            int done = 0;
+            auto *resp = pages.requestImageResponse(id1, QSize(220, 0));
+            connect(resp, &QQuickImageResponse::finished, this, [&done] { ++done; });
+            responses.emplace_back(resp);
+            QTRY_COMPARE_WITH_TIMEOUT(done, 1, 2000);
+            std::unique_ptr<QQuickTextureFactory> factory(resp->textureFactory());
+            QVERIFY(factory != nullptr);
+            const QImage img = factory->image();
+            QCOMPARE(img.width(), 220);
+            QCOMPARE(QColor(img.pixel(2, 2)).name(), QStringLiteral("#1e1f24"));
+
+            PdfPages::cancelPrefetch();
+            reader.close();
+            QVERIFY(PdfPages::cached(key1).isNull());
+            QVERIFY(PdfPages::cached(key2).isNull());
+        }
+
+        // Reader::notifyPageTurn direction normalization + playPageTurn headless no-op + PageTurnSfx throttle.
+        QSignalSpy turnSpy(&reader, &Reader::pageTurnRequested);
+        reader.notifyPageTurn(3);
+        reader.notifyPageTurn(0);
+        reader.notifyPageTurn(-2);
+        QCOMPARE(turnSpy.count(), 3);
+        QCOMPARE(turnSpy[0][0].toInt(), 1);
+        QCOMPARE(turnSpy[1][0].toInt(), 1);
+        QCOMPARE(turnSpy[2][0].toInt(), -1);
+
+        // Under offscreen test platform, playPageTurn() is a silent no-op (never opens an audio sink).
+        reader.playPageTurn(1);
+        reader.playPageTurn(-1);
+        QVERIFY(reader.m_sfx == nullptr);
+
+        // Dry-run synthesis + 85 ms rapid-repeat throttle verification (no audio hardware touched).
+        QByteArray fwdPcm, throttledPcm, bwdPcm;
+        QVERIFY(reader.playPageTurnDryRun(1, &fwdPcm));
+        QVERIFY(fwdPcm.size() >= 9000);
+        // Immediate back-to-back call is throttled (< 85ms).
+        QVERIFY(!reader.playPageTurnDryRun(-1, &throttledPcm));
+        QVERIFY(throttledPcm.isEmpty());
+        // After the 85ms throttle window, backward flip plays a distinct synthesized clip.
+        QTest::qWait(95);
+        QVERIFY(reader.playPageTurnDryRun(-1, &bwdPcm));
+        QVERIFY(bwdPcm.size() >= 9000);
+        QVERIFY(bwdPcm != fwdPcm);
+        const auto *samples = reinterpret_cast<const qint16 *>(fwdPcm.constData());
+        const qsizetype count = fwdPcm.size() / 2;
+        int peak = 0;
+        for (qsizetype i = 0; i < count; ++i)
+            peak = qMax(peak, std::abs(int(samples[i])));
+        QVERIFY2(peak > 1000 && peak <= 7000, qPrintable(QString::number(peak)));
+    }
+
+    void wave2VoiceNarrationSleepFadeAndEmptyLeadGuard() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath(QStringLiteral("sleep.epub"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                         packsManifest(QStringLiteral("http://x")));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("engine-arm"));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("kokoro-fp32"));
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        narration.setVolume(1.0);
+        narration.start(0, 0);
+        narration.addBlocks(0, R"([{"start":0,"end":44,"text":"First sentence here. Second sentence follows.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(!narration.m_clips.isEmpty() && narration.m_clips[0].state == Narration::Clip::Complete, 5000);
+
+        // 1. pause() clears active sleep fade, restores pre-fade volume, and emits sleepChanged().
+        narration.sleepIn(1);
+        narration.m_sleepAt = QDateTime::currentDateTime().addMSecs(5000);
+        narration.onSleepTick();
+        QCOMPARE(narration.sleepFading(), true);
+        QVERIFY(narration.volume() < 0.9);
+        {
+            QSignalSpy sleepSpy(&narration, &Narration::sleepChanged);
+            narration.pause();
+            QCOMPARE(narration.sleepFading(), false);
+            QVERIFY(qFuzzyCompare(narration.volume(), 1.0));
+            QVERIFY(sleepSpy.count() >= 1);
+        }
+
+        // 2. setVolume() clears active sleep fade and emits sleepChanged().
+        narration.resume();
+        narration.m_sleepAt = QDateTime::currentDateTime().addMSecs(4000);
+        narration.onSleepTick();
+        QCOMPARE(narration.sleepFading(), true);
+        {
+            QSignalSpy sleepSpy(&narration, &Narration::sleepChanged);
+            narration.setVolume(0.75);
+            QCOMPARE(narration.sleepFading(), false);
+            QVERIFY(qFuzzyCompare(narration.volume(), 0.75));
+            QVERIFY(sleepSpy.count() >= 1);
+        }
+
+        // 3. resume() clears lingering sleep fade, restores pre-fade volume, and emits sleepChanged().
+        narration.m_sleepFading = true;
+        narration.m_preFadeVolume = 0.85;
+        narration.m_player->setVolume(0.15);
+        narration.m_wanted = false;
+        {
+            QSignalSpy sleepSpy(&narration, &Narration::sleepChanged);
+            narration.resume();
+            QCOMPARE(narration.sleepFading(), false);
+            QVERIFY(qFuzzyCompare(narration.volume(), 0.85));
+            QVERIFY(sleepSpy.count() >= 1);
+        }
+
+        // 4. onSleepTick() clearing active fade when !m_wanted also emits sleepChanged().
+        narration.m_sleepAt = QDateTime::currentDateTime().addMSecs(4000);
+        narration.onSleepTick();
+        QCOMPARE(narration.sleepFading(), true);
+        narration.m_wanted = false;
+        {
+            QSignalSpy sleepSpy(&narration, &Narration::sleepChanged);
+            narration.onSleepTick();
+            QCOMPARE(narration.sleepFading(), false);
+            QVERIFY(qFuzzyCompare(narration.volume(), 0.85));
+            QVERIFY(sleepSpy.count() >= 1);
+        }
+        narration.stop();
+
+        // 5. Speech::clipsFrom() mid-clip trimming and empty/boundary/degenerate lead.sentences safety.
+        const QList<SpeechBlock> merged = {
+            block(0, QStringLiteral("Alpha first sentence.")),
+            block(25, QStringLiteral("Beta second sentence.")),
+        };
+        const QList<SpeechClip> trimmed = Speech::clipsFrom(0, merged, 25);
+        QCOMPARE(trimmed.size(), 1);
+        QCOMPARE(trimmed.first().block, 1);
+        QCOMPARE(trimmed.first().text, QStringLiteral("Beta second sentence."));
+
+        // Past the final sentence returns empty cleanly.
+        QVERIFY(Speech::clipsFrom(0, merged, 999).isEmpty());
+        // Empty and whitespace-only blocks return empty cleanly.
+        QVERIFY(Speech::clipsFrom(0, {}, 0).isEmpty());
+        QVERIFY(Speech::clipsFrom(0, {block(0, QStringLiteral("   "))}, 1).isEmpty());
+        // Non-monotonic / overlapping block offsets where lead.sentences trimming is exercised never crash.
+        SpeechBlock overlapA = block(0, QStringLiteral("First line."));
+        SpeechBlock overlapB;
+        overlapB.start = 4;
+        overlapB.end = 22;
+        overlapB.text = QStringLiteral("Second line.");
+        overlapB.kind = QStringLiteral("text");
+        const QList<SpeechClip> overlapOut = Speech::clipsFrom(0, {overlapA, overlapB}, 11);
+        QVERIFY(!overlapOut.isEmpty());
+        QVERIFY(!overlapOut.first().sentences.isEmpty());
+    }
+
+    void wave2SettingsAiLocalSetupAudioCacheVoicePacksAndFolders() {
+        QTemporaryDir dir;
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        const QByteArray origEnvKey = qgetenv("GEMINI_API_KEY");
+        auto restoreSettings = qScopeGuard([&] {
+            if (origEnvKey.isEmpty())
+                qunsetenv("GEMINI_API_KEY");
+            else
+                qputenv("GEMINI_API_KEY", origEnvKey);
+            QSettings s(settingsPath, QSettings::IniFormat);
+            s.remove(QStringLiteral("ai"));
+            s.remove(QStringLiteral("local"));
+        });
+        qunsetenv("GEMINI_API_KEY");
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+
+        // 1. AiServices::maskedKey() + resetUsageThisMonth().
+        FakeServer cloudSrv;
+        GeminiProvider gemini(nullptr, cloudSrv.endpoint());
+        MemoryKeyStore keys;
+        {
+            AiServices noKey(&gemini, &keys, library.database().connectionName());
+            QCOMPARE(noKey.maskedKey(), QString());
+        }
+        keys.save(QStringLiteral("gemini"), QStringLiteral("shortkey"));
+        {
+            AiServices shortKey(&gemini, &keys, library.database().connectionName());
+            QCOMPARE(shortKey.maskedKey(), QStringLiteral("••••••••"));
+        }
+        keys.save(QStringLiteral("gemini"), QStringLiteral("AIzaSyDemo1234567890ABCD"));
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        QCOMPARE(services.maskedKey(), QStringLiteral("AIza••••ABCD"));
+
+        Ai::Usage usage;
+        usage.inputTokens = 200000;
+        usage.outputTokens = 50000;
+        services.ledger().record(QStringLiteral("gemini"), QStringLiteral("gemini-3.5-flash-lite"),
+                                 QStringLiteral("ask"), usage, false);
+        QVERIFY(services.spentThisMonth() > 0.0);
+        QVERIFY(!services.usageThisMonth().isEmpty());
+        {
+            QSignalSpy usageSpy(&services, &AiServices::usageChanged);
+            services.resetUsageThisMonth();
+            QCOMPARE(usageSpy.count(), 1);
+            QCOMPARE(services.spentThisMonth(), 0.0);
+            QVERIFY(services.usageThisMonth().isEmpty());
+        }
+
+        // 2. AiServices::testLocal() + ServerFinder loopback alias dedup (localhost == 127.0.0.1).
+        FakeServer ollamaSrv;
+        ollamaSrv.routes.insert("/api/tags", {200, "application/json",
+                                              R"({"models":[{"name":"qwen3.5:4b"},{"name":"qwen3-embedding:0.6b"}]})"});
+        ollamaSrv.routes.insert("/api/show", {200, "application/json",
+                                              R"({"model_info":{"qwen3.context_length":32768}})"});
+        LocalModels local;
+        services.setLocalModels(&local);
+        services.useLocal(QStringLiteral("ollama"), ollamaSrv.origin(), QStringLiteral("qwen3.5:4b"), QString());
+
+        services.testLocal();
+        QVERIFY(services.testingLocal());
+        QTRY_VERIFY_WITH_TIMEOUT(!services.testingLocal(), 5000);
+        QVERIFY2(services.localError().isEmpty(), qPrintable(services.localError()));
+        QVERIFY2(services.localTestResult().startsWith(QStringLiteral("Connected")), qPrintable(services.localTestResult()));
+
+        // Invalid custom URL surfaces immediate validation error without probing.
+        services.findLocal(QStringLiteral("ftp://example.com"));
+        QVERIFY(!services.localError().isEmpty());
+
+        // Loopback alias dedup: passing localhost:<port>/v1 and 127.0.0.1:<port>/api/tags finds it ONCE.
+        const int port = QUrl(ollamaSrv.origin()).port();
+        ServerFinder finder;
+        QSignalSpy finderDone(&finder, &ServerFinder::finished);
+        finder.find({QUrl(QStringLiteral("http://localhost:%1/v1").arg(port)),
+                     QUrl(QStringLiteral("http://127.0.0.1:%1/api/tags").arg(port))});
+        QTRY_COMPARE_WITH_TIMEOUT(finderDone.count(), 1, 5000);
+        int matchedOnPort = 0;
+        QUrl matchedUrl;
+        for (const LocalModels::Server &srv : finder.servers()) {
+            if (srv.url.port() == port) {
+                ++matchedOnPort;
+                matchedUrl = srv.url;
+            }
+        }
+        QCOMPARE(matchedOnPort, 1);
+        QCOMPARE(matchedUrl.host(), QStringLiteral("localhost"));
+
+        // 3. LocalSetup::pullModel() progress & slot assignment + cancel() state reset.
+        ollamaSrv.routes.insert("/api/pull",
+                                {200, "application/x-ndjson",
+                                 "{\"status\":\"downloading\",\"digest\":\"sha256:aaa\",\"completed\":50,\"total\":100}\n"
+                                 "{\"status\":\"downloading\",\"digest\":\"sha256:aaa\",\"completed\":100,\"total\":100}\n"
+                                 "{\"status\":\"success\"}\n"});
+        LocalSetup setup(&services);
+        setup.pullModel(QStringLiteral("qwen3-embedding:0.6b"));
+        QVERIFY(setup.pulling());
+        QTRY_VERIFY_WITH_TIMEOUT(!setup.pulling(), 5000);
+        QVERIFY2(setup.problem().isEmpty(), qPrintable(setup.problem()));
+        QCOMPARE(setup.progress(), 1.0);
+        QCOMPARE(services.localEmbeddingModel(), QStringLiteral("qwen3-embedding:0.6b"));
+        QCOMPARE(services.localTextModel(), QStringLiteral("qwen3.5:4b"));
+
+        // Hanging server tests LocalSetup::cancel() mid-pull resets pulling/progress/status cleanly.
+        QTcpServer hangServer;
+        QVERIFY(hangServer.listen(QHostAddress::LocalHost));
+        QList<QPointer<QTcpSocket>> heldSockets;
+        connect(&hangServer, &QTcpServer::newConnection, &hangServer, [&hangServer, &heldSockets] {
+            while (QTcpSocket *s = hangServer.nextPendingConnection())
+                heldSockets.append(s);
+        });
+        services.useLocal(QStringLiteral("ollama"),
+                          QStringLiteral("http://127.0.0.1:%1").arg(hangServer.serverPort()),
+                          QStringLiteral("qwen3.5:4b"), QString());
+        QSignalSpy setupChanged(&setup, &LocalSetup::changed);
+        setup.pullModel(QStringLiteral("qwen3.5:2b"));
+        QVERIFY(setup.pulling());
+        setup.cancel();
+        QVERIFY(!setup.pulling());
+        QVERIFY(!setup.waiting());
+        QCOMPARE(setup.progress(), 0.0);
+        QVERIFY(setup.status().isEmpty());
+        QVERIFY(setupChanged.count() >= 2);
+        for (const QPointer<QTcpSocket> &s : std::as_const(heldSockets))
+            if (s)
+                s->close();
+        hangServer.close();
+        services.forgetLocal();
+
+        // 4. AudioCache async clear() + O(1) clipCount.
+        {
+            AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+            QCOMPARE(cache.clipCount(), 0);
+            QCOMPARE(cache.megabytes(), 0.0);
+            QVERIFY(!cache.clearing());
+
+            const QByteArray pcm(24000 * 2 / 5, '\x10');  // 0.2s mono 16-bit PCM
+            QSignalSpy idleSpy(&cache, &AudioCache::storesIdle);
+            cache.store(QStringLiteral("clip-1"), pcm, 24000);
+            cache.store(QStringLiteral("clip-2"), pcm, 24000);
+            QTRY_VERIFY_WITH_TIMEOUT(cache.clipCount() == 2 && !cache.hasPendingStores(), 10000);
+            const QString file1 = cache.lookupPath(QStringLiteral("clip-1"));
+            const QString file2 = cache.lookupPath(QStringLiteral("clip-2"));
+            QVERIFY(QFileInfo::exists(file1));
+            QVERIFY(QFileInfo::exists(file2));
+            QVERIFY(cache.megabytes() > 0.0);
+
+            QSignalSpy cacheChanged(&cache, &AudioCache::changed);
+            cache.clear();
+            QCOMPARE(cache.clipCount(), 0);
+            QCOMPARE(cache.megabytes(), 0.0);
+            QVERIFY(cache.clearing());
+            QTRY_VERIFY_WITH_TIMEOUT(!cache.clearing(), 5000);
+            QVERIFY(!QFileInfo::exists(file1));
+            QVERIFY(!QFileInfo::exists(file2));
+            QVERIFY(cacheChanged.count() >= 2);
+        }
+
+        // 5. VoicePacks::catalogPacks() + installPack().
+        {
+            auto makeArchive = [&dir](const QString &folder, const QString &file) {
+                QDir().mkpath(dir.filePath(QStringLiteral("vp-src/") + folder + QStringLiteral("/lib")));
+                write(dir.filePath(QStringLiteral("vp-src/") + folder + QStringLiteral("/lib/") + file), "pack bytes");
+                QProcess tar;
+                tar.start(QStringLiteral("tar"),
+                          {QStringLiteral("-cjf"), dir.filePath(folder + QStringLiteral(".tar.bz2")),
+                           QStringLiteral("-C"), dir.filePath(QStringLiteral("vp-src")), folder});
+                tar.waitForFinished();
+                QFile f(dir.filePath(folder + QStringLiteral(".tar.bz2")));
+                return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+            };
+            const QByteArray engArc = makeArchive(QStringLiteral("engine-arm"), QStringLiteral("libsherpa-onnx-c-api.so"));
+            const QByteArray kokArc = makeArchive(QStringLiteral("kokoro-fp32"), QStringLiteral("model.onnx"));
+            auto sha = [](const QByteArray &b) { return QString::fromLatin1(QCryptographicHash::hash(b, QCryptographicHash::Sha256).toHex()); };
+
+            FakeServer vpSrv;
+            vpSrv.routes.insert("/v1beta/engine-arm.tar.bz2", {200, "application/octet-stream", engArc});
+            vpSrv.routes.insert("/v1beta/k-fp32.tar.bz2", {200, "application/octet-stream", kokArc});
+
+            QJsonObject manifest = QJsonDocument::fromJson(
+                packsManifest(vpSrv.endpoint(), sha(engArc).toLatin1(), "00", engArc.size(), 10)).object();
+            QJsonObject kokoro = manifest.value(QStringLiteral("kokoro")).toObject();
+            QJsonObject variants = kokoro.value(QStringLiteral("variants")).toObject();
+            QJsonObject armVar = variants.value(QStringLiteral("aarch64")).toObject();
+            armVar[QStringLiteral("sha256")] = sha(kokArc);
+            armVar[QStringLiteral("size")] = kokArc.size();
+            variants[QStringLiteral("aarch64")] = armVar;
+            kokoro[QStringLiteral("variants")] = variants;
+            manifest[QStringLiteral("kokoro")] = kokoro;
+            manifest[QStringLiteral("pocket")] = QJsonObject{
+                {QStringLiteral("id"), QStringLiteral("pocket-v1")},
+                {QStringLiteral("title"), QStringLiteral("Pocket TTS")},
+                {QStringLiteral("license"), QStringLiteral("MIT")},
+                {QStringLiteral("url"), vpSrv.endpoint() + QStringLiteral("/pocket.tar.bz2")},
+                {QStringLiteral("size"), 50},
+                {QStringLiteral("sha256"), QStringLiteral("aa")},
+                {QStringLiteral("dir"), QStringLiteral("pocket-v1")},
+                {QStringLiteral("voices"), QJsonArray{QJsonObject{{QStringLiteral("id"), QStringLiteral("bria")},
+                                                                  {QStringLiteral("name"), QStringLiteral("Bria")},
+                                                                  {QStringLiteral("language"), QStringLiteral("en-US")},
+                                                                  {QStringLiteral("reference"), QStringLiteral("bria.wav")}}}},
+            };
+
+            VoicePacks packs(dir.filePath(QStringLiteral("vp-root")), nullptr, QStringLiteral("aarch64"),
+                             QJsonDocument(manifest).toJson());
+            QVERIFY(!packs.engineVersion().isEmpty());
+            const QVariantList beforeCatalog = packs.catalogPacks();
+            QCOMPARE(beforeCatalog.size(), 2);
+            QCOMPARE(beforeCatalog[0].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("kokoro-v1.0"));
+            QCOMPARE(beforeCatalog[0].toMap().value(QStringLiteral("installed")).toBool(), false);
+            QCOMPARE(beforeCatalog[0].toMap().value(QStringLiteral("bytes")).toLongLong(), qint64(engArc.size() + kokArc.size()));
+            QCOMPARE(beforeCatalog[0].toMap().value(QStringLiteral("voiceCount")).toInt(), 3);
+            QCOMPARE(beforeCatalog[0].toMap().value(QStringLiteral("languageCount")).toInt(), 1);
+            QCOMPARE(beforeCatalog[1].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("pocket-v1"));
+
+            packs.installPack(QStringLiteral("kokoro-v1.0"));
+            QVERIFY(packs.busy());
+            QTRY_VERIFY_WITH_TIMEOUT(!packs.busy(), 10000);
+            QVERIFY2(packs.problem().isEmpty(), qPrintable(packs.problem()));
+            QVERIFY(packs.engineInstalled());
+            QVERIFY(packs.isInstalled(QStringLiteral("kokoro-v1.0")));
+            QCOMPARE(packs.installedVoiceCount(), 3);
+
+            const QVariantList afterCatalog = packs.catalogPacks();
+            QCOMPARE(afterCatalog[0].toMap().value(QStringLiteral("installed")).toBool(), true);
+            QCOMPARE(afterCatalog[0].toMap().value(QStringLiteral("bytes")).toLongLong(), qint64(0));
+            // Installing an already-installed pack is a clean no-op.
+            packs.installPack(QStringLiteral("kokoro-v1.0"));
+            QVERIFY(!packs.busy());
+        }
+
+        // 6. Library::folderStats() + empty-path guard + Scanner::cancel() sets m_running=false.
+        QSignalSpy libProblem(&library, &Library::problem);
+        library.addFolder(QString());
+        library.addFolder(QStringLiteral("   "));
+        library.removeFolder(QString());
+        library.removeFolder(QStringLiteral("   "));
+        QCOMPARE(libProblem.count(), 0);
+        QVERIFY(library.folders().isEmpty());
+
+        const QString booksDir = dir.filePath(QStringLiteral("shelf-a"));
+        const QString goneDir = dir.filePath(QStringLiteral("shelf-gone"));
+        QVERIFY(QDir().mkpath(booksDir));
+        QVERIFY(QDir().mkpath(goneDir));
+        QVERIFY(TestBooks::write(booksDir + QStringLiteral("/one.epub"), TestBooks::epub2(png(16, 20))));
+        QVERIFY(TestBooks::write(booksDir + QStringLiteral("/two.pdf"), TestBooks::pdf("Two", "Auth")));
+
+        QSignalSpy scanDone(&library, &Library::scanFinished);
+        library.addFolder(booksDir);
+        QTRY_COMPARE_WITH_TIMEOUT(scanDone.count(), 1, 10000);
+        library.addFolder(goneDir);
+        QTRY_COMPARE_WITH_TIMEOUT(scanDone.count(), 2, 10000);
+        QVERIFY(QDir(goneDir).removeRecursively());
+
+        const QVariantList stats = library.folderStats();
+        QCOMPARE(stats.size(), 2);
+        QCOMPARE(stats[0].toMap().value(QStringLiteral("name")).toString(), QStringLiteral("shelf-a"));
+        QCOMPARE(stats[0].toMap().value(QStringLiteral("exists")).toBool(), true);
+        QCOMPARE(stats[0].toMap().value(QStringLiteral("books")).toInt(), 2);
+        QCOMPARE(stats[1].toMap().value(QStringLiteral("name")).toString(), QStringLiteral("shelf-gone"));
+        QCOMPARE(stats[1].toMap().value(QStringLiteral("exists")).toBool(), false);
+        QCOMPARE(stats[1].toMap().value(QStringLiteral("books")).toInt(), 0);
+
+        Scanner scanner(dir.filePath(QStringLiteral("scan-covers")));
+        scanner.scan({booksDir}, {}, {});
+        QVERIFY(scanner.running());
+        scanner.cancel();
+        QVERIFY(!scanner.running());
+    }
+
+    void wave2CompanionRecapsFirstSeenResumeSdcvSseGeminiIllustratorAndTranslator() {
+        QTemporaryDir dir;
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        const QByteArray origEnvKey = qgetenv("GEMINI_API_KEY");
+        const QByteArray origPath = qgetenv("PATH");
+        const QLocale origLocale;
+        const Qt::LayoutDirection origDir = QGuiApplication::layoutDirection();
+        auto cleanup = qScopeGuard([&] {
+            if (origEnvKey.isEmpty())
+                qunsetenv("GEMINI_API_KEY");
+            else
+                qputenv("GEMINI_API_KEY", origEnvKey);
+            qputenv("PATH", origPath);
+            QLocale::setDefault(origLocale);
+            QGuiApplication::setLayoutDirection(origDir);
+            QSettings s(settingsPath, QSettings::IniFormat);
+            s.remove(QStringLiteral("ai"));
+            s.remove(QStringLiteral("local"));
+            s.remove(QStringLiteral("appearance/language"));
+        });
+        qunsetenv("GEMINI_API_KEY");
+
+        // Build a 3-chapter linear EPUB so resolveFirstSeen() and recap spoiler-guard span real chapters.
+        const QByteArray epubBytes = TestBooks::epub({
+            {"OEBPS/content.opf",
+             "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+             "<package version=\"2.0\" unique-identifier=\"uid\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+             "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+             "    <dc:title>Fog Over Baker Street</dc:title>\n"
+             "    <dc:creator>Arthur Doyle</dc:creator>\n"
+             "    <dc:language>en</dc:language>\n"
+             "  </metadata>\n"
+             "  <manifest>\n"
+             "    <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>\n"
+             "    <item id=\"ch0\" href=\"ch0.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+             "    <item id=\"ch1\" href=\"ch1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+             "    <item id=\"ch2\" href=\"ch2.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+             "  </manifest>\n"
+             "  <spine toc=\"ncx\">\n"
+             "    <itemref idref=\"ch0\"/>\n"
+             "    <itemref idref=\"ch1\"/>\n"
+             "    <itemref idref=\"ch2\"/>\n"
+             "  </spine>\n"
+             "</package>"},
+            {"OEBPS/toc.ncx",
+             "<?xml version=\"1.0\"?>\n"
+             "<ncx xmlns=\"http://www.daisy.org/z3986/2005/ncx/\" version=\"2005-1\"><navMap>\n"
+             "  <navPoint id=\"n0\" playOrder=\"1\"><navLabel><text>Prologue</text></navLabel><content src=\"ch0.xhtml\"/></navPoint>\n"
+             "  <navPoint id=\"n1\" playOrder=\"2\"><navLabel><text>Interlude</text></navLabel><content src=\"ch1.xhtml\"/></navPoint>\n"
+             "  <navPoint id=\"n2\" playOrder=\"3\"><navLabel><text>Revelation</text></navLabel><content src=\"ch2.xhtml\"/></navPoint>\n"
+             "</navMap></ncx>"},
+            {"OEBPS/ch0.xhtml", TestBooks::chapter("Prologue",
+                "<p>A quiet figure called The Detective watched the brass lantern while Lestrade took notes.</p>")},
+            {"OEBPS/ch1.xhtml", TestBooks::chapter("Interlude",
+                "<p>Rain drummed softly across the empty cobblestone square until dawn.</p>")},
+            {"OEBPS/ch2.xhtml", TestBooks::chapter("Revelation",
+                "<p>At last Sherlock Holmes greeted Inspector Lestrade beneath the archway.</p>")},
+        });
+        const QString epubPath = dir.filePath(QStringLiteral("fog.epub"));
+        QVERIFY(TestBooks::write(epubPath, epubBytes));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+        reader.relocated({{"chapter", 2}, {"offset", 0}, {"end", 120}, {"page", 0}, {"pages", 1}});
+
+        FakeServer cloudSrv;
+        FakeServer localSrv;
+        GeminiProvider gemini(nullptr, cloudSrv.endpoint());
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        services.setLocalModels(&local);
+
+        // 1. Companion::resumePendingSetup() handoff when invoked unconfigured.
+        Companion companion(&services, &reader, library.database().connectionName());
+        companion.ask(QStringLiteral("Who watched the lantern?"));
+        QVERIFY(!companion.busy());
+        QVERIFY(companion.problemIsConfig());
+        QVERIFY(companion.hasPendingSetup());
+        QVERIFY(companion.pendingSetupLabel().contains(QStringLiteral("Who watched the lantern?")));
+
+        LocalModels::Server srv;
+        srv.kind = LocalModels::Ollama;
+        srv.url = QUrl(localSrv.origin());
+        local.configure(srv, QStringLiteral("qwen3.5:4b"));
+        services.setPreset(QStringLiteral("local"));
+        localSrv.responses.append({200, "application/x-ndjson",
+                                   "{\"message\":{\"content\":\"The Detective watched the lantern.\"},\"done\":true}\n"});
+        companion.resumePendingSetup();
+        QVERIFY(!companion.hasPendingSetup());
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QCOMPARE(companion.conversation().size(), 2);
+        QVERIFY(companion.conversation().last().toMap().value(QStringLiteral("text")).toString()
+                    .contains(QStringLiteral("The Detective")));
+
+        // 2. Companion::resolveFirstSeen() earliest-mention ordering across chapters (alias & surname in ch0 beat full name in ch2).
+        localSrv.responses.append({200, "application/x-ndjson",
+                                   "{\"message\":{\"content\":\"{\\\"people\\\":["
+                                   "{\\\"name\\\":\\\"Sherlock Holmes\\\",\\\"also\\\":\\\"The Detective\\\","
+                                   "\\\"who\\\":\\\"Consulting detective.\\\",\\\"chapter\\\":\\\"Revelation\\\"},"
+                                   "{\\\"name\\\":\\\"Inspector Lestrade\\\",\\\"also\\\":\\\"\\\","
+                                   "\\\"who\\\":\\\"Scotland Yard inspector.\\\",\\\"chapter\\\":\\\"Revelation\\\"}"
+                                   "]}\"},\"done\":true}\n"});
+        companion.whosWho();
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QCOMPARE(companion.people().size(), 2);
+        const QVariantMap holmes = companion.people()[0].toMap();
+        const QVariantMap lestrade = companion.people()[1].toMap();
+        QCOMPARE(holmes.value(QStringLiteral("chapterIndex")).toInt(), 0);
+        QCOMPARE(holmes.value(QStringLiteral("chapter")).toString(), QStringLiteral("Prologue"));
+        QVERIFY(holmes.value(QStringLiteral("offset")).toLongLong() > 0);
+        QCOMPARE(lestrade.value(QStringLiteral("chapterIndex")).toInt(), 0);
+        QCOMPARE(lestrade.value(QStringLiteral("chapter")).toString(), QStringLiteral("Prologue"));
+        QVERIFY(lestrade.value(QStringLiteral("offset")).toLongLong() > holmes.value(QStringLiteral("offset")).toLongLong());
+
+        // 3. companion_recaps persistence, memory cache, reload, backward spoiler guard, forward auto-restore & AFTER DELETE trigger.
+        localSrv.responses.append({200, "application/x-ndjson",
+                                   "{\"message\":{\"content\":\"Recap up to Revelation.\"},\"done\":true}\n"});
+        const qsizetype reqBeforeRecap = localSrv.requests.size();
+        companion.recap();
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QCOMPARE(localSrv.requests.size(), reqBeforeRecap + 1);
+        QCOMPARE(companion.recapLoaded(), true);
+        QCOMPARE(companion.recapChapter(), 2);
+        QCOMPARE(companion.recapText(), QStringLiteral("Recap up to Revelation."));
+        QCOMPARE(companion.recapWhereLocal(), true);
+
+        // Second call at same chapter hits memory cache (0 new requests).
+        companion.recap();
+        QVERIFY(!companion.busy());
+        QCOMPARE(localSrv.requests.size(), reqBeforeRecap + 1);
+
+        // Fresh Companion restores persisted recap from SQLite with 0 network requests.
+        {
+            Companion fresh(&services, &reader, library.database().connectionName());
+            QCOMPARE(fresh.recapLoaded(), true);
+            QCOMPARE(fresh.recapChapter(), 2);
+            QCOMPARE(fresh.recapText(), QStringLiteral("Recap up to Revelation."));
+        }
+
+        // Backward navigation to chapter 0 hides chapter 2 recap (strict spoiler guard).
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+        QCOMPARE(companion.recapLoaded(), false);
+        QVERIFY(companion.recapText().isEmpty());
+
+        // Returning forward to chapter 2 automatically restores the cached chapter 2 recap.
+        reader.relocated({{"chapter", 2}, {"offset", 0}, {"end", 120}, {"page", 0}, {"pages", 1}});
+        QCOMPARE(companion.recapLoaded(), true);
+        QCOMPARE(companion.recapText(), QStringLiteral("Recap up to Revelation."));
+
+        // 4. sdcv punctuation trim & single fallback guarantee.
+        const QString fakeBin = dir.filePath(QStringLiteral("sdcv-bin"));
+        QVERIFY(QDir().mkpath(fakeBin));
+        const QString sdcvLog = dir.filePath(QStringLiteral("sdcv.log"));
+        const QString sdcvScript = fakeBin + QStringLiteral("/sdcv");
+        write(sdcvScript,
+              QStringLiteral("#!/bin/sh\n"
+                             "last=\"\"\nfor a in \"$@\"; do last=\"$a\"; done\n"
+                             "printf '%s\\n' \"$last\" >> \"%1\"\n"
+                             "if [ \"$last\" = \"lantern\" ]; then\n"
+                             "  printf '[{\"word\":\"lantern\",\"dict\":\"WordNet\",\"definition\":\"A portable lamp.\"}]'\n"
+                             "  exit 0\n"
+                             "fi\n"
+                             "exit 1\n")
+                  .arg(sdcvLog)
+                  .toUtf8());
+        QVERIFY(QFile::setPermissions(sdcvScript, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        qputenv("PATH", fakeBin.toUtf8() + ":" + origPath);
+
+        companion.define(QStringLiteral("“lantern,”"), 0, 10);
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QCOMPARE(companion.where(), QStringLiteral("Dictionary on this computer"));
+        QVERIFY(companion.answer().contains(QStringLiteral("A portable lamp.")));
+        {
+            QFile logFile(sdcvLog);
+            QVERIFY(logFile.open(QIODevice::ReadOnly));
+            QCOMPARE(QString::fromUtf8(logFile.readAll()).trimmed(), QStringLiteral("lantern"));
+        }
+
+        // Missing dictionary word falls back to the AI model exactly ONCE.
+        const qsizetype reqBeforeMiss = localSrv.requests.size();
+        localSrv.responses.append({200, "application/x-ndjson",
+                                   "{\"message\":{\"content\":\"*noun* — A rare fogbound word.\"},\"done\":true}\n"});
+        companion.define(QStringLiteral("unlistedword"), 0, 10);
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QTest::qWait(50);
+        QCOMPARE(localSrv.requests.size(), reqBeforeMiss + 1);
+        QVERIFY(companion.answer().contains(QStringLiteral("rare fogbound word")));
+
+        // Broken non-executable sdcv (FailedToStart -> errorOccurred) also triggers a single fallback.
+        QVERIFY(QFile::setPermissions(sdcvScript, QFileDevice::ReadOwner | QFileDevice::WriteOwner));
+        const qsizetype reqBeforeBroken = localSrv.requests.size();
+        localSrv.responses.append({200, "application/x-ndjson",
+                                   "{\"message\":{\"content\":\"*noun* — Fallback after FailedToStart.\"},\"done\":true}\n"});
+        companion.define(QStringLiteral("anotherword"), 0, 10);
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QTest::qWait(50);
+        QCOMPARE(localSrv.requests.size(), reqBeforeBroken + 1);
+        QVERIFY(companion.answer().contains(QStringLiteral("Fallback after FailedToStart")));
+        qputenv("PATH", origPath);
+
+        // Verify AFTER DELETE ON books trigger cascades companion_recaps, companion_threads, companion_whoswho.
+        {
+            QSqlQuery countBefore(library.database());
+            QVERIFY(countBefore.exec(QStringLiteral("SELECT COUNT(*) FROM companion_recaps WHERE book_id = %1").arg(bookId)));
+            QVERIFY(countBefore.next());
+            QCOMPARE(countBefore.value(0).toInt(), 1);
+            QSqlQuery delBook(library.database());
+            QVERIFY(delBook.exec(QStringLiteral("DELETE FROM books WHERE id = %1").arg(bookId)));
+            for (const char *tbl : {"companion_recaps", "companion_threads", "companion_whoswho"}) {
+                QSqlQuery check(library.database());
+                QVERIFY(check.exec(QStringLiteral("SELECT COUNT(*) FROM %1 WHERE book_id = %2")
+                                       .arg(QString::fromLatin1(tbl))
+                                       .arg(bookId)));
+                QVERIFY(check.next());
+                QCOMPARE(check.value(0).toInt(), 0);
+            }
+        }
+
+        // 5. SseParser: UTF-8 BOM + chunk-split \r\n + bare \r.
+        {
+            SseParser sse;
+            const auto bomEvents = sse.feed("\xEF\xBB\xBF" "event: step.delta\r\ndata: hello\r\n\r\n");
+            QCOMPARE(bomEvents.size(), 1);
+            QCOMPARE(bomEvents[0].name, QByteArray("step.delta"));
+            QCOMPARE(bomEvents[0].data, QByteArray("hello"));
+
+            QVERIFY(sse.feed("event: step.delta\r").isEmpty());
+            QVERIFY(sse.feed("\ndata: line1\r").isEmpty());
+            const auto splitEvents = sse.feed("\ndata: line2\r\n\r\n");
+            QCOMPARE(splitEvents.size(), 1);
+            QCOMPARE(splitEvents[0].name, QByteArray("step.delta"));
+            QCOMPARE(splitEvents[0].data, QByteArray("line1\nline2"));
+
+            // Bare CR preserves a trailing '\r' across chunk boundaries so a chunk-split CRLF
+            // isn't prematurely split, and flushes cleanly once followed by another line or finish().
+            QVERIFY(sse.feed("data: bare1\rdata: bare2\r\r").isEmpty());
+            const auto bareCr = sse.finish();
+            QCOMPARE(bareCr.size(), 1);
+            QCOMPARE(bareCr[0].data, QByteArray("bare1\nbare2"));
+        }
+
+        // 6. GeminiReply: mid-stream SSE error mapping & single-emit abort().
+        {
+            gemini.setKey(QStringLiteral("test-gemini-key"));
+            struct SseCase {
+                QByteArray body;
+                Ai::Error::Kind expected;
+            };
+            const QList<SseCase> cases = {
+                {"event: error\ndata: {\"error\":{\"status\":\"RESOURCE_EXHAUSTED\",\"message\":\"quota\"}}\n\n",
+                 Ai::Error::Limited},
+                {"event: interaction.failed\ndata: {\"interaction\":{\"error\":{\"status\":\"UNAUTHENTICATED\",\"message\":\"bad key\"}}}\n\n",
+                 Ai::Error::BadKey},
+                {"event: error\ndata: {\"error\":{\"status\":\"PERMISSION_DENIED\",\"message\":\"denied\"}}\n\n",
+                 Ai::Error::Refused},
+                {"event: error\ndata: {\"error\":{\"code\":404,\"message\":\"missing\"}}\n\n",
+                 Ai::Error::NotFound},
+                {"event: error\ndata: {\"error\":{\"status\":\"INVALID_ARGUMENT\",\"message\":\"bad arg\"}}\n\n",
+                 Ai::Error::Invalid},
+            };
+            for (const SseCase &tc : cases) {
+                cloudSrv.responses.append({200, "text/event-stream", tc.body});
+                Ai::TextRequest req;
+                req.feature = QStringLiteral("ask");
+                req.stream = true;
+                req.messages = {{true, QStringLiteral("hi")}};
+                std::unique_ptr<Ai::Reply> reply(gemini.generate(req));
+                QSignalSpy fin(reply.get(), &Ai::Reply::finished);
+                QTRY_COMPARE_WITH_TIMEOUT(fin.count(), 1, 5000);
+                QCOMPARE(reply->error().kind, tc.expected);
+            }
+
+            // Single-emit abort() on an active hanging GeminiReply.
+            QTcpServer hangSrv;
+            QVERIFY(hangSrv.listen(QHostAddress::LocalHost));
+            QList<QPointer<QTcpSocket>> socks;
+            connect(&hangSrv, &QTcpServer::newConnection, &hangSrv, [&hangSrv, &socks] {
+                while (QTcpSocket *s = hangSrv.nextPendingConnection())
+                    socks.append(s);
+            });
+            GeminiProvider hangGemini(nullptr, QStringLiteral("http://127.0.0.1:%1/v1beta").arg(hangSrv.serverPort()));
+            hangGemini.setKey(QStringLiteral("test-gemini-key"));
+            Ai::TextRequest req;
+            req.feature = QStringLiteral("ask");
+            req.stream = true;
+            req.messages = {{true, QStringLiteral("abort me")}};
+            std::unique_ptr<Ai::Reply> abortReply(hangGemini.generate(req));
+            QSignalSpy abortSpy(abortReply.get(), &Ai::Reply::finished);
+            abortReply->abort();
+            abortReply->abort();
+            QTest::qWait(50);
+            QCOMPARE(abortSpy.count(), 1);
+            QCOMPARE(abortReply->error().kind, Ai::Error::Cancelled);
+            for (const QPointer<QTcpSocket> &s : std::as_const(socks))
+                if (s)
+                    s->close();
+            hangSrv.close();
+        }
+
+        // 7. Illustrator::budgetOk / unavailableReason / saveCopyTo().
+        {
+            const int illBookId = library.addBookFile(epubPath);
+            QVERIFY(illBookId > 0);
+            QVERIFY(reader.openBook(illBookId));
+            reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 90}, {"page", 0}, {"pages", 1}});
+
+            Illustrator illustrator(&services, &reader, library.database().connectionName(),
+                                    dir.filePath(QStringLiteral("illustrations")));
+            // No key
+            gemini.setKey({});
+            services.setPreset(QStringLiteral("cloud"));
+            QVERIFY(!illustrator.available());
+            QVERIFY(illustrator.unavailableReason().contains(QStringLiteral("add your key")));
+
+            // Key present, strict local mode
+            gemini.setKey(QStringLiteral("test-gemini-key"));
+            services.setPreset(QStringLiteral("local"));
+            QVERIFY(!illustrator.available());
+            QVERIFY(illustrator.unavailableReason().contains(QStringLiteral("Hybrid or Cloud")));
+
+            // Cloud mode with $0 monthly cap
+            services.setPreset(QStringLiteral("cloud"));
+            services.setUnlimitedBudget(false);
+            services.setBudget(0.0);
+            QVERIFY(illustrator.available());
+            QVERIFY(!illustrator.budgetOk());
+            QVERIFY(illustrator.unavailableReason().contains(QStringLiteral("$0")));
+
+            // Cloud mode with non-zero cap below picture cost
+            services.setBudget(0.001);
+            QVERIFY(!illustrator.budgetOk());
+            QVERIFY(illustrator.unavailableReason().contains(QStringLiteral("monthly budget")));
+
+            // Cloud mode with healthy budget -> generate and saveCopyTo()
+            services.setBudget(10.0);
+            QVERIFY(illustrator.budgetOk());
+            QVERIFY(illustrator.unavailableReason().isEmpty());
+
+            const QByteArray imgPng = png(48, 36);
+            const QByteArray promptReply = QJsonDocument(QJsonObject{
+                {QStringLiteral("steps"), QJsonArray{QJsonObject{
+                    {QStringLiteral("type"), QStringLiteral("model_output")},
+                    {QStringLiteral("content"), QJsonArray{QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("text")},
+                        {QStringLiteral("text"), QStringLiteral("{\"prompt\":\"Victorian fog over Baker Street lantern\",\"caption\":\"The brass lantern\"}")},
+                    }}},
+                }}},
+            }).toJson(QJsonDocument::Compact);
+            const QByteArray imageReply = QJsonDocument(QJsonObject{
+                {QStringLiteral("candidates"), QJsonArray{QJsonObject{
+                    {QStringLiteral("content"), QJsonObject{
+                        {QStringLiteral("parts"), QJsonArray{QJsonObject{
+                            {QStringLiteral("inlineData"), QJsonObject{
+                                {QStringLiteral("mimeType"), QStringLiteral("image/png")},
+                                {QStringLiteral("data"), QString::fromLatin1(imgPng.toBase64())},
+                            }},
+                        }}},
+                    }},
+                }}},
+            }).toJson(QJsonDocument::Compact);
+            cloudSrv.responses.append({200, "application/json", promptReply});
+            cloudSrv.responses.append({200, "application/json", imageReply});
+            QSignalSpy madeSpy(&illustrator, &Illustrator::made);
+            illustrator.illustrate(QStringLiteral("watched the brass lantern"), 0, 60);
+            QTRY_COMPARE_WITH_TIMEOUT(madeSpy.count(), 1, 5000);
+            const int picId = madeSpy[0][0].toInt();
+            QVERIFY(picId > 0);
+
+            const QString explicitDest = dir.filePath(QStringLiteral("exports/lantern-copy.png"));
+            QCOMPARE(illustrator.saveCopyTo(picId, explicitDest), explicitDest);
+            QFile copied(explicitDest);
+            QVERIFY(copied.open(QIODevice::ReadOnly));
+            QCOMPARE(copied.readAll(), imgPng);
+
+            const QString exportDir = dir.filePath(QStringLiteral("exports-dir"));
+            QVERIFY(QDir().mkpath(exportDir));
+            const QString intoDir = illustrator.saveCopyTo(picId, exportDir);
+            QVERIFY(intoDir.startsWith(exportDir + QLatin1Char('/')));
+            QVERIFY(QFileInfo::exists(intoDir));
+            QVERIFY(illustrator.saveCopyTo(999999, explicitDest).isEmpty());
+        }
+
+        // 8. Translator::setLanguage() / languageOverride isolation & live reload.
+        {
+            const QString langFile = dir.filePath(QStringLiteral("omarchy-lang"));
+            const QString catDir = dir.filePath(QStringLiteral("i18n"));
+            QVERIFY(QDir().mkpath(catDir));
+            write(langFile, "de\n");
+            write(catDir + QStringLiteral("/en.json"), R"({"Hello":"Hello"})");
+            write(catDir + QStringLiteral("/de.json"), R"({"Hello":"Hallo"})");
+            write(catDir + QStringLiteral("/fr.json"), R"({"Hello":"Bonjour"})");
+            write(catDir + QStringLiteral("/ar.json"), R"({"Hello":"مرحبا"})");
+
+            Translator isolated(langFile, catDir);
+            QCOMPARE(isolated.language(), QStringLiteral("de"));
+            QCOMPARE(isolated.languageOverride(), QString());
+            QCOMPARE(isolated.translate("", "Hello"), QStringLiteral("Hallo"));
+
+            QSignalSpy changedSpy(&isolated, &Translator::changed);
+            isolated.setLanguage(QStringLiteral("fr"));
+            QCOMPARE(isolated.languageOverride(), QStringLiteral("fr"));
+            QCOMPARE(isolated.language(), QStringLiteral("fr"));
+            QCOMPARE(isolated.translate("", "Hello"), QStringLiteral("Bonjour"));
+            QCOMPARE(changedSpy.count(), 1);
+            // Explicit languageFile stays isolated from settings.ini.
+            QVERIFY(QSettings(settingsPath, QSettings::IniFormat).value(QStringLiteral("appearance/language")).toString().isEmpty());
+
+            // Invalid language codes are ignored safely.
+            isolated.setLanguage(QStringLiteral("../evil"));
+            QCOMPARE(isolated.languageOverride(), QStringLiteral("fr"));
+            QCOMPARE(changedSpy.count(), 1);
+
+            // Live RTL reload on Arabic, then reset to desktop ("") restores German + LTR.
+            isolated.setLanguage(QStringLiteral("ar"));
+            QCOMPARE(isolated.language(), QStringLiteral("ar"));
+            QCOMPARE(isolated.translate("", "Hello"), QStringLiteral("مرحبا"));
+            QCOMPARE(QGuiApplication::layoutDirection(), Qt::RightToLeft);
+
+            isolated.setLanguage(QString());
+            QCOMPARE(isolated.languageOverride(), QString());
+            QCOMPARE(isolated.language(), QStringLiteral("de"));
+            QCOMPARE(isolated.translate("", "Hello"), QStringLiteral("Hallo"));
+            QCOMPARE(QGuiApplication::layoutDirection(), Qt::LeftToRight);
+
+            // Default constructor (empty languageFile) persists override under appearance/language.
+            {
+                Translator persisted(QString(), catDir);
+                persisted.setLanguage(QStringLiteral("fr"));
+                QCOMPARE(QSettings(settingsPath, QSettings::IniFormat).value(QStringLiteral("appearance/language")).toString(),
+                         QStringLiteral("fr"));
+            }
+            {
+                Translator reloaded(QString(), catDir);
+                QCOMPARE(reloaded.languageOverride(), QStringLiteral("fr"));
+                QCOMPARE(reloaded.language(), QStringLiteral("fr"));
+                reloaded.setLanguage(QString());
+                QVERIFY(QSettings(settingsPath, QSettings::IniFormat).value(QStringLiteral("appearance/language")).toString().isEmpty());
+            }
+        }
     }
 };
 

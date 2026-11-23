@@ -47,6 +47,7 @@ public:
     };
 
 private:
+    friend class DogearTests;
     friend class PageResponse;
     friend class PrefetchTask;
     static QString makeCacheKey(const QString &id, const QSize &requestedSize);

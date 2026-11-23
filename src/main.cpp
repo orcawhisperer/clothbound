@@ -296,6 +296,7 @@ int main(int argc, char *argv[]) {
 
     Theme theme;
     theme.setAppearance(appearance.value(QStringLiteral("appearance/mode"), QStringLiteral("match")).toString());
+    theme.setReducedMotion(appearance.value(QStringLiteral("appearance/reducedMotion"), false).toBool());
     Library library;
     if (!library.open()) {
         fprintf(stderr, "The library can't be opened: %s\n", qPrintable(library.errorString()));

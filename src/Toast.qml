@@ -44,9 +44,10 @@ Rectangle {
     }
 
     property bool shown: false
+    property real bottomClearance: 28
 
     anchors.horizontalCenter: parent.horizontalCenter
-    y: parent.height - (shown || theme.reducedMotion ? height + 28 : -height)
+    y: parent.height - (shown || theme.reducedMotion ? height + bottomClearance : -height)
     Behavior on y {
         enabled: !theme.reducedMotion
         NumberAnimation { duration: 280; easing.type: Easing.OutQuart }

@@ -90,6 +90,26 @@ struct Reader::PageTurnSfx {
         m_idleTimer.start();
     }
 
+    // Hermetic test entry point: exercises throttle + PCM synthesis without opening an audio sink.
+    bool playDryRun(int direction, QByteArray *pcmOut = nullptr) {
+        if (m_throttle.isValid() && m_throttle.elapsed() < kMinIntervalMs)
+            return false;
+        QAudioFormat fmt;
+        fmt.setSampleRate(44100);
+        fmt.setChannelCount(1);
+        fmt.setSampleFormat(QAudioFormat::Int16);
+        prepareClips(fmt);
+        const bool forward = direction >= 0;
+        const int idx = (forward ? m_fwdIndex++ : m_bwdIndex++) % kVariants;
+        const QByteArray &clip = forward ? m_forwardClips[size_t(idx)] : m_backwardClips[size_t(idx)];
+        if (clip.isEmpty())
+            return false;
+        m_throttle.restart();
+        if (pcmOut)
+            *pcmOut = clip;
+        return true;
+    }
+
 private:
     static QByteArray synthesizeClip(const QAudioFormat &fmt, int variant, bool forward) {
         const int sr = qBound(8000, fmt.sampleRate(), 192000);
@@ -877,6 +897,12 @@ void Reader::playPageTurn(int direction) {
     if (!m_sfx)
         m_sfx = std::make_unique<PageTurnSfx>(this);
     m_sfx->play(direction);
+}
+
+bool Reader::playPageTurnDryRun(int direction, QByteArray *pcmOut) {
+    if (!m_sfx)
+        m_sfx = std::make_unique<PageTurnSfx>(this);
+    return m_sfx->playDryRun(direction, pcmOut);
 }
 
 void Reader::notifyPageTurn(int direction) { emit pageTurnRequested(direction >= 0 ? 1 : -1); }
