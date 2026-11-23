@@ -10,3 +10,4 @@ Categories=Office;Viewer;
 MimeType=application/epub+zip;application/pdf;
 Keywords=ebook;book;epub;pdf;reader;library;read;
 StartupWMClass=dogear
+SingleMainWindow=true

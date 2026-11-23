@@ -38,14 +38,17 @@ ApplicationWindow {
         win.hide()
         if (!backgroundTold) {
             backgroundTold = true
-            desktop.notify(qsTr("Dogear reads on"),
-                           qsTr("Its controls are in the bar's tray and media panel, and the media keys work."))
+            desktop.notify(qsTr("Dogear keeps reading"),
+                           qsTr("Click here, or open Dogear again, to bring the book back. The media keys and the bar's media panel still control the voice."),
+                           true)
         }
     }
     function showAgain() {
-        win.show()
-        win.raise()
-        win.requestActivate()
+        instance.bringBack()
+    }
+    Connections {
+        target: desktop
+        function onClicked(token) { instance.bringBack(token) }
     }
     Connections {
         target: narration

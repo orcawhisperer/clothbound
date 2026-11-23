@@ -18,6 +18,7 @@
 #include "voicepacks.h"
 #include "pointerdriver.h"
 #include "notifier.h"
+#include "instance.h"
 #include "portalfilepicker.h"
 #include "reader.h"
 #include "theme.h"
@@ -28,6 +29,7 @@
 #include <QWindow>
 #include <QDBusMessage>
 #include <QDBusVariant>
+#include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
@@ -116,6 +118,8 @@ int main(int argc, char *argv[]) {
     // Matches the window to dogear.desktop, so the compositor (Wayland app_id)
     // and the launcher pick up the installed icon.
     app.setDesktopFileName("dogear");
+    // The name people see, in the bar's tray among others.
+    app.setApplicationDisplayName("Dogear");
     app.setWindowIcon(QIcon::fromTheme("dogear"));
 
     if (command)
@@ -140,6 +144,21 @@ int main(int argc, char *argv[]) {
     if (arguments.value(1) == "open")
         arguments.removeAt(1);
     args.process(arguments);
+
+    // One Dogear per library: opened again (the launcher, a terminal, a book
+    // file), it hands over to the one running, which comes back as it was,
+    // reading aloud or not, and opens the book if one was named. Scripted runs
+    // (--run, --screenshot) never hand over, so they stay their own.
+    const bool scripted = args.isSet(runOption) || args.isSet("screenshot");
+    QString bookFile;
+    if (!args.positionalArguments().isEmpty())
+        bookFile = QFileInfo(args.positionalArguments().first()).absoluteFilePath();
+    Instance instance;
+    if (!scripted && Instance::passToRunning(bookFile))
+        return 0;
+    // Of two opened at once, the one that doesn't get the name hands over.
+    if (!instance.claim() && !scripted && Instance::passToRunning(bookFile))
+        return 0;
 
     // Installed before anything is translated, and every qsTr() binding is
     // re-evaluated when the Omarchy language changes.
@@ -218,6 +237,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
     Notifier notifier;
     engine.rootContext()->setContextProperty("desktop", &notifier);
+    engine.rootContext()->setContextProperty("instance", &instance);
     engine.rootContext()->setContextProperty("localSpeech", &localSpeech);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);
@@ -230,6 +250,19 @@ int main(int argc, char *argv[]) {
         return 1;
     if (bookToOpen)
         QMetaObject::invokeMethod(engine.rootObjects().first(), "openBook", Q_ARG(QVariant, bookToOpen));
+    // Opened again: the window comes back (Instance), and a book named then
+    // joins the library and opens.
+    if (QObject *root = engine.rootObjects().first()) {
+        instance.setWindow(qobject_cast<QWindow *>(root));
+        QObject::connect(&instance, &Instance::activated, root, [&library, &notifier, root](const QString &book) {
+            if (book.isEmpty())
+                return;
+            if (const int id = library.addBookFile(book))
+                QMetaObject::invokeMethod(root, "openBook", Q_ARG(QVariant, id));
+            else
+                notifier.notify(QObject::tr("Dogear can't open this book"), library.errorString());
+        });
+    }
     // What the window has drawn is kept while it's away (on another
     // workspace), so it comes back as it was instead of black for a moment.
     if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
@@ -241,12 +274,7 @@ int main(int argc, char *argv[]) {
         window && qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
         engine.rootContext()->setContextProperty("pointer", new PointerDriver(window, &app));
     // The desktop's media controls can ask for the window.
-    if (auto *window = qobject_cast<QWindow *>(engine.rootObjects().first()))
-        QObject::connect(&mpris, &Mpris::raiseRequested, window, [window] {
-            window->show();
-            window->raise();
-            window->requestActivate();
-        });
+    QObject::connect(&mpris, &Mpris::raiseRequested, &instance, [&instance] { instance.bringBack(); });
     // New books in watched folders are picked up each time Dogear starts.
     if (!library.folders().isEmpty())
         QTimer::singleShot(400, &library, &Library::rescan);

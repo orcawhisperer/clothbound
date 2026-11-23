@@ -54,7 +54,8 @@ Rectangle {
         { keys: "⇧ P", action: qsTr("Stop listening") },
         { keys: ",  .", action: qsTr("Previous / next paragraph") },
         { keys: "<  >", action: qsTr("Slower / faster") },
-        { keys: "V", action: qsTr("Narrator and style") }
+        { keys: "V", action: qsTr("Narrator and style") },
+        { keys: "Super W", action: qsTr("Close the window and keep listening; open Dogear again to return") }
     ]
     readonly property var everywhere: [
         { keys: "F  F11", action: qsTr("Full screen") },

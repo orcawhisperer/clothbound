@@ -19,6 +19,7 @@
 #include "bookinfo.h"
 #include "fakeserver.h"
 #include "gemini.h"
+#include "instance.h"
 #include "keystore.h"
 #include "localspeech.h"
 #include "voicepacks.h"
@@ -1622,6 +1623,26 @@ private slots:
         QCOMPARE(id.publisher, QString("Harbor Books"));
         QCOMPARE(id.editor, QString("Ed Itor"));
         QCOMPARE(id.year, 1815);
+    }
+
+    // --- One Dogear at a time ----------------------------------------------
+
+    // Opened again, Dogear hands the book to the one running, which takes it
+    // (after answering, so the second can leave at once); a second can't
+    // take the name.
+    void instanceHandsOver() {
+        if (!QDBusConnection::sessionBus().isConnected())
+            QSKIP("No session bus");
+        Instance running;
+        QVERIFY(running.claim());
+        Instance second;
+        QVERIFY(!second.claim());
+        QSignalSpy activated(&running, &Instance::activated);
+        QVERIFY(Instance::passToRunning(QStringLiteral("/books/The Time Machine.epub")));
+        QVERIFY(activated.wait(2000));
+        QCOMPARE(activated.first().first().toString(), QStringLiteral("/books/The Time Machine.epub"));
+        // Without a window there's nothing to show, and nothing fails.
+        running.bringBack();
     }
 };
 

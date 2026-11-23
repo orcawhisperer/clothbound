@@ -19,6 +19,7 @@ HEADERS += \
     ../src/localspeech.h \
     ../src/voicepacks.h \
     ../src/gemini.h \
+    ../src/instance.h \
     ../src/keystore.h \
     ../src/sseparser.h \
     fakeserver.h \
