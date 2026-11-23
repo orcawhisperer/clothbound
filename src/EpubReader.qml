@@ -179,6 +179,7 @@ FocusScope {
         if (!reader.open)
             return
         clearSurfaceNudge()
+        surfaceWatcher.resetSurfaceNudgeCooldown()
         if (!pdf)
             webNeeded = true
         if (!surfaceReady && !pdf)
@@ -191,6 +192,7 @@ FocusScope {
     }
     function closeBook() {
         clearSurfaceNudge()
+        surfaceWatcher.resetSurfaceNudgeCooldown()
         refreshTimer.stop()
         refreshLater.stop()
         closePanels()
@@ -524,17 +526,20 @@ FocusScope {
 
     // Back from another workspace, monitor sleep, or tray: force Qt Quick and
     // Chromium's Viz compositor to produce and bind a fresh frame, even when
-    // Dogear returns tiled and unfocused. A transient 1 px bottom-margin nudge
-    // (inside the solid reading margin) forces visualPropertiesChanged() to
-    // allocate a new LocalSurfaceId and backing GPU texture, while reader.js
-    // ignores no-op resizes once restored so pagination never shifts.
+    // Dogear returns tiled and unfocused. A single coalesced 1 px bottom-margin
+    // nudge (inside the solid reading margin) forces visualPropertiesChanged()
+    // to allocate a new LocalSurfaceId and backing GPU texture, while reader.js
+    // explicitly suppresses relayout during the transient nudge so text lines
+    // never reflow or shift.
     property bool surfaceNudge: false
-    property double lastNudgeMs: 0
 
     function clearSurfaceNudge() {
         nudgeRestoreTimer.stop()
-        if (surfaceNudge)
+        if (surfaceNudge) {
             surfaceNudge = false
+            if (!pdf && surfaceReady && web)
+                view.js("dogear.endSurfaceNudge && dogear.endSurfaceNudge()")
+        }
     }
 
     function runSurfacePaint() {
@@ -560,11 +565,8 @@ FocusScope {
         if (!surfaceReady || !web)
             return
         surfaceWatcher.forceItemUpdate(web)
-        const strongTrigger = reason === "expose" || reason === "sceneGraph"
-                              || reason === "visibility" || reason === "hyprWorkspace"
-        const now = Date.now()
-        if (surfaceWatcher.exposed && !surfaceNudge && (strongTrigger || now - lastNudgeMs > 180)) {
-            lastNudgeMs = now
+        if (!surfaceNudge && !epubLoading && surfaceWatcher.takeSurfaceNudge(reason)) {
+            view.js("dogear.beginSurfaceNudge && dogear.beginSurfaceNudge()")
             surfaceNudge = true
             nudgeRestoreTimer.restart()
         }
@@ -588,6 +590,7 @@ FocusScope {
         function onVisibleChanged() {
             if (!win.visible) {
                 view.clearSurfaceNudge()
+                surfaceWatcher.resetSurfaceNudgeCooldown()
                 refreshTimer.stop()
                 refreshLater.stop()
             }
@@ -598,11 +601,13 @@ FocusScope {
     onPdfChanged: if (pdf) clearSurfaceNudge()
     Timer {
         id: nudgeRestoreTimer
-        interval: 48
+        interval: 32
         onTriggered: {
             view.surfaceNudge = false
-            if (!view.pdf && view.surfaceReady && reader.open && view.web)
+            if (!view.pdf && view.surfaceReady && reader.open && view.web) {
+                view.js("dogear.endSurfaceNudge && dogear.endSurfaceNudge()")
                 surfaceWatcher.forceItemUpdate(view.web)
+            }
         }
     }
     Timer { id: refreshTimer; interval: 16; onTriggered: view.runSurfacePaint() }
@@ -825,6 +830,7 @@ FocusScope {
                     console.warn("reader surface:", request.status, request.url, request.errorString)
             }
             onRenderProcessTerminated: (status, code) => {
+                view.clearSurfaceNudge()
                 view.surfaceReady = false
                 view.decoratedChapter = -1
                 reload()

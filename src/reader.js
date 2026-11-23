@@ -28,6 +28,7 @@ const dogear = (() => {
         geometry: null,
         stageWidth: 0,
         stageHeight: 0,
+        nudgeGuardUntil: 0,
         index: null,
         labels: [],
         location: null,
@@ -64,13 +65,35 @@ const dogear = (() => {
 
     // --- Geometry --------------------------------------------------------
 
+    function isNudgeGuarded() {
+        return performance.now() < state.nudgeGuardUntil
+    }
+
+    function isNudgeDelta(w, h) {
+        if (state.stageWidth <= 0 || state.stageHeight <= 0)
+            return false
+        return w === state.stageWidth
+            && h < state.stageHeight
+            && state.stageHeight - h <= 2
+    }
+
+    function effectiveStageSize() {
+        const s = stage()
+        const w = s ? s.clientWidth : 0
+        const h = s ? s.clientHeight : 0
+        if (isNudgeGuarded() && isNudgeDelta(w, h))
+            return { width: state.stageWidth, height: state.stageHeight }
+        return { width: w, height: h }
+    }
+
     // The frame holds exactly one screen: one column (or two side by side)
     // with half a gap on each side, so moving by the frame's width shows the
     // next screen with the same margins. A wide window keeps lines at a
     // comfortable measure and centers the frame.
     function computeGeometry() {
         const s = state.style
-        const W = Math.max(160, stage().clientWidth), H = Math.max(160, stage().clientHeight)
+        const size = effectiveStageSize()
+        const W = Math.max(160, size.width), H = Math.max(160, size.height)
         const em = 16 * s.fontScale
         const measure = s.measure * em
         const side = Math.max(20, Math.min(Math.round(W * s.margin), Math.floor((W - 120) / 2)))
@@ -225,9 +248,9 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 
     function applyLayout() {
         const doc = chapterDocument()
-        const s = stage()
-        state.stageWidth = s ? s.clientWidth : 0
-        state.stageHeight = s ? s.clientHeight : 0
+        const size = effectiveStageSize()
+        state.stageWidth = size.width
+        state.stageHeight = size.height
         const g = state.geometry = computeGeometry()
         const f = frame()
         f.style.left = g.left + 'px'
@@ -1579,28 +1602,63 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
     let resizeTimer = 0
     let refreshGen = 0
     let refreshCleanupTimer = 0
+    let refreshParity = false
+    let paintProbe = null
+    function paintProbeElement() {
+        if (!paintProbe && document.body) {
+            paintProbe = document.createElement('div')
+            paintProbe.id = 'dg-paint-probe'
+            paintProbe.setAttribute('aria-hidden', 'true')
+            paintProbe.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;pointer-events:none;z-index:2147483647;'
+            document.body.appendChild(paintProbe)
+        }
+        return paintProbe
+    }
     function clearRefreshStyles() {
         clearTimeout(refreshCleanupTimer)
         refreshCleanupTimer = 0
-        for (const doc of [document, frame() && frame().contentDocument]) {
-            if (!doc || !doc.documentElement)
-                continue
-            doc.documentElement.style.opacity = ''
-            doc.documentElement.style.transform = ''
-        }
+        if (paintProbe)
+            paintProbe.style.backgroundColor = ''
+    }
+    function scheduleResizeCheck(delay) {
+        clearTimeout(resizeTimer)
+        resizeTimer = setTimeout(() => {
+            resizeTimer = 0
+            run(relayout)
+        }, delay)
     }
     function onResize() {
-        clearTimeout(resizeTimer)
-        resizeTimer = setTimeout(() => run(relayout), 120)
+        const s = stage()
+        if (s && state.stageWidth > 0 && state.stageHeight > 0) {
+            const w = s.clientWidth, h = s.clientHeight
+            if (w === state.stageWidth && h === state.stageHeight) {
+                clearTimeout(resizeTimer)
+                resizeTimer = 0
+                return
+            }
+            if (isNudgeGuarded() && isNudgeDelta(w, h)) {
+                const remaining = Math.max(120, Math.ceil(state.nudgeGuardUntil - performance.now()) + 20)
+                scheduleResizeCheck(remaining)
+                return
+            }
+        }
+        scheduleResizeCheck(120)
     }
 
     async function relayout() {
         if (!state.index || !state.location)
             return
         const s = stage()
-        if (s && state.stageWidth > 0 && state.stageHeight > 0
-            && s.clientWidth === state.stageWidth && s.clientHeight === state.stageHeight)
-            return
+        if (s && state.stageWidth > 0 && state.stageHeight > 0) {
+            const w = s.clientWidth, h = s.clientHeight
+            if (w === state.stageWidth && h === state.stageHeight)
+                return
+            if (isNudgeGuarded() && isNudgeDelta(w, h)) {
+                const remaining = Math.max(20, Math.ceil(state.nudgeGuardUntil - performance.now()) + 20)
+                scheduleResizeCheck(remaining)
+                return
+            }
+        }
         closeNote()
         const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
         applyLayout()
@@ -1678,6 +1736,9 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
                 state.chapter = -1
                 state.stageWidth = 0
                 state.stageHeight = 0
+                state.nudgeGuardUntil = 0
+                clearTimeout(resizeTimer)
+                resizeTimer = 0
                 state.index = null
                 state.location = null
                 state.decorated = -1
@@ -1702,6 +1763,9 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
                 state.chapter = -1
                 state.stageWidth = 0
                 state.stageHeight = 0
+                state.nudgeGuardUntil = 0
+                clearTimeout(resizeTimer)
+                resizeTimer = 0
                 state.index = null
                 state.location = null
                 state.decorated = -1
@@ -2000,21 +2064,56 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 
         placeAt(x, y) { return placeAt(x, y) },
 
+        // Guards ResizeObserver/relayout against the transient 1 px surface
+        // recovery nudge from EpubReader.qml so returning from a workspace
+        // never reflows text lines, while genuine window resizes still relayout.
+        beginSurfaceNudge(maxMs = 1000) {
+            const parsed = Number(maxMs)
+            const duration = Number.isFinite(parsed) ? clamp(parsed, 100, 3000) : 1000
+            const now = performance.now()
+            state.nudgeGuardUntil = Math.max(state.nudgeGuardUntil, now + duration)
+            const s = stage()
+            if (resizeTimer && s && isNudgeDelta(s.clientWidth, s.clientHeight)) {
+                const remaining = Math.max(120, Math.ceil(state.nudgeGuardUntil - now) + 20)
+                scheduleResizeCheck(remaining)
+            }
+            return true
+        },
+
+        endSurfaceNudge(settleMs = 450) {
+            const parsed = Number(settleMs)
+            const settle = Number.isFinite(parsed) ? clamp(parsed, 0, 2000) : 450
+            const now = performance.now()
+            const target = now + settle
+            state.nudgeGuardUntil = state.nudgeGuardUntil > now ? Math.min(state.nudgeGuardUntil, target) : target
+            const s = stage()
+            if (s && state.stageWidth > 0 && state.stageHeight > 0) {
+                const w = s.clientWidth, h = s.clientHeight
+                if (w === state.stageWidth && h === state.stageHeight) {
+                    clearTimeout(resizeTimer)
+                    resizeTimer = 0
+                } else if (resizeTimer && isNudgeDelta(w, h)) {
+                    const remaining = Math.max(20, Math.ceil(state.nudgeGuardUntil - now) + 20)
+                    scheduleResizeCheck(remaining)
+                }
+            }
+            return true
+        },
+
         // The window is back in view: force Blink and cc's damage tracker to
         // submit a real CompositorFrame (a transparent outline is elided as
-        // zero-damage). An opacity delta of 0.001 (< 1/255) plus a transient
-        // layer promotion guarantees a fresh frame with zero visible flicker
-        // and zero layout reflow, and cleans up via both double-rAF and timer.
+        // zero-damage) using a 1x1 corner sentinel inside the outer reading
+        // margin. Never toggles opacity or transform on the page or chapter
+        // iframe, keeping subpixel glyph rendering and line positions locked.
         refresh() {
             const gen = ++refreshGen
             clearTimeout(refreshCleanupTimer)
-            for (const doc of [document, frame() && frame().contentDocument]) {
-                if (!doc || !doc.documentElement)
-                    continue
-                const root = doc.documentElement
-                root.style.opacity = '0.999'
-                root.style.transform = 'translateZ(0)'
-                void root.offsetWidth
+            const probe = paintProbeElement()
+            if (probe) {
+                refreshParity = !refreshParity
+                probe.style.backgroundColor = refreshParity
+                    ? 'rgba(0, 0, 0, 0.008)'
+                    : 'rgba(255, 255, 255, 0.008)'
             }
             const restore = () => {
                 if (gen !== refreshGen)

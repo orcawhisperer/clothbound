@@ -11,12 +11,15 @@
 namespace {
 constexpr qsizetype kMaxHyprBufferBytes = 64 * 1024;
 constexpr int kMaxHyprReconnectAttempts = 5;
+constexpr int kHyprCoalesceMs = 30;
 const QByteArray kDisableOccludedFlag = QByteArrayLiteral("--disable-backgrounding-occluded-windows");
 }  // namespace
 
 SurfaceWatcher::SurfaceWatcher(QObject *parent) : QObject(parent) {
     m_hyprReconnect.setSingleShot(true);
     connect(&m_hyprReconnect, &QTimer::timeout, this, &SurfaceWatcher::connectHyprEvents);
+    m_hyprEmitTimer.setSingleShot(true);
+    connect(&m_hyprEmitTimer, &QTimer::timeout, this, &SurfaceWatcher::emitCoalescedHyprRepaint);
 }
 
 SurfaceWatcher::~SurfaceWatcher() {
@@ -62,6 +65,11 @@ bool SurfaceWatcher::isHyprWorkspaceEvent(const QByteArray &line) {
            trimmed.startsWith("activespecial>>") || trimmed.startsWith("activespecialv2>>");
 }
 
+bool SurfaceWatcher::isSurfaceNudgeReason(const QString &reason) {
+    return reason == QLatin1String("expose") || reason == QLatin1String("sceneGraph") ||
+           reason == QLatin1String("visibility") || reason == QLatin1String("hyprWorkspace");
+}
+
 void SurfaceWatcher::attach(QQuickWindow *window) {
     if (m_window == window) {
         if (m_window && !m_hyprSocket)
@@ -78,6 +86,7 @@ void SurfaceWatcher::attach(QQuickWindow *window) {
         m_appStateConn = {};
     }
     disconnectHyprEvents();
+    m_lastNudgeTimer.invalidate();
 
     const bool oldExposed = m_wasExposed;
     m_window = window;
@@ -121,6 +130,20 @@ void SurfaceWatcher::attach(QQuickWindow *window) {
 
 bool SurfaceWatcher::isExposed() const { return m_window && m_window->isExposed(); }
 
+bool SurfaceWatcher::takeSurfaceNudge(const QString &reason, int cooldownMs) {
+    if (!m_window || !m_window->isVisible() || !m_window->isExposed())
+        return false;
+    if (!isSurfaceNudgeReason(reason))
+        return false;
+    const int effectiveCooldown = qMax(0, cooldownMs);
+    if (m_lastNudgeTimer.isValid() && m_lastNudgeTimer.elapsed() < effectiveCooldown)
+        return false;
+    m_lastNudgeTimer.restart();
+    return true;
+}
+
+void SurfaceWatcher::resetSurfaceNudgeCooldown() { m_lastNudgeTimer.invalidate(); }
+
 void SurfaceWatcher::setHyprEventSocketForTesting(const QString &socketPath) {
     m_hyprEventSocketOverride = socketPath;
     disconnectHyprEvents();
@@ -155,9 +178,14 @@ bool SurfaceWatcher::eventFilter(QObject *watched, QEvent *event) {
         const bool becameExposed = !m_wasExposed && nowExposed;
         if (nowExposed != m_wasExposed) {
             m_wasExposed = nowExposed;
+            if (!nowExposed) {
+                m_hyprEmitTimer.stop();
+                m_lastNudgeTimer.invalidate();
+            }
             emit exposedChanged();
         }
         if (becameExposed) {
+            m_hyprEmitTimer.stop();
             m_pendingOnExpose = false;
             m_pendingReason.clear();
             // Queue so QQuickWindow::exposeEvent() wakes the render loop first.
@@ -203,6 +231,7 @@ QString SurfaceWatcher::hyprEventSocketPath() const {
 }
 
 void SurfaceWatcher::disconnectHyprEvents() {
+    m_hyprEmitTimer.stop();
     m_hyprReconnect.stop();
     m_hyprReconnectAttempts = 0;
     m_hyprBuffer.clear();
@@ -252,8 +281,24 @@ void SurfaceWatcher::handleHyprData() {
         if (isHyprWorkspaceEvent(line))
             workspaceSwitched = true;
     }
-    if (workspaceSwitched)
-        requestRepaintIfExposed(QStringLiteral("hyprWorkspace"));
+    if (workspaceSwitched) {
+        if (!m_window || !m_window->isVisible())
+            return;
+        if (m_window->isExposed()) {
+            // Coalesce burst lines (workspace>> + workspacev2>> + focusedmon>>)
+            // and cancel cleanly if Expose(false) arrives moments later when
+            // switching away from this workspace.
+            m_hyprEmitTimer.start(kHyprCoalesceMs);
+        } else {
+            m_pendingOnExpose = true;
+            m_pendingReason = QStringLiteral("hyprWorkspace");
+        }
+    }
+}
+
+void SurfaceWatcher::emitCoalescedHyprRepaint() {
+    if (m_window && m_window->isVisible() && m_window->isExposed())
+        emitRepaint(QStringLiteral("hyprWorkspace"));
 }
 
 void SurfaceWatcher::scheduleHyprReconnect() {
@@ -279,6 +324,10 @@ void SurfaceWatcher::handleVisibilityChange(int visibility) {
     const bool hidden = vis == QWindow::Hidden || vis == QWindow::Minimized;
     const bool becameVisible = m_wasHidden && !hidden;
     m_wasHidden = hidden;
+    if (hidden) {
+        m_hyprEmitTimer.stop();
+        m_lastNudgeTimer.invalidate();
+    }
     if (becameVisible)
         requestRepaintIfExposed(QStringLiteral("visibility"));
 }
@@ -302,6 +351,7 @@ void SurfaceWatcher::handleSceneGraphInitialized() {
 }
 
 void SurfaceWatcher::handleSceneGraphInvalidated() {
+    m_lastNudgeTimer.invalidate();
     m_pendingOnExpose = true;
     m_pendingReason = QStringLiteral("sceneGraph");
 }

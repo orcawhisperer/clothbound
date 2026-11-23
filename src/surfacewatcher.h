@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -31,8 +32,20 @@ public:
     // monitor focus switch that can bring a window back on screen.
     static bool isHyprWorkspaceEvent(const QByteArray &line);
 
+    // True for repaint reasons that correspond to an actual surface-recovery
+    // event (workspace return, expose, visibility restore, scene-graph rebuild),
+    // as opposed to ordinary focus changes within the same workspace.
+    static bool isSurfaceNudgeReason(const QString &reason);
+
     void attach(QQuickWindow *window);
     bool isExposed() const;
+
+    // Coalesced permit for the 1 px Viz LocalSurfaceId recovery nudge: returns
+    // true at most once per return episode (or cooldownMs while exposed), and
+    // automatically resets when the window becomes unexposed/hidden or its
+    // scene graph invalidates.
+    Q_INVOKABLE bool takeSurfaceNudge(const QString &reason, int cooldownMs = 500);
+    Q_INVOKABLE void resetSurfaceNudgeCooldown();
 
     // For hermetic tests: point the Hyprland event listener at a mock socket.
     void setHyprEventSocketForTesting(const QString &socketPath);
@@ -54,6 +67,7 @@ private:
     void connectHyprEvents();
     void disconnectHyprEvents();
     void handleHyprData();
+    void emitCoalescedHyprRepaint();
     void scheduleHyprReconnect();
     void handleActiveChange();
     void handleVisibilityChange(int visibility);
@@ -74,6 +88,8 @@ private:
     QString m_hyprEventSocketOverride;
     QPointer<QLocalSocket> m_hyprSocket;
     QByteArray m_hyprBuffer;
+    QTimer m_hyprEmitTimer;
     QTimer m_hyprReconnect;
     int m_hyprReconnectAttempts = 0;
+    QElapsedTimer m_lastNudgeTimer;
 };

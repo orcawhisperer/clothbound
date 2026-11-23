@@ -5412,14 +5412,103 @@ private slots:
         QVERIFY(!watcher.isExposed());
     }
 
+    void surfaceWatcherCoalescesReturnNudgesAndHyprBursts() {
+        QVERIFY(SurfaceWatcher::isSurfaceNudgeReason(QStringLiteral("expose")));
+        QVERIFY(SurfaceWatcher::isSurfaceNudgeReason(QStringLiteral("sceneGraph")));
+        QVERIFY(SurfaceWatcher::isSurfaceNudgeReason(QStringLiteral("visibility")));
+        QVERIFY(SurfaceWatcher::isSurfaceNudgeReason(QStringLiteral("hyprWorkspace")));
+        QVERIFY(!SurfaceWatcher::isSurfaceNudgeReason(QStringLiteral("active")));
+        QVERIFY(!SurfaceWatcher::isSurfaceNudgeReason(QStringLiteral("appActive")));
+        QVERIFY(!SurfaceWatcher::isSurfaceNudgeReason(QString()));
+
+        QTemporaryDir dir;
+        const QString sockPath = dir.filePath(".socket2.sock");
+        QLocalServer server;
+        QVERIFY(server.listen(sockPath));
+        QPointer<QLocalSocket> serverPeer;
+        QObject::connect(&server, &QLocalServer::newConnection, &server, [&] {
+            serverPeer = server.nextPendingConnection();
+        });
+
+        QQuickWindow win;
+        win.resize(640, 480);
+        win.show();
+        QVERIFY(QTest::qWaitFor([&] { return win.isExposed(); }, 2000));
+
+        SurfaceWatcher watcher;
+        watcher.setHyprEventSocketForTesting(sockPath);
+        watcher.attach(&win);
+        QTRY_VERIFY(serverPeer != nullptr);
+
+        QSignalSpy repaintSpy(&watcher, &SurfaceWatcher::repaintRequested);
+
+        // Rapid multi-line Hyprland burst (workspace>> + workspacev2>> + focusedmon>>)
+        // across separate flushes must coalesce into a single hyprWorkspace signal.
+        serverPeer->write("workspace>>1\n");
+        serverPeer->flush();
+        QTest::qWait(5);
+        serverPeer->write("workspacev2>>1,1\n");
+        serverPeer->flush();
+        QTest::qWait(5);
+        serverPeer->write("focusedmon>>DP-1,1\n");
+        serverPeer->flush();
+        QTRY_COMPARE(repaintSpy.count(), 1);
+        QCOMPARE(repaintSpy.last().first().toString(), QStringLiteral("hyprWorkspace"));
+        QTest::qWait(50);
+        QCOMPARE(repaintSpy.count(), 1);
+
+        // Rapid back-to-back workspace return triggers must coalesce into ONE
+        // surface nudge and never re-nudge mid-debounce (no strongTrigger bypass),
+        // and ordinary focus switches ("active" / "appActive") never nudge.
+        QVERIFY(watcher.takeSurfaceNudge(QStringLiteral("hyprWorkspace"), 400));
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("expose"), 400));
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("visibility"), 400));
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("sceneGraph"), 400));
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("active"), 0));
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("appActive"), 0));
+
+        // Leaving a workspace (workspace event immediately followed by Expose(false))
+        // must cancel the pending hyprWorkspace timer and reset cooldown for return.
+        const int beforeLeave = repaintSpy.count();
+        serverPeer->write("workspacev2>>2,2\n");
+        serverPeer->flush();
+        QTest::qWait(5);
+        win.hide();
+        QTRY_VERIFY(!win.isExposed());
+        QTest::qWait(50);
+        QCOMPARE(repaintSpy.count(), beforeLeave);
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("expose"), 400));
+
+        // Returning from another workspace (Expose false->true) immediately permits
+        // a single fresh nudge even within the old cooldown window.
+        win.show();
+        QTRY_VERIFY(win.isExposed());
+        QVERIFY(watcher.takeSurfaceNudge(QStringLiteral("expose"), 400));
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("hyprWorkspace"), 400));
+
+        // Scene-graph invalidation resets the cooldown so rebuild gets a fresh nudge.
+        emit win.sceneGraphInvalidated();
+        QCoreApplication::processEvents();
+        QVERIFY(watcher.takeSurfaceNudge(QStringLiteral("sceneGraph"), 400));
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("expose"), 400));
+
+        // Detached watcher never grants nudges.
+        watcher.attach(nullptr);
+        QVERIFY(!watcher.takeSurfaceNudge(QStringLiteral("expose"), 0));
+    }
+
     void readerSurfaceRefreshAvoidsElidedOutlineAndNoOpRelayout() {
         QFile jsFile(QFINDTESTDATA("../src/reader.js"));
         QVERIFY(jsFile.open(QIODevice::ReadOnly));
         const QString js = QString::fromUtf8(jsFile.readAll());
         QVERIFY(!js.contains(QStringLiteral("1px solid transparent")));
-        QVERIFY(js.contains(QStringLiteral("root.style.opacity = '0.999'")));
-        QVERIFY(js.contains(QStringLiteral("root.style.transform = 'translateZ(0)'")));
-        QVERIFY(js.contains(QStringLiteral("s.clientWidth === state.stageWidth && s.clientHeight === state.stageHeight")));
+        QVERIFY(!js.contains(QStringLiteral("root.style.opacity = '0.999'")));
+        QVERIFY(!js.contains(QStringLiteral("root.style.transform = 'translateZ(0)'")));
+        QVERIFY(js.contains(QStringLiteral("dg-paint-probe")));
+        QVERIFY(js.contains(QStringLiteral("beginSurfaceNudge")));
+        QVERIFY(js.contains(QStringLiteral("endSurfaceNudge")));
+        QVERIFY(js.contains(QStringLiteral("isNudgeGuarded")));
+        QVERIFY(js.contains(QStringLiteral("isNudgeDelta")));
 
         QFile qmlFile(QFINDTESTDATA("../src/EpubReader.qml"));
         QVERIFY(qmlFile.open(QIODevice::ReadOnly));
@@ -5427,9 +5516,284 @@ private slots:
         QVERIFY(qml.contains(QStringLiteral("backgroundColor: view.look.bg")));
         QVERIFY(qml.contains(QStringLiteral("target: surfaceWatcher")));
         QVERIFY(qml.contains(QStringLiteral("surfaceWatcher.forceItemUpdate")));
+        QVERIFY(qml.contains(QStringLiteral("surfaceWatcher.takeSurfaceNudge")));
+        QVERIFY(qml.contains(QStringLiteral("dogear.beginSurfaceNudge")));
+        QVERIFY(qml.contains(QStringLiteral("dogear.endSurfaceNudge")));
         QVERIFY(qml.contains(QStringLiteral("anchors.bottomMargin: view.surfaceNudge")));
         QVERIFY(qml.contains(QStringLiteral("visible: win.visible && win.visibility !== Window.Minimized")));
         QVERIFY(qml.contains(QStringLiteral("WebEngineView.LifecycleState.Frozen")));
+        QVERIFY(!qml.contains(QStringLiteral("strongTrigger")));
+    }
+
+    void readerJsSuppressesNudgeRelayoutAndAllowsRealResize() {
+        const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
+        if (node.isEmpty())
+            QSKIP("node executable not available");
+
+        const QString readerJsPath = QFINDTESTDATA("../src/reader.js");
+        QVERIFY(QFileInfo::exists(readerJsPath));
+
+        const QString harness = QStringLiteral(R"JS(
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+let resizeCallback = null;
+let domReady = null;
+const rafQueue = [];
+
+function makeStyle() {
+    return {
+        cssText: '', opacity: '', transform: '', backgroundColor: '',
+        left: '', top: '', width: '', height: '',
+        setProperty(k, v) { this[k] = v; },
+    };
+}
+
+const stageEl = {
+    clientWidth: 1200,
+    clientHeight: 800,
+    addEventListener() {},
+    getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight }; },
+};
+
+const styleNodes = new Map();
+const textNode = { nodeType: 3, data: 'Hello world from Dogear chapter text.', parentElement: null };
+const bodyEl = {
+    childNodes: [textNode],
+    lastElementChild: {
+        getClientRects() { return [{ left: 0, right: 600, top: 0, bottom: 24, width: 600, height: 24 }]; },
+        getBoundingClientRect() { return { left: 0, right: 600, top: 0, bottom: 24, width: 600, height: 24 }; },
+    },
+};
+textNode.parentElement = bodyEl;
+
+const chapterDocEl = {
+    style: makeStyle(),
+    scrollWidth: 1200,
+    scrollHeight: 692,
+    scrollLeft: 0,
+    scrollTop: 0,
+    scrollTo(opts) {
+        if (opts && typeof opts.left === 'number') this.scrollLeft = opts.left;
+        if (opts && typeof opts.top === 'number') this.scrollTop = opts.top;
+    },
+    appendChild() {},
+};
+
+const chapterDoc = {
+    URL: 'dogear://book/1/ch1.xhtml',
+    documentElement: chapterDocEl,
+    head: { appendChild(el) { styleNodes.set(el.id, el); } },
+    body: bodyEl,
+    scrollingElement: chapterDocEl,
+    fonts: { ready: Promise.resolve() },
+    images: [],
+    defaultView: {
+        getComputedStyle() { return { writingMode: 'horizontal-tb', direction: 'ltr', textAlign: 'start' }; },
+        CSS: { highlights: new Map() },
+        Highlight: class {},
+    },
+    getElementById(id) { return styleNodes.get(id) || null; },
+    createElementNS(_ns, tag) { return { localName: tag, id: '', textContent: '', style: makeStyle() }; },
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
+    addEventListener() {},
+    removeEventListener() {},
+    createTreeWalker() {
+        let done = false;
+        return { nextNode() { if (done) return null; done = true; return textNode; } };
+    },
+    createRange() {
+        return {
+            selectNodeContents() {},
+            setStart() {},
+            setEnd() {},
+            getClientRects() { return [{ left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }]; },
+            getBoundingClientRect() { return { left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }; },
+        };
+    },
+    getSelection() { return { isCollapsed: true, removeAllRanges() {} }; },
+};
+
+const classes = new Set();
+const frameEl = {
+    style: makeStyle(),
+    classList: {
+        add(c) { classes.add(c); },
+        remove(c) { classes.delete(c); },
+        contains(c) { return classes.has(c); },
+    },
+    contentDocument: chapterDoc,
+    contentWindow: chapterDoc.defaultView,
+    onload: null,
+    _src: '',
+    set src(v) {
+        this._src = v;
+        if (typeof this.onload === 'function')
+            queueMicrotask(() => this.onload());
+    },
+    get src() { return this._src; },
+    getBoundingClientRect() { return { left: 0, top: 54, width: 800, height: 692 }; },
+};
+
+const bodyChildren = [];
+const overlayEl = { appendChild() {} };
+const docEl = { style: makeStyle() };
+const documentMock = {
+    documentElement: docEl,
+    body: {
+        children: bodyChildren,
+        appendChild(el) { bodyChildren.push(el); return el; },
+    },
+    getElementById(id) {
+        if (id === 'stage') return stageEl;
+        if (id === 'book') return frameEl;
+        if (id === 'overlay') return overlayEl;
+        if (id === 'dg-paint-probe') return bodyChildren.find(c => c.id === 'dg-paint-probe') || null;
+        return null;
+    },
+    createElement(tag) {
+        return {
+            tagName: tag.toUpperCase(),
+            id: '',
+            attrs: {},
+            style: makeStyle(),
+            setAttribute(k, v) { this.attrs[k] = v; },
+        };
+    },
+    addEventListener(type, fn) { if (type === 'DOMContentLoaded') domReady = fn; },
+};
+
+let relocatedCount = 0;
+const bridge = {
+    surfaceLoaded() {},
+    relocated() { ++relocatedCount; },
+    log(msg) { throw new Error('reader.js log error: ' + msg); },
+};
+
+const sandbox = {
+    console,
+    setTimeout,
+    clearTimeout,
+    performance,
+    Promise,
+    URL,
+    Node: { TEXT_NODE: 3 },
+    NodeFilter: { SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, FILTER_ACCEPT: 1, FILTER_REJECT: 2 },
+    CSS: { escape: s => s },
+    Hyphenation: { load: async () => false, node() {} },
+    document: documentMock,
+    window: { innerWidth: 1200, innerHeight: 800 },
+    qt: { webChannelTransport: {} },
+    QWebChannel: function(_t, cb) { cb({ objects: { bridge } }); },
+    ResizeObserver: class {
+        constructor(cb) { resizeCallback = cb; }
+        observe() {}
+    },
+    matchMedia: () => ({ matches: false }),
+    requestAnimationFrame: fn => { rafQueue.push(fn); return rafQueue.length; },
+    fetch: async () => ({ ok: true, text: async () => '', headers: { get: () => '' } }),
+};
+sandbox.globalThis = sandbox;
+
+const ctx = vm.createContext(sandbox);
+const dogear = vm.runInContext(source + '\n;dogear;', ctx);
+domReady();
+
+const wait = ms => new Promise(r => setTimeout(r, ms));
+const flushRaf = () => {
+    while (rafQueue.length) {
+        const batch = rafQueue.splice(0, rafQueue.length);
+        for (const fn of batch) fn();
+    }
+};
+
+(async () => {
+    const book = { session: 1, base: 'dogear://book/1/', language: 'en', rtl: false,
+                   spine: [{ href: 'ch1.xhtml', linear: true }], pageTargets: [] };
+    const style = {
+        theme: { bg: '#fbfaf6', fg: '#23221f', link: '#8a6a2a', muted: '#6f6b63', popover: '#fff',
+                 border: 'rgba(0,0,0,0.12)', selection: '#cde', search: '#ff0', found: '#fa0',
+                 markYellow: '#ff0', markGreen: '#0f0', markBlue: '#00f', markPink: '#f0f',
+                 speaking: '#eef', dark: false },
+        font: 'Literata', fontScale: 1.0, fontWeight: 400, lineHeight: 1.5, paragraphSpacing: 0.4,
+        margin: 0.06, measure: 34, justify: false, hyphenate: false, layout: 'single',
+        animate: false, publisher: false, marginTop: 54, marginBottom: 54, radius: 0,
+        listening: false, strings: { goToNote: 'Go', listenFromHere: 'Listen' },
+    };
+
+    await dogear.open(book, { chapter: 0, offset: 0 }, style);
+    assert.strictEqual(relocatedCount, 1, 'initial open relocates once');
+    assert.strictEqual(frameEl.style.height, '692px');
+
+    // 1. Transient 1 px surface nudge (beginSurfaceNudge -> shrink -> restore -> endSurfaceNudge):
+    // must NOT trigger relayout even if held longer than the 120 ms resize debounce.
+    dogear.beginSurfaceNudge(600);
+    stageEl.clientHeight = 799;
+    resizeCallback();
+    await wait(180);
+    assert.strictEqual(relocatedCount, 1, 'guarded 1px nudge must not trigger relayout');
+    assert.strictEqual(frameEl.style.height, '692px', '#book height must remain locked during nudge');
+    stageEl.clientHeight = 800;
+    dogear.endSurfaceNudge(80);
+    resizeCallback();
+    await wait(160);
+    assert.strictEqual(relocatedCount, 1, 'restoring 1px nudge must not trigger relayout');
+
+    // 2. IPC race: ResizeObserver fires BEFORE beginSurfaceNudge arrives.
+    stageEl.clientHeight = 799;
+    resizeCallback();
+    await wait(10);
+    dogear.beginSurfaceNudge(600);
+    await wait(170);
+    assert.strictEqual(relocatedCount, 1, 'late beginSurfaceNudge must still suppress relayout');
+    stageEl.clientHeight = 800;
+    dogear.endSurfaceNudge(60);
+    resizeCallback();
+    await wait(120);
+    assert.strictEqual(relocatedCount, 1, 'restoring after late guard must not trigger relayout');
+
+    // 3. refresh() must NOT toggle opacity/transform on document or chapter iframe,
+    // and must use the 1x1 corner paint probe and clean it up cleanly.
+    dogear.refresh();
+    assert.strictEqual(docEl.style.opacity, '', 'outer html opacity untouched');
+    assert.strictEqual(docEl.style.transform, '', 'outer html transform untouched');
+    assert.strictEqual(chapterDocEl.style.opacity, '', 'chapter html opacity untouched');
+    assert.strictEqual(chapterDocEl.style.transform, '', 'chapter html transform untouched');
+    const probe = documentMock.getElementById('dg-paint-probe');
+    assert.ok(probe, 'paint probe created');
+    assert.ok(probe.style.backgroundColor.startsWith('rgba('), 'paint probe painted with non-zero alpha');
+    flushRaf();
+    assert.strictEqual(probe.style.backgroundColor, '', 'paint probe cleaned up after double-rAF');
+
+    // 4. Genuine user window resize STILL relayouts cleanly (even during a nudge guard window).
+    dogear.beginSurfaceNudge(600);
+    stageEl.clientHeight = 650;
+    resizeCallback();
+    await wait(180);
+    assert.strictEqual(relocatedCount, 2, 'genuine resize (>2px) must still relayout');
+    assert.strictEqual(frameEl.style.height, '542px', '#book height updated for real resize');
+
+    // 5. After guard expires, even a genuine 1 px user resize relayouts cleanly.
+    dogear.endSurfaceNudge(0);
+    stageEl.clientHeight = 649;
+    resizeCallback();
+    await wait(180);
+    assert.strictEqual(relocatedCount, 3, 'unguarded 1px user resize must still relayout');
+    assert.strictEqual(frameEl.style.height, '541px');
+
+    process.exit(0);
+})().catch(err => { console.error(err); process.exit(1); });
+)JS");
+
+        QProcess proc;
+        proc.start(node, {QStringLiteral("-e"), harness, readerJsPath});
+        QVERIFY2(proc.waitForFinished(10000), "node reader.js harness timed out");
+        const QByteArray stderrOut = proc.readAllStandardError();
+        QVERIFY2(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
+                 stderrOut.isEmpty() ? "node reader.js harness failed" : stderrOut.constData());
     }
 };
 
