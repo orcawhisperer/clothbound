@@ -417,7 +417,7 @@ ApplicationWindow {
         onActivated: {
             if (toast.runAction())
                 return
-            if (readerLoader.item && readerLoader.item.visible && marks.canUndo) {
+            if (win.readerOpen && readerLoader.item && marks.canUndo) {
                 const what = marks.undoText
                 marks.undo()
                 toast.show(qsTr("Undid: %1").arg(what))
@@ -464,7 +464,17 @@ ApplicationWindow {
         LibraryView {
             id: libraryView
             anchors.fill: parent
-            visible: !win.readerOpen
+            property real viewReveal: win.readerOpen ? 0 : 1
+            Behavior on viewReveal {
+                NumberAnimation {
+                    duration: theme.reducedMotion ? 90 : (win.readerOpen ? 180 : 220)
+                    easing.type: Easing.OutCubic
+                }
+            }
+            opacity: viewReveal
+            scale: theme.reducedMotion ? 1.0 : (0.985 + 0.015 * viewReveal)
+            visible: viewReveal > 0.01
+            enabled: !win.readerOpen
             focus: !win.readerOpen
             onOpenBook: (bookId) => win.openBook(bookId)
             onListenBook: (bookId) => win.openBookAndListen(bookId)
@@ -475,7 +485,16 @@ ApplicationWindow {
             id: readerLoader
             anchors.fill: parent
             active: false
-            visible: reader.open
+            property real readerReveal: reader.open ? 1 : 0
+            Behavior on readerReveal {
+                NumberAnimation {
+                    duration: theme.reducedMotion ? 90 : (reader.open ? 210 : 170)
+                    easing.type: reader.open ? Easing.OutCubic : Easing.OutQuad
+                }
+            }
+            opacity: readerReveal
+            visible: readerReveal > 0.01
+            enabled: reader.open
             sourceComponent: EpubReader {
                 settings: readingSettings
                 onCloseRequested: win.closeBook()
@@ -496,7 +515,11 @@ ApplicationWindow {
         }
         Rectangle {
             anchors.fill: parent
-            visible: drop.containsDrag
+            opacity: drop.containsDrag ? 1 : 0
+            visible: opacity > 0.01
+            Behavior on opacity {
+                NumberAnimation { duration: theme.reducedMotion ? 80 : 150; easing.type: Easing.OutCubic }
+            }
             color: Ui.tint(theme.ground, 0.88)
             border.width: 3
             border.color: theme.accent
@@ -504,6 +527,7 @@ ApplicationWindow {
             Column {
                 anchors.centerIn: parent
                 spacing: 12
+                scale: theme.reducedMotion ? 1.0 : (0.96 + 0.04 * parent.opacity)
                 Glyph { anchors.horizontalCenter: parent.horizontalCenter; width: 48; height: 48; path: Icons.plus; color: theme.accentInk; stroke: 1.6 }
                 Label {
                     text: qsTr("Drop books or folders to add them")
@@ -571,7 +595,15 @@ ApplicationWindow {
 
         HelpOverlay {
             anchors.fill: parent
-            visible: win.helpVisible
+            opacity: win.helpVisible ? 1 : 0
+            visible: opacity > 0.01
+            enabled: win.helpVisible
+            Behavior on opacity {
+                NumberAnimation {
+                    duration: theme.reducedMotion ? 90 : (win.helpVisible ? 190 : 145)
+                    easing.type: win.helpVisible ? Easing.OutCubic : Easing.OutQuad
+                }
+            }
             reading: win.readerOpen
             z: 60
             onDismissed: win.helpVisible = false
@@ -663,6 +695,7 @@ ApplicationWindow {
         property bool dropCap: true
         property string layout: "auto"
         property bool animate: true
+        property bool pageTurnSound: true
         property bool publisher: false
         property bool pdfCrop: true
         property bool pdfOriginalColors: false

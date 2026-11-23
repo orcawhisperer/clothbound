@@ -12,8 +12,13 @@
 <body>
 <div id="stage">
     <!-- Book pages never run scripts: the sandbox allows only same-origin
-         access, which is what lets this page lay them out. -->
-    <iframe id="book" sandbox="allow-same-origin" tabindex="-1" title="Book"></iframe>
+         access, which is what lets this page lay them out. Two frames let the
+         next chapter load, style, paginate, and decode images completely off
+         screen before swapping in with zero flash. -->
+    <div id="viewport">
+        <iframe id="book" class="book-frame" sandbox="allow-same-origin" tabindex="-1" title="Book"></iframe>
+        <iframe id="book-back" class="book-frame" sandbox="allow-same-origin" tabindex="-1" aria-hidden="true" title="Book"></iframe>
+    </div>
 </div>
 <div id="overlay"></div>
 </body>

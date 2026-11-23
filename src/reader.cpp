@@ -6,23 +6,296 @@
 #include "pdfbook.h"
 #include "pdfpages.h"
 
+#include <QAudioDevice>
+#include <QAudioFormat>
+#include <QAudioSink>
+#include <QBuffer>
 #include <QClipboard>
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMediaDevices>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
 #include <QtConcurrentRun>
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 namespace {
 QString typographySettingsPath() {
     return QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
 }
+
+bool sfxSuppressedEnvironment() {
+    if (qEnvironmentVariableIsSet("DOGEAR_MUTE"))
+        return true;
+    if (!QGuiApplication::instance())
+        return true;
+    const QString platform = QGuiApplication::platformName();
+    return platform == QLatin1String("offscreen") || platform == QLatin1String("minimal");
 }
+}
+
+// Synthesized tactile parchment page-flip sound engine: zero bundled assets,
+// pre-generated organic variants (~118–142 ms) with forward/backward spectral
+// tilt, rapid-repeat throttling, automatic idle stream release, and silent
+// headless/offscreen safety.
+struct Reader::PageTurnSfx {
+    static constexpr int kVariants = 4;
+    static constexpr qint64 kMinIntervalMs = 85;
+    static constexpr int kIdleReleaseMs = 2000;
+
+    explicit PageTurnSfx(QObject *owner) : m_owner(owner) {
+        m_idleTimer.setSingleShot(true);
+        m_idleTimer.setInterval(kIdleReleaseMs);
+        QObject::connect(&m_idleTimer, &QTimer::timeout, m_owner, [this] { releaseSink(); });
+        QObject::connect(&m_devices, &QMediaDevices::audioOutputsChanged, m_owner, [this] { handleOutputsChanged(); });
+    }
+
+    ~PageTurnSfx() {
+        m_idleTimer.stop();
+        releaseSink();
+    }
+
+    void play(int direction) {
+        if (sfxSuppressedEnvironment())
+            return;
+        if (m_throttle.isValid() && m_throttle.elapsed() < kMinIntervalMs)
+            return;
+        ensureSink();
+        if (!m_sink)
+            return;
+
+        const bool forward = direction >= 0;
+        const int idx = (forward ? m_fwdIndex++ : m_bwdIndex++) % kVariants;
+        QByteArray &clip = forward ? m_forwardClips[size_t(idx)] : m_backwardClips[size_t(idx)];
+        if (clip.isEmpty())
+            return;
+
+        m_throttle.restart();
+        m_idleTimer.stop();
+        m_sink->reset();
+        if (m_buffer.isOpen())
+            m_buffer.close();
+        m_buffer.setBuffer(&clip);
+        if (!m_buffer.open(QIODevice::ReadOnly))
+            return;
+        m_sink->start(&m_buffer);
+        m_idleTimer.start();
+    }
+
+private:
+    static QByteArray synthesizeClip(const QAudioFormat &fmt, int variant, bool forward) {
+        const int sr = qBound(8000, fmt.sampleRate(), 192000);
+        const int channels = qBound(1, fmt.channelCount(), 8);
+        static constexpr std::array<double, kVariants> kDurationsSec = {0.118, 0.126, 0.134, 0.142};
+        static constexpr std::array<double, kVariants> kPitchScale = {0.96, 1.01, 1.05, 0.98};
+        const double duration = kDurationsSec[size_t(variant % kVariants)];
+        const double pitch = kPitchScale[size_t(variant % kVariants)];
+        const int total = qMax(128, int(std::lround(duration * sr)));
+
+        // Deterministic xorshift32 per variant/direction for distinct natural fiber grain.
+        uint32_t rng = 0x9E3779B9u ^ uint32_t(variant * 0x85EBCA6Bu) ^ (forward ? 0x27D4EB2Fu : 0x165667B1u);
+        auto nextNoise = [&rng]() -> double {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            return (double(int32_t(rng)) / 2147483648.0);
+        };
+
+        // Two-pole state-variable bandpass helper for smooth time-varying paper formants.
+        struct Svf {
+            double low = 0.0;
+            double band = 0.0;
+            double process(double in, double freqHz, double q, double sampleRate) {
+                const double clampedFreq = std::clamp(freqHz, 60.0, sampleRate * 0.42);
+                const double f = 2.0 * std::sin(M_PI * clampedFreq / sampleRate);
+                const double damp = 1.0 / std::max(0.45, q);
+                low += f * band;
+                const double high = in - low - damp * band;
+                band += f * high;
+                return band;
+            }
+        };
+
+        Svf bodyFilter, sheenFilter;
+        double hpPrevIn = 0.0, hpPrevOut = 0.0;
+        double lpState = 0.0;
+        double modState = 0.0;
+        const double hpAlpha = 1.0 / (1.0 + 2.0 * M_PI * 260.0 / sr);
+        const double lpAlpha = (2.0 * M_PI * 4600.0 / sr) / (1.0 + 2.0 * M_PI * 4600.0 / sr);
+        const double modAlpha = (2.0 * M_PI * 48.0 / sr) / (1.0 + 2.0 * M_PI * 48.0 / sr);
+
+        QVector<double> mono(total, 0.0);
+        double peak = 1e-6;
+        for (int n = 0; n < total; ++n) {
+            const double u = double(n) / double(total - 1);
+
+            // Asymmetric two-phase organic paper envelope:
+            // 1) Gentle brush lift across the sheet (peak ~0.24)
+            // 2) Subtle soft leaf settle (peak ~0.68), smooth decay to exact zero.
+            const double lift = std::exp(-std::pow((u - 0.25) / 0.16, 2.0));
+            const double settle = 0.48 * std::exp(-std::pow((u - 0.66) / 0.19, 2.0));
+            double env = lift + settle;
+
+            // Smooth raised-cosine attack (16 ms) and release (26 ms) for zero clicks.
+            const double attackFrac = std::min(0.22, 0.016 / duration);
+            const double releaseFrac = std::min(0.28, 0.026 / duration);
+            if (u < attackFrac)
+                env *= 0.5 - 0.5 * std::cos(M_PI * u / attackFrac);
+            if (u > 1.0 - releaseFrac)
+                env *= 0.5 - 0.5 * std::cos(M_PI * (1.0 - u) / releaseFrac);
+
+            // Slow paper-fiber friction modulation (~48 Hz).
+            const double rawA = nextNoise();
+            const double rawB = nextNoise();
+            modState += modAlpha * (rawB - modState);
+            const double grain = 1.0 + 0.35 * std::clamp(modState * 3.0, -0.5, 0.5);
+
+            // Subtle forward (bright-to-warm settle) vs backward (warm-to-bright lift) tilt.
+            const double bodyHz = (forward ? (1720.0 - 760.0 * u) : (1040.0 + 620.0 * u)) * pitch;
+            const double sheenHz = (forward ? (3350.0 - 1250.0 * u) : (2150.0 + 1050.0 * u)) * pitch;
+
+            const double shaped = bodyFilter.process(rawA, bodyHz, 0.85, sr) +
+                                  0.26 * sheenFilter.process(rawA, sheenHz, 1.15, sr);
+
+            // High-pass >260 Hz (no thump) + low-pass <4.6 kHz (no brittle static hiss).
+            const double hp = hpAlpha * (hpPrevOut + shaped - hpPrevIn);
+            hpPrevIn = shaped;
+            hpPrevOut = hp;
+            lpState += lpAlpha * (hp - lpState);
+
+            const double sample = lpState * env * grain;
+            mono[n] = sample;
+            peak = std::max(peak, std::abs(sample));
+        }
+
+        // Respectful, calm gain (~-16.5 dBFS peak) so consecutive flips stay unobtrusive.
+        const double gain = 0.148 / peak;
+        const int bytesPerSample = fmt.bytesPerSample();
+        if (bytesPerSample <= 0)
+            return {};
+        QByteArray pcm;
+        pcm.resize(total * channels * bytesPerSample);
+        char *dst = pcm.data();
+
+        for (int n = 0; n < total; ++n) {
+            const double v = std::clamp(mono[n] * gain, -1.0, 1.0);
+            for (int c = 0; c < channels; ++c) {
+                switch (fmt.sampleFormat()) {
+                case QAudioFormat::Int16: {
+                    const qint16 s = qint16(std::clamp(std::lround(v * 32767.0), -32768L, 32767L));
+                    std::memcpy(dst, &s, sizeof(s));
+                    dst += sizeof(s);
+                    break;
+                }
+                case QAudioFormat::Float: {
+                    const float s = float(v);
+                    std::memcpy(dst, &s, sizeof(s));
+                    dst += sizeof(s);
+                    break;
+                }
+                case QAudioFormat::Int32: {
+                    const qint32 s = qint32(std::clamp(std::llround(v * 2147483647.0), -2147483648LL, 2147483647LL));
+                    std::memcpy(dst, &s, sizeof(s));
+                    dst += sizeof(s);
+                    break;
+                }
+                case QAudioFormat::UInt8: {
+                    const quint8 s = quint8(std::clamp(std::lround((v * 0.5 + 0.5) * 255.0), 0L, 255L));
+                    std::memcpy(dst, &s, sizeof(s));
+                    dst += sizeof(s);
+                    break;
+                }
+                default:
+                    return {};
+                }
+            }
+        }
+        return pcm;
+    }
+
+    void prepareClips(const QAudioFormat &fmt) {
+        if (m_preparedFormat == fmt && !m_forwardClips[0].isEmpty())
+            return;
+        m_preparedFormat = fmt;
+        for (int i = 0; i < kVariants; ++i) {
+            m_forwardClips[size_t(i)] = synthesizeClip(fmt, i, true);
+            m_backwardClips[size_t(i)] = synthesizeClip(fmt, i, false);
+        }
+    }
+
+    void ensureSink() {
+        if (m_sink)
+            return;
+        const QAudioDevice device = QMediaDevices::defaultAudioOutput();
+        if (device.isNull())
+            return;
+        QAudioFormat fmt;
+        fmt.setSampleRate(44100);
+        fmt.setChannelCount(1);
+        fmt.setSampleFormat(QAudioFormat::Int16);
+        if (!device.isFormatSupported(fmt))
+            fmt = device.preferredFormat();
+        if (!fmt.isValid() || fmt.sampleRate() <= 0 || fmt.channelCount() <= 0 || fmt.bytesPerSample() <= 0)
+            return;
+        prepareClips(fmt);
+        if (m_forwardClips[0].isEmpty())
+            return;
+        m_outputDevice = device;
+        m_sink = new QAudioSink(device, fmt, m_owner);
+        m_sink->setBufferSize(qMax(1024, fmt.bytesForDuration(60000)));
+        QObject::connect(m_sink, &QAudioSink::stateChanged, m_owner, [this](QAudio::State state) {
+            if (!m_sink)
+                return;
+            if (state == QAudio::StoppedState && m_sink->error() != QAudio::NoError) {
+                releaseSink();
+                return;
+            }
+            if (state == QAudio::IdleState)
+                m_idleTimer.start();
+        });
+    }
+
+    void releaseSink() {
+        m_idleTimer.stop();
+        if (m_sink) {
+            m_sink->disconnect(m_owner);
+            m_sink->stop();
+            delete m_sink;
+            m_sink = nullptr;
+        }
+        if (m_buffer.isOpen())
+            m_buffer.close();
+    }
+
+    void handleOutputsChanged() {
+        if (!m_sink)
+            return;
+        const QAudioDevice current = QMediaDevices::defaultAudioOutput();
+        if (current != m_outputDevice || m_sink->error() != QAudio::NoError)
+            releaseSink();
+    }
+
+    QObject *m_owner;
+    QMediaDevices m_devices;
+    QAudioDevice m_outputDevice;
+    QAudioSink *m_sink = nullptr;
+    QBuffer m_buffer;
+    QAudioFormat m_preparedFormat;
+    std::array<QByteArray, kVariants> m_forwardClips;
+    std::array<QByteArray, kVariants> m_backwardClips;
+    QElapsedTimer m_throttle;
+    QTimer m_idleTimer;
+    int m_fwdIndex = 0;
+    int m_bwdIndex = 0;
+};
 
 Reader::Reader(Library *library, BookScheme *scheme, QObject *parent)
     : QObject(parent), m_library(library), m_scheme(scheme) {
@@ -598,6 +871,16 @@ void Reader::openExternal(const QString &url) {
 
 void Reader::keyPressed(const QString &key, int modifiers) { emit this->key(key, modifiers); }
 
+void Reader::playPageTurn(int direction) {
+    if (sfxSuppressedEnvironment())
+        return;
+    if (!m_sfx)
+        m_sfx = std::make_unique<PageTurnSfx>(this);
+    m_sfx->play(direction);
+}
+
+void Reader::notifyPageTurn(int direction) { emit pageTurnRequested(direction >= 0 ? 1 : -1); }
+
 void Reader::speakableReadyFor(qint64 session, int chapter, const QString &blocks) {
     if (session != m_session || !m_bookId)
         return;
@@ -926,6 +1209,21 @@ QVariantList Reader::pdfRects(int page, qint64 start, qint64 end) const {
 QString Reader::pdfPageLabel(int page) const { return m_pdf ? m_pdf->pageLabel(page) : QString(); }
 
 QString Reader::pdfPageText(int page) const { return m_pdf ? m_pdf->pageText(page) : QString(); }
+
+void Reader::pdfPrefetch(const QVariantList &pages, int pixelWidth, const QString &colorQuery) {
+    if (!m_pdf || m_token.isEmpty() || pages.isEmpty() || pixelWidth <= 0)
+        return;
+    QList<int> pageList;
+    pageList.reserve(pages.size());
+    const int total = m_pdf->pageCount();
+    for (const QVariant &item : pages) {
+        const int p = item.toInt();
+        if (p >= 0 && p < total && !pageList.contains(p))
+            pageList.append(p);
+    }
+    if (!pageList.isEmpty())
+        PdfPages::prefetch(m_token, pageList, QSize(pixelWidth, 0), colorQuery);
+}
 
 void Reader::pdfSpeakable(int page) {
     if (!m_pdf)

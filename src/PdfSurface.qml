@@ -64,16 +64,21 @@ Item {
         foundVersion++
         selection = null
         speaking = { chapter: -1, start: 0, end: 0 }
-        goTo(Object.assign({}, position || ({ chapter: 0 }), { quiet: true }))
+        spreadRow.resetSlots()
+        goTo(Object.assign({}, position || ({ chapter: 0 }), { quiet: true, instant: true }))
         return Promise.resolve(true)
     }
-    function setStyle(newStyle) { style = newStyle; report() }
+    function setStyle(newStyle) { style = newStyle; prefetchTimer.restart(); report() }
     function next() {
         if (scrolling) {
             pageList.contentY = Math.min(Math.max(0, pageList.contentHeight - pageList.height), pageList.contentY + pageList.height * 0.9)
             return
         }
-        show(Math.min(count - 1, firstOfSpread(current) + step))
+        const from = firstOfSpread(current)
+        const target = Math.min(count - 1, from + step)
+        if (target !== from && typeof reader.notifyPageTurn === "function")
+            reader.notifyPageTurn(1)
+        show(target, false, target !== from ? 1 : 0, true)
         reader.tapped("turn")
     }
     function prev() {
@@ -81,13 +86,19 @@ Item {
             pageList.contentY = Math.max(0, pageList.contentY - pageList.height * 0.9)
             return
         }
-        show(Math.max(0, firstOfSpread(current) - step))
+        const from = firstOfSpread(current)
+        const target = Math.max(0, from - step)
+        if (target !== from && typeof reader.notifyPageTurn === "function")
+            reader.notifyPageTurn(-1)
+        show(target, false, target !== from ? -1 : 0, true)
         reader.tapped("turn")
     }
     function nextChapter() {
         for (const entry of reader.contents)
             if (entry.chapter > current + step - 1) {
-                goTo({ chapter: entry.chapter })
+                if (typeof reader.notifyPageTurn === "function")
+                    reader.notifyPageTurn(1)
+                goTo({ chapter: entry.chapter, dir: 1 })
                 return
             }
     }
@@ -96,7 +107,9 @@ Item {
         for (const entry of reader.contents)
             if (entry.chapter < current)
                 target = entry.chapter
-        goTo({ chapter: target })
+        if (target !== current && typeof reader.notifyPageTurn === "function")
+            reader.notifyPageTurn(-1)
+        goTo({ chapter: target, dir: target !== current ? -1 : 0 })
     }
     function recordHistoryEntry(page) {
         const entry = { chapter: page, pageLabel: reader.pdfPageLabel(page) }
@@ -113,7 +126,7 @@ Item {
         history = history.slice(0, -1)
         forwardHistory = forwardHistory.concat([{ chapter: current, pageLabel: reader.pdfPageLabel(current) }]).slice(-50)
         justJumped = false
-        show(entry.chapter)
+        show(entry.chapter, false, 0, true)
         return true
     }
     function forward() {
@@ -123,7 +136,7 @@ Item {
         forwardHistory = forwardHistory.slice(0, -1)
         history = history.concat([{ chapter: current, pageLabel: reader.pdfPageLabel(current) }]).slice(-50)
         justJumped = false
-        show(entry.chapter)
+        show(entry.chapter, false, 0, true)
         return true
     }
     function canGoBack() { return history.length > 0 }
@@ -134,7 +147,7 @@ Item {
         const page = Math.max(0, Math.min(count - 1, target.chapter || 0))
         if (!target.quiet && page !== current)
             recordHistoryEntry(current)
-        show(page, !!target.automated)
+        show(page, !!target.automated, target.dir || 0, !target.instant)
         return Promise.resolve()
     }
     function listeningStart() { return { chapter: current, offset: 0 } }
@@ -199,10 +212,12 @@ Item {
         const first = firstOfSpread(current)
         return spread && first > 0 && first + 1 < count ? [first, first + 1] : [first]
     }
-    function show(page, automated) {
+    function show(page, automated, dir, animate) {
         current = Math.max(0, Math.min(count - 1, page))
         if (scrolling)
             pageList.positionViewAtIndex(current, ListView.Beginning)
+        else
+            spreadRow.present(visiblePages(), dir || 0, animate !== false)
         selection = null
         report(!!automated)
     }
@@ -231,9 +246,11 @@ Item {
     }
     // The page under a point of the surface, and where on it (0 to 1).
     function pageAt(x, y) {
-        const holder = scrolling ? pageList : spreadRow
-        for (const item of holder === pageList ? Array.from({ length: pageList.count }, (_, i) => pageList.itemAtIndex(i)) : spreadPages.children) {
-            if (!item || item.page === undefined || item.page < 0)
+        const items = scrolling
+            ? Array.from({ length: pageList.count }, (_, i) => pageList.itemAtIndex(i))
+            : spreadRow.activePageItems()
+        for (const item of items) {
+            if (!item || item.page === undefined || item.page < 0 || !item.visible)
                 continue
             const at = item.mapFromItem(surface, x, y)
             if (at.x >= 0 && at.y >= 0 && at.x <= item.width && at.y <= item.height)
@@ -242,8 +259,42 @@ Item {
         return null
     }
 
-    onLayoutChanged: Qt.callLater(show, current)
-    onSpreadChanged: Qt.callLater(show, current)
+    function prefetchAdjacent() {
+        if (!reader.open || surface.count <= 1 || surface.scrolling)
+            return
+        const first = surface.firstOfSpread(surface.current)
+        const nextFirst = Math.min(surface.count - 1, first + surface.step)
+        const prevFirst = Math.max(0, first - surface.step)
+        const targets = []
+        const pushSpread = (start) => {
+            if (start < 0 || start >= surface.count)
+                return
+            if (targets.indexOf(start) < 0)
+                targets.push(start)
+            if (surface.spread && start > 0 && start + 1 < surface.count && targets.indexOf(start + 1) < 0)
+                targets.push(start + 1)
+        }
+        if (nextFirst !== first)
+            pushSpread(nextFirst)
+        if (prevFirst !== first)
+            pushSpread(prevFirst)
+        if (!targets.length)
+            return
+        const fullW = spreadRow.activeSlotItem ? (spreadRow.activeSlotItem.fitWidth / surface.crop.width) : 600
+        const pixelWidth = Math.max(64, Math.ceil(fullW * Screen.devicePixelRatio / 64) * 64)
+        if (typeof reader.pdfPrefetch === "function")
+            reader.pdfPrefetch(targets, pixelWidth, surface.colors)
+    }
+
+    Timer {
+        id: prefetchTimer
+        interval: 45
+        onTriggered: surface.prefetchAdjacent()
+    }
+
+    onLayoutChanged: Qt.callLater(() => show(current, false, 0, false))
+    onSpreadChanged: Qt.callLater(() => show(current, false, 0, false))
+    onColorsChanged: prefetchTimer.restart()
     Connections {
         target: marks
         function onChanged() { surface.marksVersion++ }
@@ -256,11 +307,14 @@ Item {
         property int page: -1
         // "left" or "right" in a 2-page spread so the center spine crease aligns.
         property string spineSide: ""
+        // Standby pages render silently off-stage while the current spread stays visible.
+        property bool suppressPlaceholder: false
         // The size shown, before cropping.
         property real fullWidth: 100
         readonly property var points: page >= 0 ? reader.pdfPageSize(page) : ({ width: 612, height: 792 })
         readonly property real fullHeight: fullWidth * (points.height || 792) / (points.width || 612)
         readonly property var pageLinks: page >= 0 ? reader.pdfLinks(page) : []
+        readonly property bool imageReady: page < 0 || reader.pdfSource === "" || pageImage.status === Image.Ready || pageImage.status === Image.Error
         property bool showPlaceholder: false
         width: fullWidth * surface.crop.width
         height: fullHeight * surface.crop.height
@@ -338,7 +392,7 @@ Item {
                     sourceSize.width: Math.max(64, Math.ceil(pageItem.fullWidth * Screen.devicePixelRatio / 64) * 64)
                     fillMode: Image.Stretch
                     onStatusChanged: {
-                        if (status === Image.Loading) {
+                        if (status === Image.Loading && !pageItem.suppressPlaceholder) {
                             placeholderDelay.restart()
                         } else {
                             placeholderDelay.stop()
@@ -348,8 +402,8 @@ Item {
                 }
                 Timer {
                     id: placeholderDelay
-                    interval: 120
-                    onTriggered: if (pageImage.status === Image.Loading) pageItem.showPlaceholder = true
+                    interval: 180
+                    onTriggered: if (pageImage.status === Image.Loading && !pageItem.suppressPlaceholder) pageItem.showPlaceholder = true
                 }
                 // Highlights.
                 Repeater {
@@ -737,6 +791,50 @@ Item {
         }
     }
 
+    // Double-buffered persistent spread slot so turning pages holds the previous
+    // rendered sheet until the next image reaches Image.Ready (zero blank flash).
+    component SpreadSlot: Row {
+        id: slot
+        spacing: 0
+        property var pages: []
+        property bool isStandby: false
+        property real slideOffset: 0
+        readonly property int p0: pages.length > 0 ? pages[0] : -1
+        readonly property int p1: pages.length > 1 ? pages[1] : -1
+        readonly property bool ready: pages.length > 0 && leftPageItem.imageReady && rightPageItem.imageReady
+        readonly property alias leftPage: leftPageItem
+        readonly property alias rightPage: rightPageItem
+        readonly property real fitWidth: {
+            const first = p0 >= 0 ? p0 : surface.firstOfSpread(surface.current)
+            const size = reader.pdfPageSize(first)
+            const aspect = ((size.height || 792) * surface.crop.height) / ((size.width || 612) * surface.crop.width)
+            const pageCount = pages.length > 1 ? 2 : 1
+            const each = Math.min(spreadRow.roomWidth / pageCount, spreadRow.roomHeight / aspect)
+            return Math.max(100, each) * surface.zoom
+        }
+        visible: pages.length > 0
+        enabled: !isStandby
+        x: Math.max(24, (zoomed.width - width) / 2) + slideOffset
+        y: Math.max(surface.topRoom - 10, (zoomed.height - height) / 2)
+
+        Page {
+            id: leftPageItem
+            visible: slot.p0 >= 0
+            page: slot.p0
+            suppressPlaceholder: slot.isStandby
+            spineSide: slot.p1 >= 0 ? "left" : ""
+            fullWidth: slot.fitWidth / surface.crop.width
+        }
+        Page {
+            id: rightPageItem
+            visible: slot.p1 >= 0
+            page: slot.p1
+            suppressPlaceholder: slot.isStandby
+            spineSide: slot.p1 >= 0 ? "right" : ""
+            fullWidth: slot.fitWidth / surface.crop.width
+        }
+    }
+
     // --- One page or two --------------------------------------------------------
     Item {
         id: spreadRow
@@ -745,43 +843,178 @@ Item {
         // The space for pages, under the title and above the listen bar.
         readonly property real roomHeight: Math.max(120, height - surface.topRoom - surface.bottomRoom + 20)
         readonly property real roomWidth: Math.max(120, width - 48)
+        property int activeSlot: 0
+        property var pendingPages: []
+        property int pendingDir: 0
+        property bool pendingAnimate: false
+        property bool showSlowJump: false
+        readonly property SpreadSlot activeSlotItem: activeSlot === 0 ? spreadSlotA : spreadSlotB
+        readonly property SpreadSlot standbySlotItem: activeSlot === 0 ? spreadSlotB : spreadSlotA
+
+        function samePages(a, b) {
+            if (!a || !b || a.length !== b.length)
+                return false
+            for (let i = 0; i < a.length; ++i)
+                if (a[i] !== b[i])
+                    return false
+            return true
+        }
+        function activePageItems() {
+            const s = activeSlotItem
+            return s ? [s.leftPage, s.rightPage] : []
+        }
+        function finishAnim() {
+            if (spreadAnim.running)
+                spreadAnim.complete()
+        }
+        function resetSlots() {
+            finishAnim()
+            slowJumpTimer.stop()
+            showSlowJump = false
+            pendingPages = []
+            pendingDir = 0
+            pendingAnimate = false
+            activeSlot = 0
+            spreadSlotA.pages = []
+            spreadSlotA.opacity = 1
+            spreadSlotA.slideOffset = 0
+            spreadSlotB.pages = []
+            spreadSlotB.opacity = 0
+            spreadSlotB.slideOffset = 0
+        }
+        function present(pages, dir, animate) {
+            finishAnim()
+            if (!pages || !pages.length)
+                return
+            const cur = activeSlotItem
+            const back = standbySlotItem
+            if (!cur.pages.length || samePages(cur.pages, pages)) {
+                cur.pages = pages
+                cur.opacity = 1
+                cur.slideOffset = 0
+                back.opacity = 0
+                back.slideOffset = 0
+                pendingPages = []
+                slowJumpTimer.stop()
+                showSlowJump = false
+                prefetchTimer.restart()
+                return
+            }
+            pendingPages = pages
+            pendingDir = dir
+            pendingAnimate = animate
+            back.opacity = 0
+            back.slideOffset = 0
+            back.pages = pages
+            if (back.ready) {
+                Qt.callLater(spreadRow.commitPending)
+            } else {
+                slowJumpTimer.restart()
+            }
+        }
+        function commitPending() {
+            if (!pendingPages.length)
+                return
+            const outgoing = activeSlotItem
+            const incoming = standbySlotItem
+            if (!samePages(incoming.pages, pendingPages) || !incoming.ready)
+                return
+            slowJumpTimer.stop()
+            showSlowJump = false
+            const dir = pendingDir
+            const doAnim = pendingAnimate && surface.style.animate !== false
+            pendingPages = []
+            activeSlot = 1 - activeSlot
+            if (!doAnim) {
+                incoming.slideOffset = 0
+                incoming.opacity = 1
+                outgoing.slideOffset = 0
+                outgoing.opacity = 0
+                prefetchTimer.restart()
+                return
+            }
+            const reduced = theme.reducedMotion || dir === 0
+            const travel = reduced ? 0 : Math.min(84, Math.max(36, Math.round(spreadRow.width * 0.06)))
+            const dur = reduced ? 130 : 195
+            outgoing.slideOffset = 0
+            outgoing.opacity = 1
+            incoming.slideOffset = dir * travel
+            incoming.opacity = 0
+            inFade.target = incoming; inFade.duration = dur
+            outFade.target = outgoing; outFade.duration = dur
+            inSlide.target = incoming; inSlide.from = dir * travel; inSlide.to = 0; inSlide.duration = dur
+            outSlide.target = outgoing; outSlide.from = 0; outSlide.to = -dir * travel * 0.65; outSlide.duration = dur
+            spreadAnim.restart()
+            prefetchTimer.restart()
+        }
+
+        Timer {
+            id: slowJumpTimer
+            interval: 260
+            onTriggered: if (spreadRow.pendingPages.length > 0) spreadRow.showSlowJump = true
+        }
+
+        ParallelAnimation {
+            id: spreadAnim
+            NumberAnimation { id: inFade; property: "opacity"; from: 0; to: 1; easing.type: Easing.OutCubic }
+            NumberAnimation { id: outFade; property: "opacity"; from: 1; to: 0; easing.type: Easing.OutQuad }
+            NumberAnimation { id: inSlide; property: "slideOffset"; easing.type: Easing.OutCubic }
+            NumberAnimation { id: outSlide; property: "slideOffset"; easing.type: Easing.OutCubic }
+        }
+
         Flickable {
             id: zoomed
             anchors.fill: parent
-            contentWidth: Math.max(width, spreadPages.width + 48)
-            contentHeight: Math.max(height, spreadPages.height + surface.topRoom + surface.bottomRoom)
+            contentWidth: Math.max(width, (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.width : 0) + 48)
+            contentHeight: Math.max(height, (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.height : 0) + surface.topRoom + surface.bottomRoom)
             interactive: surface.zoom > 1.01
             boundsBehavior: Flickable.StopAtBounds
             clip: true
-            Row {
-                id: spreadPages
-                spacing: 0
-                x: Math.max(24, (zoomed.width - width) / 2)
-                y: Math.max(surface.topRoom - 10, (zoomed.height - height) / 2)
-                readonly property var pages: surface.visiblePages()
-                readonly property real fitWidth: {
-                    const first = surface.firstOfSpread(surface.current)
-                    const size = reader.pdfPageSize(first)
-                    const aspect = ((size.height || 792) * surface.crop.height) / ((size.width || 612) * surface.crop.width)
-                    const gapTotal = pages.length > 1 ? spacing * (pages.length - 1) : 0
-                    const each = Math.min((spreadRow.roomWidth - gapTotal) / pages.length, spreadRow.roomHeight / aspect)
-                    return Math.max(100, each) * surface.zoom
-                }
-                Repeater {
-                    model: spreadPages.pages
-                    delegate: Page {
-                        required property int modelData
-                        required property int index
-                        page: modelData
-                        spineSide: spreadPages.pages.length === 2 ? (index === 0 ? "left" : "right") : ""
-                        fullWidth: spreadPages.fitWidth / surface.crop.width
-                    }
-                }
+
+            SpreadSlot {
+                id: spreadSlotA
+                z: spreadRow.activeSlot === 0 ? 2 : 1
+                isStandby: spreadRow.activeSlot !== 0
+                opacity: 1
+                onReadyChanged: if (isStandby && ready && spreadRow.pendingPages.length > 0) spreadRow.commitPending()
             }
+            SpreadSlot {
+                id: spreadSlotB
+                z: spreadRow.activeSlot === 1 ? 2 : 1
+                isStandby: spreadRow.activeSlot !== 1
+                opacity: 0
+                onReadyChanged: if (isStandby && ready && spreadRow.pendingPages.length > 0) spreadRow.commitPending()
+            }
+
             WheelHandler {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 acceptedModifiers: Qt.ControlModifier
                 onWheel: (event) => surface.zoom = Math.max(1, Math.min(4, surface.zoom * (event.angleDelta.y > 0 ? 1.1 : 0.9)))
+            }
+        }
+
+        // Subtle unobtrusive indicator only if an uncached far-jump render takes >260 ms
+        // (the previous page remains visible underneath, never flashing blank).
+        Rectangle {
+            z: 5
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.topMargin: surface.topRoom + 8
+            anchors.rightMargin: 28
+            width: 32
+            height: 32
+            radius: 16
+            color: surface.look ? surface.look.popover : "#26221D"
+            border.width: 1
+            border.color: surface.look ? surface.look.line : "transparent"
+            opacity: spreadRow.showSlowJump ? 0.9 : 0
+            visible: opacity > 0.01
+            Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+            BusyIndicator {
+                anchors.centerIn: parent
+                running: parent.visible
+                implicitWidth: 18
+                implicitHeight: 18
             }
         }
         // The wheel turns pages, as on the EPUB page (unless zoomed in), with

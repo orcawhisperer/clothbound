@@ -10,6 +10,8 @@
 #include <cmath>
 
 QMutex PdfPages::s_mutex;
+PdfPages *PdfPages::s_instance = nullptr;
+std::atomic<quint64> PdfPages::s_prefetchGen{0};
 QHash<QString, QString> PdfPages::s_paths;
 // Keep up to ~128 MiB of rendered pages in an LRU cache so page turns back
 // and forth are instantaneous without re-running PDFium + recolor().
@@ -87,28 +89,7 @@ public:
             }
         }
         if (m_worker && m_worker->book && !m_cancelled.load(std::memory_order_relaxed)) {
-            const QSizeF points = m_worker->book->pageSize(m_page);
-            QSize size = m_size;
-            if (points.width() > 0 && points.height() > 0 && std::isfinite(points.width()) && std::isfinite(points.height())) {
-                const double ratio = std::clamp(points.height() / points.width(), 0.1, 10.0);
-                if (size.width() <= 0 && size.height() <= 0) {
-                    const int w = qBound(1, qRound(points.width() * 2.0), 6000);
-                    const int h = qBound(1, qRound(w * ratio), 6000);
-                    size = QSize(w, h);
-                } else if (size.height() <= 0) {
-                    const int w = qBound(1, size.width(), 6000);
-                    size = QSize(w, qBound(1, qRound(w * ratio), 6000));
-                } else if (size.width() <= 0) {
-                    const int h = qBound(1, size.height(), 6000);
-                    size = QSize(qBound(1, qRound(h / ratio), 6000), h);
-                }
-            }
-            constexpr qint64 maxPixels = 24LL * 1000 * 1000;
-            size = size.boundedTo(QSize(6000, 6000));
-            if (size.width() > 0 && size.height() > 0 && qint64(size.width()) * qint64(size.height()) > maxPixels) {
-                const double scale = std::sqrt(double(maxPixels) / (double(size.width()) * double(size.height())));
-                size = QSize(qMax(1, int(std::floor(size.width() * scale))), qMax(1, int(std::floor(size.height() * scale))));
-            }
+            const QSize size = PdfPages::renderSizeFor(m_worker->book->pageSize(m_page), m_size);
             if (!m_cancelled.load(std::memory_order_relaxed)) {
                 QImage rendered = m_worker->book->renderPage(m_page, size);
                 if (!m_cancelled.load(std::memory_order_relaxed) && !rendered.isNull()) {
@@ -135,13 +116,81 @@ private:
     QImage m_image;
 };
 
+class PrefetchTask : public QRunnable {
+public:
+    PrefetchTask(std::shared_ptr<PdfPages::WorkerState> worker, quint64 gen, QString token, QString cacheKey, int page,
+                 QSize size, QColor bg, QColor fg)
+        : m_worker(std::move(worker)),
+          m_gen(gen),
+          m_token(std::move(token)),
+          m_cacheKey(std::move(cacheKey)),
+          m_page(page),
+          m_size(size),
+          m_bg(bg),
+          m_fg(fg) {
+        setAutoDelete(true);
+    }
+
+    void run() override {
+        if (m_gen != PdfPages::s_prefetchGen.load(std::memory_order_relaxed))
+            return;
+        if (!PdfPages::cached(m_cacheKey).isNull())
+            return;
+        const QString path = PdfPages::pathFor(m_token);
+        if (path.isEmpty())
+            return;
+        if (m_worker && (m_worker->token != m_token || m_worker->path != path || !m_worker->book)) {
+            m_worker->book.reset();
+            auto opened = std::make_unique<PdfBook>(path);
+            if (opened->open()) {
+                m_worker->token = m_token;
+                m_worker->path = path;
+                m_worker->book = std::move(opened);
+            } else {
+                m_worker->token.clear();
+                m_worker->path.clear();
+                return;
+            }
+        }
+        if (!m_worker || !m_worker->book || m_page < 0 || m_page >= m_worker->book->pageCount())
+            return;
+        if (m_gen != PdfPages::s_prefetchGen.load(std::memory_order_relaxed))
+            return;
+        const QSize size = PdfPages::renderSizeFor(m_worker->book->pageSize(m_page), m_size);
+        QImage rendered = m_worker->book->renderPage(m_page, size);
+        if (rendered.isNull() || m_gen != PdfPages::s_prefetchGen.load(std::memory_order_relaxed))
+            return;
+        if (m_bg.isValid() && m_fg.isValid())
+            PdfPages::recolor(rendered, m_bg, m_fg);
+        if (m_gen == PdfPages::s_prefetchGen.load(std::memory_order_relaxed))
+            PdfPages::storeCached(m_token, m_cacheKey, rendered);
+    }
+
+private:
+    std::shared_ptr<PdfPages::WorkerState> m_worker;
+    quint64 m_gen;
+    QString m_token;
+    QString m_cacheKey;
+    int m_page;
+    QSize m_size;
+    QColor m_bg, m_fg;
+};
+
 PdfPages::PdfPages() : m_worker(std::make_shared<WorkerState>()) {
     // Dedicated single render thread: PDFium's QPdfDocument is owned, used,
     // and destroyed solely on this thread, never shared with the GUI thread.
     m_pool.setMaxThreadCount(1);
+    QMutexLocker lock(&s_mutex);
+    s_instance = this;
 }
 
 PdfPages::~PdfPages() {
+    {
+        QMutexLocker lock(&s_mutex);
+        if (s_instance == this)
+            s_instance = nullptr;
+    }
+    s_prefetchGen.fetch_add(1, std::memory_order_relaxed);
     auto worker = m_worker;
     m_pool.start([worker] {
         worker->book.reset();
@@ -158,11 +207,71 @@ void PdfPages::add(const QString &token, std::shared_ptr<PdfBook> book) {
 }
 
 void PdfPages::remove(const QString &token) {
+    s_prefetchGen.fetch_add(1, std::memory_order_relaxed);
     QMutexLocker lock(&s_mutex);
     s_paths.remove(token);
     const QSet<QString> keys = s_tokenKeys.take(token);
     for (const QString &key : keys)
         s_cache.remove(key);
+}
+
+void PdfPages::cancelPrefetch() { s_prefetchGen.fetch_add(1, std::memory_order_relaxed); }
+
+QString PdfPages::makeCacheKey(const QString &id, const QSize &requestedSize) {
+    const int w = requestedSize.width() > 0 ? requestedSize.width() : 0;
+    const int h = requestedSize.height() > 0 ? requestedSize.height() : 0;
+    return id + QStringLiteral("|%1x%2").arg(w).arg(h);
+}
+
+QSize PdfPages::renderSizeFor(const QSizeF &points, const QSize &requestedSize) {
+    QSize size = requestedSize;
+    if (points.width() > 0 && points.height() > 0 && std::isfinite(points.width()) && std::isfinite(points.height())) {
+        const double ratio = std::clamp(points.height() / points.width(), 0.1, 10.0);
+        if (size.width() <= 0 && size.height() <= 0) {
+            const int w = qBound(1, qRound(points.width() * 2.0), 6000);
+            const int h = qBound(1, qRound(w * ratio), 6000);
+            size = QSize(w, h);
+        } else if (size.height() <= 0) {
+            const int w = qBound(1, size.width(), 6000);
+            size = QSize(w, qBound(1, qRound(w * ratio), 6000));
+        } else if (size.width() <= 0) {
+            const int h = qBound(1, size.height(), 6000);
+            size = QSize(qBound(1, qRound(h / ratio), 6000), h);
+        }
+    }
+    constexpr qint64 maxPixels = 24LL * 1000 * 1000;
+    size = size.boundedTo(QSize(6000, 6000));
+    if (size.width() > 0 && size.height() > 0 && qint64(size.width()) * qint64(size.height()) > maxPixels) {
+        const double scale = std::sqrt(double(maxPixels) / (double(size.width()) * double(size.height())));
+        size = QSize(qMax(1, int(std::floor(size.width() * scale))), qMax(1, int(std::floor(size.height() * scale))));
+    }
+    return size;
+}
+
+void PdfPages::prefetch(const QString &token, const QList<int> &pages, const QSize &requestedSize,
+                        const QString &colorQuery) {
+    if (token.isEmpty() || pages.isEmpty())
+        return;
+    const quint64 gen = s_prefetchGen.fetch_add(1, std::memory_order_relaxed) + 1;
+    const QString cleanQuery = colorQuery.startsWith(QLatin1Char('?')) ? colorQuery.mid(1) : colorQuery;
+    const QUrlQuery query(cleanQuery);
+    const QColor bg(query.queryItemValue(QStringLiteral("bg"), QUrl::FullyDecoded));
+    const QColor fg(query.queryItemValue(QStringLiteral("fg"), QUrl::FullyDecoded));
+
+    QMutexLocker lock(&s_mutex);
+    if (!s_instance || !s_paths.contains(token))
+        return;
+    PdfPages *instance = s_instance;
+    const auto worker = instance->m_worker;
+    for (const int page : pages) {
+        if (page < 0)
+            continue;
+        const QString id = token + QLatin1Char('/') + QString::number(page) + colorQuery;
+        const QString cacheKey = makeCacheKey(id, requestedSize);
+        if (s_cache.contains(cacheKey))
+            continue;
+        instance->m_pool.start(new PrefetchTask(worker, gen, token, cacheKey, page, requestedSize, bg, fg), -1);
+    }
 }
 
 QString PdfPages::pathFor(const QString &token) {
@@ -191,7 +300,7 @@ void PdfPages::storeCached(const QString &token, const QString &key, const QImag
 
 QQuickImageResponse *PdfPages::requestImageResponse(const QString &id, const QSize &requestedSize) {
     // "<token>/<page>?bg=%23rrggbb&fg=%23rrggbb" (or without query for original colors)
-    const QString cacheKey = id + QStringLiteral("|%1x%2").arg(requestedSize.width()).arg(requestedSize.height());
+    const QString cacheKey = makeCacheKey(id, requestedSize);
     if (const QImage hit = cached(cacheKey); !hit.isNull())
         return new CachedPageResponse(hit);
 
@@ -202,7 +311,7 @@ QQuickImageResponse *PdfPages::requestImageResponse(const QString &id, const QSi
     const QColor bg(query.queryItemValue(QStringLiteral("bg"), QUrl::FullyDecoded));
     const QColor fg(query.queryItemValue(QStringLiteral("fg"), QUrl::FullyDecoded));
     auto *response = new PageResponse(m_worker, token, cacheKey, page, requestedSize, bg, fg);
-    m_pool.start(response);
+    m_pool.start(response, 1);
     return response;
 }
 

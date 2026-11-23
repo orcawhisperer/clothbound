@@ -26,6 +26,13 @@ html, body {
     color: var(--dg-fg);
     -webkit-user-select: none;
     user-select: none;
+    transition: background-color 200ms cubic-bezier(0.22, 1, 0.36, 1), color 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html, body {
+        transition: none;
+    }
 }
 
 @font-face { font-family: "Inter"; src: url("fonts/Inter.ttf"); font-weight: 100 900; }
@@ -65,18 +72,71 @@ html, body {
     overflow: hidden;
 }
 
-#book {
+#viewport {
     position: absolute;
+    overflow: hidden;
+}
+
+#viewport.turning {
+    -webkit-mask-image: linear-gradient(
+        to right,
+        transparent 0px,
+        #000 var(--dg-feather, 36px),
+        #000 calc(100% - var(--dg-feather, 36px)),
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to right,
+        transparent 0px,
+        #000 var(--dg-feather, 36px),
+        #000 calc(100% - var(--dg-feather, 36px)),
+        transparent 100%
+    );
+}
+
+/* Book frames have no implicit opacity transition so hiding an inactive frame
+   before navigation is instantaneous (zero unstyled white-canvas flash). */
+.book-frame, #book, #book-back {
+    position: absolute;
+    left: 0;
+    top: 0;
     border: 0;
     margin: 0;
     padding: 0;
     background: transparent;
     opacity: 0;
-    transition: opacity 120ms ease-out;
+    visibility: hidden;
+    pointer-events: none;
+    z-index: 0;
 }
 
-#book.shown {
+.book-frame.shown, #book.shown, #book-back.shown {
     opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    z-index: 2;
+}
+
+.book-frame.outgoing, #book.outgoing, #book-back.outgoing {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: none;
+    z-index: 1;
+}
+
+@keyframes dg-book-reveal {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.book-frame.reveal, #book.reveal, #book-back.reveal {
+    animation: dg-book-reveal 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .book-frame.reveal, #book.reveal, #book-back.reveal {
+        animation: none;
+    }
 }
 
 #overlay {

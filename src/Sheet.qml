@@ -26,9 +26,15 @@ FocusScope {
     function close() { if (!open) return; open = false; closed() }
 
     anchors.fill: parent
-    visible: opacity > 0
-    opacity: open ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 140 : 180; easing.type: Easing.OutCubic } }
+    property real reveal: open ? 1 : 0
+    Behavior on reveal {
+        NumberAnimation {
+            duration: theme.reducedMotion ? 110 : (sheet.open ? 230 : 165)
+            easing.type: sheet.open ? Easing.OutCubic : Easing.InCubic
+        }
+    }
+    visible: reveal > 0.005
+    opacity: reveal
     Keys.onEscapePressed: if (closable) close()
 
     Rectangle {
@@ -45,17 +51,14 @@ FocusScope {
     Rectangle {
         id: card
         anchors.centerIn: parent
+        anchors.verticalCenterOffset: theme.reducedMotion ? 0 : Math.round((1 - sheet.reveal) * 10)
         width: Math.min(sheet.cardWidth, sheet.width - 48)
         height: Math.min(sheet.maxHeight, titleRow.height + body.childrenRect.height + 24)
         radius: Ui.radius(sheet.cardRadius, theme.radius)
         color: theme.raised
         border.width: 1
         border.color: Ui.tint(theme.ink1, theme.light ? 0.12 : 0.09)
-        scale: sheet.open || theme.reducedMotion ? 1 : 0.97
-        Behavior on scale {
-            enabled: !theme.reducedMotion
-            NumberAnimation { duration: 320; easing.type: Easing.OutQuart }
-        }
+        scale: theme.reducedMotion ? 1.0 : (0.965 + 0.035 * sheet.reveal)
         // Clicks on the card stay on the card.
         MouseArea { anchors.fill: parent; acceptedButtons: Qt.AllButtons }
 

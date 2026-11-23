@@ -38,18 +38,80 @@ const dogear = (() => {
         prefetched: new Set(),
         hyphenatedNodes: new Map(),
         animation: null,
+        chapterAnim: null,
+        warm: null,
+        warmGen: 0,
+        warmTimer: 0,
+        lastTurnAt: 0,
         queue: Promise.resolve(),
         hyphenation: false,
         note: null,
     }
 
+    let activeFrameEl = null
+    let standbyFrameEl = null
+    function initFrames() {
+        if (!activeFrameEl)
+            activeFrameEl = document.getElementById('book')
+        if (!standbyFrameEl)
+            standbyFrameEl = document.getElementById('book-back')
+    }
     const stage = () => document.getElementById('stage')
-    const frame = () => document.getElementById('book')
+    const viewport = () => document.getElementById('viewport')
+    const frame = () => {
+        initFrames()
+        return activeFrameEl
+    }
+    const standby = () => {
+        initFrames()
+        return standbyFrameEl
+    }
     const overlay = () => document.getElementById('overlay')
     const chapterDocument = () => frame().contentDocument
     const clamp = (value, low, high) => Math.max(low, Math.min(high, value))
     const sessionId = () => (state.book && state.book.session) || 0
     const escapeAttr = text => String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const isReducedMotion = () => !!(state.style && state.style.reducedMotion) || matchMedia('(prefers-reduced-motion: reduce)').matches
+    const easeTurn = t => 1 - Math.pow(1 - t, 3.6)
+
+    function emitPageTurn(direction) {
+        if (state.bridge && state.bridge.notifyPageTurn)
+            state.bridge.notifyPageTurn(direction >= 0 ? 1 : -1)
+    }
+
+    function setTurningMask(on) {
+        const vp = viewport()
+        if (!vp || !vp.classList)
+            return
+        if (on)
+            vp.classList.add('turning')
+        else
+            vp.classList.remove('turning')
+    }
+
+    function clearFrameVisual(f) {
+        if (!f)
+            return
+        if (f.style) {
+            f.style.transform = ''
+            f.style.opacity = ''
+            f.style.willChange = ''
+        }
+        if (f.classList) {
+            f.classList.remove('outgoing')
+            f.classList.remove('reveal')
+        }
+    }
+
+    function hideFrameImmediately(f) {
+        if (!f)
+            return
+        clearFrameVisual(f)
+        if (f.classList)
+            f.classList.remove('shown')
+        if (f.setAttribute)
+            f.setAttribute('aria-hidden', 'true')
+    }
 
     function log(message) {
         if (state.bridge)
@@ -90,14 +152,15 @@ const dogear = (() => {
     // with half a gap on each side, so moving by the frame's width shows the
     // next screen with the same margins. A wide window keeps lines at a
     // comfortable measure and centers the frame.
-    function computeGeometry() {
+    function computeGeometry(verticalOverride) {
         const s = state.style
+        const vertical = verticalOverride !== undefined ? verticalOverride : state.vertical
         const size = effectiveStageSize()
         const W = Math.max(160, size.width), H = Math.max(160, size.height)
         const em = 16 * s.fontScale
         const measure = s.measure * em
         const side = Math.max(20, Math.min(Math.round(W * s.margin), Math.floor((W - 120) / 2)))
-        if (state.vertical) {
+        if (vertical) {
             const availH = Math.max(160, H - s.marginTop - s.marginBottom)
             const height = Math.max(160, Math.min(Math.round(measure * 1.2), availH))
             const width = Math.max(160, W - 2 * side)
@@ -130,8 +193,9 @@ const dogear = (() => {
                  columns, gap, column, step: width }
     }
 
-    function layoutCss(g) {
+    function layoutCss(g, rtlOverride) {
         const s = state.style
+        const rtl = rtlOverride !== undefined ? rtlOverride : state.rtl
         if (g.vertical)
             return `html { height: ${g.height}px !important; width: ${g.width}px !important;
                            box-sizing: border-box !important; margin: 0 !important; padding: 0 !important;
@@ -140,7 +204,7 @@ const dogear = (() => {
                            overflow-y: hidden !important; }
                     html::-webkit-scrollbar { display: none; }
                     img, svg, video, object, embed { max-height: ${g.height - 6}px !important; max-width: ${g.width - 6}px !important; }`
-        const dirRule = state.rtl ? 'direction: rtl;' : ''
+        const dirRule = rtl ? 'direction: rtl;' : ''
         if (g.scroll)
             return `html { ${dirRule} height: auto !important; columns: auto !important; overflow-x: hidden !important;
                            overflow-y: auto !important; box-sizing: border-box !important; margin: 0 !important;
@@ -162,8 +226,9 @@ const dogear = (() => {
 
     // --- Styles ----------------------------------------------------------
 
-    function typographyCss() {
+    function typographyCss(hyphenOverride) {
         const s = state.style, t = s.theme
+        const hyphenation = hyphenOverride !== undefined ? hyphenOverride : state.hyphenation
         const own = !s.publisher
         const family = own && s.font && s.font !== 'publisher' ? `"${s.font}", "Literata", serif` : ''
         const weight = clamp(Math.round(s.fontWeight || 400), 300, 700)
@@ -254,7 +319,7 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 ${literaryIndent}
 [data-dg-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; color: ${accentInk} !important; margin-inline-end: 0.14em; }
 [data-dg-flow] { text-align: ${s.justify ? 'justify' : 'start'} !important;
-                 ${s.justify && state.hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }` : ''}
+                 ${s.justify && hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }` : ''}
 `
     }
 
@@ -269,22 +334,30 @@ ${literaryIndent}
         return element
     }
 
-    function applyTypography(doc) {
-        styleElement(doc, 'dg-typography').textContent = typographyCss()
+    function applyTypography(doc, hyphenOverride) {
+        styleElement(doc, 'dg-typography').textContent = typographyCss(hyphenOverride)
     }
 
-    function applyLayout() {
-        const doc = chapterDocument()
-        const size = effectiveStageSize()
-        state.stageWidth = size.width
-        state.stageHeight = size.height
-        const g = state.geometry = computeGeometry()
-        const f = frame()
-        f.style.left = g.left + 'px'
-        f.style.top = g.top + 'px'
-        f.style.width = g.width + 'px'
-        f.style.height = g.height + 'px'
-        styleElement(doc, 'dg-layout').textContent = layoutCss(g)
+    function applyLayoutTo(targetFrame, doc, g, rtlOverride) {
+        const vp = viewport()
+        if (vp) {
+            if (targetFrame === frame()) {
+                vp.style.left = g.left + 'px'
+                vp.style.top = g.top + 'px'
+                vp.style.width = g.width + 'px'
+                vp.style.height = g.height + 'px'
+                const feather = Math.min(44, Math.max(16, Math.floor(g.gap / 2 - 4)))
+                vp.style.setProperty('--dg-feather', feather + 'px')
+            }
+            targetFrame.style.left = '0px'
+            targetFrame.style.top = '0px'
+        } else {
+            targetFrame.style.left = g.left + 'px'
+            targetFrame.style.top = g.top + 'px'
+        }
+        targetFrame.style.width = g.width + 'px'
+        targetFrame.style.height = g.height + 'px'
+        styleElement(doc, 'dg-layout').textContent = layoutCss(g, rtlOverride)
         // Cover pages often size their SVG at 100% of a height that columns
         // don't have; give them the page's.
         for (const svg of doc.querySelectorAll('svg')) {
@@ -294,6 +367,15 @@ ${literaryIndent}
                 svg.style.setProperty('width', '100%', 'important')
             }
         }
+    }
+
+    function applyLayout() {
+        const doc = chapterDocument()
+        const size = effectiveStageSize()
+        state.stageWidth = size.width
+        state.stageHeight = size.height
+        const g = state.geometry = computeGeometry()
+        applyLayoutTo(frame(), doc, g, state.rtl)
     }
 
     // Prevent tall <pre>/<table>/<figure> blocks from clipping off multi-column
@@ -406,28 +488,31 @@ ${literaryIndent}
 
     // --- Preparing a chapter -----------------------------------------------
 
-    function detectDirection(doc) {
+    function detectDirectionOf(doc) {
         const view = doc.defaultView
         const htmlStyle = view.getComputedStyle(doc.documentElement)
         const bodyStyle = doc.body ? view.getComputedStyle(doc.body) : htmlStyle
         const wm = bodyStyle.writingMode && bodyStyle.writingMode !== 'horizontal-tb'
             ? bodyStyle.writingMode : (htmlStyle.writingMode || 'horizontal-tb')
-        state.vertical = wm === 'vertical-rl' || wm === 'vertical-lr' ? wm : ''
-        if (state.vertical) {
-            state.rtl = state.vertical === 'vertical-rl'
+        const vertical = wm === 'vertical-rl' || wm === 'vertical-lr' ? wm : ''
+        let rtl
+        if (vertical) {
+            rtl = vertical === 'vertical-rl'
         } else {
             const bookRtl = !!(state.book && state.book.rtl)
             const docRtl = htmlStyle.direction === 'rtl' || bodyStyle.direction === 'rtl'
-            state.rtl = bookRtl || docRtl
+            rtl = bookRtl || docRtl
         }
+        return { rtl, vertical }
     }
 
     // Running text is marked so the reader's alignment applies to it and
     // not to centered headings, verse, or end-aligned signatures.
     // Batch all getComputedStyle reads before setAttribute writes to avoid O(N²) reflows.
-    function markFlow(doc) {
+    function markFlow(doc, rtlOverride) {
+        const rtl = rtlOverride !== undefined ? rtlOverride : state.rtl
         const view = doc.defaultView
-        const startEdge = state.rtl ? 'right' : 'left'
+        const startEdge = rtl ? 'right' : 'left'
         const candidates = []
         for (const element of doc.querySelectorAll('p, li, dd, blockquote, div')) {
             for (const child of element.childNodes) {
@@ -447,15 +532,16 @@ ${literaryIndent}
             element.setAttribute('data-dg-flow', '')
     }
 
-    function hyphenate(doc) {
+    function hyphenate(doc, mapOverride) {
+        const targetMap = mapOverride || state.hyphenatedNodes
         const walker = doc.createTreeWalker(doc.body || doc.documentElement, NodeFilter.SHOW_TEXT)
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
             const parent = node.parentElement
             if (parent && parent.closest('[data-dg-flow]') && !parent.closest('a, code, pre, kbd, samp, tt')) {
                 const before = node.data
                 Hyphenation.node(node)
-                if (node.data !== before && !state.hyphenatedNodes.has(node))
-                    state.hyphenatedNodes.set(node, before)
+                if (node.data !== before && !targetMap.has(node))
+                    targetMap.set(node, before)
             }
         }
     }
@@ -478,11 +564,13 @@ ${literaryIndent}
 
     // A chapter opens with a drop cap, in Dogear's own typography, for
     // horizontal left-to-right text (DropCap, dropcap.js, picks the paragraph).
-    function markDropCap(doc) {
+    function markDropCap(doc, rtlOverride, verticalOverride) {
+        const rtl = rtlOverride !== undefined ? rtlOverride : state.rtl
+        const vertical = verticalOverride !== undefined ? verticalOverride : state.vertical
         for (const old of doc.querySelectorAll('[data-dg-dropcap]'))
             old.removeAttribute('data-dg-dropcap')
         const s = state.style
-        if (s.publisher || s.dropCap === false || state.rtl || state.vertical || typeof DropCap === 'undefined')
+        if (s.publisher || s.dropCap === false || rtl || vertical || typeof DropCap === 'undefined')
             return
         const paragraphs = [...doc.querySelectorAll('p[data-dg-flow]')]
         const index = DropCap.choose(paragraphs.map(p => ({
@@ -493,21 +581,27 @@ ${literaryIndent}
             paragraphs[index].setAttribute('data-dg-dropcap', '')
     }
 
-    async function prepare(doc) {
-        state.hyphenatedNodes = new Map()
-        detectDirection(doc)
-        markFlow(doc)
-        markDropCap(doc)
+    async function prepareDocument(doc) {
+        const hyphenatedNodes = new Map()
+        const { rtl, vertical } = detectDirectionOf(doc)
+        markFlow(doc, rtl)
+        markDropCap(doc, rtl, vertical)
         const s = state.style
-        state.hyphenation = !s.publisher && s.justify && s.hyphenate && await Hyphenation.load(state.book.language)
-        if (state.hyphenation)
-            hyphenate(doc)
-        applyTypography(doc)
-        doc.addEventListener('click', onChapterClick, true)
-        doc.addEventListener('wheel', onWheel, { passive: false })
-        doc.addEventListener('scroll', scheduleMarginNotes, { passive: true })
-        doc.addEventListener('keydown', onKey, true)
+        const hyphenation = !s.publisher && s.justify && s.hyphenate && await Hyphenation.load(state.book.language)
+        if (hyphenation)
+            hyphenate(doc, hyphenatedNodes)
+        applyTypography(doc, hyphenation)
+        const onlyActive = fn => event => {
+            if (doc === chapterDocument())
+                fn(event)
+        }
+        doc.addEventListener('click', onlyActive(onChapterClick), true)
+        doc.addEventListener('wheel', onlyActive(onWheel), { passive: false })
+        doc.addEventListener('scroll', onlyActive(scheduleMarginNotes), { passive: true })
+        doc.addEventListener('keydown', onlyActive(onKey), true)
         doc.addEventListener('copy', event => {
+            if (doc !== chapterDocument())
+                return
             const selection = doc.getSelection()
             if (!selection || selection.isCollapsed || !event.clipboardData)
                 return
@@ -515,9 +609,10 @@ ${literaryIndent}
             event.preventDefault()
         })
         doc.addEventListener('dragstart', event => event.preventDefault())
-        doc.addEventListener('selectionchange', onSelection)
-        doc.addEventListener('mousemove', onHover, { passive: true })
-        doc.addEventListener('mouseleave', () => hideFromHere(400))
+        doc.addEventListener('selectionchange', onlyActive(onSelection))
+        doc.addEventListener('mousemove', onlyActive(onHover), { passive: true })
+        doc.addEventListener('mouseleave', () => { if (doc === chapterDocument()) hideFromHere(400) })
+        return { rtl, vertical, hyphenation, hyphenatedNodes }
     }
 
     // --- Listening from a paragraph -------------------------------------------
@@ -775,9 +870,12 @@ ${literaryIndent}
         return element ? element.getBoundingClientRect() : null
     }
 
-    function scroller() {
-        const doc = chapterDocument()
+    function scrollerOf(doc) {
         return doc.scrollingElement || doc.documentElement
+    }
+
+    function scroller() {
+        return scrollerOf(chapterDocument())
     }
 
     // The page a document position falls on.
@@ -927,44 +1025,53 @@ ${literaryIndent}
 
     // --- Pages ---------------------------------------------------------------
 
-    function measure() {
-        const g = state.geometry
-        const el = scroller()
+    function measureDoc(doc, g, rtl, chapter) {
+        const el = scrollerOf(doc)
+        let pages
         if (g.scroll && !g.vertical) {
-            state.pages = Math.max(1, Math.ceil((el.scrollHeight - 2) / g.step))
+            pages = Math.max(1, Math.ceil((el.scrollHeight - 2) / g.step))
         } else {
-            const end = Math.max(el.scrollWidth, ...lastBoxes())
-            state.pages = Math.max(1, Math.ceil((end - 2) / g.step))
+            const end = Math.max(el.scrollWidth, ...lastBoxesOf(doc, g, rtl))
+            pages = Math.max(1, Math.ceil((end - 2) / g.step))
         }
         // Printed page numbers in this chapter, by where they fall.
-        state.labels = []
-        const targets = (state.book.pageTargets || []).filter(target => target.chapter === state.chapter)
+        const labels = []
+        const targets = (state.book.pageTargets || []).filter(target => target.chapter === chapter)
         for (const target of targets) {
-            const element = elementFor(target.fragment)
+            const element = target.fragment
+                ? (doc.getElementById(target.fragment) || doc.querySelector(`[name="${CSS.escape(target.fragment)}"]`))
+                : null
             if (!element)
                 continue
             const rect = element.getBoundingClientRect()
             const at = (g.scroll && !g.vertical)
                 ? rect.top + el.scrollTop
-                : state.rtl
+                : rtl
                     ? g.width - ((rect.left + rect.right) / 2 + el.scrollLeft)
                     : rect.left + el.scrollLeft
-            state.labels.push({ label: target.label, at })
+            labels.push({ label: target.label, at })
         }
-        state.labels.sort((a, b) => a.at - b.at)
+        labels.sort((a, b) => a.at - b.at)
+        return { pages, labels }
+    }
+
+    function measure() {
+        const measured = measureDoc(chapterDocument(), state.geometry, state.rtl, state.chapter)
+        state.pages = measured.pages
+        state.labels = measured.labels
     }
 
     // Where the last content box ends, for books whose final column is not
     // counted in the scroll width.
-    function lastBoxes() {
-        const doc = chapterDocument(), el = scroller(), g = state.geometry
+    function lastBoxesOf(doc, g, rtl) {
+        const el = scrollerOf(doc)
         const body = doc.body || doc.documentElement
         const last = body.lastElementChild
         if (!last)
             return [0]
         const rects = last.getClientRects()
         const rect = rects.length ? rects[rects.length - 1] : last.getBoundingClientRect()
-        return [state.rtl ? g.width - (rect.left + el.scrollLeft) : rect.right + el.scrollLeft]
+        return [rtl ? g.width - (rect.left + el.scrollLeft) : rect.right + el.scrollLeft]
     }
 
     function labelForPage(page) {
@@ -981,21 +1088,38 @@ ${literaryIndent}
         return earlier.length ? earlier[earlier.length - 1].label : ''
     }
 
-    // A turn under way lands at once (another turn, or a jump, overtakes it).
-    function cancelAnimation() {
+    // A turn under way lands at once (or hands off its live scroll offset for
+    // smooth retargeting on rapid key repeats so turns never queue up).
+    function cancelAnimation(keepCurrentScroll = false) {
+        const chapterAnim = state.chapterAnim
+        if (chapterAnim) {
+            state.chapterAnim = null
+            if (chapterAnim.raf && typeof cancelAnimationFrame === 'function')
+                cancelAnimationFrame(chapterAnim.raf)
+            setTurningMask(false)
+            hideFrameImmediately(chapterAnim.oldFrame)
+            clearFrameVisual(chapterAnim.newFrame)
+            if (chapterAnim.newFrame && chapterAnim.newFrame.classList)
+                chapterAnim.newFrame.classList.add('shown')
+            chapterAnim.finish()
+        }
         const animation = state.animation
         if (!animation)
             return
         state.animation = null
         if (animation.raf && typeof cancelAnimationFrame === 'function')
             cancelAnimationFrame(animation.raf)
-        const horizontal = !state.geometry.scroll || state.geometry.vertical
-        scroller().scrollTo({ [horizontal ? 'left' : 'top']: animation.target, behavior: 'instant' })
-        animation.finish()
+        setTurningMask(false)
+        if (!keepCurrentScroll && state.geometry) {
+            const horizontal = !state.geometry.scroll || state.geometry.vertical
+            scroller().scrollTo({ [horizontal ? 'left' : 'top']: animation.target, behavior: 'instant' })
+        }
+        animation.finish(!keepCurrentScroll)
     }
 
     function turnTo(page, animate) {
-        cancelAnimation()
+        const retargeting = !!state.animation
+        cancelAnimation(animate)
         closeNote()
         const g = state.geometry
         state.page = clamp(page, 0, state.pages - 1)
@@ -1004,35 +1128,39 @@ ${literaryIndent}
         const target = horizontal && state.rtl ? -(state.page * g.step) : state.page * g.step
         const axis = horizontal ? 'left' : 'top'
         const now = horizontal ? el.scrollLeft : el.scrollTop
-        const reduced = !!state.style.reducedMotion || matchMedia('(prefers-reduced-motion: reduce)').matches
+        const reduced = isReducedMotion()
         if (!animate || !state.style.animate || Math.abs(target - now) < 1) {
             el.scrollTo({ [axis]: target, behavior: 'instant' })
-            return Promise.resolve()
+            return Promise.resolve(true)
         }
         if (reduced) {
-            const f = frame()
-            f.classList.remove('shown')
             el.scrollTo({ [axis]: target, behavior: 'instant' })
-            requestAnimationFrame(() => f.classList.add('shown'))
-            return Promise.resolve()
+            return Promise.resolve(true)
         }
-        // Crisp 180 ms cubic-out page slide, immediately interruptible on fast turns.
+        // Silky Apple-grade deceleration glide with feathered outer margins;
+        // rapid presses retarget live from current scroll without queuing lag.
+        const tsNow = performance.now()
+        const rapid = retargeting || (tsNow - state.lastTurnAt < 260)
+        state.lastTurnAt = tsNow
+        const duration = rapid ? 145 : 210
+        if (horizontal)
+            setTurningMask(true)
         return new Promise(resolve => {
-            const duration = 180
             const startTime = performance.now()
             const anim = { target, raf: 0, finish: resolve }
             const step = ts => {
                 if (state.animation !== anim)
                     return
                 const t = clamp((ts - startTime) / duration, 0, 1)
-                const eased = 1 - Math.pow(1 - t, 3)
+                const eased = easeTurn(t)
                 el.scrollTo({ [axis]: now + (target - now) * eased, behavior: 'instant' })
                 if (t < 1) {
                     anim.raf = requestAnimationFrame(step)
                 } else {
                     state.animation = null
+                    setTurningMask(false)
                     el.scrollTo({ [axis]: target, behavior: 'instant' })
-                    resolve()
+                    resolve(true)
                 }
             }
             state.animation = anim
@@ -1056,6 +1184,110 @@ ${literaryIndent}
             if (!fromLinear || spine[i].linear)
                 return i
         return -1
+    }
+
+    function styleSignature() {
+        const s = state.style
+        if (!s)
+            return ''
+        const sz = effectiveStageSize()
+        const t = s.theme || {}
+        return [
+            sessionId(), sz.width, sz.height,
+            t.bg, t.fg, t.link, t.dark ? 1 : 0,
+            s.font, s.fontScale, s.fontWeight, s.lineHeight, s.paragraphSpacing,
+            s.margin, s.measure, s.justify ? 1 : 0, s.hyphenate ? 1 : 0,
+            s.dropCap === false ? 0 : 1, s.layout, s.singleColumn ? 1 : 0,
+            s.publisher ? 1 : 0, s.marginTop, s.marginBottom,
+        ].join('|')
+    }
+
+    function invalidateWarm() {
+        ++state.warmGen
+        clearTimeout(state.warmTimer)
+        state.warmTimer = 0
+        state.warm = null
+    }
+
+    async function prepareIntoFrame(targetFrame, chapter) {
+        const url = state.book.base + state.book.spine[chapter].href
+        await new Promise(resolve => {
+            targetFrame.onload = () => resolve()
+            targetFrame.src = url
+        })
+        const doc = targetFrame.contentDocument
+        const prep = await prepareDocument(doc)
+        const size = effectiveStageSize()
+        const g = computeGeometry(prep.vertical)
+        applyLayoutTo(targetFrame, doc, g, prep.rtl)
+        await settle(doc)
+        classifyImages(doc)
+        fitBlocks(doc, g)
+        const index = buildIndex(doc)
+        const measured = measureDoc(doc, g, prep.rtl, chapter)
+        return {
+            frame: targetFrame,
+            doc,
+            chapter,
+            session: sessionId(),
+            sig: styleSignature(),
+            stageWidth: size.width,
+            stageHeight: size.height,
+            rtl: prep.rtl,
+            vertical: prep.vertical,
+            hyphenation: prep.hyphenation,
+            hyphenatedNodes: prep.hyphenatedNodes,
+            geometry: g,
+            index,
+            pages: measured.pages,
+            labels: measured.labels,
+        }
+    }
+
+    // Pre-render the adjacent chapter into the hidden standby iframe so
+    // chapter-crossing page turns execute in 0 ms with zero flash.
+    function scheduleWarm(dirHint = 1) {
+        clearTimeout(state.warmTimer)
+        state.warmTimer = 0
+        const sf = standby()
+        if (!sf || !state.book || state.chapter < 0 || !state.index || state.chapterAnim)
+            return
+        let target = -1
+        if (dirHint < 0 && state.page === 0)
+            target = linearBefore(state.chapter)
+        if (target < 0 && (state.pages <= 2 || state.page >= state.pages - 2))
+            target = linearAfter(state.chapter)
+        if (target < 0 && state.page === 0)
+            target = linearBefore(state.chapter)
+        if (target < 0)
+            return
+        const sig = styleSignature()
+        const sid = sessionId()
+        if (state.warm && state.warm.chapter === target && state.warm.session === sid && state.warm.sig === sig)
+            return
+        const gen = ++state.warmGen
+        state.warmTimer = setTimeout(() => {
+            state.warmTimer = 0
+            if (gen !== state.warmGen || !state.book || sid !== sessionId() || state.chapterAnim)
+                return
+            const back = standby()
+            if (!back)
+                return
+            hideFrameImmediately(back)
+            const entry = { chapter: target, session: sid, sig, ready: false, prepared: null, promise: null }
+            state.warm = entry
+            entry.promise = prepareIntoFrame(back, target).then(prepared => {
+                if (gen === state.warmGen && state.warm === entry && sid === sessionId() && sig === styleSignature()) {
+                    entry.prepared = prepared
+                    entry.ready = true
+                }
+                return prepared
+            }).catch(() => {
+                if (state.warm === entry)
+                    state.warm = null
+                return null
+            })
+        }, 45)
     }
 
     // Warm the next chapter in BookScheme and Chromium's memory cache when
@@ -1111,26 +1343,197 @@ ${literaryIndent}
         prefetchAdjacent()
     }
 
-    async function load(chapter) {
-        const f = frame()
-        f.classList.remove('shown')
-        closeNote()
-        const url = state.book.base + state.book.spine[chapter].href
-        await new Promise(resolve => {
-            f.onload = () => resolve()
-            f.src = url
+    function commitPrepared(prepared) {
+        if (prepared.frame === standbyFrameEl && standbyFrameEl) {
+            const prev = activeFrameEl
+            activeFrameEl = standbyFrameEl
+            standbyFrameEl = prev
+        }
+        state.chapter = prepared.chapter
+        state.stageWidth = prepared.stageWidth
+        state.stageHeight = prepared.stageHeight
+        state.rtl = prepared.rtl
+        state.vertical = prepared.vertical
+        state.hyphenation = prepared.hyphenation
+        state.hyphenatedNodes = prepared.hyphenatedNodes
+        state.geometry = prepared.geometry
+        state.index = prepared.index
+        state.pages = prepared.pages
+        state.labels = prepared.labels
+        const vp = viewport()
+        if (vp) {
+            const g = prepared.geometry
+            vp.style.left = g.left + 'px'
+            vp.style.top = g.top + 'px'
+            vp.style.width = g.width + 'px'
+            vp.style.height = g.height + 'px'
+            const feather = Math.min(44, Math.max(16, Math.floor(g.gap / 2 - 4)))
+            vp.style.setProperty('--dg-feather', feather + 'px')
+        }
+        if (activeFrameEl && activeFrameEl.removeAttribute)
+            activeFrameEl.removeAttribute('aria-hidden')
+    }
+
+    function animateChapterSwap(oldFrame, newFrame, dir, animate) {
+        const reduced = isReducedMotion()
+        const g = state.geometry
+        if (!animate || !state.style.animate || !oldFrame || oldFrame === newFrame) {
+            clearFrameVisual(newFrame)
+            if (newFrame && newFrame.classList)
+                newFrame.classList.add('shown')
+            if (oldFrame && oldFrame !== newFrame)
+                hideFrameImmediately(oldFrame)
+            return Promise.resolve()
+        }
+        const tsNow = performance.now()
+        const rapid = tsNow - state.lastTurnAt < 260
+        state.lastTurnAt = tsNow
+
+        if (reduced || dir === 0) {
+            const duration = reduced ? 105 : 145
+            oldFrame.classList.remove('shown')
+            oldFrame.classList.add('outgoing')
+            oldFrame.style.opacity = '1'
+            newFrame.classList.add('shown')
+            newFrame.style.opacity = '0'
+            return new Promise(resolve => {
+                const startTime = performance.now()
+                const anim = { oldFrame, newFrame, raf: 0, finish: resolve }
+                const step = ts => {
+                    if (state.chapterAnim !== anim)
+                        return
+                    const t = clamp((ts - startTime) / duration, 0, 1)
+                    const eased = easeTurn(t)
+                    newFrame.style.opacity = eased.toFixed(3)
+                    oldFrame.style.opacity = (1 - eased).toFixed(3)
+                    if (t < 1) {
+                        anim.raf = requestAnimationFrame(step)
+                    } else {
+                        state.chapterAnim = null
+                        hideFrameImmediately(oldFrame)
+                        clearFrameVisual(newFrame)
+                        newFrame.classList.add('shown')
+                        resolve()
+                    }
+                }
+                state.chapterAnim = anim
+                anim.raf = requestAnimationFrame(step)
+            })
+        }
+
+        if (g.scroll && !g.vertical) {
+            const duration = rapid ? 135 : 180
+            const travel = 28
+            oldFrame.classList.remove('shown')
+            oldFrame.classList.add('outgoing')
+            oldFrame.style.willChange = 'transform, opacity'
+            newFrame.classList.add('shown')
+            newFrame.style.willChange = 'transform, opacity'
+            newFrame.style.opacity = '0'
+            newFrame.style.transform = `translate3d(0, ${(dir * travel).toFixed(1)}px, 0)`
+            return new Promise(resolve => {
+                const startTime = performance.now()
+                const anim = { oldFrame, newFrame, raf: 0, finish: resolve }
+                const step = ts => {
+                    if (state.chapterAnim !== anim)
+                        return
+                    const t = clamp((ts - startTime) / duration, 0, 1)
+                    const eased = easeTurn(t)
+                    oldFrame.style.opacity = (1 - eased).toFixed(3)
+                    oldFrame.style.transform = `translate3d(0, ${(-dir * travel * 0.6 * eased).toFixed(2)}px, 0)`
+                    newFrame.style.opacity = eased.toFixed(3)
+                    newFrame.style.transform = `translate3d(0, ${(dir * travel * (1 - eased)).toFixed(2)}px, 0)`
+                    if (t < 1) {
+                        anim.raf = requestAnimationFrame(step)
+                    } else {
+                        state.chapterAnim = null
+                        hideFrameImmediately(oldFrame)
+                        clearFrameVisual(newFrame)
+                        newFrame.classList.add('shown')
+                        resolve()
+                    }
+                }
+                state.chapterAnim = anim
+                anim.raf = requestAnimationFrame(step)
+            })
+        }
+
+        // Full-step horizontal GPU slide matching in-chapter turn geometry,
+        // velocity, easing, and feathered margins so chapter boundaries vanish.
+        const sign = state.rtl ? -dir : dir
+        const dist = g.step
+        const duration = rapid ? 145 : 210
+        oldFrame.classList.remove('shown')
+        oldFrame.classList.add('outgoing')
+        oldFrame.style.willChange = 'transform'
+        oldFrame.style.transform = 'translate3d(0px, 0, 0)'
+        newFrame.classList.add('shown')
+        newFrame.style.willChange = 'transform'
+        newFrame.style.transform = `translate3d(${(sign * dist).toFixed(2)}px, 0, 0)`
+        setTurningMask(true)
+        return new Promise(resolve => {
+            const startTime = performance.now()
+            const anim = { oldFrame, newFrame, raf: 0, finish: resolve }
+            const step = ts => {
+                if (state.chapterAnim !== anim)
+                    return
+                const t = clamp((ts - startTime) / duration, 0, 1)
+                const offset = dist * easeTurn(t)
+                oldFrame.style.transform = `translate3d(${(-sign * offset).toFixed(2)}px, 0, 0)`
+                newFrame.style.transform = `translate3d(${(sign * (dist - offset)).toFixed(2)}px, 0, 0)`
+                if (t < 1) {
+                    anim.raf = requestAnimationFrame(step)
+                } else {
+                    state.chapterAnim = null
+                    setTurningMask(false)
+                    hideFrameImmediately(oldFrame)
+                    clearFrameVisual(newFrame)
+                    newFrame.classList.add('shown')
+                    resolve()
+                }
+            }
+            state.chapterAnim = anim
+            anim.raf = requestAnimationFrame(step)
         })
-        const doc = chapterDocument()
-        state.chapter = chapter
-        state.index = null
-        await prepare(doc)
-        applyLayout()
-        await settle(doc)
-        classifyImages(doc)
-        fitBlocks(doc, state.geometry)
-        state.index = buildIndex(doc)
-        measure()
+    }
+
+    async function loadChapter(chapter) {
+        closeNote()
+        const oldFrame = frame()
+        const sf = standby()
+        const hasVisible = state.chapter >= 0 && !!state.index && oldFrame.classList.contains('shown')
+        if (sf && hasVisible) {
+            const sid = sessionId()
+            const sig = styleSignature()
+            let prepared = null
+            if (state.warm && state.warm.chapter === chapter && state.warm.session === sid && state.warm.sig === sig) {
+                const warm = state.warm
+                state.warm = null
+                prepared = warm.ready ? warm.prepared : await warm.promise
+            } else {
+                invalidateWarm()
+                hideFrameImmediately(sf)
+                prepared = await prepareIntoFrame(sf, chapter)
+            }
+            if (prepared && prepared.sig === styleSignature() && prepared.session === sessionId()) {
+                commitPrepared(prepared)
+                restoreDecorations()
+                return { swapped: true, oldFrame, newFrame: prepared.frame }
+            }
+            invalidateWarm()
+            hideFrameImmediately(sf)
+            const fresh = await prepareIntoFrame(sf, chapter)
+            commitPrepared(fresh)
+            restoreDecorations()
+            return { swapped: true, oldFrame, newFrame: fresh.frame }
+        }
+        // First chapter on open(), or single-frame fallback (Node VM harness).
+        invalidateWarm()
+        hideFrameImmediately(oldFrame)
+        const prepared = await prepareIntoFrame(oldFrame, chapter)
+        commitPrepared(prepared)
         restoreDecorations()
+        return { swapped: false, oldFrame: null, newFrame: oldFrame }
     }
 
     // Compact 22×22 note badges beside noted highlights in the outer margin
@@ -1219,9 +1622,11 @@ ${literaryIndent}
     }
 
     // Shows a place: {chapter, offset/snippet, fragment, pageLabel, end, fraction}.
-    async function show(place, animate) {
+    async function show(place, animate, dir = 0) {
+        const wasEmpty = state.chapter < 0 || !state.index
+        let loaded = null
         if (place.chapter !== state.chapter || !state.index)
-            await load(place.chapter)
+            loaded = await loadChapter(place.chapter)
         let page = 0
         if (place.end) {
             page = state.pages - 1
@@ -1235,9 +1640,21 @@ ${literaryIndent}
         } else if (place.fraction !== undefined) {
             page = Math.floor(place.fraction * state.pages)
         }
-        await turnTo(page, animate)
-        frame().classList.add('shown')
+        if (loaded && loaded.swapped) {
+            // Scroll the hidden incoming chapter to its destination page BEFORE
+            // revealing it so backward chapter turns never flash page 0.
+            await turnTo(page, false)
+            await animateChapterSwap(loaded.oldFrame, loaded.newFrame, dir, animate)
+        } else {
+            await turnTo(page, loaded ? false : animate)
+            const f = frame()
+            clearFrameVisual(f)
+            if (wasEmpty && state.style && state.style.animate && !isReducedMotion() && standby())
+                f.classList.add('reveal')
+            f.classList.add('shown')
+        }
         report(!!place.automated)
+        scheduleWarm(dir < 0 ? -1 : 1)
     }
 
     function snapshotLocation() {
@@ -1622,9 +2039,12 @@ ${literaryIndent}
             return
         }
         const target = forward ? page + 1 : backward ? page - 1 : page
-        if (target !== page && state.bridge)
-            state.bridge.tapped('turn')
-        turnTo(target, true).then(() => report())
+        if (target !== page) {
+            if (state.bridge)
+                state.bridge.tapped('turn')
+            emitPageTurn(target > page ? 1 : -1)
+        }
+        turnTo(target, true).then(() => { report(); scheduleWarm(target > page ? 1 : -1) })
     }
 
     function onWheel(event) {
@@ -1808,6 +2228,7 @@ ${literaryIndent}
             }
         }
         closeNote()
+        invalidateWarm()
         const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
         applyLayout()
         fitBlocks(chapterDocument(), state.geometry)
@@ -1868,10 +2289,20 @@ ${literaryIndent}
 
     const api = {
         open(book, position, style) {
+            cancelAnimation()
+            invalidateWarm()
             return run(async () => {
                 cancelAnimation()
+                invalidateWarm()
                 closeNote()
                 hideFromHere(0)
+                activeFrameEl = document.getElementById('book')
+                standbyFrameEl = document.getElementById('book-back')
+                if (standbyFrameEl) {
+                    hideFrameImmediately(standbyFrameEl)
+                    standbyFrameEl.onload = null
+                    standbyFrameEl.src = 'about:blank'
+                }
                 state.book = book
                 state.style = style
                 state.rtl = !!(book && book.rtl)
@@ -1885,6 +2316,7 @@ ${literaryIndent}
                 state.stageWidth = 0
                 state.stageHeight = 0
                 state.nudgeGuardUntil = 0
+                state.lastTurnAt = 0
                 clearTimeout(resizeTimer)
                 resizeTimer = 0
                 state.index = null
@@ -1893,13 +2325,16 @@ ${literaryIndent}
                 state.decorations = {}
                 state.marks = []
                 applyPageColors()
-                await show({ chapter: position.chapter || 0, offset: position.offset || 0, snippet: position.snippet || '' }, false)
+                await show({ chapter: position.chapter || 0, offset: position.offset || 0, snippet: position.snippet || '' }, false, 0)
             })
         },
 
         close() {
+            cancelAnimation()
+            invalidateWarm()
             return run(async () => {
                 cancelAnimation()
+                invalidateWarm()
                 closeNote()
                 hideFromHere(0)
                 clearTimeout(selectionTimer)
@@ -1912,6 +2347,7 @@ ${literaryIndent}
                 state.stageWidth = 0
                 state.stageHeight = 0
                 state.nudgeGuardUntil = 0
+                state.lastTurnAt = 0
                 clearTimeout(resizeTimer)
                 resizeTimer = 0
                 state.index = null
@@ -1924,10 +2360,15 @@ ${literaryIndent}
                 state.justJumped = false
                 state.prefetched = new Set()
                 state.hyphenatedNodes = new Map()
-                const f = frame()
-                f.classList.remove('shown')
-                f.onload = null
-                f.src = 'about:blank'
+                for (const f of [frame(), standby()]) {
+                    if (!f)
+                        continue
+                    hideFrameImmediately(f)
+                    f.onload = null
+                    f.src = 'about:blank'
+                }
+                activeFrameEl = document.getElementById('book')
+                standbyFrameEl = document.getElementById('book-back')
             })
         },
 
@@ -1936,6 +2377,7 @@ ${literaryIndent}
                 const prev = state.style
                 state.style = style
                 applyPageColors()
+                invalidateWarm()
                 if (!state.index || !state.location)
                     return
                 const doc = chapterDocument()
@@ -1947,6 +2389,7 @@ ${literaryIndent}
                     markDropCap(doc)
                 if (!layoutChanged) {
                     applyTypography(doc)
+                    scheduleWarm(1)
                     return
                 }
                 const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
@@ -1974,16 +2417,22 @@ ${literaryIndent}
                 const page = pageOfOffset(resolveOffset(place.offset, place.snippet))
                 await turnTo(page, false)
                 report()
+                scheduleWarm(1)
             })
         },
 
         next() {
+            cancelAnimation(!!state.index && state.page < state.pages - 1)
             return run(async () => {
                 if (!state.index)
                     return
                 if (state.page < state.pages - 1) {
-                    await turnTo(state.page + 1, true)
-                    report()
+                    emitPageTurn(1)
+                    const settled = await turnTo(state.page + 1, true)
+                    if (settled) {
+                        report()
+                        scheduleWarm(1)
+                    }
                     return
                 }
                 const chapter = linearAfter(state.chapter)
@@ -1991,51 +2440,67 @@ ${literaryIndent}
                     report()
                     return
                 }
-                await show({ chapter, offset: 0 }, false)
+                emitPageTurn(1)
+                await show({ chapter, offset: 0 }, true, 1)
             })
         },
 
         prev() {
+            cancelAnimation(!!state.index && state.page > 0)
             return run(async () => {
                 if (!state.index)
                     return
                 if (state.page > 0) {
-                    await turnTo(state.page - 1, true)
-                    report()
+                    emitPageTurn(-1)
+                    const settled = await turnTo(state.page - 1, true)
+                    if (settled) {
+                        report()
+                        scheduleWarm(-1)
+                    }
                     return
                 }
                 const chapter = linearBefore(state.chapter)
-                if (chapter >= 0)
-                    await show({ chapter, end: true }, false)
+                if (chapter >= 0) {
+                    emitPageTurn(-1)
+                    await show({ chapter, end: true }, true, -1)
+                }
             })
         },
 
         nextChapter() {
+            cancelAnimation(false)
             return run(async () => {
                 const chapter = linearAfter(state.chapter)
-                if (chapter >= 0)
-                    await show({ chapter, offset: 0 }, false)
+                if (chapter >= 0) {
+                    emitPageTurn(1)
+                    await show({ chapter, offset: 0 }, true, 1)
+                }
             })
         },
 
         prevChapter() {
+            cancelAnimation(false)
             return run(async () => {
                 // From inside a chapter, its own start; from its start, the one before.
                 const chapter = state.page > 0 ? state.chapter : linearBefore(state.chapter)
-                if (chapter >= 0)
-                    await show({ chapter, offset: 0 }, false)
+                if (chapter >= 0) {
+                    emitPageTurn(-1)
+                    await show({ chapter, offset: 0 }, true, -1)
+                }
             })
         },
 
         goTo(place) {
+            cancelAnimation(false)
             return run(async () => {
                 if (!place.quiet)
                     remember()
-                await show(place, place.chapter === state.chapter && !place.instant)
+                await show(place, !place.instant, 0)
             })
         },
 
         back() {
+            cancelAnimation(false)
             return run(async () => {
                 const place = state.history.pop()
                 if (!place)
@@ -2047,11 +2512,12 @@ ${literaryIndent}
                         state.forward.shift()
                 }
                 state.justJumped = false
-                await show(place, false)
+                await show(place, true, 0)
             })
         },
 
         forward() {
+            cancelAnimation(false)
             return run(async () => {
                 const place = state.forward.pop()
                 if (!place)
@@ -2063,7 +2529,7 @@ ${literaryIndent}
                         state.history.shift()
                 }
                 state.justJumped = false
-                await show(place, false)
+                await show(place, true, 0)
             })
         },
 

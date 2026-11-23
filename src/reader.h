@@ -143,6 +143,9 @@ public:
     Q_INVOKABLE void openExternal(const QString &url);
     Q_INVOKABLE void keyPressed(const QString &key, int modifiers);
     Q_INVOKABLE void log(const QString &message);
+    // Tactile paper-flip sound on page turns (throttled, headless-safe).
+    Q_INVOKABLE void playPageTurn(int direction = 1);
+    Q_INVOKABLE void notifyPageTurn(int direction = 1);
     // --- PDFs: a page is a chapter, its text's offsets the place on it -------
     QString pdfSource() const { return m_pdf ? QStringLiteral("image://pdf/") + m_token : QString(); }
     QRectF pdfCrop() const { return m_pdfCrop; }
@@ -158,6 +161,7 @@ public:
     Q_INVOKABLE QVariantList pdfRects(int page, qint64 start, qint64 end) const;
     Q_INVOKABLE QString pdfPageLabel(int page) const;
     Q_INVOKABLE QString pdfPageText(int page) const;
+    Q_INVOKABLE void pdfPrefetch(const QVariantList &pages, int pixelWidth, const QString &colorQuery);
     // Reads a page's paragraphs aloud (the surface asks for them).
     Q_INVOKABLE void pdfSpeakable(int page);
 
@@ -191,9 +195,11 @@ signals:
     void selected(const QVariantMap &selection);
     void markChosen(int id, const QVariantMap &rect);
     void listenRequested(int chapter, qint64 offset);
+    void pageTurnRequested(int direction);
     void pdfCropChanged();
 
 private:
+    struct PageTurnSfx;
     void savePosition();
     void flushReadingTime();
     void measureChapters();
@@ -259,4 +265,5 @@ private:
     int m_pendingSeconds = 0;
     qint64 m_pendingChars = 0;
     QTimer m_timeFlush;
+    std::unique_ptr<PageTurnSfx> m_sfx;
 };
