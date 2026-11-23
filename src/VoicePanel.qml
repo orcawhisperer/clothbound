@@ -2,16 +2,14 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
-import "Format.js" as Format
 import "Icons.js" as Icons
 import "Ui.js" as Ui
 
-// Choose a narrator: centered 700×668 app-chrome modal sheet over a dimmed page
-// scrim. Fixed header with 2-line source tabs (On this computer / Gemini /
-// Studio), virtualized 222+ voice ListView with avatars, "Suits this book"
-// pills, inline search/language filter, AI Voice Designer, collapsible pack &
-// cache storage, and a fixed 3-row footer for Style, Full cast, and Download /
-// M4B export + primary Listen CTA.
+// Choose a narrator: centered 680×620 app-chrome modal sheet over a dimmed page
+// scrim. Focused strictly on browsing, previewing, downloading, and choosing
+// narration voices (On this computer / Gemini), with keyboard navigation
+// (Up/Down, Space to preview, Enter to choose, Esc to close) and a subtle
+// single-line mention of Studio mode in Settings › Voices.
 FocusScope {
     id: panel
 
@@ -32,15 +30,16 @@ FocusScope {
     signal sampleWanted()
     signal listenRequested()
 
-    // Which voices the sheet shows: "builtin", "gemini", or "studio".
-    property string source: "gemini"
+    // Which voices the sheet shows: "builtin" or "gemini".
+    property string source: "builtin"
     // Built-in language filter: "__book__" (book's language), "" (all),
     // "__installed__" (installed only), or a BCP-47 base code ("en", "de"...).
     property string builtinFilter: "__book__"
     property bool allBuiltins: false
     property string pendingVoice: ""
+    property string pendingPack: ""
     property int packsVersion: 0
-    property bool storageExpanded: false
+    property bool keyboardActive: false
 
     // Deterministic 6-color editorial avatar palette matching 05_narrator.html.
     readonly property var avatarPalette: ["#3E5F99", "#7A4E2D", "#2F6B57", "#6B4A82", "#8A3F4A", "#4A5A6B"]
@@ -92,10 +91,28 @@ FocusScope {
     palette.toolTipBase: theme.overlay
     palette.toolTipText: theme.ink1
 
+    readonly property bool builtinVoice: (narration.voice || "").startsWith("builtin:")
+    readonly property bool studioVoice: (narration.voice || "").startsWith("studio:")
+    readonly property bool styleDisabled: source === "builtin" || builtinVoice
+    readonly property bool typingInDesignField: {
+        const item = panel.Window.activeFocusItem
+        return item !== null && item !== searchInput && item.cursorPosition !== undefined && !item.readOnly
+    }
+    readonly property string activeProblem: {
+        if (source === "builtin" && voicePacks.supported)
+            return voicePacks.problem
+        if (source === "gemini")
+            return voices.problem
+        return ""
+    }
+
     Timer {
         id: searchDebounce
-        interval: 180
-        onTriggered: panel.debouncedQuery = panel.query
+        interval: 160
+        onTriggered: {
+            panel.debouncedQuery = panel.query
+            panel.resetListPosition()
+        }
     }
 
     function updateQuery(text) {
@@ -103,33 +120,124 @@ FocusScope {
         if (text.trim() === "") {
             searchDebounce.stop()
             debouncedQuery = ""
+            resetListPosition()
         } else {
             searchDebounce.restart()
         }
     }
 
+    function resetListPosition() {
+        voiceList.positionViewAtBeginning()
+        if (listItems.length === 0) {
+            voiceList.currentIndex = -1
+            return
+        }
+        const activeIdx = listItems.findIndex(item => !item.designEntry && item.voice && item.voice.id === narration.voice)
+        voiceList.currentIndex = activeIdx >= 0 ? activeIdx : 0
+    }
+
+    function switchSource(nextSource) {
+        if (source === nextSource)
+            return
+        voices.stopPreview()
+        source = nextSource
+        keyboardActive = false
+        if (nextSource === "gemini" && ai.hasKey)
+            voices.refresh()
+        resetListPosition()
+    }
+
+    function moveHighlight(delta) {
+        const count = listItems.length
+        if (count <= 0)
+            return
+        keyboardActive = true
+        const cur = voiceList.currentIndex
+        const next = cur < 0 ? (delta > 0 ? 0 : count - 1)
+                             : Math.max(0, Math.min(count - 1, cur + delta))
+        voiceList.currentIndex = next
+        voiceList.positionViewAtIndex(next, ListView.Contain)
+    }
+
+    function activateHighlighted() {
+        const idx = voiceList.currentIndex
+        if (idx < 0 || idx >= listItems.length)
+            return
+        const entry = listItems[idx]
+        if (entry.designEntry) {
+            if (voices.casting === "")
+                voices.cast(reader.passageFrom(reader.chapter, 4000))
+            return
+        }
+        if (!entry.voice)
+            return
+        // Pressing Enter on the already-chosen playable voice starts listening right away.
+        if (narration.voice === entry.voice.id && (entry.voice.kind !== "builtin" || entry.voice.installed)
+            && !(entry.voice.kind !== "builtin" && !ai.hasKey)) {
+            startOrFinishListening()
+            return
+        }
+        choose(entry.voice)
+    }
+
+    function previewHighlighted() {
+        const idx = voiceList.currentIndex
+        if (idx < 0 || idx >= listItems.length)
+            return
+        const entry = listItems[idx]
+        if (entry.designEntry || !entry.voice)
+            return
+        if (entry.voice.kind === "builtin" && !entry.voice.installed)
+            return
+        if (entry.voice.kind !== "builtin" && !ai.hasKey)
+            return
+        preview(entry.voice.id)
+    }
+
+    function startOrFinishListening() {
+        panel.resumeAfter = false
+        voices.stopPreview()
+        const shouldResume = narration.active && !narration.playing
+        const shouldStartPending = !narration.active && narration.hasPendingStart
+        const shouldListen = !narration.active && !narration.hasPendingStart
+        panel.close()
+        if (shouldResume)
+            narration.resume()
+        else if (shouldStartPending)
+            narration.startPending()
+        else if (shouldListen)
+            panel.listenRequested()
+    }
+
+    function openVoicesSettings() {
+        panel.close()
+        if (typeof settingsView !== "undefined" && typeof settingsView.show === "function")
+            settingsView.show("listening")
+        else if (typeof win !== "undefined" && typeof win.showAiSettings === "function")
+            win.showAiSettings()
+    }
+
     function show() {
         open = true
+        keyboardActive = false
         searchDebounce.stop()
         query = ""
         debouncedQuery = ""
         builtinFilter = reader.language !== "" ? "__book__" : ""
-        source = studioVoice ? "studio"
-               : builtinVoice || (!ai.hasKey && voicePacks.supported) ? "builtin" : "gemini"
-        if (ai.localSpeechModel !== "")
-            voices.loadStudioVoices()
+        source = !voicePacks.supported ? "gemini"
+               : builtinVoice || !ai.hasKey ? "builtin" : "gemini"
         if (ai.hasKey)
             voices.refresh()
-        voiceList.positionViewAtBeginning()
+        resetListPosition()
         sampleWanted()
         forceActiveFocus()
     }
+
     function close() {
         if (!open)
             return
         open = false
-        downloadMenu.close()
-        castPopup.close()
+        keyboardActive = false
         voices.stopPreview()
         if (resumeAfter) {
             resumeAfter = false
@@ -137,7 +245,12 @@ FocusScope {
         }
         closed()
     }
+
+    Component.onDestruction: voices.stopPreview()
+
     function preview(id) {
+        if (!id)
+            return
         if (voices.previewing === id) {
             voices.stopPreview()
             return
@@ -148,27 +261,51 @@ FocusScope {
         }
         voices.preview(id, sample)
     }
+
     function choose(voice) {
+        if (!voice || !voice.id)
+            return
         voices.stopPreview()
         if (voice.kind === "builtin" && !voice.installed) {
+            // Never overwrite an active download's target voice.
+            if (voicePacks.busy)
+                return
             pendingVoice = voice.id
+            pendingPack = voice.pack || ""
             voicePacks.installVoice(voice.id)
             return
         }
+        if (voice.kind !== "builtin" && !ai.hasKey)
+            return
         narration.setVoice(voice.id, voice.title || voice.name)
     }
+
+    function voiceAccentTag(voice) {
+        const title = String(voice.title || voice.name || "")
+        const accent = String(voice.accent || "")
+        if (accent !== "" && accent.toLowerCase() !== title.toLowerCase())
+            return accent
+        if (voice.gender)
+            return voice.gender === "female" ? qsTr("Female")
+                 : voice.gender === "male" ? qsTr("Male") : voice.gender
+        return ""
+    }
+
     function voiceSubtitle(voice) {
         const parts = []
         if (voice.kind === "builtin") {
             parts.push(voice.engine || qsTr("Built-in"))
+            if (voice.note)
+                parts.push(voice.note)
             if (!voice.installed) {
-                parts.push(qsTr("%1 MB to download").arg(Math.round((voice.bytes || 0) / 1e6).toLocaleString(Qt.locale(), 'f', 0)))
+                const mb = Math.max(1, Math.round((voice.bytes || 0) / 1e6))
+                parts.push(qsTr("%1 MB download").arg(mb.toLocaleString(Qt.locale(), 'f', 0)))
             } else {
-                if (voice.note)
-                    parts.push(voice.note)
                 const speed = localSpeech.speedOf(voice.id)
                 if (speed > 0 && translator.language !== "")
                     parts.push(qsTr("%1× real time").arg(speed.toLocaleString(Qt.locale(), 'f', 1)))
+                else
+                    parts.push(qsTr("Ready offline"))
             }
             return parts.join(" · ")
         }
@@ -180,8 +317,6 @@ FocusScope {
                 parts.push(voice.summary)
             return parts.join(" · ")
         }
-        if (voice.kind === "studio")
-            return voice.note || voice.summary || qsTr("On your server")
         // Gemini library / classic voice
         parts.push("Gemini")
         if (voice.note)
@@ -190,36 +325,6 @@ FocusScope {
             parts.push(voice.summary)
         return parts.join(" · ")
     }
-    function removePack(packId) {
-        if (voicePacks.busy)
-            return
-        if (narration.active && narration.voice.startsWith("builtin:")) {
-            const cur = voicePacks.voice(narration.voice)
-            if (packId === "engine" || (cur && cur.pack === packId))
-                narration.stop()
-        }
-        voices.stopPreview()
-        voicePacks.remove(packId)
-    }
-
-    // Voice families.
-    readonly property bool builtinVoice: (narration.voice || "").startsWith("builtin:")
-    readonly property bool studioVoice: (narration.voice || "").startsWith("studio:")
-    readonly property bool localVoice: builtinVoice || studioVoice
-    readonly property bool styleDisabled: source === "builtin" || builtinVoice
-
-    // Downloading for offline listening / audiobook export.
-    readonly property int lastChapter: reader.chapterCount - 1
-    readonly property var chapterEstimate: open && voices.count >= 0 && narration.voice !== undefined && narration.economy !== undefined && reader.chapterMarks.length >= 0
-        ? download.estimate(reader.chapter, reader.chapter) : ({})
-    readonly property var restEstimate: open && voices.count >= 0 && narration.voice !== undefined && narration.economy !== undefined && reader.chapterMarks.length >= 0
-        ? download.estimate(reader.chapter, lastChapter) : ({})
-    function money(dollars) {
-        return dollars < 0.01 ? qsTr("under $0.01") : qsTr("about %1").arg("$" + dollars.toLocaleString(Qt.locale(), 'f', 2))
-    }
-    readonly property bool downloadingThisBook: download.active && download.bookId === reader.bookId
-    readonly property bool offlineApplies: (ai.hasKey || ai.canSpeak || ai.localSpeechModel !== "" || voicePacks.engineInstalled || voicePacks.megabytes >= 0)
-                                           && narration.voice !== "" && ai.canSpeakWith(narration.voice)
 
     readonly property string language: reader.language
     readonly property var suggestions: open && voices.count >= 0 ? voices.suggestions(language) : []
@@ -228,17 +333,16 @@ FocusScope {
     readonly property var yours: open && voices.count >= 0 ? voices.designedVoices() : []
     readonly property var geminiResults: open && debouncedQuery.trim() !== "" && voices.count >= 0
         ? voices.search(debouncedQuery, "", 120) : []
-    readonly property var castChoices: cast.available ? cast.choices() : []
 
-    // Built-in voices & packs.
+    // Built-in voices & language filter options.
     readonly property var builtinsForBook: open && packsVersion >= 0 ? voicePacks.voices(language) : []
     readonly property var builtinInstalledForBook: builtinsForBook.filter(voice => voice.installed)
-    readonly property var installedPacks: open && packsVersion >= 0 ? voicePacks.installedPacks() : []
     readonly property var builtinLanguageOptions: {
         void(packsVersion)
         const opts = []
         if (panel.language !== "") {
-            const bookLangName = Qt.locale(panel.language).nativeLanguageName || panel.language
+            const base = panel.language.split(/[-_]/)[0]
+            const bookLangName = Qt.locale(base).nativeLanguageName || Qt.locale(panel.language).nativeLanguageName || panel.language
             opts.push({ code: "__book__", label: qsTr("Book (%1)").arg(bookLangName) })
         }
         opts.push({ code: "", label: qsTr("All languages") })
@@ -262,42 +366,52 @@ FocusScope {
         if (!open)
             return []
         const items = []
-        if (source === "studio") {
-            const list = voices.studioVoices || []
-            for (let i = 0; i < list.length; ++i)
-                items.push({ designEntry: false, voice: list[i] })
-            return items
-        }
+        const q = debouncedQuery.trim()
         if (source === "builtin" && voicePacks.supported) {
-            const q = debouncedQuery.trim()
             const installedOnly = builtinFilter === "__installed__"
             const langCode = builtinFilter === "__book__" ? language
                            : builtinFilter === "__installed__" ? "" : builtinFilter
             let list = voicePacks.searchVoices(q, langCode, installedOnly)
             if (q === "" && builtinFilter === "__book__" && !allBuiltins && builtinInstalledForBook.length > 0) {
                 const compact = builtinInstalledForBook.filter(v => v.recommended || v.id === narration.voice)
-                // Also surface one uninstalled pack option (e.g. Piper) if space allows.
                 const uninstalled = list.filter(v => !v.installed).slice(0, 2)
                 list = compact.concat(uninstalled)
             }
-            for (let i = 0; i < list.length; ++i)
-                items.push({ designEntry: false, voice: list[i] })
+            let badgeCount = 0
+            for (let i = 0; i < list.length; ++i) {
+                const v = list[i]
+                const showBadge = q === "" && !!v.suggested && badgeCount < 2
+                if (showBadge)
+                    badgeCount++
+                items.push({ designEntry: false, voice: v, badgeSuggested: showBadge })
+            }
             return items
         }
         // Gemini tab
-        if (debouncedQuery.trim() !== "") {
+        if (q !== "") {
             for (let i = 0; i < geminiResults.length; ++i)
-                items.push({ designEntry: false, voice: geminiResults[i] })
+                items.push({ designEntry: false, voice: geminiResults[i], badgeSuggested: false })
             return items
         }
         for (let i = 0; i < yours.length; ++i)
-            items.push({ designEntry: false, voice: yours[i] })
-        for (let i = 0; i < narrators.length; ++i)
-            items.push({ designEntry: false, voice: narrators[i] })
-        for (let i = 0; i < classics.length; ++i)
-            items.push({ designEntry: false, voice: classics[i] })
+            items.push({ designEntry: false, voice: yours[i], badgeSuggested: false })
+        let badgeCount = 0
+        for (let i = 0; i < narrators.length; ++i) {
+            const v = narrators[i]
+            const showBadge = !!v.suggested && badgeCount < 2
+            if (showBadge)
+                badgeCount++
+            items.push({ designEntry: false, voice: v, badgeSuggested: showBadge })
+        }
+        for (let i = 0; i < classics.length; ++i) {
+            const v = classics[i]
+            const showBadge = !!v.suggested && badgeCount < 2
+            if (showBadge)
+                badgeCount++
+            items.push({ designEntry: false, voice: v, badgeSuggested: showBadge })
+        }
         if (ai.canDesignVoices)
-            items.push({ designEntry: true, voice: { id: "__design__" } })
+            items.push({ designEntry: true, voice: { id: "__design__" }, badgeSuggested: false })
         return items
     }
 
@@ -310,13 +424,29 @@ FocusScope {
     Connections {
         target: voicePacks
         function onChanged() { panel.packsVersion++ }
+        function onFailed() {
+            panel.pendingVoice = ""
+            panel.pendingPack = ""
+            panel.packsVersion++
+        }
+        function onProgressChanged() {
+            if (!voicePacks.busy && panel.pendingVoice !== "") {
+                const v = voicePacks.voice(panel.pendingVoice)
+                if (!v || !v.installed) {
+                    panel.pendingVoice = ""
+                    panel.pendingPack = ""
+                }
+            }
+        }
         function onReady(voiceId) {
             panel.packsVersion++
             if (voiceId !== panel.pendingVoice)
                 return
             panel.pendingVoice = ""
+            panel.pendingPack = ""
             const voice = voicePacks.voice(voiceId)
-            narration.setVoice(voice.id, voice.name)
+            if (voice && voice.id)
+                narration.setVoice(voice.id, voice.name)
             if (!narration.active && narration.hasPendingStart) {
                 panel.close()
                 narration.startPending()
@@ -336,16 +466,56 @@ FocusScope {
         }
     }
 
-    Keys.onEscapePressed: {
-        if (downloadMenu.opened)
-            downloadMenu.close()
-        else if (castPopup.opened)
-            castPopup.close()
-        else
-            close()
+    Keys.onEscapePressed: (event) => {
+        if (searchInput.activeFocus && panel.query !== "") {
+            panel.updateQuery("")
+            event.accepted = true
+            return
+        }
+        panel.close()
+        event.accepted = true
+    }
+    Keys.onDownPressed: (event) => {
+        if (panel.typingInDesignField)
+            return
+        panel.moveHighlight(1)
+        event.accepted = true
+    }
+    Keys.onUpPressed: (event) => {
+        if (panel.typingInDesignField)
+            return
+        panel.moveHighlight(-1)
+        event.accepted = true
+    }
+    Keys.onReturnPressed: (event) => {
+        if (panel.typingInDesignField)
+            return
+        panel.activateHighlighted()
+        event.accepted = true
+    }
+    Keys.onEnterPressed: (event) => {
+        if (panel.typingInDesignField)
+            return
+        panel.activateHighlighted()
+        event.accepted = true
+    }
+    Keys.onPressed: (event) => {
+        if (panel.typingInDesignField)
+            return
+        if (event.key === Qt.Key_Space && !searchInput.activeFocus) {
+            panel.previewHighlighted()
+            event.accepted = true
+            return
+        }
+        if ((event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier))
+            || (event.key === Qt.Key_Slash && event.modifiers === Qt.NoModifier && !searchInput.activeFocus)) {
+            searchInput.forceActiveFocus()
+            searchInput.selectAll()
+            event.accepted = true
+        }
     }
 
-    // Fill the reader window so scrim & centered 700×668 modal always align.
+    // Fill the reader window so scrim & centered modal always align.
     x: 0
     y: 0
     z: 10
@@ -353,7 +523,12 @@ FocusScope {
     height: parent ? parent.height : 0
     visible: opacity > 0.01
     opacity: open ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 140 : 180; easing.type: Easing.OutCubic } }
+    Behavior on opacity {
+        NumberAnimation {
+            duration: theme.reducedMotion ? 100 : (panel.open ? 180 : 130)
+            easing.type: Easing.OutCubic
+        }
+    }
 
     // Dimmed modal scrim over the page.
     Rectangle {
@@ -372,17 +547,22 @@ FocusScope {
         id: listen
         property string voiceId
         property var press: null
-        readonly property bool playing: voices.previewing === voiceId
+        property string disabledTip: ""
+        readonly property bool playing: voiceId !== "" && voices.previewing === voiceId
         implicitWidth: 30
         implicitHeight: 30
         hoverEnabled: true
         focusPolicy: Qt.TabFocus
+        opacity: enabled ? 1.0 : 0.38
         Accessible.name: playing ? qsTr("Stop preview") : qsTr("Preview")
         background: Rectangle {
             radius: 15
             color: listen.playing ? theme.accentSoft
-                 : listen.pressed ? theme.fillPressed
-                 : listen.hovered ? theme.fillHover : theme.fill
+                 : listen.enabled && listen.pressed ? theme.fillPressed
+                 : listen.enabled && listen.hovered ? theme.fillHover : theme.fill
+            border.width: listen.playing ? 1 : 0
+            border.color: Ui.tint(theme.accent, 0.48)
+            Behavior on color { ColorAnimation { duration: 100 } }
             Rectangle {
                 anchors.fill: parent
                 anchors.margins: -2
@@ -406,23 +586,31 @@ FocusScope {
             }
             BusyIndicator {
                 anchors.centerIn: parent
-                implicitWidth: 22
-                implicitHeight: 22
+                implicitWidth: 20
+                implicitHeight: 20
                 visible: listen.playing && voices.previewBuffering
                 running: visible
             }
         }
         onClicked: press ? press() : panel.preview(voiceId)
+        HoverHandler { cursorShape: listen.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
         ToolTip.visible: hovered
-        ToolTip.text: playing ? qsTr("Stop") : qsTr("Hear it read this page")
-        ToolTip.delay: 600
+        ToolTip.text: !enabled && disabledTip !== "" ? disabledTip
+                    : playing ? qsTr("Stop preview") : qsTr("Hear it read this page")
+        ToolTip.delay: 500
     }
 
     component VoiceRow: AbstractButton {
         id: row
         property var voice: ({})
+        property bool badgeSuggested: false
+        property bool keyboardHighlighted: false
         readonly property bool chosen: narration.voice === voice.id
+        readonly property bool previewingThis: voice.id !== undefined && voices.previewing === voice.id
         readonly property bool needsDownload: voice.kind === "builtin" && !voice.installed
+        readonly property bool downloadingThis: voicePacks.busy && needsDownload && panel.pendingVoice === voice.id
+        readonly property bool needsKey: voice.kind !== "builtin" && !ai.hasKey
+        readonly property string accentTag: panel.voiceAccentTag(voice)
         property bool confirming: false
 
         Timer {
@@ -431,18 +619,24 @@ FocusScope {
             onTriggered: row.confirming = false
         }
 
-        implicitHeight: Math.max(52, rowLayout.implicitHeight + 16)
+        implicitHeight: Math.max(52, rowLayout.implicitHeight + 14)
         hoverEnabled: true
         focusPolicy: Qt.TabFocus
-        Accessible.name: (voice.title || voice.name || "") + (voice.accent ? ", " + voice.accent : "")
+        Accessible.name: (voice.title || voice.name || "") + (accentTag !== "" ? ", " + accentTag : "")
         Accessible.checked: chosen
         onClicked: panel.choose(voice)
+        onHoveredChanged: if (hovered) panel.keyboardActive = false
 
         background: Rectangle {
             radius: Ui.radius(10, theme.radius)
-            color: row.chosen ? Ui.tint(theme.ink1, 0.07)
+            color: row.chosen ? Ui.tint(theme.ink1, 0.08)
+                 : row.previewingThis ? Ui.tint(theme.accent, 0.08)
+                 : row.keyboardHighlighted ? Ui.tint(theme.ink1, 0.06)
                  : row.pressed ? Ui.tint(theme.ink1, 0.06)
                  : row.hovered ? Ui.tint(theme.ink1, 0.04) : "transparent"
+            border.width: row.previewingThis ? 1 : row.keyboardHighlighted ? 1.5 : 0
+            border.color: row.previewingThis ? Ui.tint(theme.accent, 0.35) : Ui.tint(theme.accent, 0.65)
+            Behavior on color { ColorAnimation { duration: 100 } }
             Rectangle {
                 anchors.fill: parent
                 anchors.margins: -2
@@ -478,6 +672,7 @@ FocusScope {
             // 2-line metadata stack.
             ColumnLayout {
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
                 Layout.alignment: Qt.AlignVCenter
                 spacing: 2
 
@@ -494,15 +689,15 @@ FocusScope {
                         Layout.maximumWidth: 200
                     }
                     Label {
-                        visible: text !== ""
-                        text: row.voice.accent || ""
+                        visible: row.accentTag !== ""
+                        text: row.accentTag
                         color: theme.ink3
                         font.pixelSize: 13
                         elide: Text.ElideRight
                         Layout.maximumWidth: 160
                     }
                     Rectangle {
-                        visible: !!row.voice.suggested
+                        visible: row.badgeSuggested
                         Layout.alignment: Qt.AlignVCenter
                         implicitWidth: suitsLabel.implicitWidth + 12
                         implicitHeight: 17
@@ -577,25 +772,42 @@ FocusScope {
                 ToolTip.delay: 600
             }
 
-            // 30×30 preview button (or download trigger when uninstalled).
+            // 30×30 action slot: preview play/stop, active download spinner, or download trigger.
             ListenBtn {
                 visible: !row.needsDownload
                 Layout.alignment: Qt.AlignVCenter
                 voiceId: row.voice.id || ""
+                enabled: !row.needsKey
+                disabledTip: qsTr("Add your Gemini API key to preview")
+            }
+            Item {
+                visible: row.downloadingThis
+                Layout.alignment: Qt.AlignVCenter
+                Layout.preferredWidth: 30
+                Layout.preferredHeight: 30
+                BusyIndicator {
+                    anchors.centerIn: parent
+                    implicitWidth: 22
+                    implicitHeight: 22
+                    running: parent.visible
+                }
             }
             AbstractButton {
                 id: dlRowBtn
-                visible: row.needsDownload
+                visible: row.needsDownload && !row.downloadingThis
                 Layout.alignment: Qt.AlignVCenter
                 implicitWidth: 30
                 implicitHeight: 30
                 hoverEnabled: true
                 focusPolicy: Qt.TabFocus
                 enabled: !voicePacks.busy
+                opacity: enabled ? 1.0 : 0.38
+                Accessible.name: qsTr("Download this voice")
                 onClicked: panel.choose(row.voice)
                 background: Rectangle {
                     radius: 15
-                    color: dlRowBtn.hovered ? theme.fillHover : theme.fill
+                    color: dlRowBtn.enabled && dlRowBtn.pressed ? theme.fillPressed
+                         : dlRowBtn.enabled && dlRowBtn.hovered ? theme.fillHover : theme.fill
                 }
                 contentItem: Item {
                     Glyph {
@@ -606,12 +818,13 @@ FocusScope {
                         color: theme.ink3
                     }
                 }
+                HoverHandler { cursorShape: dlRowBtn.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
                 ToolTip.visible: hovered
-                ToolTip.text: qsTr("Download this voice")
-                ToolTip.delay: 600
+                ToolTip.text: voicePacks.busy ? qsTr("Wait for the current download to finish") : qsTr("Download this voice")
+                ToolTip.delay: 500
             }
 
-            // 18 px checkmark slot so preview buttons align cleanly across rows.
+            // 18 px checkmark slot so action buttons align cleanly across every row.
             Item {
                 Layout.preferredWidth: 18
                 Layout.preferredHeight: 18
@@ -630,9 +843,10 @@ FocusScope {
         }
     }
 
-    // "+ Design a narrator…" entry that expands into the full editable AI Casting card.
+    // "+ Design a narrator…" entry that expands into the editable AI Casting card (Gemini tab).
     component DesignNarratorEntry: Item {
         id: entry
+        property bool keyboardHighlighted: false
         implicitHeight: voices.casting === "" ? designRow.implicitHeight : castingCard.implicitHeight + 8
 
         AbstractButton {
@@ -646,8 +860,11 @@ FocusScope {
             onClicked: voices.cast(reader.passageFrom(reader.chapter, 4000))
             background: Rectangle {
                 radius: Ui.radius(10, theme.radius)
-                color: designRow.pressed ? Ui.tint(theme.ink1, 0.06)
+                color: entry.keyboardHighlighted ? Ui.tint(theme.ink1, 0.06)
+                     : designRow.pressed ? Ui.tint(theme.ink1, 0.06)
                      : designRow.hovered ? Ui.tint(theme.ink1, 0.04) : "transparent"
+                border.width: entry.keyboardHighlighted ? 1.5 : 0
+                border.color: Ui.tint(theme.accent, 0.65)
                 Rectangle {
                     anchors.fill: parent
                     anchors.margins: -2
@@ -892,59 +1109,27 @@ FocusScope {
         }
     }
 
-    component PackRow: RowLayout {
-        id: packRow
-        property var pack: ({})
-        property bool confirming: false
-        Timer {
-            running: packRow.confirming
-            interval: 4000
-            onTriggered: packRow.confirming = false
-        }
-        Layout.fillWidth: true
-        spacing: 8
-        Label {
-            Layout.fillWidth: true
-            text: packRow.pack.title || packRow.pack.id || ""
-            color: theme.ink1
-            font.pixelSize: 12
-            elide: Text.ElideRight
-        }
-        Label {
-            text: Format.size((packRow.pack.megabytes || 0) * 1024 * 1024, Qt.locale())
-            color: theme.ink4
-            font.pixelSize: 11
-            font.features: ({ "tnum": 1 })
-        }
-        TextButton {
-            size: "compact"
-            enabled: !voicePacks.busy
-            text: packRow.confirming ? qsTr("Remove?") : qsTr("Remove")
-            onClicked: {
-                if (!packRow.confirming) {
-                    packRow.confirming = true
-                    return
-                }
-                packRow.confirming = false
-                panel.removePack(packRow.pack.id)
-            }
-        }
-    }
-
-    // --- Centered 700×668 App-Chrome Modal Sheet ---
+    // --- Centered 680×620 App-Chrome Modal Sheet ---
     Rectangle {
         id: sheetCard
         anchors.centerIn: parent
-        width: Math.min(700, Math.max(380, panel.width - 48))
-        height: Math.min(668, Math.max(420, panel.height - 64))
+        width: Math.min(680, Math.max(380, panel.width - 48))
+        height: Math.min(620, Math.max(420, panel.height - 64))
         radius: Ui.radius(16, theme.radius)
         color: theme.raised
         border.width: 1
         border.color: theme.hairline
-        scale: panel.open || theme.reducedMotion ? 1 : 0.97
+        scale: panel.open || theme.reducedMotion ? 1.0 : 0.97
+        transform: Translate {
+            y: panel.open || theme.reducedMotion ? 0 : 8
+            Behavior on y {
+                enabled: !theme.reducedMotion
+                NumberAnimation { duration: 210; easing.type: Easing.OutCubic }
+            }
+        }
         Behavior on scale {
             enabled: !theme.reducedMotion
-            NumberAnimation { duration: 320; easing.type: Easing.OutQuart }
+            NumberAnimation { duration: 210; easing.type: Easing.OutCubic }
         }
 
         // Soft layered modal shadow (works identically in rounded and sharp modes).
@@ -981,14 +1166,14 @@ FocusScope {
             // === 1. Fixed Header ===
             Item {
                 Layout.fillWidth: true
-                implicitHeight: headerCol.implicitHeight + 36
+                implicitHeight: headerCol.implicitHeight + 34
 
                 ColumnLayout {
                     id: headerCol
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: parent.top
-                    anchors.topMargin: 20
+                    anchors.topMargin: 18
                     anchors.leftMargin: 22
                     anchors.rightMargin: 22
                     spacing: 14
@@ -1051,13 +1236,14 @@ FocusScope {
                                     color: theme.ink2
                                 }
                             }
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("Close (Esc)")
                             ToolTip.delay: 600
                         }
                     }
 
-                    // 3-column 2-line Source Tabs.
+                    // Clean 2-source toggle: On this computer vs Gemini.
                     Segmented {
                         Layout.fillWidth: true
                         model: [
@@ -1070,20 +1256,11 @@ FocusScope {
                             {
                                 value: "gemini",
                                 label: qsTr("Gemini"),
-                                subtitle: qsTr("Most natural")
-                            },
-                            {
-                                value: "studio",
-                                label: qsTr("Studio"),
-                                subtitle: qsTr("Your server")
+                                subtitle: ai.hasKey ? qsTr("Most natural") : qsTr("Needs your key")
                             }
                         ]
                         current: panel.source
-                        onActivated: (value) => {
-                            panel.source = value
-                            if (value === "studio" && ai.localSpeechModel !== "")
-                                voices.loadStudioVoices()
-                        }
+                        onActivated: (value) => panel.switchSource(value)
                     }
                 }
 
@@ -1096,7 +1273,7 @@ FocusScope {
                 }
             }
 
-            // === 2. Middle Virtualized Voice List ===
+            // === 2. Filter Bar + Persistent Download/Error Banners + Virtualized Voice List ===
             Item {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
@@ -1106,21 +1283,20 @@ FocusScope {
                     anchors.fill: parent
                     spacing: 0
 
-                    // Compact section title + inline search & language filter.
+                    // Compact section title + inline language filter & search.
                     RowLayout {
                         Layout.fillWidth: true
                         Layout.leftMargin: 22
                         Layout.rightMargin: 18
                         Layout.topMargin: 12
-                        Layout.bottomMargin: 6
+                        Layout.bottomMargin: 8
                         spacing: 8
 
                         Label {
                             Layout.fillWidth: true
-                            text: panel.source === "builtin" ? qsTr("Made on this computer: instant, free, private")
-                                : panel.source === "gemini" ? qsTr("Gemini voices, with your key")
-                                : ai.localSpeechModel !== "" ? qsTr("From the server you set up · %1").arg(ai.localSpeechModel)
-                                : qsTr("From the server you set up")
+                            text: panel.source === "builtin"
+                                  ? qsTr("Made on this computer: instant, free, private")
+                                  : qsTr("Gemini voices, with your key")
                             color: theme.ink4
                             font.pixelSize: 11
                             font.weight: Font.DemiBold
@@ -1130,7 +1306,7 @@ FocusScope {
 
                         ComboBox {
                             visible: voicePacks.supported && panel.source === "builtin"
-                            Layout.preferredWidth: 146
+                            Layout.preferredWidth: 192
                             implicitHeight: 28
                             font.pixelSize: 12
                             model: panel.builtinLanguageOptions.map(o => o.label)
@@ -1142,12 +1318,13 @@ FocusScope {
                                 if (index >= 0 && index < panel.builtinLanguageOptions.length) {
                                     panel.builtinFilter = panel.builtinLanguageOptions[index].code
                                     panel.allBuiltins = true
+                                    panel.resetListPosition()
                                 }
                             }
                         }
 
                         Rectangle {
-                            visible: panel.source !== "studio"
+                            visible: panel.source === "builtin" || ai.hasKey
                             Layout.preferredWidth: 164
                             implicitHeight: 28
                             radius: Ui.radius(7, theme.radius)
@@ -1178,11 +1355,16 @@ FocusScope {
                                 clip: true
                                 text: panel.query
                                 onTextEdited: panel.updateQuery(text)
+                                Keys.onDownPressed: (event) => { panel.moveHighlight(1); event.accepted = true }
+                                Keys.onUpPressed: (event) => { panel.moveHighlight(-1); event.accepted = true }
+                                Keys.onReturnPressed: (event) => { panel.activateHighlighted(); event.accepted = true }
+                                Keys.onEnterPressed: (event) => { panel.activateHighlighted(); event.accepted = true }
                                 Keys.onEscapePressed: (event) => {
                                     if (text !== "") {
                                         panel.updateQuery("")
                                         event.accepted = true
                                     } else {
+                                        panel.forceActiveFocus()
                                         event.accepted = false
                                     }
                                 }
@@ -1202,7 +1384,9 @@ FocusScope {
                                 visible: panel.query !== ""
                                 implicitWidth: 20
                                 implicitHeight: 20
+                                hoverEnabled: true
                                 focusPolicy: Qt.NoFocus
+                                Accessible.name: qsTr("Clear filter")
                                 contentItem: Glyph {
                                     anchors.centerIn: parent
                                     width: 10
@@ -1219,91 +1403,136 @@ FocusScope {
                         }
                     }
 
-                    // Virtualized ListView for 222+ built-in & Gemini voices.
+                    // Persistent built-in download progress card (stays reachable while scrolling or switching tabs).
+                    Rectangle {
+                        visible: voicePacks.supported && voicePacks.busy
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 18
+                        Layout.rightMargin: 18
+                        Layout.bottomMargin: 8
+                        radius: Ui.radius(10, theme.radius)
+                        color: theme.fill
+                        border.width: 1
+                        border.color: theme.hairline
+                        implicitHeight: dlProgCol.implicitHeight + 18
+
+                        ColumnLayout {
+                            id: dlProgCol
+                            x: 12
+                            y: 9
+                            width: parent.width - 24
+                            spacing: 6
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 8
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: voicePacks.progress >= 1.0
+                                          ? qsTr("Installing %1…").arg(voicePacks.installing)
+                                          : voicePacks.progress > 0
+                                            ? qsTr("Downloading %1… %2%")
+                                                  .arg(voicePacks.installing)
+                                                  .arg(Math.round(Math.min(1, voicePacks.progress) * 100).toLocaleString(Qt.locale(), 'f', 0))
+                                            : qsTr("Downloading %1…").arg(voicePacks.installing)
+                                    color: theme.ink1
+                                    font.pixelSize: 12
+                                    font.weight: Font.Medium
+                                    font.features: ({ "tnum": 1 })
+                                    elide: Text.ElideRight
+                                }
+                                TextButton {
+                                    size: "compact"
+                                    text: qsTr("Cancel")
+                                    onClicked: {
+                                        panel.pendingVoice = ""
+                                        panel.pendingPack = ""
+                                        voicePacks.cancel()
+                                    }
+                                }
+                            }
+                            ProgressBar {
+                                Layout.fillWidth: true
+                                value: Math.max(0, Math.min(1, voicePacks.progress))
+                                indeterminate: voicePacks.progress <= 0 || voicePacks.progress >= 1.0
+                            }
+                        }
+                    }
+
+                    // Persistent inline error banner with retry affordance for Gemini.
+                    Rectangle {
+                        visible: panel.activeProblem !== ""
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 18
+                        Layout.rightMargin: 18
+                        Layout.bottomMargin: 8
+                        radius: Ui.radius(10, theme.radius)
+                        color: theme.cloudSoft
+                        border.width: 1
+                        border.color: Ui.tint(theme.cloud, 0.30)
+                        implicitHeight: errBannerRow.implicitHeight + 16
+
+                        RowLayout {
+                            id: errBannerRow
+                            x: 12
+                            y: 8
+                            width: parent.width - 24
+                            spacing: 8
+
+                            Glyph {
+                                Layout.alignment: Qt.AlignTop
+                                Layout.topMargin: 2
+                                Layout.preferredWidth: 14
+                                Layout.preferredHeight: 14
+                                stroke: 2.0
+                                path: Icons.infoCircle
+                                color: theme.cloudInk
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: panel.activeProblem
+                                color: theme.cloudInk
+                                font.pixelSize: 12
+                                wrapMode: Text.Wrap
+                            }
+                            TextButton {
+                                visible: panel.source === "gemini" && ai.hasKey && !voices.loading
+                                size: "compact"
+                                text: qsTr("Retry")
+                                onClicked: voices.refresh(true)
+                            }
+                        }
+                    }
+
+                    // Virtualized ListView for 222+ built-in & Gemini voices (zero blank gaps).
                     ListView {
                         id: voiceList
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         clip: true
                         boundsBehavior: Flickable.StopAtBounds
-                        spacing: 4
+                        topMargin: 2
+                        bottomMargin: 8
+                        spacing: 3
                         cacheBuffer: 360
+                        highlightFollowsCurrentItem: false
                         model: panel.listItems
                         ScrollBar.vertical: ScrollBar {}
 
                         header: Item {
-                            readonly property bool hasAlert:
-                                (voicePacks.supported && panel.source === "builtin" && (voicePacks.busy || voicePacks.problem !== ""))
-                                || (panel.source === "gemini" && (!ai.hasKey || voices.loading || voices.problem !== ""))
-                                || (panel.source === "studio" && (ai.localSpeechModel === "" || voices.problem !== ""))
+                            readonly property bool hasHeader:
+                                panel.source === "gemini" && (!ai.hasKey || voices.loading)
                             width: voiceList.width
-                            visible: hasAlert
-                            implicitHeight: hasAlert ? headerAlerts.implicitHeight + 8 : 0
+                            visible: hasHeader
+                            implicitHeight: hasHeader ? headerCards.implicitHeight + 10 : 0
                             height: implicitHeight
 
                             ColumnLayout {
-                                id: headerAlerts
+                                id: headerCards
                                 x: 14
                                 y: 2
                                 width: parent.width - 28
                                 spacing: 8
-
-                                // Built-in pack download progress.
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    visible: voicePacks.supported && panel.source === "builtin" && voicePacks.busy
-                                    radius: Ui.radius(10, theme.radius)
-                                    color: theme.fill
-                                    border.width: 1
-                                    border.color: theme.hairline
-                                    implicitHeight: dlProgCol.implicitHeight + 20
-                                    ColumnLayout {
-                                        id: dlProgCol
-                                        x: 12
-                                        y: 10
-                                        width: parent.width - 24
-                                        spacing: 6
-                                        RowLayout {
-                                            Layout.fillWidth: true
-                                            Label {
-                                                Layout.fillWidth: true
-                                                text: voicePacks.progress >= 1.0
-                                                      ? qsTr("Installing %1…").arg(voicePacks.installing)
-                                                      : qsTr("Downloading %1… %2%")
-                                                            .arg(voicePacks.installing)
-                                                            .arg(Math.round(voicePacks.progress * 100))
-                                                color: theme.ink1
-                                                font.pixelSize: 12
-                                                font.features: ({ "tnum": 1 })
-                                            }
-                                            TextButton {
-                                                size: "compact"
-                                                text: qsTr("Cancel")
-                                                onClicked: {
-                                                    panel.pendingVoice = ""
-                                                    voicePacks.cancel()
-                                                }
-                                            }
-                                        }
-                                        ProgressBar {
-                                            Layout.fillWidth: true
-                                            value: voicePacks.progress
-                                            indeterminate: voicePacks.progress >= 1.0
-                                        }
-                                    }
-                                }
-
-                                // Built-in pack error.
-                                Label {
-                                    Layout.fillWidth: true
-                                    Layout.leftMargin: 8
-                                    Layout.rightMargin: 8
-                                    visible: voicePacks.supported && panel.source === "builtin" && voicePacks.problem !== ""
-                                    text: voicePacks.problem
-                                    color: theme.cloudInk
-                                    font.pixelSize: 12
-                                    wrapMode: Text.Wrap
-                                }
 
                                 // Gemini honest missing-key card.
                                 Rectangle {
@@ -1340,65 +1569,30 @@ FocusScope {
                                             TextButton {
                                                 visible: voicePacks.supported
                                                 text: qsTr("Use offline voices")
-                                                onClicked: panel.source = "builtin"
+                                                onClicked: panel.switchSource("builtin")
                                             }
                                         }
                                     }
                                 }
 
-                                // Gemini fetch loading / problem.
-                                Label {
+                                // Gemini loading state with spinner.
+                                RowLayout {
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 8
                                     Layout.rightMargin: 8
-                                    visible: panel.source === "gemini" && (voices.loading || voices.problem !== "")
-                                    text: voices.loading ? qsTr("Fetching the voices…") : voices.problem
-                                    color: voices.problem !== "" ? theme.cloudInk : theme.ink3
-                                    font.pixelSize: 12
-                                    wrapMode: Text.Wrap
-                                }
-
-                                // Studio honest unconfigured card or server error.
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    visible: panel.source === "studio" && ai.localSpeechModel === ""
-                                    radius: Ui.radius(10, theme.radius)
-                                    color: theme.fill
-                                    border.width: 1
-                                    border.color: theme.hairline
-                                    implicitHeight: studioEmptyCol.implicitHeight + 22
-                                    ColumnLayout {
-                                        id: studioEmptyCol
-                                        x: 14
-                                        y: 11
-                                        width: parent.width - 28
-                                        spacing: 8
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: qsTr("Connect a speech server on your computer or LAN (such as Qwen3-TTS) in Settings › Intelligence.")
-                                            color: theme.ink1
-                                            font.pixelSize: 13
-                                            wrapMode: Text.Wrap
-                                        }
-                                        TextButton {
-                                            primary: true
-                                            text: qsTr("Open Intelligence settings")
-                                            onClicked: {
-                                                panel.close()
-                                                win.showAiSettings()
-                                            }
-                                        }
+                                    visible: panel.source === "gemini" && voices.loading
+                                    spacing: 8
+                                    BusyIndicator {
+                                        implicitWidth: 16
+                                        implicitHeight: 16
+                                        running: parent.visible
                                     }
-                                }
-                                Label {
-                                    Layout.fillWidth: true
-                                    Layout.leftMargin: 8
-                                    Layout.rightMargin: 8
-                                    visible: panel.source === "studio" && ai.localSpeechModel !== "" && voices.problem !== ""
-                                    text: voices.problem
-                                    color: theme.cloudInk
-                                    font.pixelSize: 12
-                                    wrapMode: Text.Wrap
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Fetching the voices…")
+                                        color: theme.ink3
+                                        font.pixelSize: 12
+                                    }
                                 }
                             }
                         }
@@ -1406,6 +1600,8 @@ FocusScope {
                         delegate: Item {
                             id: delWrap
                             required property var modelData
+                            required property int index
+                            readonly property bool kbHighlight: panel.keyboardActive && voiceList.currentIndex === index
                             width: voiceList.width
                             height: modelData.designEntry ? designItem.implicitHeight : voiceItem.implicitHeight
 
@@ -1415,18 +1611,30 @@ FocusScope {
                                 x: 14
                                 width: parent.width - 28
                                 voice: delWrap.modelData.voice
+                                badgeSuggested: !!delWrap.modelData.badgeSuggested
+                                keyboardHighlighted: delWrap.kbHighlight
                             }
                             DesignNarratorEntry {
                                 id: designItem
                                 visible: !!delWrap.modelData.designEntry
                                 x: 14
                                 width: parent.width - 28
+                                keyboardHighlighted: delWrap.kbHighlight
                             }
                         }
 
                         footer: Item {
+                            readonly property bool showEmpty: panel.listItems.length === 0
+                                && !(panel.source === "gemini" && (voices.loading || !ai.hasKey))
+                            readonly property bool showMoreBtn: panel.hiddenBuiltinCount > 0
+                                || (panel.source === "builtin" && panel.builtinFilter === "__book__"
+                                    && panel.debouncedQuery.trim() === "" && panel.allBuiltins
+                                    && panel.builtinInstalledForBook.length > 0)
+                            readonly property bool showEconomy: panel.source === "gemini" && ai.hasKey && panel.debouncedQuery.trim() === ""
+                            readonly property bool hasFooter: showEmpty || showMoreBtn || showEconomy
                             width: voiceList.width
-                            implicitHeight: footerCol.implicitHeight + 16
+                            visible: hasFooter
+                            implicitHeight: hasFooter ? footerCol.implicitHeight + 12 : 0
                             height: implicitHeight
 
                             ColumnLayout {
@@ -1436,26 +1644,31 @@ FocusScope {
                                 width: parent.width - 28
                                 spacing: 8
 
-                                Label {
+                                RowLayout {
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 8
-                                    visible: panel.listItems.length === 0
-                                             && !(panel.source === "gemini" && (voices.loading || !ai.hasKey))
-                                             && !(panel.source === "studio" && (ai.localSpeechModel === "" || voices.problem !== ""))
-                                    text: panel.source === "studio"
-                                          ? qsTr("The server lists no voices yet.")
-                                          : panel.debouncedQuery.trim() !== ""
-                                            ? qsTr("No voice matches.")
-                                            : qsTr("No built-in voice matches this filter.")
-                                    color: theme.ink3
-                                    font.pixelSize: 12
+                                    Layout.rightMargin: 8
+                                    visible: parent.parent.showEmpty
+                                    spacing: 8
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: panel.debouncedQuery.trim() !== ""
+                                              ? qsTr("No voice matches.")
+                                              : qsTr("No built-in voice matches this filter.")
+                                        color: theme.ink3
+                                        font.pixelSize: 12
+                                    }
+                                    TextButton {
+                                        visible: panel.query !== ""
+                                        size: "compact"
+                                        ghost: true
+                                        text: qsTr("Clear filter")
+                                        onClicked: panel.updateQuery("")
+                                    }
                                 }
 
                                 TextButton {
-                                    visible: panel.hiddenBuiltinCount > 0
-                                             || (panel.source === "builtin" && panel.builtinFilter === "__book__"
-                                                 && panel.debouncedQuery.trim() === "" && panel.allBuiltins
-                                                 && panel.builtinInstalledForBook.length > 0)
+                                    visible: parent.parent.showMoreBtn
                                     size: "compact"
                                     ghost: true
                                     text: panel.allBuiltins ? qsTr("Show fewer voices")
@@ -1463,10 +1676,10 @@ FocusScope {
                                     onClicked: panel.allBuiltins = !panel.allBuiltins
                                 }
 
-                                // Preserved Flash Lite (narration.economy) toggle on Gemini tab.
+                                // Flash Lite (narration.economy) toggle on Gemini tab.
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    visible: panel.source === "gemini" && ai.hasKey
+                                    visible: parent.parent.showEconomy
                                     radius: Ui.radius(10, theme.radius)
                                     color: Ui.tint(theme.ink1, 0.04)
                                     border.width: 1
@@ -1497,119 +1710,8 @@ FocusScope {
                                         }
                                         Switch {
                                             checked: narration.economy
+                                            Accessible.name: qsTr("Flash Lite voice")
                                             onToggled: narration.economy = checked
-                                        }
-                                    }
-                                }
-
-                                // Collapsible storage disclosure (installed packs + audio cache) — preserved cleanly.
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    visible: (voicePacks.supported && panel.installedPacks.length > 0) || audioCache.megabytes > 0.001
-                                    spacing: 6
-
-                                    AbstractButton {
-                                        id: storageToggle
-                                        Layout.fillWidth: true
-                                        implicitHeight: 28
-                                        hoverEnabled: true
-                                        focusPolicy: Qt.TabFocus
-                                        onClicked: panel.storageExpanded = !panel.storageExpanded
-                                        background: Rectangle {
-                                            radius: Ui.radius(7, theme.radius)
-                                            color: storageToggle.hovered ? theme.fill : "transparent"
-                                        }
-                                        contentItem: RowLayout {
-                                            spacing: 6
-                                            Glyph {
-                                                Layout.leftMargin: 6
-                                                width: 12
-                                                height: 12
-                                                path: panel.storageExpanded ? Icons.chevronDown : Icons.chevronRight
-                                                color: theme.ink4
-                                            }
-                                            Label {
-                                                Layout.fillWidth: true
-                                                text: {
-                                                    const parts = [qsTr("Packs & audio cache")]
-                                                    if (voicePacks.megabytes > 0.1)
-                                                        parts.push(qsTr("%1 voices").arg(Format.size(voicePacks.megabytes * 1024 * 1024, Qt.locale())))
-                                                    if (audioCache.megabytes > 0.001)
-                                                        parts.push(qsTr("%1 cached").arg(Format.size(audioCache.megabytes * 1024 * 1024, Qt.locale())))
-                                                    return parts.join(" · ")
-                                                }
-                                                color: theme.ink4
-                                                font.pixelSize: 12
-                                                font.features: ({ "tnum": 1 })
-                                            }
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        id: storageCard
-                                        visible: panel.storageExpanded
-                                        Layout.fillWidth: true
-                                        radius: Ui.radius(10, theme.radius)
-                                        color: Ui.tint(theme.ink1, 0.04)
-                                        border.width: 1
-                                        border.color: theme.hairline
-                                        implicitHeight: storageInner.implicitHeight + 20
-
-                                        property bool confirmingClear: false
-                                        Timer {
-                                            running: storageCard.confirmingClear
-                                            interval: 4000
-                                            onTriggered: storageCard.confirmingClear = false
-                                        }
-
-                                        ColumnLayout {
-                                            id: storageInner
-                                            x: 12
-                                            y: 10
-                                            width: parent.width - 24
-                                            spacing: 8
-
-                                            Repeater {
-                                                model: voicePacks.supported ? panel.installedPacks : []
-                                                delegate: PackRow {
-                                                    required property var modelData
-                                                    pack: modelData
-                                                }
-                                            }
-
-                                            Rectangle {
-                                                visible: voicePacks.supported && panel.installedPacks.length > 0
-                                                Layout.fillWidth: true
-                                                Layout.preferredHeight: 1
-                                                color: theme.hairline
-                                            }
-
-                                            RowLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 8
-                                                Label {
-                                                    Layout.fillWidth: true
-                                                    text: audioCache.megabytes > 0.001
-                                                          ? qsTr("Audio cache · %1 kept on disk").arg(Format.size(audioCache.megabytes * 1024 * 1024, Qt.locale()))
-                                                          : qsTr("Audio cache · Empty")
-                                                    color: theme.ink3
-                                                    font.pixelSize: 12
-                                                    font.features: ({ "tnum": 1 })
-                                                }
-                                                TextButton {
-                                                    size: "compact"
-                                                    enabled: audioCache.megabytes > 0.001
-                                                    text: storageCard.confirmingClear ? qsTr("Clear cache?") : qsTr("Clear cache")
-                                                    onClicked: {
-                                                        if (!storageCard.confirmingClear) {
-                                                            storageCard.confirmingClear = true
-                                                            return
-                                                        }
-                                                        storageCard.confirmingClear = false
-                                                        audioCache.clear()
-                                                    }
-                                                }
-                                            }
                                         }
                                     }
                                 }
@@ -1619,10 +1721,10 @@ FocusScope {
                 }
             }
 
-            // === 3. Fixed 3-Row Footer (Style · Full Cast · Download + Listen) ===
+            // === 3. Clean Fixed Footer (Optional Gemini Style · Subtle Studio Mention · Listen CTA) ===
             Item {
                 Layout.fillWidth: true
-                implicitHeight: footerPanel.implicitHeight + 28
+                implicitHeight: footerPanel.implicitHeight + 24
 
                 Rectangle {
                     anchors.left: parent.left
@@ -1637,18 +1739,18 @@ FocusScope {
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.top: parent.top
-                    anchors.topMargin: 14
+                    anchors.topMargin: 12
                     anchors.leftMargin: 22
                     anchors.rightMargin: 22
-                    spacing: 12
+                    spacing: 10
 
-                    // Row 1: Style (always visible, Natural/Dramatic disabled on local voices).
+                    // Compact Style selector when browsing Gemini voices with a key.
                     RowLayout {
+                        visible: panel.source === "gemini" && ai.hasKey
                         Layout.fillWidth: true
-                        spacing: 16
+                        spacing: 14
 
                         Label {
-                            Layout.preferredWidth: 88
                             text: qsTr("Style")
                             color: theme.ink1
                             font.pixelSize: 13
@@ -1656,7 +1758,7 @@ FocusScope {
                         }
 
                         Segmented {
-                            Layout.preferredWidth: Math.min(300, Math.max(210, sheetCard.width * 0.43))
+                            Layout.preferredWidth: Math.min(280, Math.max(200, sheetCard.width * 0.42))
                             compact: true
                             model: [
                                 { value: "plain", label: qsTr("Plain"), enabled: true },
@@ -1679,303 +1781,97 @@ FocusScope {
                         }
                     }
 
-                    // Row 2: Full cast (dynamic speaker preview + Edit cast popup + 38×22 Switch).
+                    // Bottom bar: understated single-line Studio mention + primary Listen CTA.
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: 16
+                        spacing: 12
 
-                        Label {
-                            Layout.preferredWidth: 88
-                            text: qsTr("Full cast")
-                            color: theme.ink1
-                            font.pixelSize: 13
-                            font.weight: Font.Medium
-                        }
-
-                        Label {
+                        Item {
+                            id: studioNoteArea
                             Layout.fillWidth: true
-                            text: !cast.available
-                                  ? qsTr("Available with Kokoro or Gemini voices (several voices in one family).")
-                                  : cast.members.length > 0
-                                    ? qsTr("A voice for each character: %1… Chosen from this narrator's family.")
-                                          .arg(cast.members.slice(0, 3).map(m => m.speaker).join(", "))
-                                    : qsTr("A voice for each character, chosen from this narrator's family (%1).").arg(ai.whereFor("cast"))
-                            color: theme.ink3
-                            font.pixelSize: 12
-                            wrapMode: Text.Wrap
-                            maximumLineCount: 2
-                            elide: Text.ElideRight
-                        }
+                            Layout.minimumWidth: 0
+                            implicitHeight: 24
 
-                        TextButton {
-                            id: editCastBtn
-                            visible: cast.available && cast.enabled && cast.members.length > 0
-                            size: "compact"
-                            ghost: true
-                            text: qsTr("Cast (%1)").arg(cast.members.length)
-                            onClicked: castPopup.opened ? castPopup.close() : castPopup.open()
+                            Row {
+                                anchors.left: parent.left
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 6
 
-                            Popup {
-                                id: castPopup
-                                y: -height - 10
-                                x: Math.min(0, editCastBtn.width - width)
-                                width: 390
-                                height: Math.min(340, castListCol.implicitHeight + 24)
-                                padding: 12
-                                background: Rectangle {
-                                    radius: Ui.radius(12, theme.radius)
-                                    color: theme.overlay
-                                    border.width: 1
-                                    border.color: theme.hairline
-                                }
-                                contentItem: Flickable {
-                                    clip: true
-                                    contentHeight: castListCol.implicitHeight
-                                    boundsBehavior: Flickable.StopAtBounds
-                                    ScrollBar.vertical: ScrollBar {}
-                                    ColumnLayout {
-                                        id: castListCol
-                                        width: parent.width
-                                        spacing: 8
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: qsTr("Characters heard so far")
-                                            color: theme.ink3
-                                            font.pixelSize: 11
-                                            font.weight: Font.DemiBold
-                                        }
-                                        Repeater {
-                                            model: cast.enabled ? cast.members.slice(0, 12) : []
-                                            delegate: RowLayout {
-                                                required property var modelData
-                                                Layout.fillWidth: true
-                                                spacing: 8
-                                                Label {
-                                                    Layout.fillWidth: true
-                                                    text: modelData.speaker
-                                                    color: theme.ink1
-                                                    font.pixelSize: 13
-                                                    elide: Text.ElideRight
-                                                }
-                                                ComboBox {
-                                                    Layout.preferredWidth: 165
-                                                    readonly property var choices: panel.castChoices
-                                                    model: choices.map(c => c.name + (c.gender ? " · " + c.gender : ""))
-                                                    currentIndex: choices.findIndex(c => c.id === modelData.voice)
-                                                    onActivated: (index) => {
-                                                        if (index >= 0 && index < choices.length)
-                                                            cast.setVoice(modelData.speaker, choices[index].id)
-                                                    }
-                                                }
-                                                ListenBtn { voiceId: modelData.voice }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Switch {
-                            checked: cast.enabled
-                            enabled: cast.available
-                            Accessible.name: qsTr("Full cast")
-                            onToggled: cast.enabled = checked
-                        }
-                    }
-
-                    // Row 3: Download the book (M4B / offline popover) + Primary Listen CTA.
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 2
-                        spacing: 8
-
-                        // Idle Download trigger + anchored chapter/book choice popover.
-                        TextButton {
-                            id: downloadBtn
-                            visible: !panel.downloadingThisBook && !audiobook.busy && audiobook.saved === "" && audiobook.problem === ""
-                            glyph: Icons.download
-                            text: qsTr("Download the book")
-                            enabled: panel.offlineApplies
-                            onClicked: downloadMenu.opened ? downloadMenu.close() : downloadMenu.open()
-
-                            Popup {
-                                id: downloadMenu
-                                y: -height - 10
-                                x: 0
-                                width: 356
-                                padding: 14
-                                background: Rectangle {
-                                    radius: Ui.radius(12, theme.radius)
-                                    color: theme.overlay
-                                    border.width: 1
-                                    border.color: theme.hairline
-                                }
-                                contentItem: ColumnLayout {
-                                    spacing: 10
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: panel.localVoice
-                                              ? qsTr("Render narration ahead on this computer so you can save an M4B audiobook with chapters.")
-                                              : qsTr("Download narration for offline listening at Gemini's slower Flex tier (half price).")
-                                        color: theme.ink3
-                                        font.pixelSize: 12
-                                        wrapMode: Text.Wrap
-                                        lineHeight: 1.35
-                                    }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: 8
-                                        TextButton {
-                                            text: qsTr("This chapter")
-                                            enabled: (panel.chapterEstimate.chapters || 0) > 0
-                                            onClicked: {
-                                                downloadMenu.close()
-                                                download.start(reader.chapter, reader.chapter)
-                                            }
-                                        }
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: (panel.chapterEstimate.chapters || 0) > 0 && translator.language !== ""
-                                                  ? Format.duration(panel.chapterEstimate.minutes)
-                                                    + (panel.chapterEstimate.local ? "" : " · " + panel.money(panel.chapterEstimate.cost))
-                                                  : ""
-                                            color: theme.ink4
-                                            font.pixelSize: 12
-                                            elide: Text.ElideRight
-                                        }
-                                    }
-                                    RowLayout {
-                                        visible: (panel.restEstimate.chapters || 0) > 1
-                                        Layout.fillWidth: true
-                                        spacing: 8
-                                        TextButton {
-                                            text: qsTr("To the end")
-                                            onClicked: {
-                                                downloadMenu.close()
-                                                download.start(reader.chapter, panel.lastChapter)
-                                            }
-                                        }
-                                        Label {
-                                            Layout.fillWidth: true
-                                            text: translator.language !== ""
-                                                  ? qsTr("%n chapters", "", panel.restEstimate.chapters || 0)
-                                                    + " · " + Format.duration(panel.restEstimate.minutes || 0)
-                                                    + (panel.restEstimate.local ? "" : " · " + panel.money(panel.restEstimate.cost || 0))
-                                                  : ""
-                                            color: theme.ink4
-                                            font.pixelSize: 12
-                                            elide: Text.ElideRight
-                                        }
-                                    }
-                                    Label {
-                                        Layout.fillWidth: true
-                                        visible: !panel.restEstimate.local && (panel.restEstimate.cost || 0) > 0
-                                                 && !ai.fitsBudget(panel.restEstimate.cost)
-                                        text: qsTr("Downloading to the end would pass your monthly budget; it stops there.")
-                                        color: theme.cloudInk
-                                        font.pixelSize: 12
-                                        wrapMode: Text.Wrap
-                                    }
-                                }
-                            }
-                        }
-
-                        Label {
-                            visible: !panel.downloadingThisBook && !audiobook.busy && audiobook.saved === "" && audiobook.problem === ""
-                            Layout.fillWidth: true
-                            text: panel.source === "builtin" ? qsTr("Free · made in the background")
-                                : panel.source === "studio" ? qsTr("Free · runs on your server")
-                                : qsTr("At half price, shown before it starts")
-                            color: theme.ink4
-                            font.pixelSize: 12
-                            elide: Text.ElideRight
-                        }
-
-                        // Active offline download / M4B save / Saved reveal controls.
-                        RowLayout {
-                            visible: panel.downloadingThisBook || audiobook.busy || audiobook.saved !== "" || audiobook.problem !== ""
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 4
-                                ProgressBar {
-                                    visible: panel.downloadingThisBook || audiobook.busy
-                                    Layout.fillWidth: true
-                                    value: audiobook.busy ? audiobook.progress : download.fraction
-                                    indeterminate: !audiobook.busy && download.running && download.fraction === 0
-                                }
                                 Label {
-                                    Layout.fillWidth: true
-                                    text: audiobook.problem !== "" ? audiobook.problem
-                                        : audiobook.busy ? qsTr("Saving audiobook… %1%").arg(Math.round(audiobook.progress * 100))
-                                        : audiobook.saved !== "" ? qsTr("Saved %1").arg(audiobook.saved.replace(/^.*\/(Music\/)/, "$1"))
-                                        : download.problem !== "" ? download.problem
-                                        : download.finished ? qsTr("Ready offline")
-                                        : translator.language === "" ? ""
-                                        : qsTr("%1 of %2 ready").arg(Format.duration(download.minutesReady)).arg(Format.duration(download.minutesTotal))
-                                          + (download.running && download.secondsLeft > 0
-                                             ? " · " + qsTr("%1 left").arg(Format.duration(download.secondsLeft / 60)) : "")
-                                          + (!download.running ? " · " + qsTr("paused") : "")
-                                    color: (audiobook.problem !== "" || download.problem !== "") ? theme.cloudInk
-                                         : audiobook.saved !== "" ? theme.positiveInk : theme.ink3
+                                    id: studioNoteLabel
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    readonly property real maxLabelW: Math.max(48, studioNoteArea.width - studioDot.implicitWidth - studioSettingsLink.implicitWidth - 12)
+                                    width: Math.min(implicitWidth, maxLabelW)
+                                    text: panel.studioVoice
+                                          ? qsTr("Studio voice active")
+                                          : qsTr("Studio mode & full-cast narration")
+                                    color: theme.ink4
                                     font.pixelSize: 12
                                     elide: Text.ElideRight
                                 }
-                            }
 
-                            TextButton {
-                                visible: panel.downloadingThisBook && !download.finished
-                                size: "compact"
-                                text: download.running ? qsTr("Pause") : qsTr("Resume")
-                                onClicked: download.running ? download.pause() : download.resume()
-                            }
-                            TextButton {
-                                visible: panel.downloadingThisBook && download.finished && !audiobook.busy
-                                size: "compact"
-                                text: qsTr("Save M4B")
-                                onClicked: audiobook.save()
-                            }
-                            TextButton {
-                                visible: audiobook.busy
-                                size: "compact"
-                                text: qsTr("Cancel")
-                                onClicked: audiobook.cancel()
-                            }
-                            TextButton {
-                                visible: audiobook.saved !== "" && !audiobook.busy
-                                size: "compact"
-                                text: qsTr("Reveal")
-                                onClicked: audiobook.revealSaved()
-                            }
-                            TextButton {
-                                visible: panel.downloadingThisBook && !audiobook.busy
-                                size: "compact"
-                                ghost: true
-                                text: download.finished ? qsTr("Done") : qsTr("Stop")
-                                onClicked: download.cancel()
+                                Label {
+                                    id: studioDot
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: "·"
+                                    color: theme.ink4
+                                    font.pixelSize: 12
+                                }
+
+                                AbstractButton {
+                                    id: studioSettingsLink
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    implicitHeight: 24
+                                    implicitWidth: studioLinkRow.implicitWidth + 10
+                                    hoverEnabled: true
+                                    focusPolicy: Qt.TabFocus
+                                    Accessible.name: qsTr("Open Studio mode in Settings › Voices")
+                                    onClicked: panel.openVoicesSettings()
+                                    background: Rectangle {
+                                        radius: Ui.radius(5, theme.radius)
+                                        color: studioSettingsLink.pressed ? theme.fillPressed
+                                             : studioSettingsLink.hovered ? theme.fill : "transparent"
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -2
+                                            visible: studioSettingsLink.visualFocus
+                                            radius: Ui.radius(7, theme.radius)
+                                            color: "transparent"
+                                            border.width: 2
+                                            border.color: theme.accent
+                                        }
+                                    }
+                                    contentItem: Row {
+                                        id: studioLinkRow
+                                        anchors.centerIn: parent
+                                        spacing: 3
+                                        Label {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            text: qsTr("Settings › Voices")
+                                            color: studioSettingsLink.hovered ? theme.accentInk : theme.ink3
+                                            font.pixelSize: 12
+                                            font.weight: Font.Medium
+                                        }
+                                        Glyph {
+                                            anchors.verticalCenter: parent.verticalCenter
+                                            width: 11
+                                            height: 11
+                                            stroke: 2.0
+                                            path: Icons.chevronRight
+                                            color: studioSettingsLink.hovered ? theme.accentInk : theme.ink4
+                                        }
+                                    }
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                }
                             }
                         }
 
                         // Primary Listen CTA.
                         TextButton {
                             primary: true
+                            enabled: !voicePacks.busy || ai.canSpeakWith(narration.voice)
                             text: narration.active && narration.playing ? qsTr("Done") : qsTr("Listen")
-                            onClicked: {
-                                panel.resumeAfter = false
-                                voices.stopPreview()
-                                const shouldResume = narration.active && !narration.playing
-                                const shouldStartPending = !narration.active && narration.hasPendingStart
-                                const shouldListen = !narration.active && !narration.hasPendingStart
-                                panel.close()
-                                if (shouldResume)
-                                    narration.resume()
-                                else if (shouldStartPending)
-                                    narration.startPending()
-                                else if (shouldListen)
-                                    panel.listenRequested()
-                            }
+                            onClicked: panel.startOrFinishListening()
                         }
                     }
                 }

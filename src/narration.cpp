@@ -157,10 +157,13 @@ double Narration::volume() const { return m_player->volume(); }
 
 void Narration::setVolume(double volume) {
     // Explicit external volume change supersedes any pending sleep-fade restore.
+    const bool wasFading = m_sleepFading;
     m_sleepPausedRestore = false;
     m_sleepFading = false;
     m_preFadeVolume = -1.0;
     m_player->setVolume(volume);
+    if (wasFading)
+        emit sleepChanged();
 }
 
 int Narration::indexOfClip(int trackId) const {
@@ -1309,6 +1312,7 @@ void Narration::pause() {
     if (!m_active)
         return;
     trace(QStringLiteral("pause"));
+    const bool wasFading = m_sleepFading;
     if (m_sleepFading && !m_sleepPausedRestore)
         restoreSleepVolume();
     m_wanted = false;
@@ -1317,6 +1321,8 @@ void Narration::pause() {
     m_player->pause();
     setBuffering(false);
     emit stateChanged();
+    if (wasFading)
+        emit sleepChanged();
 }
 
 void Narration::resume() {
@@ -1324,6 +1330,7 @@ void Narration::resume() {
         return;
     trace(QStringLiteral("resume"));
     setProblem({});
+    const bool wasFading = m_sleepFading;
     if (m_sleepPausedRestore || m_sleepFading)
         restoreSleepVolume();
     // A clip that couldn't be made is tried again.
@@ -1336,6 +1343,8 @@ void Narration::resume() {
     if (m_holdSamples <= 0)
         m_player->play();
     emit stateChanged();
+    if (wasFading)
+        emit sleepChanged();
     pump();
 }
 
@@ -1456,6 +1465,9 @@ void Narration::onSleepTick() {
         m_player->setVolume(m_preFadeVolume * t * t);
     } else if (m_sleepFading && !m_wanted) {
         restoreSleepVolume();
+        m_sleepTick.setInterval(1000);
+        emit sleepChanged();
+    } else if (!m_wanted && m_sleepTick.interval() < 1000) {
         m_sleepTick.setInterval(1000);
     }
     const int secs = sleepSecondsLeft();

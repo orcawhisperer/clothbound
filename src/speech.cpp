@@ -596,11 +596,13 @@ QList<SpeechClip> clipsFrom(int chapter, const QList<SpeechBlock> &blocks, qint6
             parts.append(sentence.text);
         lead.text = parts.join(' ');
         // Its first block, for the director, is the one it now begins in.
-        for (int b = lead.block; b < blocks.size(); ++b)
-            if (blocks[b].end > lead.sentences.first().start) {
-                lead.block = b;
-                break;
-            }
+        if (!lead.sentences.isEmpty()) {
+            for (int b = lead.block; b < blocks.size(); ++b)
+                if (blocks[b].end > lead.sentences.first().start) {
+                    lead.block = b;
+                    break;
+                }
+        }
     }
     return result;
 }
