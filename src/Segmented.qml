@@ -3,11 +3,10 @@ import QtQuick.Controls
 
 import "Ui.js" as Ui
 
-// A segmented control: a few exclusive choices in one quiet track, the
-// current one raised. `model` is a list of {value, label, glyph} (or plain
-// strings); with a glyph the label becomes its tooltip. `current` is the
-// chosen value; `activated(value)` on a choice.
-// Arrow keys move the choice when it has focus.
+// A segmented control: exclusive choices in one quiet track, the current one
+// raised. `model` items may be plain strings or objects
+// `{ value, label, subtitle, glyph, enabled }`; with `glyph` the label becomes
+// its tooltip; with `subtitle` the track grows to 44 px for two-line tabs.
 FocusScope {
     id: control
 
@@ -17,13 +16,34 @@ FocusScope {
     signal activated(var value)
 
     readonly property int count: model ? model.length : 0
-    function valueAt(i) { const m = model[i]; return typeof m === "object" ? m.value : m }
-    function labelAt(i) { const m = model[i]; return typeof m === "object" ? m.label : String(m) }
-    function glyphAt(i) { const m = model[i]; return typeof m === "object" && m.glyph ? m.glyph : "" }
+    readonly property bool hasSubtitles: {
+        for (let i = 0; i < count; ++i)
+            if (subtitleAt(i) !== "")
+                return true
+        return false
+    }
+    function valueAt(i) { const m = model[i]; return typeof m === "object" && m !== null ? m.value : m }
+    function labelAt(i) { const m = model[i]; return typeof m === "object" && m !== null ? (m.label || "") : String(m) }
+    function subtitleAt(i) { const m = model[i]; return typeof m === "object" && m !== null && m.subtitle ? String(m.subtitle) : "" }
+    function glyphAt(i) { const m = model[i]; return typeof m === "object" && m !== null && m.glyph ? m.glyph : "" }
+    function enabledAt(i) { const m = model[i]; return !(typeof m === "object" && m !== null && m.enabled === false) }
     function indexOfCurrent() { for (let i = 0; i < count; ++i) if (valueAt(i) === current) return i; return -1 }
-    function choose(i) { if (i >= 0 && i < count && valueAt(i) !== current) activated(valueAt(i)) }
+    function choose(i) {
+        if (i >= 0 && i < count && enabledAt(i) && valueAt(i) !== current)
+            activated(valueAt(i))
+    }
+    function step(delta) {
+        let i = indexOfCurrent() + delta
+        while (i >= 0 && i < count) {
+            if (enabledAt(i)) {
+                choose(i)
+                return
+            }
+            i += delta
+        }
+    }
 
-    implicitHeight: compact ? 26 : 30
+    implicitHeight: hasSubtitles ? 44 : (compact ? 28 : 30)
     // The segments' own widths, summed apart from their laid-out widths so a
     // stretched control can share its width out evenly.
     readonly property real naturalWidth: {
@@ -38,19 +58,28 @@ FocusScope {
     activeFocusOnTab: true
     Accessible.role: Accessible.PageTabList
 
-    Keys.onLeftPressed: choose(indexOfCurrent() + (control.mirrored ? 1 : -1))
-    Keys.onRightPressed: choose(indexOfCurrent() + (control.mirrored ? -1 : 1))
+    Keys.onLeftPressed: step(control.mirrored ? 1 : -1)
+    Keys.onRightPressed: step(control.mirrored ? -1 : 1)
     readonly property bool mirrored: LayoutMirroring.enabled
 
+    // 2 px offset focus ring when reached via keyboard Tab.
     Rectangle {
         anchors.fill: parent
-        radius: Math.min(8, theme.radius)
-        color: Ui.tint(control.palette.windowText, 0.06)
-        border.width: control.activeFocus ? 2 : 0
+        anchors.margins: -3
+        visible: control.activeFocus
+        radius: Ui.radius(10, theme.radius)
+        color: "transparent"
+        border.width: 2
         border.color: control.palette.highlight
     }
 
-    // The raised thumb glides under the current choice.
+    Rectangle {
+        anchors.fill: parent
+        radius: Ui.radius(7, theme.radius)
+        color: Ui.tint(control.palette.windowText, 0.06)
+    }
+
+    // The active pill glides under the current choice.
     Rectangle {
         id: thumb
         // itemAt() isn't a notifying binding, so it is read again whenever
@@ -62,12 +91,16 @@ FocusScope {
         y: 2
         width: target ? target.width : 0
         height: control.height - 4
-        radius: Math.max(0, Math.min(6, theme.radius))
-        color: Ui.mix(control.palette.window, control.palette.light, 0.85)
-        border.width: 1
-        border.color: Ui.tint(control.palette.windowText, 0.08)
-        Behavior on x { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
-        Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        radius: Ui.radius(5, theme.radius)
+        color: Ui.tint(control.palette.windowText, 0.13)
+        Behavior on x {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+        }
+        Behavior on width {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+        }
     }
 
     Row {
@@ -84,41 +117,77 @@ FocusScope {
                 id: segment
                 required property int index
                 readonly property bool chosen: control.valueAt(index) === control.current
+                readonly property string glyph: control.glyphAt(index)
+                readonly property string subtitle: control.subtitleAt(index)
+                readonly property bool itemEnabled: control.enabledAt(index)
+
+                enabled: itemEnabled
                 width: control.width > control.naturalWidth + 4
                        ? (control.width - 4) / control.count : implicitWidth
-                readonly property string glyph: control.glyphAt(index)
-                implicitWidth: glyph !== "" ? (control.compact ? 30 : 34) : label.implicitWidth + (control.compact ? 18 : 24)
+                implicitWidth: glyph !== "" ? (control.compact ? 30 : 34)
+                             : subtitle !== "" ? Math.max(twoLineTitle.implicitWidth, twoLineSub.implicitWidth) + 22
+                             : label.implicitWidth + (control.compact ? 18 : 24)
                 height: row.height
-                hoverEnabled: true
+                hoverEnabled: itemEnabled
                 focusPolicy: Qt.NoFocus
+                opacity: itemEnabled ? 1 : 0.42
                 Accessible.role: Accessible.PageTab
-                Accessible.name: label.text
+                Accessible.name: subtitle !== "" ? (control.labelAt(index) + ", " + subtitle) : control.labelAt(index)
                 Accessible.checked: chosen
                 onClicked: control.choose(index)
                 ToolTip.visible: glyph !== "" && hovered
                 ToolTip.text: control.labelAt(index)
                 ToolTip.delay: 600
+
+                readonly property color fgColor: segment.chosen ? control.palette.windowText
+                                               : segment.hovered ? Ui.mix(control.palette.mid, control.palette.windowText, 0.5)
+                                               : control.palette.mid
+
                 contentItem: Item {
                     Glyph {
                         anchors.centerIn: parent
                         visible: segment.glyph !== ""
-                        width: 16
-                        height: 16
+                        width: 14
+                        height: 14
                         path: segment.glyph
-                        color: label.color
+                        color: segment.fgColor
                     }
                     Label {
                         id: label
                         anchors.fill: parent
-                        visible: segment.glyph === ""
+                        visible: segment.glyph === "" && segment.subtitle === ""
                         text: control.labelAt(segment.index)
                         horizontalAlignment: Text.AlignHCenter
                         verticalAlignment: Text.AlignVCenter
                         elide: Text.ElideRight
                         font.pixelSize: control.compact ? 12 : 13
-                        font.weight: segment.chosen ? Font.DemiBold : Font.Medium
-                        color: segment.chosen ? control.palette.windowText
-                             : segment.hovered ? Ui.mix(control.palette.mid, control.palette.windowText, 0.5) : control.palette.mid
+                        font.weight: segment.chosen ? Font.Medium : Font.Normal
+                        color: segment.fgColor
+                    }
+                    Column {
+                        anchors.centerIn: parent
+                        width: parent.width - 8
+                        visible: segment.glyph === "" && segment.subtitle !== ""
+                        spacing: 1
+                        Label {
+                            id: twoLineTitle
+                            width: parent.width
+                            text: control.labelAt(segment.index)
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                            color: segment.fgColor
+                        }
+                        Label {
+                            id: twoLineSub
+                            width: parent.width
+                            text: segment.subtitle
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                            font.pixelSize: 11
+                            color: control.palette.mid
+                        }
                     }
                 }
                 background: null

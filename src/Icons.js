@@ -58,3 +58,22 @@ var list = "M8 6.5 H20 M8 12 H20 M8 17.5 H20 M4 6.5 H5 M4 12 H5 M4 17.5 H5"
 var filter = "M4.5 6 H19.5 M7.5 12 H16.5 M10.5 18 H13.5"
 var stats = "M5 19.5 V13 M10 19.5 V8.5 M15 19.5 V11 M20 19.5 V5.5"
 var shield = "M12 3.5 L19 6.5 V11.5 Q19 17 12 20.5 Q5 17 5 11.5 V6.5 Z"
+
+// Canonical icons shared across the redesigned reading, listening, companion,
+// settings and library surfaces.
+var waveform = "M4 10 V14 M8 7 V17 M12 4 V20 M16 7 V17 M20 10 V14"
+var disc = "M21 12 A9 9 0 1 1 3 12 A9 9 0 1 1 21 12 Z M15 12 A3 3 0 1 1 9 12 A3 3 0 1 1 15 12 Z"
+var noteLines = "M5 7 H19 M5 12 H19 M5 17 H13"
+var computer = "M4.5 5 H19.5 Q21 5 21 6.5 V15.5 Q21 17 19.5 17 H4.5 Q3 17 3 15.5 V6.5 Q3 5 4.5 5 Z M8 21 H16 M12 17 V21"
+var cloud = "M7 17 A5 5 0 0 1 7 7 A6 6 0 0 1 18.3 9 A4 4 0 0 1 18 17 Z"
+var shieldCheck = "M12 3 L20 6 V12 C20 16.5 16.6 20 12 21 C7.4 20 4 16.5 4 12 V6 Z M8.5 12 L11 14.5 L15.5 9.5"
+var arrowUp = "M12 19 V5 M5 12 L12 5 L19 12"
+var picture = "M5 4 H19 Q21 4 21 6 V18 Q21 20 19 20 H5 Q3 20 3 18 V6 Q3 4 5 4 Z M11 10 A2 2 0 1 1 7 10 A2 2 0 1 1 11 10 Z M21 16 L16 11 L7 20"
+var chevronsUpDown = "M7 9 L12 4 L17 9 M7 15 L12 20 L17 15"
+var infoCircle = "M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 Z M12 8 V13 M12 16 H12.01"
+
+// Solid filled transport icons (drawn with Glyph { filled: true }).
+var playSolid = "M8 5 V19 L19 12 Z"
+var pauseSolid = "M7 5 H9 Q10 5 10 6 V18 Q10 19 9 19 H7 Q6 19 6 18 V6 Q6 5 7 5 Z M15 5 H17 Q18 5 18 6 V18 Q18 19 17 19 H15 Q14 19 14 18 V6 Q14 5 15 5 Z"
+var skipBackSolid = "M6 5 H8 V19 H6 Z M19 5 V19 L9 12 Z"
+var skipForwardSolid = "M16 5 H18 V19 H16 Z M5 5 V19 L15 12 Z"

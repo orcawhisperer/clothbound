@@ -23,6 +23,22 @@ function hash(text) {
     return Math.abs(h)
 }
 
+// Corner radius clamped to Hyprland's rounding: strictly 0 in sharp mode.
+function radius(maxR, themeRadius) {
+    return themeRadius > 0 ? Math.min(maxR, themeRadius) : 0
+}
+
+// Curated muted swatch palette for collection badges in the sidebar & details.
+var collectionColors = [
+    "#6B8CC9", "#C9925A", "#6BA887", "#A879C4",
+    "#C96B7D", "#5BA3AD", "#B5A25A", "#8B84C9"
+]
+
+function collectionColor(index) {
+    var i = typeof index === "number" ? Math.abs(Math.floor(index)) : hash(String(index || ""))
+    return collectionColors[i % collectionColors.length]
+}
+
 // Black or white, whichever reads on `color` (WCAG relative luminance).
 function readableOn(color) {
     var c = Qt.lighter(color, 1.0)

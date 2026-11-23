@@ -235,6 +235,10 @@ QString Theme::readableOn(const QString &color) {
 
 QString Theme::accentForeground() const { return readableOn(accent()); }
 
+QString Theme::accentOn() const {
+    return readableOn(accent()) == QLatin1String("black") ? QStringLiteral("#0b0d12") : QStringLiteral("#ffffff");
+}
+
 double Theme::contrast(const QString &a, const QString &b) {
     auto luminance = [](const QColor &c) {
         auto linear = [](double v) { return v <= .04045 ? v / 12.92 : std::pow((v + .055) / 1.055, 2.4); };
@@ -279,18 +283,22 @@ QHash<QString, QString> Theme::deriveTokens(const QHash<QString, QString> &palet
         const QString extreme = light ? QStringLiteral("#000000") : QStringLiteral("#ffffff");
         t["ground"] = bg;
         t["sidebar"] = mix(bg, fg, light ? .045 : .035);
+        t["drawer"] = light ? t["sidebar"] : mix(bg, fg, .025);
         t["raised"] = light ? mix(bg, "#ffffff", .7) : mix(bg, fg, .06);
         t["overlay"] = light ? mix(bg, "#ffffff", .9) : mix(bg, fg, .09);
         t["ink1"] = mix(fg, extreme, .35);
         t["ink2"] = fg;
         t["ink3"] = mix(fg, bg, .28);
         t["ink4"] = mix(fg, bg, .42);
+        t["quote"] = mix(fg, bg, .14);
     } else if (light) {
-        t = {{"ground", "#fbfbfc"}, {"sidebar", "#f1f1f3"}, {"raised", "#ffffff"}, {"overlay", "#ffffff"},
-             {"ink1", "#1c1c1f"}, {"ink2", "#34343a"}, {"ink3", "#5a5a62"}, {"ink4", "#66666e"}};
+        t = {{"ground", "#fbfbfc"}, {"sidebar", "#f1f1f3"}, {"drawer", "#f1f1f3"},
+             {"raised", "#ffffff"}, {"overlay", "#ffffff"},
+             {"ink1", "#1c1c1f"}, {"ink2", "#34343a"}, {"ink3", "#5a5a62"}, {"ink4", "#66666e"}, {"quote", "#47474f"}};
     } else {
-        t = {{"ground", "#121214"}, {"sidebar", "#18181b"}, {"raised", "#1c1c1f"}, {"overlay", "#232327"},
-             {"ink1", "#f2f2f3"}, {"ink2", "#d4d4d8"}, {"ink3", "#a1a1aa"}, {"ink4", "#8b8b94"}};
+        t = {{"ground", "#121214"}, {"sidebar", "#18181b"}, {"drawer", "#171716"},
+             {"raised", "#1c1c1f"}, {"overlay", "#232327"},
+             {"ink1", "#f2f2f3"}, {"ink2", "#d4d4d8"}, {"ink3", "#a1a1aa"}, {"ink4", "#8b8b94"}, {"quote", "#c4c4ca"}};
     }
     // However faint a theme's foreground, body text stays readable (WCAG AA),
     // headings stronger, and only hints may drop to 3:1.
@@ -299,6 +307,7 @@ QHash<QString, QString> Theme::deriveTokens(const QHash<QString, QString> &palet
     t["ink2"] = readable(t["ink2"], ground, 4.5);
     t["ink3"] = readable(t["ink3"], ground, 4.5);
     t["ink4"] = readable(t["ink4"], ground, 3.0);
+    t["quote"] = readable(t["quote"], ground, 4.5);
 
     const QString ink = t["ink1"];
     t["hairline"] = withAlpha(ink, light ? .10 : .08);
@@ -310,13 +319,20 @@ QHash<QString, QString> Theme::deriveTokens(const QHash<QString, QString> &palet
     // darkened until it reads, as the design does with its accents.
     t["accentInk"] = readable(accent, ground, 4.5);
     t["accentSoft"] = withAlpha(accent, light ? .14 : .18);
+    t["accentRead"] = withAlpha(accent, .28);
     t["focus"] = withAlpha(accent, .6);
     // Where intelligence runs: green on this computer, amber sent to Google.
     t["positive"] = readable("#5fcb8a", ground, 4.5);
+    t["positiveSoft"] = light ? (omarchy ? mix(ground, "#5fcb8a", .14) : QStringLiteral("#e3efe3"))
+                              : withAlpha("#5fcb8a", .14);
+    t["positiveInk"] = readable(light ? QStringLiteral("#24502c") : QStringLiteral("#8fddae"), ground, 4.5);
     t["cloud"] = readable("#e0af68", ground, 4.5);
+    t["cloudSoft"] = light ? (omarchy ? mix(ground, "#e0af68", .16) : QStringLiteral("#f4e6cc"))
+                           : withAlpha("#e0af68", .14);
+    t["cloudInk"] = readable(light ? QStringLiteral("#6a4410") : QStringLiteral("#ebc48c"), ground, 4.5);
     t["danger"] = readable(palette.value("red", "#ff6b6b"), ground, 4.5);
-    t["scrim"] = light ? "#40000000" : "#80000000";
-    t["shadow"] = light ? "#26000000" : "#73000000";
+    t["scrim"] = light ? QStringLiteral("#40060608") : QStringLiteral("#94060608");
+    t["shadow"] = light ? QStringLiteral("#26000000") : QStringLiteral("#73000000");
     return t;
 }
 
@@ -329,8 +345,16 @@ void Theme::setAppearance(const QString &appearance) {
     emit changed();
 }
 
+void Theme::setReducedMotion(bool reduced) {
+    if (reduced == m_reducedMotion)
+        return;
+    m_reducedMotion = reduced;
+    emit changed();
+}
+
 QVariantMap Theme::scale() {
-    return {{"caption", 11}, {"small", 12}, {"body", 13}, {"title", 15}, {"heading", 20}, {"display", 28}};
+    return {{"caption", 11}, {"small", 12}, {"body", 13}, {"title", 15},
+            {"heading", 20}, {"pageTitle", 22}, {"display", 28}};
 }
 
 void Theme::reload() {

@@ -21,6 +21,8 @@
         <file alias="OptionCard.qml">OptionCard.qml</file>
         <file alias="SidePanel.qml">SidePanel.qml</file>
         <file alias="Sheet.qml">Sheet.qml</file>
+        <file alias="DogearMark.qml">DogearMark.qml</file>
+        <file alias="ProviderPill.qml">ProviderPill.qml</file>
         <file alias="LibraryView.qml">LibraryView.qml</file>
         <file alias="ListenBar.qml">ListenBar.qml</file>
         <file alias="VoicePanel.qml">VoicePanel.qml</file>

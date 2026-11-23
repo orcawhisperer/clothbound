@@ -40,25 +40,34 @@ class Theme : public QObject {
     Q_PROPERTY(QVariantMap scale READ scale CONSTANT)
     Q_PROPERTY(QString ground READ ground NOTIFY changed)
     Q_PROPERTY(QString sidebar READ sidebar NOTIFY changed)
+    Q_PROPERTY(QString drawer READ drawer NOTIFY changed)
     Q_PROPERTY(QString raised READ raised NOTIFY changed)
     Q_PROPERTY(QString overlay READ overlay NOTIFY changed)
     Q_PROPERTY(QString ink1 READ ink1 NOTIFY changed)
     Q_PROPERTY(QString ink2 READ ink2 NOTIFY changed)
     Q_PROPERTY(QString ink3 READ ink3 NOTIFY changed)
     Q_PROPERTY(QString ink4 READ ink4 NOTIFY changed)
+    Q_PROPERTY(QString quote READ quote NOTIFY changed)
     Q_PROPERTY(QString hairline READ hairline NOTIFY changed)
     Q_PROPERTY(QString separator READ separator NOTIFY changed)
     Q_PROPERTY(QString fill READ fill NOTIFY changed)
     Q_PROPERTY(QString fillHover READ fillHover NOTIFY changed)
     Q_PROPERTY(QString fillPressed READ fillPressed NOTIFY changed)
     Q_PROPERTY(QString accentInk READ accentInk NOTIFY changed)
+    Q_PROPERTY(QString accentOn READ accentOn NOTIFY changed)
     Q_PROPERTY(QString accentSoft READ accentSoft NOTIFY changed)
+    Q_PROPERTY(QString accentRead READ accentRead NOTIFY changed)
     Q_PROPERTY(QString focus READ focus NOTIFY changed)
     Q_PROPERTY(QString positive READ positive NOTIFY changed)
+    Q_PROPERTY(QString positiveSoft READ positiveSoft NOTIFY changed)
+    Q_PROPERTY(QString positiveInk READ positiveInk NOTIFY changed)
     Q_PROPERTY(QString cloud READ cloud NOTIFY changed)
+    Q_PROPERTY(QString cloudSoft READ cloudSoft NOTIFY changed)
+    Q_PROPERTY(QString cloudInk READ cloudInk NOTIFY changed)
     Q_PROPERTY(QString danger READ danger NOTIFY changed)
     Q_PROPERTY(QString scrim READ scrim NOTIFY changed)
     Q_PROPERTY(QString shadow READ shadow NOTIFY changed)
+    Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY changed)
 
 public:
     explicit Theme(const QString &currentDirectory = {}, QObject *parent = nullptr, const QString &hyprSocketDir = {});
@@ -84,25 +93,35 @@ public:
     static QVariantMap scale();
     QString ground() const { return m_tokens.value("ground"); }
     QString sidebar() const { return m_tokens.value("sidebar"); }
+    QString drawer() const { return m_tokens.value("drawer"); }
     QString raised() const { return m_tokens.value("raised"); }
     QString overlay() const { return m_tokens.value("overlay"); }
     QString ink1() const { return m_tokens.value("ink1"); }
     QString ink2() const { return m_tokens.value("ink2"); }
     QString ink3() const { return m_tokens.value("ink3"); }
     QString ink4() const { return m_tokens.value("ink4"); }
+    QString quote() const { return m_tokens.value("quote"); }
     QString hairline() const { return m_tokens.value("hairline"); }
     QString separator() const { return m_tokens.value("separator"); }
     QString fill() const { return m_tokens.value("fill"); }
     QString fillHover() const { return m_tokens.value("fillHover"); }
     QString fillPressed() const { return m_tokens.value("fillPressed"); }
     QString accentInk() const { return m_tokens.value("accentInk"); }
+    QString accentOn() const;
     QString accentSoft() const { return m_tokens.value("accentSoft"); }
+    QString accentRead() const { return m_tokens.value("accentRead"); }
     QString focus() const { return m_tokens.value("focus"); }
     QString positive() const { return m_tokens.value("positive"); }
+    QString positiveSoft() const { return m_tokens.value("positiveSoft"); }
+    QString positiveInk() const { return m_tokens.value("positiveInk"); }
     QString cloud() const { return m_tokens.value("cloud"); }
+    QString cloudSoft() const { return m_tokens.value("cloudSoft"); }
+    QString cloudInk() const { return m_tokens.value("cloudInk"); }
     QString danger() const { return m_tokens.value("danger"); }
     QString scrim() const { return m_tokens.value("scrim"); }
     QString shadow() const { return m_tokens.value("shadow"); }
+    bool reducedMotion() const { return m_reducedMotion; }
+    void setReducedMotion(bool reduced);
     QHash<QString, QString> tokens() const { return m_tokens; }
 
     // The semantic tokens for a palette (see the class comment).
@@ -139,6 +158,7 @@ private:
     QString m_appearance = QStringLiteral("match");
     bool m_light = false;
     bool m_omarchy = false;
+    bool m_reducedMotion = false;
     QFileSystemWatcher m_watcher;
     QTimer m_debounce;
     QString m_hyprSocketDir;

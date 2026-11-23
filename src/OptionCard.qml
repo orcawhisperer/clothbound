@@ -15,6 +15,7 @@ AbstractButton {
     checkable: true
     autoExclusive: true
     hoverEnabled: true
+    focusPolicy: Qt.TabFocus
     implicitWidth: 320
     implicitHeight: column.implicitHeight + 24
     Accessible.role: Accessible.RadioButton
@@ -23,13 +24,23 @@ AbstractButton {
     Accessible.checked: checked
 
     background: Rectangle {
-        radius: Math.min(10, theme.radius)
+        radius: Ui.radius(10, theme.radius)
         color: card.checked ? Ui.tint(card.palette.highlight, 0.12)
              : card.hovered ? Ui.tint(card.palette.windowText, 0.05) : Ui.tint(card.palette.windowText, 0.03)
-        border.width: card.visualFocus ? 2 : 1
-        border.color: card.checked || card.visualFocus ? Ui.tint(card.palette.highlight, 0.6)
-                                                       : Ui.tint(card.palette.windowText, 0.08)
+        border.width: 1
+        border.color: card.checked ? Ui.tint(card.palette.highlight, 0.6)
+                                   : Ui.tint(card.palette.windowText, 0.08)
         Behavior on color { ColorAnimation { duration: 100 } }
+
+        Rectangle {
+            anchors.fill: parent
+            anchors.margins: -3
+            visible: card.visualFocus
+            radius: Ui.radius(13, theme.radius)
+            color: "transparent"
+            border.width: 2
+            border.color: card.palette.highlight
+        }
     }
 
     contentItem: Item {
@@ -64,7 +75,7 @@ AbstractButton {
                 text: card.description
                 color: card.palette.mid
                 font.pixelSize: 12
-                lineHeight: 1.15
+                lineHeight: 1.4
                 wrapMode: Text.Wrap
             }
         }

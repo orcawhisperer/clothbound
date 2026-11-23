@@ -9,22 +9,25 @@ AbstractButton {
     id: row
 
     property string hint
-    // Kept for older callers; the reading theme now arrives as the palette.
+    // Kept for reading-surface callers passing a Themes.palette() look object.
     property var look: null
 
-    readonly property color inkColor: palette.windowText
-    readonly property color mutedColor: palette.mid
-    readonly property color accentColor: palette.link
+    readonly property color inkColor: look ? look.fg : palette.windowText
+    readonly property color mutedColor: look ? look.muted : palette.mid
+    readonly property color accentColor: look ? look.link : palette.link
 
     width: parent ? parent.width : 200
     implicitHeight: 30
     hoverEnabled: true
-    focusPolicy: Qt.NoFocus
+    focusPolicy: Qt.TabFocus
     Accessible.name: text
 
     background: Rectangle {
-        radius: Math.min(6, theme.radius)
-        color: row.pressed ? Ui.tint(row.inkColor, 0.12) : row.hovered ? Ui.tint(row.inkColor, 0.07) : "transparent"
+        radius: Ui.radius(6, theme.radius)
+        color: row.pressed ? Ui.tint(row.inkColor, 0.12)
+             : row.hovered || row.visualFocus ? Ui.tint(row.inkColor, 0.07) : "transparent"
+        border.width: row.visualFocus ? 1.5 : 0
+        border.color: row.palette.highlight
     }
     contentItem: Item {
         Glyph {

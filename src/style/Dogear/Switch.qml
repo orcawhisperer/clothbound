@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Templates as T
 
-// A small pill switch, the accent when on.
+// A 38×22 pill switch with an 18×18 white knob, filled with the accent when on.
 T.Switch {
     id: control
 
@@ -17,28 +17,50 @@ T.Switch {
     opacity: enabled ? 1 : 0.45
 
     indicator: Rectangle {
-        implicitWidth: 32
-        implicitHeight: 18
+        implicitWidth: 38
+        implicitHeight: 22
         x: control.text ? (control.mirrored ? control.width - width - control.rightPadding : control.leftPadding)
                         : control.leftPadding + (control.availableWidth - width) / 2
         y: control.topPadding + (control.availableHeight - height) / 2
         radius: height / 2
-        color: control.checked ? control.palette.highlight : control.palette.dark
-        border.width: control.visualFocus ? 2 : 0
-        border.color: control.palette.link
+        color: control.checked
+               ? control.palette.highlight
+               : Qt.rgba(control.palette.windowText.r, control.palette.windowText.g, control.palette.windowText.b, 0.16)
         Behavior on color { ColorAnimation { duration: 140 } }
 
+        // 2 px offset focus ring when reached via keyboard Tab.
         Rectangle {
+            anchors.fill: parent
+            anchors.margins: -3
+            visible: control.visualFocus
+            radius: height / 2
+            color: "transparent"
+            border.width: 2
+            border.color: control.palette.highlight
+        }
+
+        Item {
             x: Math.max(2, Math.min(parent.width - width - 2,
                                     control.visualPosition * parent.width - width / 2))
             y: 2
-            width: 14
-            height: 14
-            radius: 7
-            color: "#ffffff"
+            width: 18
+            height: 18
             Behavior on x {
-                enabled: !control.down
-                NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
+                enabled: !control.down && !theme.reducedMotion
+                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+            }
+
+            Rectangle {
+                y: 1
+                width: parent.width
+                height: parent.height
+                radius: height / 2
+                color: Qt.rgba(0, 0, 0, 0.28)
+            }
+            Rectangle {
+                anchors.fill: parent
+                radius: height / 2
+                color: "#ffffff"
             }
         }
     }
