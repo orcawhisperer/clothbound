@@ -16,7 +16,7 @@ class QNetworkReply;
 // Ollama: whether it's installed and running, the model that suits this
 // computer (with its download size, asked of Ollama's registry), installing
 // Ollama in Omarchy's terminal (where the reader types their password, never
-// Dogear), and downloading the model through Ollama's own API, with
+// Clothbound), and downloading the model through Ollama's own API, with
 // progress, then using it.
 class LocalSetup : public QObject {
     Q_OBJECT

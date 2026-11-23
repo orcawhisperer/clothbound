@@ -48,7 +48,7 @@ function listening() {
         { keys: "⇧ ←  ⇧ →", action: qsTr("Skip back / forward 15 seconds") },
         { keys: "<  >", action: qsTr("Slower / faster") },
         { keys: "V", action: qsTr("Narrator and style") },
-        { keys: "Super W", action: qsTr("Close the window and keep listening; open Dogear again to return") }
+        { keys: "Super W", action: qsTr("Close the window and keep listening; open Clothbound again to return") }
     ]
 }
 function everywhere() {

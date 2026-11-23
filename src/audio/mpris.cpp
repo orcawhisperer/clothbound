@@ -50,7 +50,7 @@ QVariantMap Mpris::metadata() const {
     const int chapter = qMax(0, m_narration->chapter());
     QVariantMap map;
     map["mpris:trackid"] = QVariant::fromValue(
-        QDBusObjectPath(QStringLiteral("/org/dogear/book%1/chapter%2").arg(book).arg(chapter)));
+        QDBusObjectPath(QStringLiteral("/app/clothbound/book%1/chapter%2").arg(book).arg(chapter)));
     const qint64 length = m_narration->durationUs();
     if (length > 0)
         map["mpris:length"] = QVariant::fromValue(qlonglong(length));
@@ -66,7 +66,7 @@ QVariantMap Mpris::metadata() const {
     return map;
 }
 
-// Dogear is a player while it reads aloud, and gone from the desktop's list
+// Clothbound is a player while it reads aloud, and gone from the desktop's list
 // of players otherwise.
 void Mpris::update() {
     QDBusConnection bus = QDBusConnection::sessionBus();
@@ -75,8 +75,8 @@ void Mpris::update() {
     if (m_narration->active() && !m_registered) {
         if (!bus.registerObject(path, this, QDBusConnection::ExportAdaptors))
             return;
-        m_service = QStringLiteral("org.mpris.MediaPlayer2.dogear");
-        // A second Dogear takes a name of its own.
+        m_service = QStringLiteral("org.mpris.MediaPlayer2.clothbound");
+        // A second Clothbound takes a name of its own.
         bool registered = bus.registerService(m_service);
         if (!registered) {
             m_service += QStringLiteral(".instance%1").arg(QCoreApplication::applicationPid());

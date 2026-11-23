@@ -1,6 +1,6 @@
 .pragma library
 
-// Dogear's line icons, drawn on a 24 × 24 grid with round caps and joins.
+// Clothbound's line icons, drawn on a 24 × 24 grid with round caps and joins.
 // They're drawn by Glyph.qml in any color and size.
 
 var search = "M17 10.5 A6.5 6.5 0 1 1 4 10.5 A6.5 6.5 0 1 1 17 10.5 Z M15.3 15.3 L20 20"

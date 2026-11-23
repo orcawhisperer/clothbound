@@ -12,7 +12,7 @@ class QNetworkReply;
 // A model server the reader runs on their own computer (Ollama, llama.cpp's
 // llama-server, LM Studio, MLX, vLLM, or any OpenAI-compatible one), for
 // text, embeddings and, where it offers /v1/audio/speech, voices. Nothing
-// is bundled: Dogear talks to what's installed. The only place in Dogear
+// is bundled: Clothbound talks to what's installed. The only place in Clothbound
 // that knows these servers' wire formats.
 class LocalModels : public Ai::Provider, public Ai::TextModel, public Ai::Embedder, public Ai::SpeechSynthesizer {
     Q_OBJECT

@@ -5,7 +5,7 @@ ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 mkdir -p "$ROOT/build"
 cd "$ROOT/build"
 
-qmake6 "$ROOT/dogear.pro"
+qmake6 "$ROOT/clothbound.pro"
 make -j"$(nproc)"
 
-echo "Built $ROOT/build/dogear"
+echo "Built $ROOT/build/clothbound"

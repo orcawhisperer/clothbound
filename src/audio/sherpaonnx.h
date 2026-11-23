@@ -2,7 +2,7 @@
 
 // The parts of sherpa-onnx's C API (https://github.com/k2-fsa/sherpa-onnx,
 // sherpa-onnx/c-api/c-api.h at v1.13.8, Apache-2.0, Copyright Xiaomi
-// Corporation) that Dogear's built-in voices use. The library itself is
+// Corporation) that Clothbound's built-in voices use. The library itself is
 // downloaded on first use and loaded at run time; these declarations must
 // match its version exactly, which is checked before it's used.
 

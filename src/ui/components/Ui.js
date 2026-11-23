@@ -1,6 +1,6 @@
 .pragma library
 
-// Small helpers shared by Dogear's QML.
+// Small helpers shared by Clothbound's QML.
 
 // `color` (a "#rrggbb" string or color) at the given opacity.
 function tint(color, alpha) {

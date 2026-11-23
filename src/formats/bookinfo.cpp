@@ -136,7 +136,7 @@ BookInfo read(const QString &path, int coverHeight, QList<int> *chapterLengths) 
         if (coverHeight > 0)
             info.cover = scaledCover(book.renderCover(coverHeight), coverHeight);
     } else {
-        info.problem = QStringLiteral("Dogear reads EPUB and PDF books.");
+        info.problem = QStringLiteral("Clothbound reads EPUB and PDF books.");
     }
     return info;
 }

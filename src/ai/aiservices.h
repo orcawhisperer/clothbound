@@ -16,7 +16,7 @@ class KeyStore;
 class LocalModels;
 class ServerFinder;
 
-// Dogear's intelligence, as the window and the features see it: which
+// Clothbound's intelligence, as the window and the features see it: which
 // provider serves each capability, its key, whether it works, and what it
 // has cost. Features ask here for a text model or a voice; they never
 // create providers. main.cpp decides which providers exist.

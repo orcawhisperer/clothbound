@@ -448,7 +448,7 @@ QString AudioCache::audiobookFolder() const {
     QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
     if (music.isEmpty())
         music = QDir::homePath() + QStringLiteral("/Music");
-    return music + QStringLiteral("/Dogear");
+    return music + QStringLiteral("/Clothbound");
 }
 
 void AudioCache::openAudiobookFolder() const {

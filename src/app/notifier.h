@@ -38,9 +38,9 @@ public:
         // "default" is the note's own click; servers that list actions as
         // buttons show its label.
         const QStringList actions =
-            clickable ? QStringList{QStringLiteral("default"), tr("Show Dogear")} : QStringList();
-        const QVariantMap hints{{QStringLiteral("desktop-entry"), QStringLiteral("dogear")}};
-        message << QStringLiteral("Dogear") << uint(0) << QStringLiteral("dogear") << summary << body << actions
+            clickable ? QStringList{QStringLiteral("default"), tr("Show Clothbound")} : QStringList();
+        const QVariantMap hints{{QStringLiteral("desktop-entry"), QStringLiteral("clothbound")}};
+        message << QStringLiteral("Clothbound") << uint(0) << QStringLiteral("clothbound") << summary << body << actions
                 << hints << int(-1);
         auto *watcher = new QDBusPendingCallWatcher(bus.asyncCall(message), this);
         connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, clickable](QDBusPendingCallWatcher *call) {

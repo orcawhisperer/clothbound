@@ -1,17 +1,17 @@
-// Dogear's reading surface. It shows one chapter at a time in a sandboxed
+// Clothbound's reading surface. It shows one chapter at a time in a sandboxed
 // frame and lays it out in pages with CSS columns: one or two per screen,
 // turned by moving the frame's scroll position a screen at a time.
 //
 // Positions are character offsets into the chapter's text, counted the way
-// Dogear's C++ counts them (EpubBook::extractText): every text node of the
+// Clothbound's C++ counts them (EpubBook::extractText): every text node of the
 // body in document order, outside script and style, without soft hyphens.
 // Saved places, search hits, highlights, and narration all use them.
 //
-// The window drives it through `window.dogear`; it reports back to `bridge`
+// The window drives it through `window.clothbound`; it reports back to `bridge`
 // (the Reader object) over the web channel.
 'use strict'
 
-const dogear = (() => {
+const clothbound = (() => {
     const SHY = '­'
     const OPS = 'http://www.idpf.org/2007/ops'
     const XLINK = 'http://www.w3.org/1999/xlink'
@@ -238,9 +238,9 @@ const dogear = (() => {
         const searchUnderline = t.searchUnderline || t.link
         const paragraphSpacing = clamp(s.paragraphSpacing !== undefined ? Number(s.paragraphSpacing) : 0.0, 0, 1.2)
         const literaryIndent = own && paragraphSpacing <= 0.15
-            ? `p[data-dg-flow] + p[data-dg-flow] { text-indent: 1.4em; }
-h1 + p[data-dg-flow], h2 + p[data-dg-flow], h3 + p[data-dg-flow], h4 + p[data-dg-flow],
-hr + p[data-dg-flow], blockquote + p[data-dg-flow], [data-dg-dropcap] { text-indent: 0 !important; }`
+            ? `p[data-cb-flow] + p[data-cb-flow] { text-indent: 1.4em; }
+h1 + p[data-cb-flow], h2 + p[data-cb-flow], h3 + p[data-cb-flow], h4 + p[data-cb-flow],
+hr + p[data-cb-flow], blockquote + p[data-cb-flow], [data-cb-dropcap] { text-indent: 0 !important; }`
             : ''
         const colorRules = own
             ? `body *, body *::before, body *::after { color: inherit !important; background-color: transparent !important; }
@@ -256,21 +256,21 @@ hr + p[data-dg-flow], blockquote + p[data-dg-flow], [data-dg-dropcap] { text-ind
                 : `body *, body *::before, body *::after { color: inherit; }`
         const darkMediaRules = t.dark ? `
 svg:not(:has(image)) { filter: invert(0.86) hue-rotate(180deg); }
-img[src$=".svg" i], img[src*=".svg?" i], img[src^="data:image/svg+xml" i], img[data-dg-lineart] {
+img[src$=".svg" i], img[src*=".svg?" i], img[src^="data:image/svg+xml" i], img[data-cb-lineart] {
     filter: invert(0.86) hue-rotate(180deg) !important;
 }
-img[data-dg-matte] {
+img[data-cb-matte] {
     background-color: rgba(242, 239, 232, 0.86) !important;
     border-radius: 4px;
     padding: 3px;
     filter: brightness(0.92) contrast(1.02) !important;
 }
-img:not([data-dg-lineart]):not([data-dg-matte]):not([src$=".svg" i]):not([src*=".svg?" i]):not([src^="data:image/svg+xml" i]) {
+img:not([data-cb-lineart]):not([data-cb-matte]):not([src$=".svg" i]):not([src*=".svg?" i]):not([src^="data:image/svg+xml" i]) {
     filter: brightness(0.88) contrast(1.04);
 }` : ''
         return `
-@font-face { font-family: "Literata"; src: url("dogear://local/app/fonts/Literata.ttf"); font-weight: 200 900; font-style: normal; font-display: block; }
-@font-face { font-family: "Literata"; src: url("dogear://local/app/fonts/Literata-Italic.ttf"); font-weight: 200 900; font-style: italic; font-display: block; }
+@font-face { font-family: "Literata"; src: url("clothbound://local/app/fonts/Literata.ttf"); font-weight: 200 900; font-style: normal; font-display: block; }
+@font-face { font-family: "Literata"; src: url("clothbound://local/app/fonts/Literata-Italic.ttf"); font-weight: 200 900; font-style: italic; font-display: block; }
 html { background: ${t.bg} !important; color: ${t.fg} !important; font-size: ${s.fontScale * 100}% !important;
        -webkit-text-size-adjust: none; text-rendering: optimizeLegibility; font-kerning: normal;
        font-variant-ligatures: common-ligatures; font-optical-sizing: auto; }
@@ -285,15 +285,15 @@ ${colorRules}
 a, a * { color: ${t.link} !important; }
 a { text-decoration: none !important; }
 ::selection { background: ${t.selection}; }
-::highlight(dg-spoken) { color: ${t.muted}; }
-::highlight(dg-search) { background-color: transparent; text-decoration: underline solid ${searchUnderline}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
-::highlight(dg-found) { background-color: ${t.selection}; text-decoration: underline solid ${searchUnderline}; text-decoration-thickness: 2.5px; text-underline-offset: 3px; }
-::highlight(dg-mark-yellow) { background-color: ${t.markYellow}; color: ${t.fg}; }
-::highlight(dg-mark-green) { background-color: ${t.markGreen}; color: ${t.fg}; }
-::highlight(dg-mark-blue) { background-color: ${t.markBlue}; color: ${t.fg}; }
-::highlight(dg-mark-pink) { background-color: ${t.markPink}; color: ${t.fg}; }
-::highlight(dg-noted) { text-decoration: underline dotted ${accentInk}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
-::highlight(dg-speaking) { background-color: ${t.speaking}; color: ${t.fg}; }
+::highlight(cb-spoken) { color: ${t.muted}; }
+::highlight(cb-search) { background-color: transparent; text-decoration: underline solid ${searchUnderline}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+::highlight(cb-found) { background-color: ${t.selection}; text-decoration: underline solid ${searchUnderline}; text-decoration-thickness: 2.5px; text-underline-offset: 3px; }
+::highlight(cb-mark-yellow) { background-color: ${t.markYellow}; color: ${t.fg}; }
+::highlight(cb-mark-green) { background-color: ${t.markGreen}; color: ${t.fg}; }
+::highlight(cb-mark-blue) { background-color: ${t.markBlue}; color: ${t.fg}; }
+::highlight(cb-mark-pink) { background-color: ${t.markPink}; color: ${t.fg}; }
+::highlight(cb-noted) { text-decoration: underline dotted ${accentInk}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+::highlight(cb-speaking) { background-color: ${t.speaking}; color: ${t.fg}; }
 img, svg, video { max-width: 100% !important; object-fit: contain; break-inside: avoid; }
 img, svg { cursor: zoom-in; }
 a img, a svg { cursor: pointer; }
@@ -303,10 +303,10 @@ ${darkMediaRules}
 h1, h2, h3, h4, h5, h6 { break-after: avoid; break-inside: avoid; }
 p { widows: 2; orphans: 2; }
 figure { break-inside: avoid; }
-figure[data-dg-tall] { break-inside: auto !important; }
+figure[data-cb-tall] { break-inside: auto !important; }
 pre, table { break-inside: auto; max-width: 100%; }
-pre[data-dg-short], table[data-dg-short] { break-inside: avoid; }
-table[data-dg-wide] { display: block !important; max-width: 100% !important; overflow-x: auto !important; }
+pre[data-cb-short], table[data-cb-short] { break-inside: avoid; }
+table[data-cb-wide] { display: block !important; max-width: 100% !important; overflow-x: auto !important; }
 pre, code, kbd, samp, tt { font-family: ui-monospace, "JetBrainsMono Nerd Font", monospace !important; }
 pre { white-space: pre-wrap !important; overflow-wrap: anywhere; }
 ${family ? `body, body :not(pre):not(code):not(kbd):not(samp):not(tt) { font-family: ${family} !important; }` : ''}
@@ -317,8 +317,8 @@ h1, h2 { line-height: 1.2 !important; letter-spacing: -0.01em; }
 p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !important; }
 p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 ${literaryIndent}
-[data-dg-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; color: ${accentInk} !important; margin-inline-end: 0.14em; }
-[data-dg-flow] { text-align: ${s.justify ? 'justify' : 'start'} !important;
+[data-cb-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; color: ${accentInk} !important; margin-inline-end: 0.14em; }
+[data-cb-flow] { text-align: ${s.justify ? 'justify' : 'start'} !important;
                  ${s.justify && hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }` : ''}
 `
     }
@@ -335,7 +335,7 @@ ${literaryIndent}
     }
 
     function applyTypography(doc, hyphenOverride) {
-        styleElement(doc, 'dg-typography').textContent = typographyCss(hyphenOverride)
+        styleElement(doc, 'cb-typography').textContent = typographyCss(hyphenOverride)
     }
 
     function applyLayoutTo(targetFrame, doc, g, rtlOverride) {
@@ -347,7 +347,7 @@ ${literaryIndent}
                 vp.style.width = g.width + 'px'
                 vp.style.height = g.height + 'px'
                 const feather = Math.min(44, Math.max(16, Math.floor(g.gap / 2 - 4)))
-                vp.style.setProperty('--dg-feather', feather + 'px')
+                vp.style.setProperty('--cb-feather', feather + 'px')
             }
             targetFrame.style.left = '0px'
             targetFrame.style.top = '0px'
@@ -357,7 +357,7 @@ ${literaryIndent}
         }
         targetFrame.style.width = g.width + 'px'
         targetFrame.style.height = g.height + 'px'
-        styleElement(doc, 'dg-layout').textContent = layoutCss(g, rtlOverride)
+        styleElement(doc, 'cb-layout').textContent = layoutCss(g, rtlOverride)
         // Cover pages often size their SVG at 100% of a height that columns
         // don't have; give them the page's.
         for (const svg of doc.querySelectorAll('svg')) {
@@ -414,20 +414,20 @@ ${literaryIndent}
         for (const m of measurements) {
             if (m.tag === 'figure') {
                 if (m.height > tallThreshold)
-                    m.el.setAttribute('data-dg-tall', '')
+                    m.el.setAttribute('data-cb-tall', '')
                 else
-                    m.el.removeAttribute('data-dg-tall')
+                    m.el.removeAttribute('data-cb-tall')
             } else {
                 if (!g.scroll && m.height > 0 && m.height <= shortThreshold)
-                    m.el.setAttribute('data-dg-short', '')
+                    m.el.setAttribute('data-cb-short', '')
                 else
-                    m.el.removeAttribute('data-dg-short')
+                    m.el.removeAttribute('data-cb-short')
             }
             if (m.tag === 'table') {
                 if (m.width > g.column + 2)
-                    m.el.setAttribute('data-dg-wide', '')
+                    m.el.setAttribute('data-cb-wide', '')
                 else
-                    m.el.removeAttribute('data-dg-wide')
+                    m.el.removeAttribute('data-cb-wide')
             }
         }
     }
@@ -448,14 +448,14 @@ ${literaryIndent}
             if (!ctx)
                 return
             for (const img of doc.images) {
-                if (img.hasAttribute('data-dg-img-checked') || !img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0)
+                if (img.hasAttribute('data-cb-img-checked') || !img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0)
                     continue
                 const src = img.currentSrc || img.src || ''
                 if (/\.svg(?:$|\?)|^data:image\/svg\+xml/i.test(src)) {
-                    img.setAttribute('data-dg-img-checked', '1')
+                    img.setAttribute('data-cb-img-checked', '1')
                     continue
                 }
-                img.setAttribute('data-dg-img-checked', '1')
+                img.setAttribute('data-cb-img-checked', '1')
                 const w = Math.min(32, img.naturalWidth), h = Math.min(32, img.naturalHeight)
                 ctx.clearRect(0, 0, w, h)
                 ctx.drawImage(img, 0, 0, w, h)
@@ -478,9 +478,9 @@ ${literaryIndent}
                 if (transparent / total > 0.08 && opaque > 0) {
                     const darkShare = darkLowChroma / opaque
                     if (darkShare > 0.72)
-                        img.setAttribute('data-dg-lineart', '')
+                        img.setAttribute('data-cb-lineart', '')
                     else if (darkShare > 0.15)
-                        img.setAttribute('data-dg-matte', '')
+                        img.setAttribute('data-cb-matte', '')
                 }
             }
         } catch (e) { }
@@ -529,7 +529,7 @@ ${literaryIndent}
                 flow.push(element)
         }
         for (const element of flow)
-            element.setAttribute('data-dg-flow', '')
+            element.setAttribute('data-cb-flow', '')
     }
 
     function hyphenate(doc, mapOverride) {
@@ -537,7 +537,7 @@ ${literaryIndent}
         const walker = doc.createTreeWalker(doc.body || doc.documentElement, NodeFilter.SHOW_TEXT)
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
             const parent = node.parentElement
-            if (parent && parent.closest('[data-dg-flow]') && !parent.closest('a, code, pre, kbd, samp, tt')) {
+            if (parent && parent.closest('[data-cb-flow]') && !parent.closest('a, code, pre, kbd, samp, tt')) {
                 const before = node.data
                 Hyphenation.node(node)
                 if (node.data !== before && !targetMap.has(node))
@@ -562,23 +562,23 @@ ${literaryIndent}
             ])
     }
 
-    // A chapter opens with a drop cap, in Dogear's own typography, for
+    // A chapter opens with a drop cap, in Clothbound's own typography, for
     // horizontal left-to-right text (DropCap, dropcap.js, picks the paragraph).
     function markDropCap(doc, rtlOverride, verticalOverride) {
         const rtl = rtlOverride !== undefined ? rtlOverride : state.rtl
         const vertical = verticalOverride !== undefined ? verticalOverride : state.vertical
-        for (const old of doc.querySelectorAll('[data-dg-dropcap]'))
-            old.removeAttribute('data-dg-dropcap')
+        for (const old of doc.querySelectorAll('[data-cb-dropcap]'))
+            old.removeAttribute('data-cb-dropcap')
         const s = state.style
         if (s.publisher || s.dropCap === false || rtl || vertical || typeof DropCap === 'undefined')
             return
-        const paragraphs = [...doc.querySelectorAll('p[data-dg-flow]')]
+        const paragraphs = [...doc.querySelectorAll('p[data-cb-flow]')]
         const index = DropCap.choose(paragraphs.map(p => ({
             text: p.textContent,
             excluded: !!p.closest('blockquote, aside, figure, table, nav, header, footer, li, [class*="epigraph" i]'),
         })))
         if (index >= 0)
-            paragraphs[index].setAttribute('data-dg-dropcap', '')
+            paragraphs[index].setAttribute('data-cb-dropcap', '')
     }
 
     async function prepareDocument(doc) {
@@ -1368,7 +1368,7 @@ ${literaryIndent}
             vp.style.width = g.width + 'px'
             vp.style.height = g.height + 'px'
             const feather = Math.min(44, Math.max(16, Math.floor(g.gap / 2 - 4)))
-            vp.style.setProperty('--dg-feather', feather + 'px')
+            vp.style.setProperty('--cb-feather', feather + 'px')
         }
         if (activeFrameEl && activeFrameEl.removeAttribute)
             activeFrameEl.removeAttribute('aria-hidden')
@@ -1591,7 +1591,7 @@ ${literaryIndent}
             badge.style.left = left + 'px'
             const mark = state.style.theme['mark' + span.color.charAt(0).toUpperCase() + span.color.slice(1)]
             if (mark)
-                badge.style.setProperty('--dg-mark', mark)
+                badge.style.setProperty('--cb-mark', mark)
             badge.addEventListener('click', event => {
                 event.preventDefault()
                 event.stopPropagation()
@@ -1763,8 +1763,8 @@ ${literaryIndent}
                 body * { color: inherit !important; background: transparent !important; font-family: inherit !important; }
                 p { margin: 0 0 .5em; text-indent: 0 !important; }
                 img { max-width: 100%; height: auto; }
-                @font-face { font-family: "Literata"; src: url("dogear://local/app/fonts/Literata.ttf"); font-weight: 200 900; }
-                @font-face { font-family: "Literata"; src: url("dogear://local/app/fonts/Literata-Italic.ttf"); font-style: italic; font-weight: 200 900; }`
+                @font-face { font-family: "Literata"; src: url("clothbound://local/app/fonts/Literata.ttf"); font-weight: 200 900; }
+                @font-face { font-family: "Literata"; src: url("clothbound://local/app/fonts/Literata-Italic.ttf"); font-style: italic; font-weight: 200 900; }`
     }
 
     function closeNote() {
@@ -1845,7 +1845,7 @@ ${literaryIndent}
         if (!href)
             return
         const url = new URL(href, anchor.ownerDocument.baseURI)
-        if (url.protocol !== 'dogear:') {
+        if (url.protocol !== 'clothbound:') {
             if (state.bridge)
                 state.bridge.openExternal(url.href)
             return
@@ -2175,7 +2175,7 @@ ${literaryIndent}
     function paintProbeElement() {
         if (!paintProbe && document.body) {
             paintProbe = document.createElement('div')
-            paintProbe.id = 'dg-paint-probe'
+            paintProbe.id = 'cb-paint-probe'
             paintProbe.setAttribute('aria-hidden', 'true')
             paintProbe.style.cssText = 'position:fixed;right:0;bottom:0;width:1px;height:1px;pointer-events:none;z-index:2147483647;'
             document.body.appendChild(paintProbe)
@@ -2562,7 +2562,7 @@ ${literaryIndent}
         },
 
         // Marks spans of the chapter's text: [{start, end}] under a name
-        // styled in the typography (dg-search, dg-speaking).
+        // styled in the typography (cb-search, cb-speaking).
         highlight(name, spans) {
             // Kept, so the chapter laid out again (a new size, hyphens) gets
             // its highlights back.
@@ -2578,16 +2578,16 @@ ${literaryIndent}
             if (ranges.length) {
                 const highlight = new view.Highlight(...ranges)
                 // Priority order: spoken dimming < user marks < active sentence < search < current match.
-                highlight.priority = name === 'dg-found' ? 4
-                    : name === 'dg-search' ? 3
-                    : name === 'dg-speaking' ? 2
-                    : name === 'dg-spoken' ? 0 : 1
+                highlight.priority = name === 'cb-found' ? 4
+                    : name === 'cb-search' ? 3
+                    : name === 'cb-speaking' ? 2
+                    : name === 'cb-spoken' ? 0 : 1
                 view.CSS.highlights.set(name, highlight)
             } else {
                 view.CSS.highlights.delete(name)
             }
-            if (name === 'dg-speaking' && !(spans && spans.length))
-                api.highlight('dg-spoken', [])
+            if (name === 'cb-speaking' && !(spans && spans.length))
+                api.highlight('cb-spoken', [])
         },
 
         // The chapter's highlights, each in its color; those with notes are
@@ -2595,8 +2595,8 @@ ${literaryIndent}
         marks(spans) {
             state.marks = spans || []
             for (const color of ['yellow', 'green', 'blue', 'pink'])
-                api.highlight('dg-mark-' + color, state.marks.filter(span => span.color === color))
-            api.highlight('dg-noted', state.marks.filter(span => span.noted))
+                api.highlight('cb-mark-' + color, state.marks.filter(span => span.color === color))
+            api.highlight('cb-noted', state.marks.filter(span => span.noted))
             scheduleMarginNotes()
         },
 
@@ -2608,8 +2608,8 @@ ${literaryIndent}
 
         // Search hits in the chapter shown, and the one gone to.
         found(spans, current) {
-            api.highlight('dg-search', spans)
-            api.highlight('dg-found', current ? [current] : [])
+            api.highlight('cb-search', spans)
+            api.highlight('cb-found', current ? [current] : [])
         },
 
         // The blocks to read aloud from a chapter, reported to the bridge
@@ -2643,8 +2643,8 @@ ${literaryIndent}
         speak(start, end, follow) {
             if (!state.index)
                 return
-            api.highlight('dg-spoken', start > 0 ? [{ start: 0, end: start }] : [])
-            api.highlight('dg-speaking', [{ start, end }])
+            api.highlight('cb-spoken', start > 0 ? [{ start: 0, end: start }] : [])
+            api.highlight('cb-speaking', [{ start, end }])
             if (!follow)
                 return
             const page = pageOfOffset(start)
@@ -2759,17 +2759,17 @@ ${literaryIndent}
         const t = state.style.theme
         const root = document.documentElement.style
         const r = state.style.radius || 0
-        root.setProperty('--dg-bg', t.bg)
-        root.setProperty('--dg-fg', t.fg)
-        root.setProperty('--dg-ink-soft', t.inkSoft || t.fg)
-        root.setProperty('--dg-link', t.accentInk || t.link)
-        root.setProperty('--dg-muted', t.muted)
-        root.setProperty('--dg-popover', t.popover)
-        root.setProperty('--dg-highlight', t.highlight || t.markYellow || '#F7DE8A')
-        root.setProperty('--dg-border', t.border)
-        root.setProperty('--dg-radius', (r > 0 ? Math.min(7, r) : 0) + 'px')
-        root.setProperty('--dg-radius-lg', (r > 0 ? Math.min(12, r) : 0) + 'px')
-        root.setProperty('--dg-radius-sm', (r > 0 ? Math.min(6, r) : 0) + 'px')
+        root.setProperty('--cb-bg', t.bg)
+        root.setProperty('--cb-fg', t.fg)
+        root.setProperty('--cb-ink-soft', t.inkSoft || t.fg)
+        root.setProperty('--cb-link', t.accentInk || t.link)
+        root.setProperty('--cb-muted', t.muted)
+        root.setProperty('--cb-popover', t.popover)
+        root.setProperty('--cb-highlight', t.highlight || t.markYellow || '#F7DE8A')
+        root.setProperty('--cb-border', t.border)
+        root.setProperty('--cb-radius', (r > 0 ? Math.min(7, r) : 0) + 'px')
+        root.setProperty('--cb-radius-lg', (r > 0 ? Math.min(12, r) : 0) + 'px')
+        root.setProperty('--cb-radius-sm', (r > 0 ? Math.min(6, r) : 0) + 'px')
         document.documentElement.style.colorScheme = t.dark ? 'dark' : 'light'
     }
 

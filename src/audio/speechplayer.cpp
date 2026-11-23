@@ -162,7 +162,7 @@ bool Stretcher::process(const qint16 *source, qint64 available, bool complete, d
 }
 
 SpeechPlayer::SpeechPlayer(int sampleRate, QObject *parent) : QObject(parent), m_sampleRate(sampleRate) {
-    m_muted = qEnvironmentVariableIsSet("DOGEAR_MUTE");
+    m_muted = qEnvironmentVariableIsSet("CLOTHBOUND_MUTE") || qEnvironmentVariableIsSet("DOGEAR_MUTE");
     m_timer.setInterval(15);
     connect(&m_timer, &QTimer::timeout, this, [this] {
         fill();

@@ -23,7 +23,9 @@
 #include <memory>
 
 namespace {
-const QString installedMarker = QStringLiteral(".dogear-installed");
+const QString installedMarker = QStringLiteral(".clothbound-installed");
+// Legacy sentinel accepted as a read fallback so pre-rebrand voice packs remain usable.
+const QString legacyInstalledMarker = QStringLiteral(".dogear-installed");
 constexpr int downloadTimeoutMs = 60000;
 
 int gradeRank(const QString &grade) {
@@ -305,7 +307,11 @@ std::optional<VoicePacks::Pack> VoicePacks::pack(const QString &packId) const {
 
 bool VoicePacks::isInstalled(const QString &packId) const {
     const auto found = pack(packId);
-    return found && QFile::exists(QDir(m_directory).filePath(found->dir + '/' + installedMarker));
+    if (!found)
+        return false;
+    const QDir base(m_directory);
+    return QFile::exists(base.filePath(found->dir + QLatin1Char('/') + installedMarker)) ||
+           QFile::exists(base.filePath(found->dir + QLatin1Char('/') + legacyInstalledMarker));
 }
 
 QString VoicePacks::engineLibrary() const {
@@ -757,6 +763,7 @@ void VoicePacks::verifyAndUnpack(const Pack &pack, const QString &archive) {
                         return;
                     }
                     marker.close();
+                    QFile::remove(target + QLatin1Char('/') + legacyInstalledMarker);
                     QFile::remove(archive);
                     m_packMegabytes.insert(pack.id, pack.size / (1024.0 * 1024.0));
                     recomputeMegabytes();
@@ -818,7 +825,7 @@ void VoicePacks::remove(const QString &packId) {
     if (!found || found->dir.isEmpty())
         return;
     const QString target = QDir(m_directory).filePath(found->dir);
-    // Only ever inside Dogear's own folder.
+    // Only ever inside Clothbound's own folder.
     if (!QFileInfo(target).canonicalFilePath().startsWith(QFileInfo(m_directory).canonicalFilePath() + '/'))
         return;
     emit aboutToRemove(packId);

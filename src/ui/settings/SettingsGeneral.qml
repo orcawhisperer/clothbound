@@ -127,7 +127,7 @@ ColumnLayout {
             title: qsTr("Light or dark")
             description: theme.omarchy || appearance.mode !== "match"
                          ? qsTr("Match desktop follows your Omarchy theme as it changes.")
-                         : qsTr("Match desktop follows your Omarchy theme as it changes; without one, Dogear is dark.")
+                         : qsTr("Match desktop follows your Omarchy theme as it changes; without one, Clothbound is dark.")
             Segmented {
                 model: [{ value: "match", label: qsTr("Match desktop") },
                         { value: "dark", label: qsTr("Dark") },
@@ -139,8 +139,8 @@ ColumnLayout {
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.hairline }
         SettingsRow {
             title: qsTr("Use the desktop's font")
-            description: page.fontChanged ? qsTr("Takes effect the next time Dogear starts.")
-                                          : qsTr("Dogear's interface is set in Inter. Books keep their own typeface.")
+            description: page.fontChanged ? qsTr("Takes effect the next time Clothbound starts.")
+                                          : qsTr("Clothbound's interface is set in Inter. Books keep their own typeface.")
             Switch {
                 checked: appearance.desktopFont
                 onToggled: appearance.desktopFont = checked
@@ -165,7 +165,7 @@ ColumnLayout {
                          ? (page.languageOverride === ""
                             ? qsTr("Following your desktop language (%1). Choose any language below to switch immediately.").arg(page.languageLabel(translator.language))
                             : qsTr("Using %1 instead of your desktop language. Switch back to Follow desktop any time.").arg(page.languageLabel(translator.language)))
-                         : qsTr("Dogear speaks the language chosen for Omarchy in Setup › Language, and follows it when it changes.")
+                         : qsTr("Clothbound speaks the language chosen for Omarchy in Setup › Language, and follows it when it changes.")
             ComboBox {
                 visible: page.canSwitchLanguage
                 width: 220
@@ -252,7 +252,7 @@ ColumnLayout {
     SettingsCard {
         title: qsTr("Library folders")
         glyph: Icons.folder
-        description: qsTr("Books in these folders are read where they are, never changed, and new ones are added each time Dogear starts.")
+        description: qsTr("Books in these folders are read where they are, never changed, and new ones are added each time Clothbound starts.")
 
         Repeater {
             model: page.folderList
@@ -460,7 +460,7 @@ ColumnLayout {
     SettingsCard {
         title: qsTr("Guide & updates")
         glyph: Icons.bookOpen
-        description: qsTr("Dogear %1. Revisit the welcome tour or see what changed in this version.").arg(Qt.application.version)
+        description: qsTr("Clothbound %1. Revisit the welcome tour or see what changed in this version.").arg(Qt.application.version)
         RowLayout {
             Layout.fillWidth: true
             spacing: 8

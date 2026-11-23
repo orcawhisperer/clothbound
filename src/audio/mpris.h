@@ -13,7 +13,7 @@ class Reader;
 // The book being read aloud, as a media player the desktop knows: media
 // keys, Omarchy's bar, and anything else that speaks MPRIS see the chapter,
 // the book, its author and cover, and can play, pause, and move a paragraph
-// either way. Dogear is a player only while it's reading aloud.
+// either way. Clothbound is a player only while it's reading aloud.
 class Mpris : public QObject {
     Q_OBJECT
 
@@ -59,8 +59,8 @@ public:
     explicit MprisRoot(Mpris *mpris);
     bool yes() const { return true; }
     bool no() const { return false; }
-    QString identity() const { return QStringLiteral("Dogear"); }
-    QString desktopEntry() const { return QStringLiteral("dogear"); }
+    QString identity() const { return QStringLiteral("Clothbound"); }
+    QString desktopEntry() const { return QStringLiteral("clothbound"); }
     QStringList none() const { return {}; }
 
 public slots:

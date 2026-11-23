@@ -16,7 +16,7 @@ class Scanner;
 struct ScannedBook;
 
 // The reading library: the folders it watches, every book found in them,
-// and each book's reading state, kept in SQLite under ~/.local/share/dogear.
+// and each book's reading state, kept in SQLite under ~/.local/share/clothbound.
 // Book files themselves are only ever read.
 class Library : public QObject {
     Q_OBJECT

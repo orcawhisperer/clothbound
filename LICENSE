@@ -26,11 +26,11 @@ SOFTWARE.
 
 ---
 
-Dogear also bundles, compiled into the binary:
+Clothbound also bundles, compiled into the binary:
 
 - Literata (src/fonts), Copyright 2017 The Literata Project Authors, under the
   SIL Open Font License 1.1 (src/fonts/OFL.txt).
-- American English hyphenation patterns (src/hyphenation/hyph-en-us.*.txt),
+- American English hyphenation patterns (src/reader/hyphenation/hyph-en-us.*.txt),
   Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken: "Copying and distribution
   of this file, with or without modification, are permitted in any medium
   without royalty provided the copyright notice and this notice are

@@ -1,4 +1,4 @@
-// Dogear — an ebook reader for Omarchy: your EPUBs and PDFs in one library,
+// Clothbound — an ebook reader for Omarchy: your EPUBs and PDFs in one library,
 // and a calm page to read them on.
 
 #include "ai/aiservices.h"
@@ -27,6 +27,7 @@
 #include "audio/localspeech.h"
 #include "audio/voicepacks.h"
 #include "app/pointerdriver.h"
+#include "app/migration.h"
 #include "app/notifier.h"
 #include "app/instance.h"
 #include "app/portalfilepicker.h"
@@ -116,10 +117,14 @@ static void adoptDesktopFont(QObject *context) {
     });
 }
 
+static bool debugEnabled() {
+    return qEnvironmentVariableIsSet("CLOTHBOUND_DEBUG") || qEnvironmentVariableIsSet("DOGEAR_DEBUG");
+}
+
 // Book pages and the reading surface are served from one origin, so the
 // surface can lay out and annotate the chapter documents it shows.
 static void registerBookScheme() {
-    QWebEngineUrlScheme scheme("dogear");
+    QWebEngineUrlScheme scheme("clothbound");
     scheme.setSyntax(QWebEngineUrlScheme::Syntax::Host);
     scheme.setFlags(QWebEngineUrlScheme::SecureScheme | QWebEngineUrlScheme::CorsEnabled |
                     QWebEngineUrlScheme::FetchApiAllowed);
@@ -144,7 +149,7 @@ static void configureParser(QCommandLineParser &args, QCommandLineOption &runOpt
 }
 
 int main(int argc, char *argv[]) {
-    // Dogear themes itself; Qt's gtk3 platform theme only adds a GTK
+    // Clothbound themes itself; Qt's gtk3 platform theme only adds a GTK
     // use-after-free when the desktop theme changes under a running app.
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
 
@@ -171,10 +176,13 @@ int main(int argc, char *argv[]) {
     // lightweight QCoreApplication and exit without touching QPA or Chromium.
     if (command || infoFlag) {
         QCoreApplication core(argc, argv);
-        core.setApplicationName(QStringLiteral("dogear"));
-        core.setApplicationVersion(DOGEAR_VERSION);
-        if (command)
+        core.setApplicationName(QStringLiteral("clothbound"));
+        core.setOrganizationDomain(QStringLiteral("clothbound.app"));
+        core.setApplicationVersion(CLOTHBOUND_VERSION);
+        if (command) {
+            Migration::runIfNeeded();
             return runCli(core.arguments());
+        }
 
         QCommandLineParser infoArgs;
         QCommandLineOption infoRun(QStringLiteral("run"), QStringLiteral("Evaluate a QML expression in the window (repeatable)"),
@@ -197,8 +205,9 @@ int main(int argc, char *argv[]) {
     // shuts down Qt's QDBusConnectionManager post-routine and would stop a
     // subsequent QGuiApplication from receiving D-Bus calls.
     if (!scriptedFlag) {
-        QCoreApplication::setApplicationName(QStringLiteral("dogear"));
-        QCoreApplication::setApplicationVersion(DOGEAR_VERSION);
+        QCoreApplication::setApplicationName(QStringLiteral("clothbound"));
+        QCoreApplication::setOrganizationDomain(QStringLiteral("clothbound.app"));
+        QCoreApplication::setApplicationVersion(CLOTHBOUND_VERSION);
         QCommandLineParser preArgs;
         QCommandLineOption preRun(QStringLiteral("run"), QStringLiteral("Evaluate a QML expression in the window (repeatable)"),
                                   QStringLiteral("expression"));
@@ -220,8 +229,9 @@ int main(int argc, char *argv[]) {
         } else if (!preArgs.errorText().isEmpty()) {
             // Invalid CLI option: fail fast without launching QtWebEngine.
             QCoreApplication core(argc, argv);
-            core.setApplicationName(QStringLiteral("dogear"));
-            core.setApplicationVersion(DOGEAR_VERSION);
+            core.setApplicationName(QStringLiteral("clothbound"));
+            core.setOrganizationDomain(QStringLiteral("clothbound.app"));
+            core.setApplicationVersion(CLOTHBOUND_VERSION);
             preArgs.process(preArguments);
         }
     }
@@ -236,17 +246,19 @@ int main(int argc, char *argv[]) {
     QtWebEngineQuick::initialize();
 
     QGuiApplication app(argc, argv);
-    // The window can hide while a book is read aloud; Dogear quits itself
+    // The window can hide while a book is read aloud; Clothbound quits itself
     // when it's closed otherwise, or the reading ends.
     app.setQuitOnLastWindowClosed(false);
-    app.setApplicationName("dogear");
-    app.setApplicationVersion(DOGEAR_VERSION);
-    // Matches the window to dogear.desktop, so the compositor (Wayland app_id)
+    app.setApplicationName(QStringLiteral("clothbound"));
+    app.setOrganizationDomain(QStringLiteral("clothbound.app"));
+    app.setApplicationVersion(CLOTHBOUND_VERSION);
+    Migration::runIfNeeded();
+    // Matches the window to clothbound.desktop, so the compositor (Wayland app_id)
     // and the launcher pick up the installed icon.
-    app.setDesktopFileName("dogear");
+    app.setDesktopFileName(QStringLiteral("clothbound"));
     // The name people see, in the bar's tray among others.
-    app.setApplicationDisplayName("Dogear");
-    app.setWindowIcon(QIcon::fromTheme("dogear"));
+    app.setApplicationDisplayName(QStringLiteral("Clothbound"));
+    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("clothbound")));
 
     QCommandLineParser args;
     QCommandLineOption runOption("run", "Evaluate a QML expression in the window (repeatable)", "expression");
@@ -258,7 +270,7 @@ int main(int argc, char *argv[]) {
         arguments.removeAt(1);
     args.process(arguments);
 
-    // One Dogear per library: of two opened at once, the one that doesn't get
+    // One Clothbound per library: of two opened at once, the one that doesn't get
     // the name hands over. Scripted runs (--run, --screenshot) never claim the
     // name or hand over.
     const bool scripted = args.isSet(runOption) || args.isSet("screenshot");
@@ -291,8 +303,8 @@ int main(int argc, char *argv[]) {
         inter.setHintingPreference(QFont::PreferNoHinting);
         QGuiApplication::setFont(inter);
     }
-    // Dogear's own Controls style (src/ui/style/Dogear), on top of Basic.
-    QQuickStyle::setStyle(QStringLiteral("Dogear"));
+    // Clothbound's own Controls style (src/ui/style/Clothbound), on top of Basic.
+    QQuickStyle::setStyle(QStringLiteral("Clothbound"));
 
     Theme theme;
     theme.setAppearance(appearance.value(QStringLiteral("appearance/mode"), QStringLiteral("match")).toString());
@@ -312,7 +324,7 @@ int main(int argc, char *argv[]) {
     auto *profile = new QQuickWebEngineProfile(&app);
     profile->setOffTheRecord(true);
     profile->setHttpCacheType(QQuickWebEngineProfile::MemoryHttpCache);
-    profile->installUrlSchemeHandler("dogear", &bookScheme);
+    profile->installUrlSchemeHandler("clothbound", &bookScheme);
     profile->setUrlRequestInterceptor(&offline);
     Reader reader(&library, &bookScheme);
 
@@ -414,7 +426,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("localSpeech", &localSpeech);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);
-    engine.rootContext()->setContextProperty("debugMode", qEnvironmentVariableIsSet("DOGEAR_DEBUG"));
+    engine.rootContext()->setContextProperty("debugMode", debugEnabled());
     engine.rootContext()->setContextProperty(
         "settingsUrl", QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
                                            QStringLiteral("/settings.ini")));
@@ -425,7 +437,7 @@ int main(int argc, char *argv[]) {
     if (bookToOpen)
         QMetaObject::invokeMethod(engine.rootObjects().first(), "openBook", Q_ARG(QVariant, bookToOpen));
     if (!startupErrors.isEmpty())
-        notifier.notify(QObject::tr("Dogear can't open this book"), startupErrors.first());
+        notifier.notify(QObject::tr("Clothbound can't open this book"), startupErrors.first());
     // Opened again: the window comes back (Instance), and a book named then
     // joins the library and opens.
     if (QObject *root = engine.rootObjects().first()) {
@@ -437,7 +449,7 @@ int main(int argc, char *argv[]) {
             if (const int id = library.addBookFile(file))
                 QMetaObject::invokeMethod(root, "openBook", Q_ARG(QVariant, id));
             else
-                notifier.notify(QObject::tr("Dogear can't open this book"), library.errorString());
+                notifier.notify(QObject::tr("Clothbound can't open this book"), library.errorString());
         });
     }
     // Watch window exposure, scene-graph rebuilds, and Hyprland workspace
@@ -446,12 +458,12 @@ int main(int argc, char *argv[]) {
     if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
         surfaceWatcher.attach(window);
         // While debugging, a pointer that --run can move.
-        if (qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
+        if (debugEnabled())
             engine.rootContext()->setContextProperty("pointer", new PointerDriver(window, &app));
     }
     // The desktop's media controls can ask for the window.
     QObject::connect(&mpris, &Mpris::raiseRequested, &instance, [&instance] { instance.bringBack(); });
-    // New books in watched folders are picked up each time Dogear starts.
+    // New books in watched folders are picked up each time Clothbound starts.
     if (!library.folders().isEmpty())
         QTimer::singleShot(400, &library, &Library::rescan);
 

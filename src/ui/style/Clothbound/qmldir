@@ -1,4 +1,4 @@
-module Dogear
+module Clothbound
 import QtQuick.Controls.Basic auto
 BusyIndicator 6.0 BusyIndicator.qml
 Button 6.0 Button.qml

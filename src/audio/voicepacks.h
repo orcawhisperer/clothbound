@@ -17,7 +17,7 @@ class QProcess;
 
 // Built-in voices as packages: the speech engine for this computer, Kokoro
 // (49 voices in 8 languages) and Piper (173 voices in 42), from a pinned
-// list compiled into Dogear. Nothing is downloaded until asked. A download
+// list compiled into Clothbound. Nothing is downloaded until asked. A download
 // picks up where it stopped, is checked against its published checksum, and
 // is unpacked aside, then moved into place.
 class VoicePacks : public QObject {

@@ -8,7 +8,7 @@
 #include <QString>
 #include <QStringList>
 
-// Dogear's intelligence features (narration, the companion, illustration)
+// Clothbound's intelligence features (narration, the companion, illustration)
 // talk to these interfaces only. A provider (Gemini today; an
 // OpenAI-compatible server or a local model tomorrow) implements the
 // capabilities it has, and the features adapt to what's there. Nothing

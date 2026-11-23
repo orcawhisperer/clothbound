@@ -560,7 +560,7 @@ QString Illustrator::saveCopy(int id) {
     const QFileInfo fi(fileName);
     const QString base = fi.completeBaseName();
     const QString ext = fi.suffix().isEmpty() ? QStringLiteral("png") : fi.suffix();
-    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Dogear");
+    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Clothbound");
     QDir().mkpath(folder);
     QString target = QDir(folder).filePath(QStringLiteral("%1.%2").arg(base, ext));
     for (int n = 2; QFile::exists(target); ++n)
@@ -606,9 +606,9 @@ void Illustrator::chooseSaveCopy(int id) {
     }
 
     clearPendingSave();
-    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Dogear");
+    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Clothbound");
     QDir().mkpath(folder);
-    const QString token = QStringLiteral("dogear_save_%1").arg(QRandomGenerator::global()->generate());
+    const QString token = QStringLiteral("clothbound_save_%1").arg(QRandomGenerator::global()->generate());
     QString sender = bus.baseService().mid(1);
     sender.replace(QLatin1Char('.'), QLatin1Char('_'));
     const QString predictedPath = QStringLiteral("/org/freedesktop/portal/desktop/request/%1/%2").arg(sender, token);

@@ -303,8 +303,8 @@ ColumnLayout {
                 text: localSetup.running
                       ? qsTr("Ollama is running on this computer.")
                       : localSetup.installed
-                      ? qsTr("Start Ollama. A terminal opens and asks for your password; Dogear never sees it.")
-                      : qsTr("Install Ollama. A terminal opens and asks for your password; Dogear never sees it.")
+                      ? qsTr("Start Ollama. A terminal opens and asks for your password; Clothbound never sees it.")
+                      : qsTr("Install Ollama. A terminal opens and asks for your password; Clothbound never sees it.")
                 color: localSetup.running ? theme.ink3 : theme.ink2
                 font.pixelSize: 13
                 wrapMode: Text.Wrap
@@ -375,7 +375,7 @@ ColumnLayout {
             visible: localSetup.waiting || localSetup.status !== "" || localSetup.problem !== ""
             text: localSetup.problem !== "" ? localSetup.problem
                 : localSetup.status !== "" ? localSetup.status
-                : qsTr("Finish in the terminal, and Dogear carries on by itself.")
+                : qsTr("Finish in the terminal, and Clothbound carries on by itself.")
             color: localSetup.problem !== "" ? theme.danger : theme.ink3
             font.pixelSize: 12
             wrapMode: Text.Wrap
@@ -414,7 +414,7 @@ ColumnLayout {
         spacing: 10
         Label {
             Layout.fillWidth: true
-            text: qsTr("Define still works without a model, from the dictionary on this computer. Everything else in Dogear is unchanged.")
+            text: qsTr("Define still works without a model, from the dictionary on this computer. Everything else in Clothbound is unchanged.")
             color: theme.ink2
             font.pixelSize: 13
             wrapMode: Text.Wrap

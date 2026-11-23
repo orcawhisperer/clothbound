@@ -198,7 +198,7 @@ FocusScope {
         list.push({ id: "ai-settings", title: qsTr("Intelligence settings"), subtitle: qsTr("Gemini, local models, budget"), hint: "Ctrl+,", glyph: Icons.sparkle })
         list.push({ id: "fullscreen", title: qsTr("Toggle full screen"), subtitle: "", hint: "F", glyph: Icons.fullscreen })
         list.push({ id: "help", title: qsTr("Keyboard shortcuts"), subtitle: qsTr("View all keys"), hint: "?", glyph: Icons.keyboard })
-        list.push({ id: "quit", title: qsTr("Quit Dogear"), subtitle: "", hint: "Q", glyph: Icons.close })
+        list.push({ id: "quit", title: qsTr("Quit Clothbound"), subtitle: "", hint: "Q", glyph: Icons.close })
         return list
     }
 
@@ -927,7 +927,7 @@ FocusScope {
 
                 Label {
                     Layout.rightMargin: 18
-                    text: qsTr("Books, passages, your notes, and anything Dogear can do")
+                    text: qsTr("Books, passages, your notes, and anything Clothbound can do")
                     color: theme.ink4
                     font.pixelSize: 11
                     elide: Text.ElideRight

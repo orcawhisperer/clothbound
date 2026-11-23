@@ -173,7 +173,7 @@ bool Library::open() {
     }
     QSqlQuery pragma(db);
     // Set busy_timeout first so journal_mode=WAL waits rather than failing with
-    // SQLITE_BUSY when another Dogear instance or the CLI holds the database.
+    // SQLITE_BUSY when another Clothbound instance or the CLI holds the database.
     pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
     pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
     pragma.exec(QStringLiteral("PRAGMA synchronous=NORMAL"));
@@ -545,7 +545,7 @@ void Library::addUrls(const QList<QUrl> &urls) {
         }
     }
     if (folders.isEmpty() && files.isEmpty()) {
-        emit problem(tr("Dogear reads EPUB and PDF books."));
+        emit problem(tr("Clothbound reads EPUB and PDF books."));
         return;
     }
     bool needScan = false;
@@ -882,7 +882,7 @@ int Library::addBookFile(const QString &path) {
         return 0;
     }
     if (!BookFiles::isBook(file)) {
-        m_error = tr("Dogear reads EPUB and PDF books.");
+        m_error = tr("Clothbound reads EPUB and PDF books.");
         return 0;
     }
     if (const int id = idForPath(file)) {

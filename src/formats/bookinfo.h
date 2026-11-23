@@ -32,7 +32,7 @@ struct BookInfo {
 };
 
 namespace BookFiles {
-// "epub", "pdf", or "" for files Dogear doesn't read.
+// "epub", "pdf", or "" for files Clothbound doesn't read.
 QString formatOf(const QString &path);
 bool isBook(const QString &path);
 // Reads metadata, and the cover scaled to `coverHeight` when it's above 0.

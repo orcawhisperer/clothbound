@@ -57,7 +57,7 @@ ColumnLayout {
 
     function diagnosticsText() {
         const lines = [
-            "Dogear " + Qt.application.version,
+            "Clothbound " + Qt.application.version,
             "Platform: " + Qt.platform.os + (machineInfo.architecture ? " (" + machineInfo.architecture + ")" : ""),
             "Hardware: " + hardwareSummary,
             "Language: " + translator.language,
@@ -78,7 +78,7 @@ ColumnLayout {
             Layout.fillWidth: true
             spacing: 16
             Image {
-                source: "qrc:/dogear.svg"
+                source: "qrc:/clothbound.svg"
                 sourceSize.width: 56
                 sourceSize.height: 56
                 Layout.preferredWidth: 56
@@ -88,7 +88,7 @@ ColumnLayout {
                 Layout.fillWidth: true
                 spacing: 3
                 Label {
-                    text: "Dogear"
+                    text: "Clothbound"
                     color: theme.ink1
                     font.family: "Literata"
                     font.pixelSize: 22
@@ -105,6 +105,24 @@ ColumnLayout {
                     color: theme.ink2
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
+                }
+                AbstractButton {
+                    id: websiteLink
+                    hoverEnabled: true
+                    padding: 0
+                    implicitWidth: websiteLabel.implicitWidth
+                    implicitHeight: websiteLabel.implicitHeight
+                    Accessible.name: "clothbound.app"
+                    Accessible.role: Accessible.Link
+                    onClicked: Qt.openUrlExternally("https://clothbound.app")
+                    contentItem: Label {
+                        id: websiteLabel
+                        text: "clothbound.app"
+                        color: theme.accentInk
+                        font.pixelSize: 12
+                        font.underline: websiteLink.hovered || websiteLink.activeFocus
+                    }
+                    HoverHandler { cursorShape: Qt.PointingHandCursor }
                 }
             }
         }
@@ -221,7 +239,7 @@ ColumnLayout {
         }
         Label {
             Layout.fillWidth: true
-            text: qsTr("Dogear reads with Qt (LGPL) and Chromium's engine.")
+            text: qsTr("Clothbound reads with Qt (LGPL) and Chromium's engine.")
             color: theme.ink3
             font.pixelSize: 12
             wrapMode: Text.Wrap

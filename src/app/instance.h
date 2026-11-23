@@ -20,39 +20,39 @@
 #include <functional>
 #include <memory>
 
-// One Dogear per library: opening it again (from the launcher, a terminal, or
+// One Clothbound per library: opening it again (from the launcher, a terminal, or
 // a book file) brings back the one already running, hidden in the background
 // or not, as it was (the book, the voice, the highlight), and opens the book
-// if one was named, rather than starting a second Dogear at the library.
+// if one was named, rather than starting a second Clothbound at the library.
 class Instance : public QObject {
     Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "app.dogear.Reader")
+    Q_CLASSINFO("D-Bus Interface", "app.clothbound.Reader")
 
 public:
     explicit Instance(QObject *parent = nullptr) : QObject(parent) {}
 
-    // The bus name for this library, so Dogears with different data folders
+    // The bus name for this library, so Clothbound instances with different data folders
     // (a test profile, say) stay apart.
     static QString serviceName() {
         const QByteArray folder = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation).toUtf8();
-        return QStringLiteral("app.dogear.Reader.p") +
+        return QStringLiteral("app.clothbound.Reader.p") +
                QString::fromLatin1(QCryptographicHash::hash(folder, QCryptographicHash::Sha1).toHex().left(12));
     }
 
-    // Hands `book` (a file, or "") to the Dogear already running for this
+    // Hands `book` (a file, or "") to the Clothbound already running for this
     // library, with the launcher's activation token if it gave one; true when
     // there was one to take it.
     static bool passToRunning(const QString &book) {
         QDBusConnection bus = QDBusConnection::sessionBus();
         if (!bus.isConnected())
             return false;
-        QDBusMessage call = QDBusMessage::createMethodCall(serviceName(), path(), QStringLiteral("app.dogear.Reader"),
+        QDBusMessage call = QDBusMessage::createMethodCall(serviceName(), path(), QStringLiteral("app.clothbound.Reader"),
                                                            QStringLiteral("Activate"));
         call << book << qEnvironmentVariable("XDG_ACTIVATION_TOKEN");
         return bus.call(call, QDBus::Block, 5000).type() == QDBusMessage::ReplyMessage;
     }
 
-    // Makes this the Dogear to bring back; false when another has the name.
+    // Makes this the Clothbound to bring back; false when another has the name.
     bool claim() {
         QDBusConnection bus = QDBusConnection::sessionBus();
         if (!bus.isConnected() || !bus.registerObject(path(), this, QDBusConnection::ExportScriptableSlots))
@@ -89,7 +89,7 @@ signals:
     void activated(const QString &book);
 
 public slots:
-    // Answers at once, so the Dogear opened again can leave; the work follows.
+    // Answers at once, so the Clothbound opened again can leave; the work follows.
     Q_SCRIPTABLE void Activate(const QString &book, const QString &token) {
         QMetaObject::invokeMethod(
             this,
@@ -101,7 +101,7 @@ public slots:
     }
 
 private:
-    static QString path() { return QStringLiteral("/app/dogear/Reader"); }
+    static QString path() { return QStringLiteral("/app/clothbound/Reader"); }
 
     QString hyprSocketPath() const {
         if (!m_hyprSocketOverride.isEmpty())

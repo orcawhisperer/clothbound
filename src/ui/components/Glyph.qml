@@ -1,7 +1,7 @@
 import QtQuick
 import QtQuick.Shapes
 
-// One of Dogear's line icons (Icons.js), drawn in any color and size.
+// One of Clothbound's line icons (Icons.js), drawn in any color and size.
 // Set `filled: true` for solid transport glyphs (playSolid, pauseSolid...).
 Item {
     id: glyph

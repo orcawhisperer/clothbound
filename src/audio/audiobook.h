@@ -34,7 +34,7 @@ public:
     QString problem() const { return m_problem; }
     QString saved() const { return m_saved; }
 
-    // The download's chapters, as an M4B in ~/Music/Dogear.
+    // The download's chapters, as an M4B in ~/Music/Clothbound.
     Q_INVOKABLE void save();
     Q_INVOKABLE void cancel();
     // Opens the file manager highlighting the last saved M4B file.

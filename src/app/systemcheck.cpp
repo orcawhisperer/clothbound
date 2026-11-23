@@ -470,7 +470,7 @@ QVariantList SystemCheck::judge(double voiceSpeed, double promptRate, double ans
                        embeds ? QString() : tr("Qwen3-Embedding 0.6B or EmbeddingGemma are small and fast.")));
     out.append(verdict(tr("Illustrate"), m_ai->hasKey() ? tr("With Gemini") : tr("Needs a Gemini key"),
                        m_ai->hasKey() ? QStringLiteral("good") : QStringLiteral("no"),
-                       tr("Pictures need a large graphics card to make on a computer; Dogear makes them with Gemini.")));
+                       tr("Pictures need a large graphics card to make on a computer; Clothbound makes them with Gemini.")));
     return out;
 }
 

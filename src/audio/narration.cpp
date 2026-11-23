@@ -27,9 +27,9 @@ QSettings settings() {
                      QSettings::IniFormat);
 }
 qint64 nowMs() { return QDateTime::currentMSecsSinceEpoch(); }
-// DOGEAR_DEBUG traces the clips' lives on stderr.
+// CLOTHBOUND_DEBUG (or legacy DOGEAR_DEBUG) traces the clips' lives on stderr.
 void trace(const QString &message) {
-    static const bool on = qEnvironmentVariableIsSet("DOGEAR_DEBUG");
+    static const bool on = qEnvironmentVariableIsSet("CLOTHBOUND_DEBUG") || qEnvironmentVariableIsSet("DOGEAR_DEBUG");
     static const qint64 started = nowMs();
     if (on)
         fprintf(stderr, "narration %6.2fs %s\n", (nowMs() - started) / 1000.0, qPrintable(message));

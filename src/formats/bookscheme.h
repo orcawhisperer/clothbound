@@ -11,10 +11,10 @@
 class EpubBook;
 
 // Serves the reading surface and the open books to the web view, all from
-// one origin, dogear://local, so the surface can lay out and annotate the
+// one origin, clothbound://local, so the surface can lay out and annotate the
 // chapters it shows:
-//   dogear://local/app/…              the surface itself, from the binary
-//   dogear://local/book/<token>/<path> a file inside an open book's ZIP
+//   clothbound://local/app/…              the surface itself, from the binary
+//   clothbound://local/book/<token>/<path> a file inside an open book's ZIP
 // A book's token is random and dies with the book, so a page can only
 // reach books that are open.
 class BookScheme : public QWebEngineUrlSchemeHandler {
@@ -48,7 +48,7 @@ private:
     QHash<QString, bool> m_wellFormed;
 };
 
-// Books never reach the network: everything but dogear:, data: and blob:
+// Books never reach the network: everything but clothbound:, data: and blob:
 // is refused, so a book can't fetch fonts, images, or trackers from the web.
 class OfflineInterceptor : public QWebEngineUrlRequestInterceptor {
     Q_OBJECT

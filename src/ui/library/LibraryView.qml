@@ -403,7 +403,7 @@ FocusScope {
                 }
             }
 
-            // Format / series filter menu (preserved Dogear power feature)
+            // Format / series filter menu (preserved Clothbound power feature)
             IconButton {
                 id: filterButton
                 visible: library.bookCount > 0
@@ -1120,7 +1120,7 @@ FocusScope {
 
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("Dogear scans these folders for EPUB and PDF books automatically. Book files are never modified.")
+                    text: qsTr("Clothbound scans these folders for EPUB and PDF books automatically. Book files are never modified.")
                     color: theme.ink3
                     font.pixelSize: 13
                     wrapMode: Text.Wrap

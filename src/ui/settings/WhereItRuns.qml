@@ -180,7 +180,7 @@ Rectangle {
             Label {
                 Layout.fillWidth: true
                 visible: localSetup.waiting
-                text: qsTr("Finish in the terminal (it asks for your password), and Dogear carries on by itself.")
+                text: qsTr("Finish in the terminal (it asks for your password), and Clothbound carries on by itself.")
                 color: theme.ink3
                 font.pixelSize: 12
                 wrapMode: Text.Wrap

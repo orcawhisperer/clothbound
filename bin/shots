@@ -1,5 +1,5 @@
 #!/bin/sh
-# Every main screen of Dogear, in a dark and a light Omarchy theme, one PNG
+# Every main screen of Clothbound, in a dark and a light Omarchy theme, one PNG
 # per board of the design canvas: bin/shots [prefix] [extra bin/shot options].
 # Compare build/shots/<prefix>-*.png against the canvas after each change.
 set -eu
@@ -16,7 +16,7 @@ TEXT="readerLoader.item.goTo({chapter: 6, instant: true})"
 R="readerLoader.item"
 
 failed=0
-export DOGEAR_SHOT_QUIET=1
+export CLOTHBOUND_SHOT_QUIET=1
 command -v xvfb-run >/dev/null 2>&1 || echo "bin/shots: no xvfb-run, so book pages render blank (install xorg-server-xvfb)" >&2
 shoot() {
     name="$1"; shift

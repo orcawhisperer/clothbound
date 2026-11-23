@@ -10,7 +10,7 @@
 #include <QWheelEvent>
 
 // A mouse, a wheel and a keyboard for the window, driven from --run while
-// debugging (DOGEAR_DEBUG): input arrives through public Qt events so release
+// debugging (CLOTHBOUND_DEBUG): input arrives through public Qt events so release
 // binaries carry no Qt private API linkage.
 class PointerDriver : public QObject {
     Q_OBJECT

@@ -23,7 +23,7 @@ FocusScope {
         { id: "reading", label: qsTr("Reading"), glyph: Icons.bookOpen, subtitle: "" },
         { id: "listening", label: qsTr("Voices"), glyph: Icons.headphones, subtitle: "" },
         { id: "intelligence", label: qsTr("Intelligence"), glyph: Icons.sparkle,
-          subtitle: qsTr("All of it is optional: Dogear is a complete reader without a model. Each answer says where it was made.") },
+          subtitle: qsTr("All of it is optional: Clothbound is a complete reader without a model. Each answer says where it was made.") },
         { id: "shortcuts", label: qsTr("Shortcuts"), glyph: Icons.keyboard, subtitle: "" },
         { id: "about", label: qsTr("About"), glyph: Icons.info, subtitle: "" }
     ]

@@ -33,7 +33,7 @@ QString typographySettingsPath() {
 }
 
 bool sfxSuppressedEnvironment() {
-    if (qEnvironmentVariableIsSet("DOGEAR_MUTE"))
+    if (qEnvironmentVariableIsSet("CLOTHBOUND_MUTE") || qEnvironmentVariableIsSet("DOGEAR_MUTE"))
         return true;
     if (!QGuiApplication::instance())
         return true;
@@ -345,7 +345,7 @@ bool Reader::openBook(int bookId) {
     if (record.format == QStringLiteral("pdf"))
         return openPdf(bookId);
     if (record.format != QStringLiteral("epub")) {
-        m_error = tr("Dogear reads EPUB and PDF books.");
+        m_error = tr("Clothbound reads EPUB and PDF books.");
         return false;
     }
     auto book = std::make_shared<EpubBook>(record.path);
@@ -945,7 +945,7 @@ void Reader::imageClicked(const QVariantMap &info) {
     if (!m_book)
         return;
     const QUrl url(urlString);
-    if (url.scheme() != QLatin1String("dogear") || url.host() != QLatin1String("local"))
+    if (url.scheme() != QLatin1String("clothbound") || url.host() != QLatin1String("local"))
         return;
     const QString path = url.path(QUrl::FullyDecoded);
     const QString prefix = QStringLiteral("/book/%1/").arg(m_token);
@@ -980,7 +980,7 @@ void Reader::listenFromSession(qint64 session, int chapter, qint64 offset) {
 }
 
 void Reader::log(const QString &message) {
-    if (qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
+    if (qEnvironmentVariableIsSet("CLOTHBOUND_DEBUG") || qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
         fprintf(stderr, "reader: %s\n", qPrintable(message));
 }
 

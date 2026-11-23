@@ -25,7 +25,7 @@ constexpr int sampleRate = 24000;
 constexpr double estimatedCastCost = 0.005;
 constexpr double estimatedDesignCost = 0.03;
 
-// The kept list is Dogear's own record of the voices, whatever provider
+// The kept list is Clothbound's own record of the voices, whatever provider
 // they came from.
 QJsonObject toJson(const Ai::Voice &voice) {
     QJsonObject json{{"id", voice.id},           {"name", voice.name},         {"description", voice.description},

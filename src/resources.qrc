@@ -4,7 +4,7 @@
         <file alias="ui/Welcome.qml">ui/Welcome.qml</file>
         <file alias="ui/CommandPalette.qml">ui/CommandPalette.qml</file>
         <file alias="ui/HelpOverlay.qml">ui/HelpOverlay.qml</file>
-        <file alias="ui/DogearMark.qml">ui/DogearMark.qml</file>
+        <file alias="ui/ClothboundMark.qml">ui/ClothboundMark.qml</file>
         <file alias="ui/components/Badge.qml">ui/components/Badge.qml</file>
         <file alias="ui/components/Glyph.qml">ui/components/Glyph.qml</file>
         <file alias="ui/components/IconButton.qml">ui/components/IconButton.qml</file>
@@ -65,7 +65,7 @@
         <file alias="hyphenation/hyph-en-us.pat.txt">reader/hyphenation/hyph-en-us.pat.txt</file>
         <file alias="hyphenation/hyph-en-us.hyp.txt">reader/hyphenation/hyph-en-us.hyp.txt</file>
         <file alias="voices/packs.json">audio/voices/packs.json</file>
-        <file alias="dogear.svg">../pkgbuild/dogear.svg</file>
+        <file alias="clothbound.svg">../pkgbuild/clothbound.svg</file>
         <file alias="skill.md">skill.md</file>
         <file alias="fonts/Literata.ttf">fonts/Literata.ttf</file>
         <file alias="fonts/Literata-Italic.ttf">fonts/Literata-Italic.ttf</file>
@@ -121,26 +121,26 @@
         <file alias="i18n/zh-CN.json">i18n/zh-CN.json</file>
         <file alias="i18n/zh-TW.json">i18n/zh-TW.json</file>
     </qresource>
-    <qresource prefix="/ui/style/Dogear">
-        <file alias="BusyIndicator.qml">ui/style/Dogear/BusyIndicator.qml</file>
-        <file alias="Button.qml">ui/style/Dogear/Button.qml</file>
-        <file alias="CheckBox.qml">ui/style/Dogear/CheckBox.qml</file>
-        <file alias="ComboBox.qml">ui/style/Dogear/ComboBox.qml</file>
-        <file alias="ItemDelegate.qml">ui/style/Dogear/ItemDelegate.qml</file>
-        <file alias="Label.qml">ui/style/Dogear/Label.qml</file>
-        <file alias="Menu.qml">ui/style/Dogear/Menu.qml</file>
-        <file alias="MenuItem.qml">ui/style/Dogear/MenuItem.qml</file>
-        <file alias="MenuSeparator.qml">ui/style/Dogear/MenuSeparator.qml</file>
-        <file alias="Popup.qml">ui/style/Dogear/Popup.qml</file>
-        <file alias="ProgressBar.qml">ui/style/Dogear/ProgressBar.qml</file>
-        <file alias="RadioButton.qml">ui/style/Dogear/RadioButton.qml</file>
-        <file alias="ScrollBar.qml">ui/style/Dogear/ScrollBar.qml</file>
-        <file alias="ScrollIndicator.qml">ui/style/Dogear/ScrollIndicator.qml</file>
-        <file alias="Slider.qml">ui/style/Dogear/Slider.qml</file>
-        <file alias="Switch.qml">ui/style/Dogear/Switch.qml</file>
-        <file alias="TextArea.qml">ui/style/Dogear/TextArea.qml</file>
-        <file alias="TextField.qml">ui/style/Dogear/TextField.qml</file>
-        <file alias="ToolTip.qml">ui/style/Dogear/ToolTip.qml</file>
-        <file alias="qmldir">ui/style/Dogear/qmldir</file>
+    <qresource prefix="/ui/style/Clothbound">
+        <file alias="BusyIndicator.qml">ui/style/Clothbound/BusyIndicator.qml</file>
+        <file alias="Button.qml">ui/style/Clothbound/Button.qml</file>
+        <file alias="CheckBox.qml">ui/style/Clothbound/CheckBox.qml</file>
+        <file alias="ComboBox.qml">ui/style/Clothbound/ComboBox.qml</file>
+        <file alias="ItemDelegate.qml">ui/style/Clothbound/ItemDelegate.qml</file>
+        <file alias="Label.qml">ui/style/Clothbound/Label.qml</file>
+        <file alias="Menu.qml">ui/style/Clothbound/Menu.qml</file>
+        <file alias="MenuItem.qml">ui/style/Clothbound/MenuItem.qml</file>
+        <file alias="MenuSeparator.qml">ui/style/Clothbound/MenuSeparator.qml</file>
+        <file alias="Popup.qml">ui/style/Clothbound/Popup.qml</file>
+        <file alias="ProgressBar.qml">ui/style/Clothbound/ProgressBar.qml</file>
+        <file alias="RadioButton.qml">ui/style/Clothbound/RadioButton.qml</file>
+        <file alias="ScrollBar.qml">ui/style/Clothbound/ScrollBar.qml</file>
+        <file alias="ScrollIndicator.qml">ui/style/Clothbound/ScrollIndicator.qml</file>
+        <file alias="Slider.qml">ui/style/Clothbound/Slider.qml</file>
+        <file alias="Switch.qml">ui/style/Clothbound/Switch.qml</file>
+        <file alias="TextArea.qml">ui/style/Clothbound/TextArea.qml</file>
+        <file alias="TextField.qml">ui/style/Clothbound/TextField.qml</file>
+        <file alias="ToolTip.qml">ui/style/Clothbound/ToolTip.qml</file>
+        <file alias="qmldir">ui/style/Clothbound/qmldir</file>
     </qresource>
 </RCC>

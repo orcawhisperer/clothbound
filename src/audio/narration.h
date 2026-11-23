@@ -150,7 +150,7 @@ signals:
     void voiceMissing();
 
 private:
-    friend class DogearTests;
+    friend class ClothboundTests;
     struct Clip : SpeechClip {
         // Waiting: not started. Working: its audio is arriving (from the
         // network, or being decoded from the cache). Complete: all of it is

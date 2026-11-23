@@ -199,7 +199,7 @@ signals:
     void pdfCropChanged();
 
 private:
-    friend class DogearTests;
+    friend class ClothboundTests;
     struct PageTurnSfx;
     bool playPageTurnDryRun(int direction, QByteArray *pcmOut = nullptr);
     void savePosition();

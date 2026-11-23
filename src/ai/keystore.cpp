@@ -14,35 +14,72 @@
 namespace {
 QThreadPool *keyringPool() {
     // A pool of its own that quitting never waits for: a keyring that doesn't
-    // answer mustn't keep Dogear running after it's closed.
+    // answer mustn't keep Clothbound running after it's closed.
     static QThreadPool *pool = new QThreadPool;
     return pool;
 }
 
 const SecretSchema *schema() {
-    static const SecretSchema dogear = {
+    static const SecretSchema clothbound = {
+        "app.clothbound.ApiKey",
+        SECRET_SCHEMA_NONE,
+        {{"provider", SECRET_SCHEMA_ATTRIBUTE_STRING}, {nullptr, SecretSchemaAttributeType(0)}},
+        0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+    };
+    return &clothbound;
+}
+
+// Legacy schema retained read-only for seamless key migration after the
+// Dogear -> Clothbound rename, and cleared alongside the primary schema.
+const SecretSchema *legacySchema() {
+    static const SecretSchema legacy = {
         "org.omarchy.Dogear.ApiKey",
         SECRET_SCHEMA_NONE,
         {{"provider", SECRET_SCHEMA_ATTRIBUTE_STRING}, {nullptr, SecretSchemaAttributeType(0)}},
         0, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
     };
-    return &dogear;
-}
-}
-
-QFuture<QString> SecretKeyStore::loadLater(const QString &provider) {
-    return QtConcurrent::run(keyringPool(), &SecretKeyStore::lookup, provider);
+    return &legacy;
 }
 
-QString SecretKeyStore::lookup(const QString &provider) {
+QString lookupIn(const SecretSchema *target, const QString &provider) {
     GError *error = nullptr;
-    gchar *secret = secret_password_lookup_sync(schema(), nullptr, &error, "provider", provider.toUtf8().constData(), nullptr);
+    gchar *secret = secret_password_lookup_sync(target, nullptr, &error, "provider",
+                                                provider.toUtf8().constData(), nullptr);
     if (error)
         g_error_free(error);
     if (!secret)
         return {};
     const QString key = QString::fromUtf8(secret);
     secret_password_free(secret);
+    return key;
+}
+
+bool clearIn(const SecretSchema *target, const QString &provider) {
+    GError *error = nullptr;
+    const gboolean ok = secret_password_clear_sync(target, nullptr, &error, "provider",
+                                                   provider.toUtf8().constData(), nullptr);
+    if (error)
+        g_error_free(error);
+    return bool(ok);
+}
+}  // namespace
+
+QFuture<QString> SecretKeyStore::loadLater(const QString &provider) {
+    return QtConcurrent::run(keyringPool(), &SecretKeyStore::lookup, provider);
+}
+
+QString SecretKeyStore::lookup(const QString &provider) {
+    QString key = lookupIn(schema(), provider);
+    if (!key.isEmpty())
+        return key;
+    key = lookupIn(legacySchema(), provider);
+    if (!key.isEmpty()) {
+        // Mirror into Clothbound's schema on first read so future lookups hit
+        // the primary schema directly while leaving the legacy entry intact.
+        const QByteArray label =
+            QCoreApplication::translate("KeyStore", "Clothbound: %1 API key").arg(provider).toUtf8();
+        store(provider, key, label);
+    }
     return key;
 }
 
@@ -62,15 +99,14 @@ QPair<bool, QString> SecretKeyStore::store(const QString &provider, const QStrin
 }
 
 bool SecretKeyStore::clear(const QString &provider) {
-    GError *error = nullptr;
-    const gboolean ok = secret_password_clear_sync(schema(), nullptr, &error, "provider", provider.toUtf8().constData(), nullptr);
-    if (error)
-        g_error_free(error);
-    return bool(ok);
+    const bool clearedPrimary = clearIn(schema(), provider);
+    const bool clearedLegacy = clearIn(legacySchema(), provider);
+    return clearedPrimary || clearedLegacy;
 }
 
 bool SecretKeyStore::save(const QString &provider, const QString &key, QString *message) {
-    const QByteArray label = QCoreApplication::translate("KeyStore", "Dogear: %1 API key").arg(provider).toUtf8();
+    const QByteArray label =
+        QCoreApplication::translate("KeyStore", "Clothbound: %1 API key").arg(provider).toUtf8();
     const auto [ok, err] = store(provider, key, label);
     if (message && !err.isEmpty())
         *message = err;
@@ -78,7 +114,8 @@ bool SecretKeyStore::save(const QString &provider, const QString &key, QString *
 }
 
 QFuture<QPair<bool, QString>> SecretKeyStore::saveLater(const QString &provider, const QString &key) {
-    const QByteArray label = QCoreApplication::translate("KeyStore", "Dogear: %1 API key").arg(provider).toUtf8();
+    const QByteArray label =
+        QCoreApplication::translate("KeyStore", "Clothbound: %1 API key").arg(provider).toUtf8();
     return QtConcurrent::run(keyringPool(), &SecretKeyStore::store, provider, key, label);
 }
 

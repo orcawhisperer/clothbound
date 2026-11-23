@@ -49,7 +49,7 @@ QString tokenFromReferer(const QByteArray &refererHeader) {
     if (refererHeader.isEmpty())
         return {};
     const QUrl referer(QString::fromUtf8(refererHeader));
-    if (referer.scheme() != QLatin1String("dogear") || referer.host() != QLatin1String("local"))
+    if (referer.scheme() != QLatin1String("clothbound") || referer.host() != QLatin1String("local"))
         return {};
     const QString refPath = referer.path(QUrl::FullyDecoded);
     if (!refPath.startsWith(QLatin1String("/book/")))
@@ -113,7 +113,7 @@ void BookScheme::remove(const QString &token) {
         it = it.key().startsWith(prefix) ? m_wellFormed.erase(it) : std::next(it);
 }
 
-QString BookScheme::baseUrl(const QString &token) { return QStringLiteral("dogear://local/book/%1/").arg(token); }
+QString BookScheme::baseUrl(const QString &token) { return QStringLiteral("clothbound://local/book/%1/").arg(token); }
 
 bool BookScheme::isWellFormed(const QByteArray &document) {
     QXmlStreamReader xml(document);
@@ -159,7 +159,7 @@ BookScheme::ResolvedResource BookScheme::resolveRequest(const QUrl &url, const Q
         entry = slash < 0 ? QString() : rest.mid(slash + 1);
     } else if (path.startsWith(QLatin1Char('/'))) {
         // Root-relative links inside an EPUB (e.g. "/images/cover.jpg") resolve
-        // against dogear://local/; map them safely back into the referring book.
+        // against clothbound://local/; map them safely back into the referring book.
         token = tokenFromReferer(referer);
         entry = EpubBook::resolve(QString(), path.mid(1));
     }
@@ -218,7 +218,7 @@ void BookScheme::requestStarted(QWebEngineUrlRequestJob *job) {
 
 void OfflineInterceptor::interceptRequest(QWebEngineUrlRequestInfo &info) {
     const QString scheme = info.requestUrl().scheme();
-    if (scheme != QStringLiteral("dogear") && scheme != QStringLiteral("data") && scheme != QStringLiteral("blob") &&
+    if (scheme != QStringLiteral("clothbound") && scheme != QStringLiteral("data") && scheme != QStringLiteral("blob") &&
         scheme != QStringLiteral("about"))
         info.block(true);
 }

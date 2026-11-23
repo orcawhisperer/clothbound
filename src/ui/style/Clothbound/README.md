@@ -1,6 +1,6 @@
-# The Dogear style
+# The Clothbound style
 
-Qt Quick Controls style for Dogear, so every stock control (ComboBox, Switch,
+Qt Quick Controls style for Clothbound, so every stock control (ComboBox, Switch,
 Slider, Menu, ToolTip...) wears the design without per-file styling. Anything
 not listed in `qmldir` falls back to Basic.
 

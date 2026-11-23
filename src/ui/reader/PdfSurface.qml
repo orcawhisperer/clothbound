@@ -8,7 +8,7 @@ import "../components/Themes.js" as Themes
 
 // A PDF's reading surface: its pages rendered to the reading theme, one at
 // a time, two side by side, or scrolling, with margins cut the same on
-// every page. It answers the same calls as the EPUB surface (dogear.next(),
+// every page. It answers the same calls as the EPUB surface (clothbound.next(),
 // goTo, marks, speak, placeAt…), so the reader around it is the same: a
 // page is a chapter, and a place on it an offset in its text.
 Item {
@@ -173,7 +173,7 @@ Item {
             show(narration.chapter, true)
     }
     function highlight(name, spans) {
-        if (name === "dg-speaking" && (!spans || !spans.length))
+        if (name === "cb-speaking" && (!spans || !spans.length))
             speaking = { chapter: -1, start: 0, end: 0 }
     }
     function requestSpeakable(page) { reader.pdfSpeakable(page) }

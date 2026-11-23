@@ -56,7 +56,7 @@ QString safeFileName(QString title) {
     title.replace(bad, QStringLiteral("-"));
     title.replace(QRegularExpression(QStringLiteral(R"(\s+)")), QStringLiteral(" "));
     title = title.left(120).trimmed();
-    return title.isEmpty() ? QStringLiteral("dogear-notes") : title;
+    return title.isEmpty() ? QStringLiteral("clothbound-notes") : title;
 }
 
 // Scores how closely `haystack` around [pos, pos + len) matches expected prefix/suffix.
@@ -584,7 +584,7 @@ QString Marks::markdown(const QString &title, const QString &author, const QStri
             out += QStringLiteral("author: %1\n").arg(yamlEscape(author));
         out += QStringLiteral("exported: %1\n").arg(QDate::currentDate().toString(Qt::ISODate));
         out += QStringLiteral("highlights: %1\n").arg(m_marks.size());
-        out += QStringLiteral("tags:\n  - dogear\n  - reading-notes\n");
+        out += QStringLiteral("tags:\n  - clothbound\n  - reading-notes\n");
         out += QStringLiteral("---\n\n");
     }
     out += QStringLiteral("# %1\n").arg(title);
@@ -634,7 +634,7 @@ QString Marks::exportMarkdownToFile(const QString &filePath, const QString &titl
         QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
         if (docs.isEmpty())
             docs = QDir::homePath();
-        target = QDir(docs).filePath(QStringLiteral("Dogear Notes/%1.md").arg(safeFileName(title)));
+        target = QDir(docs).filePath(QStringLiteral("Clothbound Notes/%1.md").arg(safeFileName(title)));
     }
     const QFileInfo info(target);
     if (!QDir().mkpath(info.absolutePath())) {

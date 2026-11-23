@@ -8,7 +8,7 @@ import "../components/Icons.js" as Icons
 import "../components/Ui.js" as Ui
 
 // Journey J1 — An empty library (10_j1_empty_library.html): 72 px wireframe
-// DogearMark, Literata 28 px "No books yet", auto-detected folder card with
+// ClothboundMark, Literata 28 px "No books yet", auto-detected folder card with
 // EPUB/PDF counts and one-click "Add this folder", secondary folder/file
 // buttons, and a 520×96 dashed dropzone box.
 Column {
@@ -47,7 +47,7 @@ Column {
         width: Math.min(440, parent.width)
         spacing: 14
 
-        DogearMark {
+        ClothboundMark {
             anchors.horizontalCenter: parent.horizontalCenter
             wireframe: true
             size: 72
@@ -66,7 +66,7 @@ Column {
         Label {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
-            text: qsTr("Point Dogear at the folder your books live in. New books there join by themselves, and your files are never changed.")
+            text: qsTr("Point Clothbound at the folder your books live in. New books there join by themselves, and your files are never changed.")
             color: theme.ink3
             font.pixelSize: 14
             wrapMode: Text.Wrap

@@ -9,7 +9,7 @@ class QNetworkReply;
 
 // Google Gemini over its REST API, with the reader's own key: text through
 // the Interactions API, speech through the TTS models, and Voice Design.
-// The only place in Dogear that knows Gemini's wire format.
+// The only place in Clothbound that knows Gemini's wire format.
 class GeminiProvider : public Ai::Provider, public Ai::TextModel, public Ai::SpeechSynthesizer, public Ai::VoiceDesigner,
                        public Ai::Embedder, public Ai::ImageGenerator {
     Q_OBJECT

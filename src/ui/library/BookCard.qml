@@ -127,7 +127,7 @@ Item {
             }
         }
 
-        // Top-left series number badge (preserved Dogear feature).
+        // Top-left series number badge (preserved Clothbound feature).
         Label {
             visible: card.series !== "" && card.seriesIndex > 0
             x: art.box.x + 8

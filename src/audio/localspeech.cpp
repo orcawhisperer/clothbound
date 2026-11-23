@@ -171,8 +171,10 @@ private:
 SherpaEngine::SherpaEngine(const QString &library) : m_library(library) {}
 
 int SherpaEngine::threads() {
-    // DOGEAR_TTS_THREADS overrides, for measuring.
-    const int asked = qEnvironmentVariableIntValue("DOGEAR_TTS_THREADS");
+    // CLOTHBOUND_TTS_THREADS (or legacy DOGEAR_TTS_THREADS) overrides, for measuring.
+    const int asked = qEnvironmentVariableIntValue("CLOTHBOUND_TTS_THREADS") > 0
+                          ? qEnvironmentVariableIntValue("CLOTHBOUND_TTS_THREADS")
+                          : qEnvironmentVariableIntValue("DOGEAR_TTS_THREADS");
     if (asked > 0)
         return asked;
     // Half the cores, at most four: more makes the engine no faster.
@@ -196,13 +198,13 @@ QString SherpaEngine::load() {
         return {};
     if (!m_library.load())
         return QCoreApplication::translate("LocalSpeech", "The speech engine couldn't be loaded: %1").arg(m_library.errorString());
-    // The declarations Dogear uses are this version's; another one is refused
+    // The declarations Clothbound uses are this version's; another one is refused
     // rather than trusted.
     const auto version = reinterpret_cast<SherpaOnnx::VersionString>(m_library.resolve("SherpaOnnxGetVersionStr"));
     if (!version || QLatin1String(version()) != QLatin1String(SherpaOnnx::version)) {
         const QString found = version ? QString::fromLatin1(version()) : QStringLiteral("?");
         m_library.unload();
-        return QCoreApplication::translate("LocalSpeech", "The speech engine is a version Dogear doesn't know (%1). Download the built-in voices again.")
+        return QCoreApplication::translate("LocalSpeech", "The speech engine is a version Clothbound doesn't know (%1). Download the built-in voices again.")
             .arg(found);
     }
     m_create = reinterpret_cast<void *>(m_library.resolve("SherpaOnnxCreateOfflineTts"));

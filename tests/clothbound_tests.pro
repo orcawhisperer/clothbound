@@ -1,6 +1,6 @@
 QT += core gui qml quick quickcontrols2 testlib dbus sql concurrent network multimedia pdf webenginecore webenginequick webchannel
 CONFIG += c++20 testcase
-TARGET = dogear_tests
+TARGET = clothbound_tests
 TEMPLATE = app
 LIBS += -lz
 CONFIG += link_pkgconfig
@@ -14,6 +14,7 @@ HEADERS += \
     ../src/app/cli.h \
     ../src/app/filepicker.h \
     ../src/app/instance.h \
+    ../src/app/migration.h \
     ../src/app/notifier.h \
     ../src/app/pointerdriver.h \
     ../src/app/portalfilepicker.h \
@@ -63,8 +64,9 @@ HEADERS += \
     ../src/ai/sseparser.h
 
 SOURCES += \
-    dogear_tests.cpp \
+    clothbound_tests.cpp \
     ../src/app/cli.cpp \
+    ../src/app/migration.cpp \
     ../src/app/portalfilepicker.cpp \
     ../src/app/surfacewatcher.cpp \
     ../src/app/systemcheck.cpp \

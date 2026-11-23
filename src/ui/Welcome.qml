@@ -27,7 +27,7 @@ FocusScope {
         {
             kicker: qsTr("Welcome"),
             title: qsTr("Your books, and a calm page to read them on"),
-            lead: qsTr("EPUB and PDF in one library. Dogear only reads your files; it never changes them."),
+            lead: qsTr("EPUB and PDF in one library. Clothbound only reads your files; it never changes them."),
             points: [
                 { key: "+", text: qsTr("Add the folder your books live in. New ones there join by themselves.") },
                 { key: "⇧", text: qsTr("Or drop books and folders anywhere on the window.") }
@@ -61,8 +61,8 @@ FocusScope {
         qsTr("The companion (C): ask about the book, Previously…, who's who, define, explain, translate, and pictures."),
         qsTr("Models on this computer: Intelligence (✦) sets one up for you, or finds yours."),
         qsTr("Search by meaning, a full cast, Studio and Pocket TTS voices, and audiobooks (M4B) from downloads."),
-        qsTr("Opening Dogear again brings back the one already running, even while it reads in the background."),
-        qsTr("Dogear speaks Omarchy's 50 languages.")
+        qsTr("Opening Clothbound again brings back the one already running, even while it reads in the background."),
+        qsTr("Clothbound speaks Omarchy's 50 languages.")
     ]
 
     function show(which) {
@@ -159,20 +159,20 @@ FocusScope {
                     color: "#F6F1E7"
                     clip: true
 
-                    // Step 0: Layered paper pages with accent dog-ear corner.
+                    // Step 0: Clothbound hardcover volume over warm cream leaf with silk ribbon bookmark.
                     Item {
                         anchors.fill: parent
                         visible: welcome.page === 0
 
-                        // Back page rotated -6 deg.
+                        // Warm cream leaf peeking behind the hardcover.
                         Rectangle {
-                            x: 70
+                            x: 72
                             y: 96
                             width: 170
                             height: 230
                             radius: 3
-                            color: "#FFFFFF"
-                            rotation: -6
+                            color: "#FDFBF6"
+                            rotation: -5
                             Rectangle {
                                 z: -1
                                 anchors.fill: parent
@@ -183,10 +183,10 @@ FocusScope {
                             }
                         }
 
-                        // Front cream page with mock text lines and folded corner.
+                        // Front clothbound hardcover book with bound spine & silk ribbon.
                         Item {
-                            x: 82
-                            y: 108
+                            x: 84
+                            y: 106
                             width: 170
                             height: 230
 
@@ -194,47 +194,89 @@ FocusScope {
                                 anchors.fill: parent
                                 anchors.topMargin: 10
                                 anchors.margins: -3
-                                radius: 5
-                                color: Qt.rgba(60 / 255, 40 / 255, 10 / 255, 0.16)
+                                radius: 7
+                                color: Qt.rgba(60 / 255, 40 / 255, 10 / 255, 0.18)
                             }
 
+                            // Silk swallowtail bookmark ribbon emerging beneath the text block.
+                            Shape {
+                                x: 112
+                                y: 214
+                                width: 22
+                                height: 34
+                                preferredRendererType: Shape.CurveRenderer
+                                ShapePath {
+                                    strokeWidth: 0
+                                    fillColor: theme.accent
+                                    PathSvg { path: "M0 0 H22 V32 L11 23 L0 32 Z" }
+                                }
+                            }
+
+                            // Woven indigo hardcover board.
                             Rectangle {
                                 anchors.fill: parent
-                                radius: 3
-                                color: "#FDFBF6"
+                                radius: 6
+                                color: "#2C3E63"
+                                border.width: 1
+                                border.color: "#1E2C47"
                                 clip: true
 
-                                Column {
-                                    anchors.fill: parent
-                                    anchors.topMargin: 28
-                                    anchors.leftMargin: 22
-                                    anchors.rightMargin: 22
-                                    spacing: 9
-
-                                    Rectangle { width: parent.width * 0.6; height: 6; radius: 3; color: "#2B2722" }
-                                    Rectangle { width: parent.width; height: 4; radius: 2; color: "#CFC6B5" }
-                                    Rectangle { width: parent.width; height: 4; radius: 2; color: "#CFC6B5" }
-                                    Rectangle { width: parent.width * 0.85; height: 4; radius: 2; color: "#CFC6B5" }
-                                    Rectangle { width: parent.width; height: 4; radius: 2; color: "#CFC6B5" }
-                                    Rectangle { width: parent.width * 0.7; height: 4; radius: 2; color: "#CFC6B5" }
+                                // Stitched dark-cloth spine panel.
+                                Rectangle {
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    anchors.left: parent.left
+                                    width: 24
+                                    color: "#1F2D49"
+                                    Rectangle {
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        width: 1
+                                        color: Qt.rgba(1, 1, 1, 0.14)
+                                    }
                                 }
 
-                                // 38×38 folded dog-ear corner in theme.accent.
-                                Shape {
-                                    anchors.top: parent.top
-                                    anchors.right: parent.right
-                                    width: 38
-                                    height: 38
-                                    preferredRendererType: Shape.CurveRenderer
-                                    ShapePath {
-                                        strokeWidth: 0
-                                        fillColor: "#F6F1E7"
-                                        PathSvg { path: "M0 0 H38 V38 Z" }
-                                    }
-                                    ShapePath {
-                                        strokeWidth: 0
-                                        fillColor: theme.accent
-                                        PathSvg { path: "M0 0 V38 H38 Z" }
+                                // Debossed cover frame and gilt title rules.
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 34
+                                    anchors.rightMargin: 14
+                                    anchors.topMargin: 16
+                                    anchors.bottomMargin: 16
+                                    radius: 3
+                                    color: "transparent"
+                                    border.width: 1
+                                    border.color: Qt.rgba(232 / 255, 179 / 255, 57 / 255, 0.35)
+
+                                    Column {
+                                        anchors.centerIn: parent
+                                        width: parent.width - 24
+                                        spacing: 10
+
+                                        Rectangle {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            width: parent.width * 0.78
+                                            height: 6
+                                            radius: 3
+                                            color: "#F4EDE0"
+                                        }
+                                        Rectangle {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            width: parent.width * 0.52
+                                            height: 4
+                                            radius: 2
+                                            color: theme.accent
+                                            opacity: 0.9
+                                        }
+                                        Rectangle {
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            width: parent.width * 0.36
+                                            height: 2
+                                            radius: 1
+                                            color: "#F4EDE0"
+                                            opacity: 0.35
+                                        }
                                     }
                                 }
                             }
@@ -445,7 +487,7 @@ FocusScope {
 
                             Label {
                                 Layout.fillWidth: true
-                                text: card.current ? card.current.title : qsTr("What's new in Dogear %1").arg(Qt.application.version)
+                                text: card.current ? card.current.title : qsTr("What's new in Clothbound %1").arg(Qt.application.version)
                                 color: theme.ink1
                                 font.family: "Literata"
                                 font.pixelSize: card.current ? 30 : 24
@@ -497,7 +539,7 @@ FocusScope {
                                 }
                             }
 
-                            // Post-update "What's new" points (preserved Dogear feature).
+                            // Post-update "What's new" points (preserved Clothbound feature).
                             ColumnLayout {
                                 visible: !card.current
                                 Layout.fillWidth: true

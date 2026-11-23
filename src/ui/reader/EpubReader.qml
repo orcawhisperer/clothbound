@@ -15,7 +15,7 @@ import "../components/Ui.js" as Ui
 
 // Reading a book: the page edge to edge in the reading theme, a quiet
 // running head and folio, and everything else one key away. The page itself
-// is the web surface (reader.html), driven through `dogear`.
+// is the web surface (reader.html), driven through `clothbound`.
 FocusScope {
     id: view
 
@@ -92,7 +92,7 @@ FocusScope {
     signal closeRequested()
 
     // The reading theme as the palette of every panel, menu and control in
-    // the reader (the roles are in src/style/Dogear/README.md).
+    // the reader (the roles are in src/style/Clothbound/README.md).
     palette.window: look.bg
     palette.windowText: look.fg
     palette.base: Ui.tint(look.fg, 0.06)
@@ -169,14 +169,14 @@ FocusScope {
         }
     }
 
-    // The surface's calls (dogear.next(), …): the web page's for an EPUB,
+    // The surface's calls (clothbound.next(), …): the web page's for an EPUB,
     // the PDF surface's (which answers the same calls) for a PDF.
     function js(code, callback) {
         if (pdf) {
             // (QML keeps "escape" and "marks" for its own: the surface calls them
             // dismiss and setMarks.)
-            const call = code.replace("dogear.escape(", "dogear.dismiss(").replace("dogear.marks(", "dogear.setMarks(")
-            const result = (new Function("dogear", "return (" + call + ")"))(pdfSurface)
+            const call = code.replace("clothbound.escape(", "clothbound.dismiss(").replace("clothbound.marks(", "clothbound.setMarks(")
+            const result = (new Function("clothbound", "return (" + call + ")"))(pdfSurface)
             if (callback)
                 callback(result)
             return
@@ -236,7 +236,7 @@ FocusScope {
         decoratedChapter = -1
         jumpPillVisible = false
         lightbox.close()
-        js("dogear.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
+        js("clothbound.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
            + JSON.stringify(style()) + ")")
     }
     function closeBook() {
@@ -256,7 +256,7 @@ FocusScope {
         if (pdf)
             pdfSurface.clearSelection()
         else if (surfaceReady && web)
-            js("dogear.close()")
+            js("clothbound.close()")
     }
     // Turning pages by hand while listening leaves the voice where it is;
     // "Back to the voice" brings the page back to it.
@@ -264,13 +264,13 @@ FocusScope {
         if (narration.active)
             narration.following = false
     }
-    function next() { leaveVoice(); js("dogear.next()") }
-    function prev() { leaveVoice(); js("dogear.prev()") }
-    function nextChapter() { leaveVoice(); js("dogear.nextChapter()") }
-    function prevChapter() { leaveVoice(); js("dogear.prevChapter()") }
-    function back() { leaveVoice(); jumpPillVisible = false; js("dogear.back()") }
-    function forward() { leaveVoice(); jumpPillVisible = false; js("dogear.forward()") }
-    function goTo(target) { leaveVoice(); js("dogear.goTo(" + JSON.stringify(target) + ")") }
+    function next() { leaveVoice(); js("clothbound.next()") }
+    function prev() { leaveVoice(); js("clothbound.prev()") }
+    function nextChapter() { leaveVoice(); js("clothbound.nextChapter()") }
+    function prevChapter() { leaveVoice(); js("clothbound.prevChapter()") }
+    function back() { leaveVoice(); jumpPillVisible = false; js("clothbound.back()") }
+    function forward() { leaveVoice(); jumpPillVisible = false; js("clothbound.forward()") }
+    function goTo(target) { leaveVoice(); js("clothbound.goTo(" + JSON.stringify(target) + ")") }
 
     // Cross-branch seam (ContinueShelf / VoicePanel): start reading aloud from
     // the current page, deferring cleanly if the EPUB surface is still loading.
@@ -285,7 +285,7 @@ FocusScope {
             return
         }
         pendingStartListening = false
-        js("JSON.stringify(dogear.listeningStart())", function(result) {
+        js("JSON.stringify(clothbound.listeningStart())", function(result) {
             const place = JSON.parse(result || "null")
             if (place)
                 narration.start(place.chapter, place.offset)
@@ -344,14 +344,14 @@ FocusScope {
         }
         if (selectionBar.visible) {
             selectionBar.visible = false
-            js("dogear.clearSelection()")
+            js("clothbound.clearSelection()")
             return
         }
         if (searchBar.open) {
             searchBar.close()
             return
         }
-        js("dogear.escape()", function(closed) {
+        js("clothbound.escape()", function(closed) {
             if (!closed)
                 view.closeRequested()
         })
@@ -398,12 +398,12 @@ FocusScope {
         const hit = bookSearch.current >= 0 ? bookSearch.results[bookSearch.current] : null
         const current = hit && (hit.chapter === reader.chapter || pdf)
                         ? { chapter: hit.chapter, start: hit.start, end: hit.end } : null
-        js("dogear.found(" + JSON.stringify(bookSearch.inChapter(reader.chapter)) + "," + JSON.stringify(current) + ")")
+        js("clothbound.found(" + JSON.stringify(bookSearch.inChapter(reader.chapter)) + "," + JSON.stringify(current) + ")")
     }
     function showFound(hit) {
         leaveVoice()
-        js("dogear.goTo(" + JSON.stringify({ chapter: hit.chapter, offset: hit.start, instant: true }) + ")"
-           + ".then(() => dogear.found(" + JSON.stringify(bookSearch.inChapter(hit.chapter)) + ","
+        js("clothbound.goTo(" + JSON.stringify({ chapter: hit.chapter, offset: hit.start, instant: true }) + ")"
+           + ".then(() => clothbound.found(" + JSON.stringify(bookSearch.inChapter(hit.chapter)) + ","
            + JSON.stringify({ chapter: hit.chapter, start: hit.start, end: hit.end }) + "))")
         foundChapter = hit.chapter
     }
@@ -415,7 +415,7 @@ FocusScope {
     property int decoratedChapter: -1
     function decorate() {
         if ((pdf || (surfaceReady && reader.relocationSeq > 0)) && reader.open)
-            js("dogear.marks(" + JSON.stringify(marks.highlightsIn(reader.chapter)) + ")")
+            js("clothbound.marks(" + JSON.stringify(marks.highlightsIn(reader.chapter)) + ")")
     }
     Connections {
         target: reader
@@ -436,7 +436,7 @@ FocusScope {
                     view.markFound()
                 // Back in the chapter being read aloud: its sentence at once.
                 if (narration.active && narration.chapter === reader.chapter && narration.sentenceStart >= 0)
-                    view.js("dogear.speak(" + narration.sentenceStart + "," + narration.sentenceEnd + ",false)")
+                    view.js("clothbound.speak(" + narration.sentenceStart + "," + narration.sentenceEnd + ",false)")
             }
         }
         function onBookChanged() { view.decoratedChapter = -1 }
@@ -548,7 +548,7 @@ FocusScope {
     Timer {
         id: styleTimer
         interval: 50
-        onTriggered: if ((view.surfaceReady || view.pdf) && reader.open) view.js("dogear.setStyle(" + JSON.stringify(view.style()) + ")")
+        onTriggered: if ((view.surfaceReady || view.pdf) && reader.open) view.js("clothbound.setStyle(" + JSON.stringify(view.style()) + ")")
     }
     onLookChanged: styleTimer.restart()
     Connections {
@@ -584,20 +584,20 @@ FocusScope {
 
     Connections {
         target: download
-        function onBlocksWanted(chapter) { view.js("dogear.requestSpeakable(" + chapter + ")") }
+        function onBlocksWanted(chapter) { view.js("clothbound.requestSpeakable(" + chapter + ")") }
         function onReady() { toast.show(qsTr("Ready to listen offline")) }
         function onChanged() { if (view.web) view.web.updateLifecycleState() }
     }
     Connections {
         target: narration
-        function onBlocksWanted(chapter) { view.js("dogear.requestSpeakable(" + chapter + ")") }
+        function onBlocksWanted(chapter) { view.js("clothbound.requestSpeakable(" + chapter + ")") }
         function onSpeaking(chapter, start, end) {
             // A PDF shows two pages at once and finds its own way to the page.
             if (chapter === reader.chapter || view.pdf)
-                view.js("dogear.speak(" + start + "," + end + "," + narration.following + ")")
+                view.js("clothbound.speak(" + start + "," + end + "," + narration.following + ")")
             else if (narration.following)
-                view.js("dogear.goTo({chapter:" + chapter + ",offset:" + start + ",instant:true,quiet:true,automated:true})"
-                        + ".then(() => dogear.speak(" + start + "," + end + ",true))")
+                view.js("clothbound.goTo({chapter:" + chapter + ",offset:" + start + ",instant:true,quiet:true,automated:true})"
+                        + ".then(() => clothbound.speak(" + start + "," + end + ",true))")
         }
         function onStateChanged() {
             if (narration.active) {
@@ -609,7 +609,7 @@ FocusScope {
                 styleTimer.restart()
             }
             if (!narration.active)
-                view.js("dogear.highlight('dg-speaking', [])")
+                view.js("clothbound.highlight('cb-speaking', [])")
             if (view.web)
                 view.web.updateLifecycleState()
         }
@@ -632,7 +632,7 @@ FocusScope {
 
     // Back from another workspace, monitor sleep, or tray: force Qt Quick and
     // Chromium's Viz compositor to produce and bind a fresh frame, even when
-    // Dogear returns tiled and unfocused. A single coalesced 1 px bottom-margin
+    // Clothbound returns tiled and unfocused. A single coalesced 1 px bottom-margin
     // nudge (inside the solid reading margin) forces visualPropertiesChanged()
     // to allocate a new LocalSurfaceId and backing GPU texture, while reader.js
     // explicitly suppresses relayout during the transient nudge so text lines
@@ -644,7 +644,7 @@ FocusScope {
         if (surfaceNudge) {
             surfaceNudge = false
             if (!pdf && surfaceReady && web)
-                view.js("dogear.endSurfaceNudge && dogear.endSurfaceNudge()")
+                view.js("clothbound.endSurfaceNudge && clothbound.endSurfaceNudge()")
         }
     }
 
@@ -658,7 +658,7 @@ FocusScope {
         if (!surfaceReady || !web)
             return
         surfaceWatcher.forceItemUpdate(web)
-        view.js("dogear.refresh && dogear.refresh()")
+        view.js("clothbound.refresh && clothbound.refresh()")
     }
 
     function refreshSoon(reason) {
@@ -672,7 +672,7 @@ FocusScope {
             return
         surfaceWatcher.forceItemUpdate(web)
         if (!surfaceNudge && !epubLoading && surfaceWatcher.takeSurfaceNudge(reason)) {
-            view.js("dogear.beginSurfaceNudge && dogear.beginSurfaceNudge()")
+            view.js("clothbound.beginSurfaceNudge && clothbound.beginSurfaceNudge()")
             surfaceNudge = true
             nudgeRestoreTimer.restart()
         }
@@ -711,7 +711,7 @@ FocusScope {
         onTriggered: {
             view.surfaceNudge = false
             if (!view.pdf && view.surfaceReady && reader.open && view.web) {
-                view.js("dogear.endSurfaceNudge && dogear.endSurfaceNudge()")
+                view.js("clothbound.endSurfaceNudge && clothbound.endSurfaceNudge()")
                 surfaceWatcher.forceItemUpdate(view.web)
             }
         }
@@ -1523,7 +1523,7 @@ FocusScope {
 
         // The bookmark is a 44×44 tactile paper dog-ear in the top-right corner (02_reading:550).
         Item {
-            id: dogEar
+            id: pageFold
             z: 4
             anchors.top: parent.top
             anchors.right: parent.right
@@ -1542,8 +1542,8 @@ FocusScope {
             ToolTip.delay: 500
             Canvas {
                 anchors.fill: parent
-                visible: dogEar.fold > 0.01
-                property real fold: dogEar.fold
+                visible: pageFold.fold > 0.01
+                property real fold: pageFold.fold
                 property color page: view.look.bg
                 property color flap: view.pageBookmark > 0
                                    ? (view.look.fold || Ui.mix(view.look.bg, view.look.fg, 0.12))
@@ -1582,7 +1582,7 @@ FocusScope {
                 } else {
                     marks.addHighlight(target.chapter, target.start, target.end, target.text, color,
                                        reader.titleOfChapter(target.chapter))
-                    view.js("dogear.clearSelection()")
+                    view.js("clothbound.clearSelection()")
                 }
                 visible = false
             }
@@ -1606,19 +1606,19 @@ FocusScope {
                     : marks.addHighlight(target.chapter, target.start, target.end, target.text, "yellow",
                                          reader.titleOfChapter(target.chapter))
                 if (!forMark)
-                    view.js("dogear.clearSelection()")
+                    view.js("clothbound.clearSelection()")
                 visible = false
                 noteEditor.show(id)
             }
             onCopy: {
                 reader.copyText(target.text)
                 if (!forMark)
-                    view.js("dogear.clearSelection()")
+                    view.js("clothbound.clearSelection()")
                 visible = false
                 toast.show(qsTr("Copied"))
             }
             onListen: {
-                view.js("dogear.clearSelection()")
+                view.js("clothbound.clearSelection()")
                 visible = false
                 narration.start(target.chapter, target.start)
             }
@@ -1704,7 +1704,7 @@ FocusScope {
             // margin) when it has focus; the window's shortcuts still come first.
             activeFocusOnPress: true
             webChannel: channel
-            url: "dogear://local/app/reader.html"
+            url: "clothbound://local/app/reader.html"
             settings.javascriptCanOpenWindows: false
             settings.localContentCanAccessRemoteUrls: false
             settings.localContentCanAccessFileUrls: false
@@ -1715,12 +1715,12 @@ FocusScope {
             settings.errorPageEnabled: false
             settings.spatialNavigationEnabled: false
             settings.linksIncludedInFocusChain: false
-            // Dogear's own menu for the page: listening from the place clicked,
+            // Clothbound's own menu for the page: listening from the place clicked,
             // and the selection's highlight, note and copy.
             onContextMenuRequested: (request) => {
                 request.accepted = true
                 const at = Qt.point(request.position.x, request.position.y)
-                view.js("JSON.stringify(dogear.placeAt(" + at.x + "," + at.y + "))", function(result) {
+                view.js("JSON.stringify(clothbound.placeAt(" + at.x + "," + at.y + "))", function(result) {
                     const place = JSON.parse(result || "null")
                     if (!place)
                         return
@@ -1730,7 +1730,7 @@ FocusScope {
             }
             onNewWindowRequested: (request) => {}
             onNavigationRequested: (request) => {
-                if (!request.url.toString().startsWith("dogear://"))
+                if (!request.url.toString().startsWith("clothbound://"))
                     request.reject()
             }
             onJavaScriptConsoleMessage: (level, message, line, source) => {
@@ -1844,7 +1844,7 @@ FocusScope {
         onClosed: view.focusPage()
         height: parent.height
         look: view.look
-        onSampleWanted: view.js("dogear.sampleText()", function(text) {
+        onSampleWanted: view.js("clothbound.sampleText()", function(text) {
             voicePanel.sample = text || ""
             if (debugMode)
                 console.log("voice sample:", voicePanel.sample)
@@ -1910,7 +1910,7 @@ FocusScope {
             onTriggered: {
                 marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
                                    view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
-                view.js("dogear.clearSelection()")
+                view.js("clothbound.clearSelection()")
                 selectionBar.visible = false
             }
         }
@@ -1921,7 +1921,7 @@ FocusScope {
             onTriggered: {
                 const id = marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
                                               view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
-                view.js("dogear.clearSelection()")
+                view.js("clothbound.clearSelection()")
                 selectionBar.visible = false
                 noteEditor.show(id)
             }
@@ -1932,7 +1932,7 @@ FocusScope {
             text: qsTr("Copy")
             onTriggered: {
                 reader.copyText(view.selection.text)
-                view.js("dogear.clearSelection()")
+                view.js("clothbound.clearSelection()")
                 selectionBar.visible = false
                 toast.show(qsTr("Copied"))
             }

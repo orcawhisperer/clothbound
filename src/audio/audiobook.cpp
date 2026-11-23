@@ -309,7 +309,7 @@ void Audiobook::save() {
     QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
     if (music.isEmpty())
         music = QDir::homePath() + QStringLiteral("/Music");
-    const QString folder = music + QStringLiteral("/Dogear");
+    const QString folder = music + QStringLiteral("/Clothbound");
     if (!QDir().mkpath(folder)) {
         fail(tr("Couldn't create the folder %1.").arg(folder));
         return;

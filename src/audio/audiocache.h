@@ -15,7 +15,7 @@
 class QProcess;
 
 // Narration already made, kept so no passage is ever paid for twice: Opus
-// files (48 kbps, about 0.36 MB a minute) under ~/.cache/dogear/audio,
+// files (48 kbps, about 0.36 MB a minute) under ~/.cache/clothbound/audio,
 // indexed in the library database, the least recently heard evicted past a
 // size cap. Encoding runs in ffmpeg, off the UI thread.
 class AudioCache : public QObject {

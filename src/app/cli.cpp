@@ -93,7 +93,7 @@ QJsonObject identityJson(const BookInfo &info) {
 }
 
 int info(const QStringList &arguments) {
-    Command command("info", "Show what Dogear knows about a book: its metadata and table of contents.", "<book>");
+    Command command("info", "Show what Clothbound knows about a book: its metadata and table of contents.", "<book>");
     command.json();
     command.parser.process(arguments);
     const QString path = command.argument(1);
@@ -103,7 +103,7 @@ int info(const QStringList &arguments) {
     if (!file.exists())
         return fail(path + ": no such file");
     if (!BookFiles::isBook(path))
-        return fail(path + ": Dogear reads EPUB and PDF books.");
+        return fail(path + ": Clothbound reads EPUB and PDF books.");
 
     // Open and parse the book once for both metadata and table of contents.
     BookInfo book;
@@ -314,7 +314,7 @@ int list(const QStringList &arguments) {
     return 0;
 }
 
-// dogear notes: what the reader marked in a book, as Markdown to keep
+// clothbound notes: what the reader marked in a book, as Markdown to keep
 // elsewhere, or as JSON. The book is a file, or a few words of its title.
 int notes(const QStringList &arguments) {
     Command command("notes", "Print a book's highlights, notes, and bookmarks as Markdown.", "<book>");
@@ -367,7 +367,7 @@ int notes(const QStringList &arguments) {
     return 0;
 }
 
-// dogear voices: the built-in voices (made on this computer): which there
+// clothbound voices: the built-in voices (made on this computer): which there
 // are, installing one, and how fast one speaks here.
 int voices(const QStringList &arguments) {
     Command command("voices", "Built-in voices, made on this computer: list, install, remove, bench.");
@@ -404,7 +404,7 @@ int voices(const QStringList &arguments) {
     if (action == "install") {
         const QVariantMap voice = packs.voice(target);
         if (voice.isEmpty())
-            return fail("No built-in voice is called " + target + ". See: dogear voices list");
+            return fail("No built-in voice is called " + target + ". See: clothbound voices list");
         QEventLoop loop;
         int result = 0;
         QString errorText;
@@ -461,7 +461,7 @@ int voices(const QStringList &arguments) {
     if (action == "bench") {
         const auto model = packs.model(target);
         if (!model)
-            return fail(target + " isn't installed. Install it with: dogear voices install " + target);
+            return fail(target + " isn't installed. Install it with: clothbound voices install " + target);
         SherpaEngine engine(packs.engineLibrary());
         QElapsedTimer clock;
         clock.start();
@@ -491,13 +491,13 @@ int voices(const QStringList &arguments) {
                           .arg(SherpaEngine::threads()).arg(loading / 1000.0, 0, 'f', 1));
         return 0;
     }
-    return fail("Unknown action " + action + ". See: dogear help voices");
+    return fail("Unknown action " + action + ". See: clothbound help voices");
 }
 
-// dogear ai: the reader's Gemini key, costs, and local model servers. The key
+// clothbound ai: the reader's Gemini key, costs, and local model servers. The key
 // is read from standard input, so it never appears in the shell's history.
 int ai(const QStringList &arguments) {
-    Command command("ai", "Intelligence for Dogear: status, key, forget, or local.");
+    Command command("ai", "Intelligence for Clothbound: status, key, forget, or local.");
     command.parser.addPositionalArgument("action", "status (default), key (read from standard input), forget, or local (find model servers on this computer)", "[action]");
     command.json();
     command.parser.process(arguments);
@@ -545,7 +545,7 @@ int ai(const QStringList &arguments) {
     }
 
     if (action != "status" && action != "key" && action != "forget")
-        return fail("Use dogear ai status, dogear ai key, dogear ai forget, or dogear ai local.");
+        return fail("Use clothbound ai status, clothbound ai key, clothbound ai forget, or clothbound ai local.");
 
     Library library;
     if (!openLibrary(library))
@@ -571,7 +571,7 @@ int ai(const QStringList &arguments) {
         QTextStream in(stdin);
         const QString key = in.readLine().trimmed();
         if (key.isEmpty())
-            return fail("Pipe the key in: dogear ai key < keyfile");
+            return fail("Pipe the key in: clothbound ai key < keyfile");
         QEventLoop loop;
         bool ok = false;
         QString message;
@@ -637,7 +637,7 @@ int ai(const QStringList &arguments) {
 // As Hype does: one shared copy, linked into Claude Code, found directly by Codex.
 int skill(const QStringList &arguments) {
     Command command("skill", "Print the agent skill, or install it for your coding agents with: skill install.");
-    command.parser.addPositionalArgument("install", "Copy to ~/.agents/skills/dogear and link into ~/.claude/skills",
+    command.parser.addPositionalArgument("install", "Copy to ~/.agents/skills/clothbound and link into ~/.claude/skills",
                                          "[install]");
     command.parser.process(arguments);
     QFile bundled(":/skill.md");
@@ -649,22 +649,37 @@ int skill(const QStringList &arguments) {
         return 0;
     }
     if (command.argument(1) != "install")
-        return fail("Use dogear skill to print the skill, or dogear skill install.");
+        return fail("Use clothbound skill to print the skill, or clothbound skill install.");
     const QDir home = QDir::home();
-    const QString directory = home.filePath(".agents/skills/dogear");
+    const QString directory = home.filePath(".agents/skills/clothbound");
     QSaveFile file(directory + "/SKILL.md");
     if (!QDir().mkpath(directory) || !file.open(QIODevice::WriteOnly) || file.write(text) < 0 || !file.commit())
         return fail("Could not write " + file.fileName());
     print(stdout, "Installed " + file.fileName());
+
+    // Clean up our own legacy pre-rebrand skill only if its frontmatter matches ours.
+    const QString legacyDir = home.filePath(".agents/skills/dogear");
+    QFile legacySkill(legacyDir + "/SKILL.md");
+    if (legacySkill.open(QIODevice::ReadOnly)) {
+        const QByteArray legacyText = legacySkill.readAll();
+        legacySkill.close();
+        if (legacyText.contains("name: dogear") && legacyText.contains("Omarchy ebook reader")) {
+            QDir(legacyDir).removeRecursively();
+            const QString legacyLink = home.filePath(".claude/skills/dogear");
+            if (QFileInfo(legacyLink).isSymLink())
+                QFile::remove(legacyLink);
+        }
+    }
+
     if (!home.exists(".claude"))
         return 0;
-    const QString link = home.filePath(".claude/skills/dogear");
+    const QString link = home.filePath(".claude/skills/clothbound");
     const QFileInfo existing(link);
     if (existing.isSymLink())
         QFile::remove(link);
     else if (existing.exists())
         return fail(link + " exists and is not a link; leaving it alone.");
-    if (!home.mkpath(".claude/skills") || !QFile::link("../../.agents/skills/dogear", link))
+    if (!home.mkpath(".claude/skills") || !QFile::link("../../.agents/skills/clothbound", link))
         return fail("Could not link " + link);
     print(stdout, "Linked " + link);
     return 0;
@@ -673,12 +688,12 @@ int skill(const QStringList &arguments) {
 int help(const QStringList &arguments) {
     const QString topic = arguments.value(2);
     if (topic == "open") {
-        print(stdout, "Usage: dogear [open] [book...]\n\nOpen the library, or add and open one or more EPUB or PDF books.");
+        print(stdout, "Usage: clothbound [open] [book...]\n\nOpen the library, or add and open one or more EPUB or PDF books.");
         return 0;
     }
     if (isCliCommand(topic) && topic != "help")
         return runCli({arguments[0], topic, "--help"});
-    print(stdout, "Usage: dogear [open] [book...]\n       dogear <command> [options]\n\n" + cliSummary());
+    print(stdout, "Usage: clothbound [open] [book...]\n       clothbound <command> [options]\n\n" + cliSummary());
     return 0;
 }
 }  // namespace
@@ -686,7 +701,7 @@ int help(const QStringList &arguments) {
 QString cliSummary() {
     return "Reader:\n"
            "  open [book...]                         Open the library, or books where you left off\n\n"
-           "Commands that need no display (dogear help <command> for options):\n"
+           "Commands that need no display (clothbound help <command> for options):\n"
            "  add <folder-or-book>...                Add books to the library; files are never changed\n"
            "  list                                   The books in the library, with reading progress\n"
            "  info <book>                            Metadata and table of contents of an EPUB or PDF\n"

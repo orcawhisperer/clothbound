@@ -52,6 +52,7 @@
 #include "app/systemcheck.h"
 #include "ai/localsetup.h"
 #include "app/instance.h"
+#include "app/migration.h"
 #include "ai/keystore.h"
 #include "audio/localspeech.h"
 #include "app/notifier.h"
@@ -91,7 +92,7 @@ public:
     }
 };
 
-class DogearTests : public QObject {
+class ClothboundTests : public QObject {
     Q_OBJECT
 
 private:
@@ -159,7 +160,7 @@ private:
         std::unique_ptr<VoiceCatalog> catalog;
         VoiceRig() {
             qunsetenv("GEMINI_API_KEY");
-            qputenv("DOGEAR_MUTE", "1");
+            qputenv("CLOTHBOUND_MUTE", "1");
             library.open();
             keys.save("gemini", "test-key");
             services = std::make_unique<AiServices>(&gemini, &keys, library.database().connectionName());
@@ -209,7 +210,7 @@ private:
     // A pack's folder, as if it had been downloaded and unpacked.
     static void fakeInstall(const QString &root, const QString &dir) {
         QDir().mkpath(root + "/" + dir);
-        QFile marker(root + "/" + dir + "/.dogear-installed");
+        QFile marker(root + "/" + dir + "/.clothbound-installed");
         QVERIFY(marker.open(QIODevice::WriteOnly));
     }
 
@@ -1042,7 +1043,7 @@ private slots:
         QCOMPARE(reader.chapterCount(), 2);
         const QVariantList spine = reader.manifest().value("spine").toList();
         QCOMPARE(spine[0].toMap().value("href").toString(), QString("OEBPS/text/chapter%201.xhtml"));
-        QVERIFY(reader.manifest().value("base").toString().startsWith("dogear://local/book/"));
+        QVERIFY(reader.manifest().value("base").toString().startsWith("clothbound://local/book/"));
         QCOMPARE(reader.titleOfChapter(1), QString("Notes"));
 
         const QList<int> lengths = library.chapterLengths(id);
@@ -2335,9 +2336,9 @@ private slots:
         QCOMPARE(id.year, 1815);
     }
 
-    // --- One Dogear at a time ----------------------------------------------
+    // --- One Clothbound at a time ----------------------------------------------
 
-    // Opened again, Dogear hands the book to the one running, which takes it
+    // Opened again, Clothbound hands the book to the one running, which takes it
     // (after answering, so the second can leave at once); a second can't
     // take the name.
     void instanceHandsOver() {
@@ -2432,31 +2433,31 @@ private slots:
         QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
 
         // Single-pass info succeeds on a valid EPUB.
-        QCOMPARE(runCli({"dogear", "info", "--json", epubPath}), 0);
-        QCOMPARE(runCli({"dogear", "help", "open"}), 0);
+        QCOMPARE(runCli({"clothbound", "info", "--json", epubPath}), 0);
+        QCOMPARE(runCli({"clothbound", "help", "open"}), 0);
 
         // Add book once, then re-add: idempotent, no crash/hang.
-        QCOMPARE(runCli({"dogear", "add", "--json", epubPath}), 0);
-        QCOMPARE(runCli({"dogear", "add", "--json", epubPath}), 0);
+        QCOMPARE(runCli({"clothbound", "add", "--json", epubPath}), 0);
+        QCOMPARE(runCli({"clothbound", "add", "--json", epubPath}), 0);
 
         // Add multiple folders in one call: batches into one scan, never hangs.
         const QString dir1 = dir.filePath("d1"), dir2 = dir.filePath("d2");
         QDir().mkpath(dir1);
         QDir().mkpath(dir2);
-        QCOMPARE(runCli({"dogear", "add", "--json", dir1, dir2}), 0);
+        QCOMPARE(runCli({"clothbound", "add", "--json", dir1, dir2}), 0);
 
         // notes: must not collide with a same-named directory in CWD, and 0 marks exits 0.
         const QString prevCwd = QDir::currentPath();
         QDir().mkpath(dir.filePath("lantern"));
         QVERIFY(QDir::setCurrent(dir.path()));
-        const int notesPlain = runCli({"dogear", "notes", "lantern"});
-        const int notesJson = runCli({"dogear", "notes", "--json", "lantern"});
+        const int notesPlain = runCli({"clothbound", "notes", "lantern"});
+        const int notesJson = runCli({"clothbound", "notes", "--json", "lantern"});
         QVERIFY(QDir::setCurrent(prevCwd));
         QCOMPARE(notesPlain, 0);
         QCOMPARE(notesJson, 0);
 
         // ai local runs without opening SQLite or libsecret keyring.
-        QCOMPARE(runCli({"dogear", "ai", "local", "--json"}), 0);
+        QCOMPARE(runCli({"clothbound", "ai", "local", "--json"}), 0);
     }
 
     // --- Post-merge regression tests: Input / PDF -------------------------
@@ -2827,7 +2828,7 @@ private slots:
 
         BookScheme scheme;
         const QString token = scheme.add(book);
-        const QByteArray ref = QStringLiteral("dogear://local/book/%1/OEBPS/ok.xhtml").arg(token).toUtf8();
+        const QByteArray ref = QStringLiteral("clothbound://local/book/%1/OEBPS/ok.xhtml").arg(token).toUtf8();
 
         auto checkSecurity = [](const BookScheme::ResolvedResource &res) {
             QVERIFY(res.ok);
@@ -2837,35 +2838,35 @@ private slots:
             QVERIFY(csp.contains("object-src 'none'"));
         };
 
-        const auto okRes = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/book/%1/OEBPS/ok.xhtml").arg(token)));
+        const auto okRes = scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/book/%1/OEBPS/ok.xhtml").arg(token)));
         checkSecurity(okRes);
         QCOMPARE(okRes.mimeType, QByteArray("application/xhtml+xml"));
 
-        const auto badRes = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/book/%1/OEBPS/bad.xhtml").arg(token)));
+        const auto badRes = scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/book/%1/OEBPS/bad.xhtml").arg(token)));
         checkSecurity(badRes);
         QCOMPARE(badRes.mimeType, QByteArray("text/html"));
 
-        const auto h5Res = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/book/%1/OEBPS/h5.xhtml").arg(token)));
+        const auto h5Res = scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/book/%1/OEBPS/h5.xhtml").arg(token)));
         checkSecurity(h5Res);
         QCOMPARE(h5Res.mimeType, QByteArray("text/html"));
 
         // SVG/binary resources also carry strict CSP + nosniff.
-        const auto svgRes = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/book/%1/OEBPS/images/pic.svg").arg(token)));
+        const auto svgRes = scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/book/%1/OEBPS/images/pic.svg").arg(token)));
         checkSecurity(svgRes);
         QCOMPARE(svgRes.mimeType, QByteArray("image/svg+xml"));
 
-        // Root-relative /path resolves safely via valid dogear://local/book/<token>/ Referer.
-        const auto rootRel = scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/OEBPS/images/cover.png")), ref);
+        // Root-relative /path resolves safely via valid clothbound://local/book/<token>/ Referer.
+        const auto rootRel = scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/OEBPS/images/cover.png")), ref);
         checkSecurity(rootRel);
         QCOMPARE(rootRel.data, cover);
 
         // Missing, external, or traversal root-relative requests are refused.
-        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/OEBPS/images/cover.png"))).ok);
-        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/OEBPS/images/cover.png")),
+        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/OEBPS/images/cover.png"))).ok);
+        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/OEBPS/images/cover.png")),
                                        "https://evil.example/book/" + token.toUtf8() + "/ok.xhtml")
                      .ok);
-        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("dogear://local/../../etc/passwd")), ref).ok);
-        const auto wrongHost = scheme.resolveRequest(QUrl(QStringLiteral("dogear://evil/book/%1/OEBPS/ok.xhtml").arg(token)));
+        QVERIFY(!scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/../../etc/passwd")), ref).ok);
+        const auto wrongHost = scheme.resolveRequest(QUrl(QStringLiteral("clothbound://evil/book/%1/OEBPS/ok.xhtml").arg(token)));
         QVERIFY(!wrongHost.ok && wrongHost.invalidUrl);
     }
 
@@ -3841,7 +3842,7 @@ private slots:
         audiobook.save();
         QTRY_VERIFY_WITH_TIMEOUT(!audiobook.busy(), 15000);
         QVERIFY2(audiobook.problem().isEmpty(), qPrintable(audiobook.problem()));
-        const QString expected = QDir(musicDir + QStringLiteral("/Dogear")).filePath(QStringLiteral("Evil Title With Bad Chars.m4b"));
+        const QString expected = QDir(musicDir + QStringLiteral("/Clothbound")).filePath(QStringLiteral("Evil Title With Bad Chars.m4b"));
         QCOMPARE(audiobook.saved(), expected);
         QVERIFY(QFileInfo(expected).size() > 1000);
 
@@ -3979,7 +3980,7 @@ private slots:
             object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");                               // 5
             object("<< /Type /Annot /Subtype /Link /Rect [20 240 120 265] /A << /S /GoTo /D [9 0 R /XYZ 0 300 1] >> >>");  // 6
             object("<< /Type /Annot /Subtype /Link /Rect [20 200 140 220] "
-                   "/A << /S /URI /URI (https://example.org/dogear) >> >>");                                // 7
+                   "/A << /S /URI /URI (https://example.org/clothbound) >> >>");                                // 7
             object("<< /Type /Annot /Subtype /Link /Rect [20 160 140 180] "
                    "/A << /S /URI /URI (javascript:alert\\(1\\)) >> >>");                                   // 8
             object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents 10 0 R "
@@ -4027,7 +4028,7 @@ private slots:
             }
             if (entry.page == 1 && entry.url.isEmpty())
                 sawInternal = true;
-            if (entry.page == -1 && entry.url == QUrl(QStringLiteral("https://example.org/dogear")))
+            if (entry.page == -1 && entry.url == QUrl(QStringLiteral("https://example.org/clothbound")))
                 sawExternal = true;
             QVERIFY(entry.url.scheme() != QLatin1String("javascript"));
         }
@@ -4958,7 +4959,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!audiobook.busy(), 15000);
         QVERIFY2(audiobook.problem().isEmpty(), qPrintable(audiobook.problem()));
         const QString expectedRange =
-            QDir(musicDir + QStringLiteral("/Dogear")).filePath(QStringLiteral("Sea Voyages (Ch 2\u20133).m4b"));
+            QDir(musicDir + QStringLiteral("/Clothbound")).filePath(QStringLiteral("Sea Voyages (Ch 2\u20133).m4b"));
         QCOMPARE(audiobook.saved(), expectedRange);
         QVERIFY(QFileInfo(expectedRange).size() > 1000);
 
@@ -4984,7 +4985,7 @@ private slots:
         QTRY_VERIFY_WITH_TIMEOUT(!singleBook.busy(), 15000);
         QVERIFY2(singleBook.problem().isEmpty(), qPrintable(singleBook.problem()));
         const QString expectedSingle =
-            QDir(musicDir + QStringLiteral("/Dogear")).filePath(QStringLiteral("Sea Voyages (Ch 1).m4b"));
+            QDir(musicDir + QStringLiteral("/Clothbound")).filePath(QStringLiteral("Sea Voyages (Ch 1).m4b"));
         QCOMPARE(singleBook.saved(), expectedSingle);
         QVERIFY(QFileInfo(expectedSingle).size() > 1000);
     }
@@ -5474,7 +5475,7 @@ private slots:
         QVERIFY(obsContent.startsWith(QStringLiteral("---\n")));
         QVERIFY(obsContent.contains(QStringLiteral("title: \"The \\\"Lantern\\\"\"\n")));
         QVERIFY(obsContent.contains(QStringLiteral("author: \"Ada Marsh\"\n")));
-        QVERIFY(obsContent.contains(QStringLiteral("tags:\n  - dogear\n  - reading-notes\n")));
+        QVERIFY(obsContent.contains(QStringLiteral("tags:\n  - clothbound\n  - reading-notes\n")));
         QVERIFY(obsContent.contains(QStringLiteral("> the harbor\n")));
         QVERIFY(obsContent.contains(QStringLiteral("Great café atmosphere\n")));
         QVERIFY(obsContent.contains(QStringLiteral("— *Blue · Ch. 1 · ")));
@@ -5499,9 +5500,9 @@ private slots:
     }
 
     void cliVersionFastPathExitsCleanlyWithoutDisplay() {
-        const QString dogearBin = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../dogear"));
-        if (!QFileInfo::exists(dogearBin))
-            QSKIP("build/dogear binary not built yet");
+        const QString clothboundBin = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../clothbound"));
+        if (!QFileInfo::exists(clothboundBin))
+            QSKIP("build/clothbound binary not built yet");
 
         QProcess proc;
         QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
@@ -5512,7 +5513,7 @@ private slots:
 
         QElapsedTimer timer;
         timer.start();
-        proc.start(dogearBin, {QStringLiteral("--version")});
+        proc.start(clothboundBin, {QStringLiteral("--version")});
         QVERIFY(proc.waitForFinished(5000));
         const qint64 elapsedMs = timer.elapsed();
 
@@ -5520,15 +5521,15 @@ private slots:
         QCOMPARE(proc.exitCode(), 0);
         const QString out = QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
         const QString err = QString::fromUtf8(proc.readAllStandardError()).trimmed();
-        QVERIFY2(out.startsWith(QStringLiteral("dogear ")), qPrintable(out));
-        QVERIFY2(QRegularExpression(QStringLiteral("^dogear \\d+\\.\\d+\\.\\d+")).match(out).hasMatch(), qPrintable(out));
+        QVERIFY2(out.startsWith(QStringLiteral("clothbound ")), qPrintable(out));
+        QVERIFY2(QRegularExpression(QStringLiteral("^clothbound \\d+\\.\\d+\\.\\d+")).match(out).hasMatch(), qPrintable(out));
         QVERIFY2(err.isEmpty(), qPrintable(err));
         QVERIFY2(elapsedMs < 2000, qPrintable(QStringLiteral("slow --version: %1 ms").arg(elapsedMs)));
 
         // --help also completes via the lightweight QCoreApplication fast path without display.
         QProcess helpProc;
         helpProc.setProcessEnvironment(env);
-        helpProc.start(dogearBin, {QStringLiteral("--help")});
+        helpProc.start(clothboundBin, {QStringLiteral("--help")});
         QVERIFY(helpProc.waitForFinished(5000));
         QCOMPARE(helpProc.exitStatus(), QProcess::NormalExit);
         QCOMPARE(helpProc.exitCode(), 0);
@@ -5574,7 +5575,7 @@ private slots:
         QVERIFY(SurfaceWatcher::isHyprWorkspaceEvent("activespecial>>scratch,DP-1"));
         QVERIFY(SurfaceWatcher::isHyprWorkspaceEvent("activespecialv2>>-98,special:scratch,DP-1"));
         QVERIFY(!SurfaceWatcher::isHyprWorkspaceEvent("activewindow>>kitty,zsh"));
-        QVERIFY(!SurfaceWatcher::isHyprWorkspaceEvent("openwindow>>0x1,1,dogear,Dogear"));
+        QVERIFY(!SurfaceWatcher::isHyprWorkspaceEvent("openwindow>>0x1,1,clothbound,Clothbound"));
         QVERIFY(!SurfaceWatcher::isHyprWorkspaceEvent(""));
 
         QTemporaryDir dir;
@@ -5751,7 +5752,7 @@ private slots:
         QVERIFY(!js.contains(QStringLiteral("1px solid transparent")));
         QVERIFY(!js.contains(QStringLiteral("root.style.opacity = '0.999'")));
         QVERIFY(!js.contains(QStringLiteral("root.style.transform = 'translateZ(0)'")));
-        QVERIFY(js.contains(QStringLiteral("dg-paint-probe")));
+        QVERIFY(js.contains(QStringLiteral("cb-paint-probe")));
         QVERIFY(js.contains(QStringLiteral("beginSurfaceNudge")));
         QVERIFY(js.contains(QStringLiteral("endSurfaceNudge")));
         QVERIFY(js.contains(QStringLiteral("isNudgeGuarded")));
@@ -5764,8 +5765,8 @@ private slots:
         QVERIFY(qml.contains(QStringLiteral("target: surfaceWatcher")));
         QVERIFY(qml.contains(QStringLiteral("surfaceWatcher.forceItemUpdate")));
         QVERIFY(qml.contains(QStringLiteral("surfaceWatcher.takeSurfaceNudge")));
-        QVERIFY(qml.contains(QStringLiteral("dogear.beginSurfaceNudge")));
-        QVERIFY(qml.contains(QStringLiteral("dogear.endSurfaceNudge")));
+        QVERIFY(qml.contains(QStringLiteral("clothbound.beginSurfaceNudge")));
+        QVERIFY(qml.contains(QStringLiteral("clothbound.endSurfaceNudge")));
         QVERIFY(qml.contains(QStringLiteral("anchors.bottomMargin: view.surfaceNudge")));
         QVERIFY(qml.contains(QStringLiteral("visible: win.visible && win.visibility !== Window.Minimized")));
         QVERIFY(qml.contains(QStringLiteral("WebEngineView.LifecycleState.Frozen")));
@@ -5839,7 +5840,7 @@ const stageEl = {
 };
 
 const styleNodes = new Map();
-const textNode = { nodeType: 3, data: 'Hello world from Dogear chapter text.', parentElement: null };
+const textNode = { nodeType: 3, data: 'Hello world from Clothbound chapter text.', parentElement: null };
 const bodyEl = {
     childNodes: [textNode],
     lastElementChild: {
@@ -5863,7 +5864,7 @@ const chapterDocEl = {
 };
 
 const chapterDoc = {
-    URL: 'dogear://book/1/ch1.xhtml',
+    URL: 'clothbound://book/1/ch1.xhtml',
     documentElement: chapterDocEl,
     head: { appendChild(el) { styleNodes.set(el.id, el); } },
     body: bodyEl,
@@ -5931,7 +5932,7 @@ const documentMock = {
         if (id === 'stage') return stageEl;
         if (id === 'book') return frameEl;
         if (id === 'overlay') return overlayEl;
-        if (id === 'dg-paint-probe') return bodyChildren.find(c => c.id === 'dg-paint-probe') || null;
+        if (id === 'cb-paint-probe') return bodyChildren.find(c => c.id === 'cb-paint-probe') || null;
         return null;
     },
     createElement(tag) {
@@ -5979,7 +5980,7 @@ const sandbox = {
 sandbox.globalThis = sandbox;
 
 const ctx = vm.createContext(sandbox);
-const dogear = vm.runInContext(source + '\n;dogear;', ctx);
+const clothbound = vm.runInContext(source + '\n;clothbound;', ctx);
 domReady();
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -5991,7 +5992,7 @@ const flushRaf = () => {
 };
 
 (async () => {
-    const book = { session: 1, base: 'dogear://book/1/', language: 'en', rtl: false,
+    const book = { session: 1, base: 'clothbound://book/1/', language: 'en', rtl: false,
                    spine: [{ href: 'ch1.xhtml', linear: true }], pageTargets: [] };
     const style = {
         theme: { bg: '#fbfaf6', fg: '#23221f', link: '#8a6a2a', muted: '#6f6b63', popover: '#fff',
@@ -6004,20 +6005,20 @@ const flushRaf = () => {
         listening: false, strings: { goToNote: 'Go', listenFromHere: 'Listen' },
     };
 
-    await dogear.open(book, { chapter: 0, offset: 0 }, style);
+    await clothbound.open(book, { chapter: 0, offset: 0 }, style);
     assert.strictEqual(relocatedCount, 1, 'initial open relocates once');
     assert.strictEqual(frameEl.style.height, '692px');
 
     // 1. Transient 1 px surface nudge (beginSurfaceNudge -> shrink -> restore -> endSurfaceNudge):
     // must NOT trigger relayout even if held longer than the 120 ms resize debounce.
-    dogear.beginSurfaceNudge(600);
+    clothbound.beginSurfaceNudge(600);
     stageEl.clientHeight = 799;
     resizeCallback();
     await wait(180);
     assert.strictEqual(relocatedCount, 1, 'guarded 1px nudge must not trigger relayout');
     assert.strictEqual(frameEl.style.height, '692px', '#book height must remain locked during nudge');
     stageEl.clientHeight = 800;
-    dogear.endSurfaceNudge(80);
+    clothbound.endSurfaceNudge(80);
     resizeCallback();
     await wait(160);
     assert.strictEqual(relocatedCount, 1, 'restoring 1px nudge must not trigger relayout');
@@ -6026,30 +6027,30 @@ const flushRaf = () => {
     stageEl.clientHeight = 799;
     resizeCallback();
     await wait(10);
-    dogear.beginSurfaceNudge(600);
+    clothbound.beginSurfaceNudge(600);
     await wait(170);
     assert.strictEqual(relocatedCount, 1, 'late beginSurfaceNudge must still suppress relayout');
     stageEl.clientHeight = 800;
-    dogear.endSurfaceNudge(60);
+    clothbound.endSurfaceNudge(60);
     resizeCallback();
     await wait(120);
     assert.strictEqual(relocatedCount, 1, 'restoring after late guard must not trigger relayout');
 
     // 3. refresh() must NOT toggle opacity/transform on document or chapter iframe,
     // and must use the 1x1 corner paint probe and clean it up cleanly.
-    dogear.refresh();
+    clothbound.refresh();
     assert.strictEqual(docEl.style.opacity, '', 'outer html opacity untouched');
     assert.strictEqual(docEl.style.transform, '', 'outer html transform untouched');
     assert.strictEqual(chapterDocEl.style.opacity, '', 'chapter html opacity untouched');
     assert.strictEqual(chapterDocEl.style.transform, '', 'chapter html transform untouched');
-    const probe = documentMock.getElementById('dg-paint-probe');
+    const probe = documentMock.getElementById('cb-paint-probe');
     assert.ok(probe, 'paint probe created');
     assert.ok(probe.style.backgroundColor.startsWith('rgba('), 'paint probe painted with non-zero alpha');
     flushRaf();
     assert.strictEqual(probe.style.backgroundColor, '', 'paint probe cleaned up after double-rAF');
 
     // 4. Genuine user window resize STILL relayouts cleanly (even during a nudge guard window).
-    dogear.beginSurfaceNudge(600);
+    clothbound.beginSurfaceNudge(600);
     stageEl.clientHeight = 650;
     resizeCallback();
     await wait(180);
@@ -6057,7 +6058,7 @@ const flushRaf = () => {
     assert.strictEqual(frameEl.style.height, '542px', '#book height updated for real resize');
 
     // 5. After guard expires, even a genuine 1 px user resize relayouts cleanly.
-    dogear.endSurfaceNudge(0);
+    clothbound.endSurfaceNudge(0);
     stageEl.clientHeight = 649;
     resizeCallback();
     await wait(180);
@@ -6317,7 +6318,7 @@ const flushRaf = () => {
         QCOMPARE(reader2.bookPageEnd(), 3);
         reader2.close();
 
-        // reader.js Node VM test: singleColumn docking, dg-spoken dimming/clearing, and 2-column bleed containment.
+        // reader.js Node VM test: singleColumn docking, cb-spoken dimming/clearing, and 2-column bleed containment.
         const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
         if (node.isEmpty())
             QSKIP("node executable not available");
@@ -6371,7 +6372,7 @@ const chapterDocEl = {
 
 const highlights = new Map();
 const chapterDoc = {
-    URL: 'dogear://book/1/ch1.xhtml',
+    URL: 'clothbound://book/1/ch1.xhtml',
     documentElement: chapterDocEl,
     head: { appendChild(el) { styleNodes.set(el.id, el); } },
     body: bodyEl,
@@ -6465,11 +6466,11 @@ const sandbox = {
 sandbox.globalThis = sandbox;
 
 const ctx = vm.createContext(sandbox);
-const dogear = vm.runInContext(source + '\n;dogear;', ctx);
+const clothbound = vm.runInContext(source + '\n;clothbound;', ctx);
 domReady();
 
 (async () => {
-    const book = { session: 1, base: 'dogear://book/1/', language: 'en', rtl: false,
+    const book = { session: 1, base: 'clothbound://book/1/', language: 'en', rtl: false,
                    spine: [{ href: 'ch1.xhtml', linear: true }], pageTargets: [] };
     const baseStyle = {
         theme: { bg: '#fbfaf6', fg: '#23221f', link: '#8a6a2a', accentInk: '#7a5a1a', muted: '#6f6b63',
@@ -6482,12 +6483,12 @@ domReady();
         listening: false, strings: { goToNote: 'Go', listenFromHere: 'Listen' },
     };
 
-    await dogear.open(book, { chapter: 0, offset: 0 }, baseStyle);
+    await clothbound.open(book, { chapter: 0, offset: 0 }, baseStyle);
     assert.strictEqual(lastLoc.columns, 2, 'double layout on 1400px uses 2 columns');
 
     // Verify 2-column horizontal bleed containment CSS & fitBlocks nowrap/pre neutralization.
-    const typoCss = styleNodes.get('dg-typography').textContent;
-    const layCss = styleNodes.get('dg-layout').textContent;
+    const typoCss = styleNodes.get('cb-typography').textContent;
+    const layCss = styleNodes.get('cb-layout').textContent;
     assert.ok(typoCss.includes('overflow-wrap: break-word'), 'typographyCss enables break-word');
     assert.ok(typoCss.includes('text-wrap-mode: wrap !important'), 'typographyCss forces wrap mode');
     assert.ok(typoCss.includes('nobr { white-space: normal !important; }'), 'typographyCss neutralizes nobr');
@@ -6500,34 +6501,34 @@ domReady();
     assert.strictEqual(preEl.style.props['white-space'], undefined, 'pre blocks handled by CSS');
 
     // Companion docked seam: singleColumn forces 1 column even in layout=double, then restores 2.
-    await dogear.setStyle({ ...baseStyle, singleColumn: true });
+    await clothbound.setStyle({ ...baseStyle, singleColumn: true });
     assert.strictEqual(lastLoc.columns, 1, 'singleColumn forces 1 column');
-    await dogear.setStyle({ ...baseStyle, singleColumn: false });
+    await clothbound.setStyle({ ...baseStyle, singleColumn: false });
     assert.strictEqual(lastLoc.columns, 2, 'clearing singleColumn restores 2 columns');
 
-    // dg-spoken dims prior text [0, start) at priority 0 < marks (1) < dg-speaking (2) < dg-search (3) < dg-found (4).
-    dogear.highlight('dg-mark-yellow', [{ start: 0, end: 6 }]);
-    dogear.found([{ start: 7, end: 13 }], { start: 7, end: 13 });
-    dogear.speak(15, 28, false);
-    assert.ok(highlights.has('dg-spoken'), 'dg-spoken added for start > 0');
-    assert.ok(highlights.has('dg-speaking'), 'dg-speaking added');
-    assert.strictEqual(highlights.get('dg-spoken').priority, 0);
-    assert.strictEqual(highlights.get('dg-mark-yellow').priority, 1);
-    assert.strictEqual(highlights.get('dg-speaking').priority, 2);
-    assert.strictEqual(highlights.get('dg-search').priority, 3);
-    assert.strictEqual(highlights.get('dg-found').priority, 4);
-    assert.strictEqual(highlights.get('dg-spoken').ranges[0].start, 0);
-    assert.strictEqual(highlights.get('dg-spoken').ranges[0].end, 15);
+    // cb-spoken dims prior text [0, start) at priority 0 < marks (1) < cb-speaking (2) < cb-search (3) < cb-found (4).
+    clothbound.highlight('cb-mark-yellow', [{ start: 0, end: 6 }]);
+    clothbound.found([{ start: 7, end: 13 }], { start: 7, end: 13 });
+    clothbound.speak(15, 28, false);
+    assert.ok(highlights.has('cb-spoken'), 'cb-spoken added for start > 0');
+    assert.ok(highlights.has('cb-speaking'), 'cb-speaking added');
+    assert.strictEqual(highlights.get('cb-spoken').priority, 0);
+    assert.strictEqual(highlights.get('cb-mark-yellow').priority, 1);
+    assert.strictEqual(highlights.get('cb-speaking').priority, 2);
+    assert.strictEqual(highlights.get('cb-search').priority, 3);
+    assert.strictEqual(highlights.get('cb-found').priority, 4);
+    assert.strictEqual(highlights.get('cb-spoken').ranges[0].start, 0);
+    assert.strictEqual(highlights.get('cb-spoken').ranges[0].end, 15);
 
-    // Clearing dg-speaking automatically clears dg-spoken as well.
-    dogear.highlight('dg-speaking', []);
-    assert.ok(!highlights.has('dg-speaking'));
-    assert.ok(!highlights.has('dg-spoken'), 'dg-spoken cleared when dg-speaking clears');
+    // Clearing cb-speaking automatically clears cb-spoken as well.
+    clothbound.highlight('cb-speaking', []);
+    assert.ok(!highlights.has('cb-speaking'));
+    assert.ok(!highlights.has('cb-spoken'), 'cb-spoken cleared when cb-speaking clears');
 
-    // Speaking at offset 0 creates no dg-spoken range.
-    dogear.speak(0, 6, false);
-    assert.ok(highlights.has('dg-speaking'));
-    assert.ok(!highlights.has('dg-spoken'));
+    // Speaking at offset 0 creates no cb-spoken range.
+    clothbound.speak(0, 6, false);
+    assert.ok(highlights.has('cb-speaking'));
+    assert.ok(!highlights.has('cb-spoken'));
     process.exit(0);
 })().catch(err => { console.error(err); process.exit(1); });
 )JS");
@@ -6922,9 +6923,9 @@ function makeClassList(onAdd) {
 }
 
 const chapterSpecs = {
-    'dogear://book/1/ch0.xhtml': { pages: 1, text: 'Chapter zero opening words.' },
-    'dogear://book/1/ch1.xhtml': { pages: 3, text: 'Chapter one has three full pages of prose.' },
-    'dogear://book/1/ch2.xhtml': { pages: 2, text: 'Chapter two follows with two pages.' },
+    'clothbound://book/1/ch0.xhtml': { pages: 1, text: 'Chapter zero opening words.' },
+    'clothbound://book/1/ch1.xhtml': { pages: 3, text: 'Chapter one has three full pages of prose.' },
+    'clothbound://book/1/ch2.xhtml': { pages: 2, text: 'Chapter two follows with two pages.' },
 };
 
 function makeChapterDoc(ownerFrame, url) {
@@ -7125,12 +7126,12 @@ const sandbox = {
 sandbox.globalThis = sandbox;
 
 const ctx = vm.createContext(sandbox);
-const dogear = vm.runInContext(source + '\n;dogear;', ctx);
+const clothbound = vm.runInContext(source + '\n;clothbound;', ctx);
 domReady();
 
 (async () => {
     const book = {
-        session: 1, base: 'dogear://book/1/', language: 'en', rtl: false,
+        session: 1, base: 'clothbound://book/1/', language: 'en', rtl: false,
         spine: [
             { href: 'ch0.xhtml', linear: true },
             { href: 'ch1.xhtml', linear: true },
@@ -7149,7 +7150,7 @@ domReady();
         listening: false, strings: { goToNote: 'Go', listenFromHere: 'Listen' },
     };
 
-    await dogear.open(book, { chapter: 0, offset: 0 }, style);
+    await clothbound.open(book, { chapter: 0, offset: 0 }, style);
     assert.strictEqual(lastLoc.chapter, 0);
     assert.strictEqual(bookFrame.classList.contains('shown'), true);
     assert.strictEqual(backFrame.classList.contains('shown'), false);
@@ -7159,12 +7160,12 @@ domReady();
     await new Promise(r => setTimeout(r, 90));
     assert.strictEqual(srcLoads.length, 2, 'standby #book-back should pre-warm ch1');
     assert.strictEqual(srcLoads[1].id, 'book-back');
-    assert.strictEqual(srcLoads[1].url, 'dogear://book/1/ch1.xhtml');
+    assert.strictEqual(srcLoads[1].url, 'clothbound://book/1/ch1.xhtml');
     assert.strictEqual(backFrame.classList.contains('shown'), false, 'pre-warmed standby stays hidden');
 
     // Cross chapter 0 -> chapter 1: reuses warm #book-back with ZERO extra src load.
     const loadsBeforeSwap = srcLoads.length;
-    await dogear.next();
+    await clothbound.next();
     assert.strictEqual(srcLoads.length, loadsBeforeSwap, 'warm chapter swap must not re-navigate src');
     assert.strictEqual(lastLoc.chapter, 1);
     assert.strictEqual(lastLoc.page, 0);
@@ -7179,7 +7180,7 @@ domReady();
     const step = parseFloat(backFrame.style.width);
     assert.ok(step > 200);
     autoRaf = false;
-    const p1 = dogear.next();
+    const p1 = clothbound.next();
     await new Promise(r => setTimeout(r, 10));
     assert.strictEqual(viewportEl.classList.contains('turning'), true, 'feather mask enabled while turning');
     stepRaf(65);
@@ -7187,7 +7188,7 @@ domReady();
     assert.ok(midScroll > 0 && midScroll < step, `expected mid-flight scroll, got ${midScroll}/${step}`);
 
     // Fire second turn before first finishes: keeps live scroll and retargets cleanly to page 2.
-    const p2 = dogear.next();
+    const p2 = clothbound.next();
     await new Promise(r => setTimeout(r, 10));
     assert.strictEqual(activeDocEl.scrollLeft, midScroll, 'retargeting must not snap scroll back before gliding');
     stepRaf(20);
@@ -7204,23 +7205,23 @@ domReady();
     autoRaf = true;
     await new Promise(r => setTimeout(r, 90));
     const loadsBeforeCh2 = srcLoads.length;
-    await dogear.next();
+    await clothbound.next();
     assert.strictEqual(srcLoads.length, loadsBeforeCh2, 'ch2 should also reuse warm standby');
     assert.strictEqual(lastLoc.chapter, 2);
     assert.strictEqual(lastLoc.page, 0);
 
     // Backward chapter turn: ch1 must be pre-scrolled to its LAST page (2 * step) BEFORE .shown is added.
     const shownCountBeforePrev = shownEvents.length;
-    await dogear.prev();
+    await clothbound.prev();
     assert.strictEqual(lastLoc.chapter, 1);
     assert.strictEqual(lastLoc.page, 2);
-    const ch1Reveal = shownEvents.slice(shownCountBeforePrev).find(e => e.url === 'dogear://book/1/ch1.xhtml');
+    const ch1Reveal = shownEvents.slice(shownCountBeforePrev).find(e => e.url === 'clothbound://book/1/ch1.xhtml');
     assert.ok(ch1Reveal, 'ch1 reveal should be recorded');
     assert.strictEqual(ch1Reveal.scrollLeft, 2 * step,
         `backward turn must pre-scroll to last page (${2 * step}) before adding .shown (saw ${ch1Reveal.scrollLeft})`);
 
     // close() hides both frames and resets them to about:blank.
-    await dogear.close();
+    await clothbound.close();
     assert.strictEqual(bookFrame.classList.contains('shown'), false);
     assert.strictEqual(backFrame.classList.contains('shown'), false);
     assert.strictEqual(bookFrame.src, 'about:blank');
@@ -8164,13 +8165,218 @@ domReady();
             }
         }
     }
+
+    // --- Legacy Dogear -> Clothbound XDG migration & guard tests -----------
+
+    void migrationMovesGenuineLegacyDataAndRenamesVoiceSentinels() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString legacyCfg = dir.filePath(QStringLiteral("config/dogear"));
+        const QString newCfg = dir.filePath(QStringLiteral("config/clothbound"));
+        const QString legacyData = dir.filePath(QStringLiteral("data/dogear"));
+        const QString newData = dir.filePath(QStringLiteral("data/clothbound"));
+        const QString legacyCache = dir.filePath(QStringLiteral("cache/dogear"));
+        const QString newCache = dir.filePath(QStringLiteral("cache/clothbound"));
+
+        // 1. Seed a genuine legacy config, library DB, voice pack sentinel, illustration, and cache.
+        QDir().mkpath(legacyCfg);
+        QDir().mkpath(legacyData + QStringLiteral("/voices/kokoro-v1.0"));
+        QDir().mkpath(legacyData + QStringLiteral("/illustrations"));
+        QDir().mkpath(legacyCache + QStringLiteral("/covers"));
+        QDir().mkpath(legacyCache + QStringLiteral("/audio"));
+
+        write(legacyCfg + QStringLiteral("/settings.ini"),
+              "[reading]\ntheme=sepia\n[onboarding]\nwelcomed=true\n");
+
+        QDir().mkpath(dir.filePath(QStringLiteral("books")));
+        const QString bookPath = dir.filePath(QStringLiteral("books/legacy.epub"));
+        QVERIFY(TestBooks::write(bookPath, TestBooks::epub2({})));
+        {
+            Library legacyLib(legacyData, legacyCache);
+            QVERIFY(legacyLib.open());
+            const int id = legacyLib.addBookFile(bookPath);
+            QVERIFY(id > 0);
+        }
+        write(legacyData + QStringLiteral("/voices/kokoro-v1.0/.dogear-installed"), "kokoro-v1.0 deadbeef\n");
+        write(legacyData + QStringLiteral("/illustrations/scene.png"), "PNGDATA");
+        write(legacyCache + QStringLiteral("/audio/clip.opus"), "OPUSDATA");
+        write(legacyCache + QStringLiteral("/voices.json"), "{\"voices\":[]}");
+
+        QVERIFY(Migration::isLegacyConfigDir(legacyCfg));
+        QVERIFY(Migration::isLegacyDataDir(legacyData));
+
+        const Migration::Paths paths{legacyCfg, newCfg, legacyData, newData, legacyCache, newCache};
+        const Migration::Result res = Migration::run(paths);
+        QVERIFY(res.configMigrated);
+        QVERIFY(res.dataMigrated);
+        QVERIFY(res.cacheMigrated);
+        QCOMPARE(res.voiceSentinelsRenamed, 1);
+
+        // Verify everything landed cleanly in Clothbound paths and sentinels were renamed.
+        QVERIFY(!QFileInfo::exists(legacyCfg));
+        QVERIFY(!QFileInfo::exists(legacyData));
+        QVERIFY(!QFileInfo::exists(legacyCache));
+        QCOMPARE(QSettings(newCfg + QStringLiteral("/settings.ini"), QSettings::IniFormat)
+                     .value(QStringLiteral("reading/theme")).toString(),
+                 QStringLiteral("sepia"));
+        QVERIFY(QFileInfo::exists(newData + QStringLiteral("/library.sqlite")));
+        QVERIFY(QFileInfo::exists(newData + QStringLiteral("/voices/kokoro-v1.0/.clothbound-installed")));
+        QVERIFY(!QFileInfo::exists(newData + QStringLiteral("/voices/kokoro-v1.0/.dogear-installed")));
+        QVERIFY(QFileInfo::exists(newData + QStringLiteral("/illustrations/scene.png")));
+        QVERIFY(QFileInfo::exists(newCache + QStringLiteral("/audio/clip.opus")));
+        QVERIFY(QFileInfo::exists(newCache + QStringLiteral("/voices.json")));
+
+        // Migrated library opens cleanly with the book preserved.
+        {
+            Library migratedLib(newData, newCache);
+            QVERIFY(migratedLib.open());
+            QCOMPARE(migratedLib.bookCount(), 1);
+            QCOMPARE(migratedLib.records().first().title, QStringLiteral("The Lantern Keeper"));
+        }
+
+        // Second run is a clean idempotent no-op.
+        const Migration::Result second = Migration::run(paths);
+        QVERIFY(!second.configMigrated);
+        QVERIFY(!second.dataMigrated);
+        QVERIFY(!second.cacheMigrated);
+        QCOMPARE(second.voiceSentinelsRenamed, 0);
+
+        // VoicePacks::isInstalled() also honors legacy .dogear-installed as a read fallback.
+        const QString fallbackVoicesDir = dir.filePath(QStringLiteral("fallback-voices"));
+        QDir().mkpath(fallbackVoicesDir + QStringLiteral("/engine"));
+        write(fallbackVoicesDir + QStringLiteral("/engine/.dogear-installed"), "engine legacy\n");
+        const QByteArray manifest = R"({"engine":{"x86_64":{"url":"http://127.0.0.1/e.tar.bz2","size":10,"sha256":"00","dir":"engine"}}})";
+        VoicePacks packs(fallbackVoicesDir, nullptr, QStringLiteral("x86_64"), manifest);
+        QVERIFY(packs.isInstalled(QStringLiteral("engine")));
+    }
+
+    void migrationRejectsForeignDogearDirectories() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString legacyCfg = dir.filePath(QStringLiteral("config/dogear"));
+        const QString newCfg = dir.filePath(QStringLiteral("config/clothbound"));
+        const QString legacyData = dir.filePath(QStringLiteral("data/dogear"));
+        const QString newData = dir.filePath(QStringLiteral("data/clothbound"));
+        const QString legacyCache = dir.filePath(QStringLiteral("cache/dogear"));
+        const QString newCache = dir.filePath(QStringLiteral("cache/clothbound"));
+
+        // Foreign config (e.g. ninepointlabs/dogear) with unrecognized groups.
+        QDir().mkpath(legacyCfg);
+        write(legacyCfg + QStringLiteral("/settings.ini"), "[sync]\nendpoint=https://example.invalid\n");
+
+        // Foreign SQLite DB with unrelated schema.
+        QDir().mkpath(legacyData);
+        const QString foreignDbPath = legacyData + QStringLiteral("/library.sqlite");
+        {
+            const QString conn = QStringLiteral("foreign-dogear-test");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+                db.setDatabaseName(foreignDbPath);
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.exec(QStringLiteral("CREATE TABLE bookmarks (id INTEGER PRIMARY KEY, url TEXT)")));
+                QVERIFY(q.exec(QStringLiteral("INSERT INTO bookmarks (url) VALUES ('https://example.invalid')")));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(conn);
+        }
+
+        // Foreign cache directory.
+        QDir().mkpath(legacyCache + QStringLiteral("/covers"));
+        write(legacyCache + QStringLiteral("/covers/foreign.bin"), "FOREIGN");
+
+        QVERIFY(!Migration::isLegacyConfigDir(legacyCfg));
+        QVERIFY(!Migration::isLegacyDataDir(legacyData));
+        QVERIFY(!Migration::isLegacyCacheDir(legacyCache));
+
+        const Migration::Result res = Migration::run({legacyCfg, newCfg, legacyData, newData, legacyCache, newCache});
+        QVERIFY(!res.configMigrated);
+        QVERIFY(!res.dataMigrated);
+        QVERIFY(!res.cacheMigrated);
+        QCOMPARE(res.voiceSentinelsRenamed, 0);
+
+        // Foreign files must remain completely untouched and nothing created in Clothbound paths.
+        QVERIFY(QFileInfo::exists(legacyCfg + QStringLiteral("/settings.ini")));
+        QVERIFY(QFileInfo::exists(foreignDbPath));
+        QVERIFY(QFileInfo::exists(legacyCache + QStringLiteral("/covers/foreign.bin")));
+        QVERIFY(!QFileInfo::exists(newCfg));
+        QVERIFY(!QFileInfo::exists(newData));
+        QVERIFY(!QFileInfo::exists(newCache));
+
+        // Corrupt / non-SQLite file named library.sqlite is also rejected safely.
+        const QString corruptData = dir.filePath(QStringLiteral("corrupt/dogear"));
+        QDir().mkpath(corruptData);
+        write(corruptData + QStringLiteral("/library.sqlite"), "not a sqlite database");
+        QVERIFY(!Migration::isLegacyDataDir(corruptData));
+    }
+
+    void migrationNeverClobbersExistingClothboundData() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString legacyCfg = dir.filePath(QStringLiteral("config/dogear"));
+        const QString newCfg = dir.filePath(QStringLiteral("config/clothbound"));
+        const QString legacyData = dir.filePath(QStringLiteral("data/dogear"));
+        const QString newData = dir.filePath(QStringLiteral("data/clothbound"));
+        const QString legacyCache = dir.filePath(QStringLiteral("cache/dogear"));
+        const QString newCache = dir.filePath(QStringLiteral("cache/clothbound"));
+
+        // Seed genuine legacy Dogear data...
+        QDir().mkpath(legacyCfg);
+        QDir().mkpath(legacyData);
+        QDir().mkpath(legacyCache + QStringLiteral("/audio"));
+        write(legacyCfg + QStringLiteral("/settings.ini"), "[reading]\ntheme=paper\n");
+        {
+            Library legacyLib(legacyData, legacyCache);
+            QVERIFY(legacyLib.open());
+        }
+        write(legacyCache + QStringLiteral("/voices.json"), "{\"source\":\"legacy\"}");
+
+        // ...AND already-populated Clothbound buckets.
+        QDir().mkpath(newCfg);
+        QDir().mkpath(newData);
+        QDir().mkpath(newCache);
+        write(newCfg + QStringLiteral("/settings.ini"), "[reading]\ntheme=night\n");
+        QDir().mkpath(dir.filePath(QStringLiteral("books")));
+        const QString newBook = dir.filePath(QStringLiteral("books/clothbound.epub"));
+        QVERIFY(TestBooks::write(newBook, TestBooks::epub2({})));
+        {
+            Library existingLib(newData, newCache);
+            QVERIFY(existingLib.open());
+            QVERIFY(existingLib.addBookFile(newBook) > 0);
+        }
+        write(newCache + QStringLiteral("/voices.json"), "{\"source\":\"clothbound\"}");
+
+        const Migration::Result res = Migration::run({legacyCfg, newCfg, legacyData, newData, legacyCache, newCache});
+        QVERIFY(!res.configMigrated);
+        QVERIFY(!res.dataMigrated);
+        QVERIFY(!res.cacheMigrated);
+
+        // Existing Clothbound config, library, and cache are completely untouched.
+        QCOMPARE(QSettings(newCfg + QStringLiteral("/settings.ini"), QSettings::IniFormat)
+                     .value(QStringLiteral("reading/theme")).toString(),
+                 QStringLiteral("night"));
+        {
+            Library checkLib(newData, newCache);
+            QVERIFY(checkLib.open());
+            QCOMPARE(checkLib.bookCount(), 1);
+            QCOMPARE(checkLib.records().first().title, QStringLiteral("The Lantern Keeper"));
+        }
+        QFile cacheFile(newCache + QStringLiteral("/voices.json"));
+        QVERIFY(cacheFile.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(cacheFile.readAll()), QStringLiteral("{\"source\":\"clothbound\"}"));
+
+        // Legacy data also remains intact (never deleted when skipped).
+        QVERIFY(QFileInfo::exists(legacyCfg + QStringLiteral("/settings.ini")));
+        QVERIFY(QFileInfo::exists(legacyData + QStringLiteral("/library.sqlite")));
+        QVERIFY(QFileInfo::exists(legacyCache + QStringLiteral("/voices.json")));
+    }
 };
 
 int main(int argc, char *argv[]) {
     // Always avoid GTK3 platform theme (crashes headless without a display).
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
-    // Hermetic XDG isolation: tests never touch ~/.config/dogear/settings.ini
-    // or collide with a live Dogear D-Bus instance.
+    // Hermetic XDG isolation: tests never touch ~/.config/clothbound/settings.ini
+    // or collide with a live Clothbound D-Bus instance.
     QTemporaryDir testXdg;
     if (testXdg.isValid()) {
         QDir(testXdg.path()).mkpath("config");
@@ -8181,11 +8387,11 @@ int main(int argc, char *argv[]) {
         qputenv("XDG_CACHE_HOME", testXdg.filePath("cache").toUtf8());
     }
     QGuiApplication app(argc, argv);
-    app.setApplicationName(QStringLiteral("dogear"));
+    app.setApplicationName(QStringLiteral("clothbound"));
     app.setAttribute(Qt::AA_Use96Dpi, true);
-    QQuickStyle::setStyle(QStringLiteral("Dogear"));
+    QQuickStyle::setStyle(QStringLiteral("Clothbound"));
     QTEST_SET_MAIN_SOURCE_PATH
-    DogearTests tc;
+    ClothboundTests tc;
     return QTest::qExec(&tc, argc, argv);
 }
-#include "dogear_tests.moc"
+#include "clothbound_tests.moc"

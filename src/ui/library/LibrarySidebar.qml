@@ -6,7 +6,7 @@ import "../components"
 import "../components/Icons.js" as Icons
 import "../components/Ui.js" as Ui
 
-// The library sidebar: Dogear brand mark, core shelves, Listening (Downloaded &
+// The library sidebar: Clothbound brand mark, core shelves, Listening (Downloaded &
 // Audiobooks), color-swatched Collections, transient J2 watching card, and the
 // Intelligence status card at the foot (01_library.html, 10_j1, 11_j2).
 // Ctrl+B folds it to a 60 px icon rail on a damped 350 ms transition.
@@ -182,13 +182,13 @@ Rectangle {
             visible: !side.collapsed
             opacity: side.width > side.expandedWidth - 40 ? 1 : 0
 
-            DogearMark {
+            ClothboundMark {
                 anchors.verticalCenter: parent.verticalCenter
                 size: 20
             }
             Label {
                 anchors.verticalCenter: parent.verticalCenter
-                text: "Dogear"
+                text: "Clothbound"
                 color: theme.ink1
                 font.pixelSize: 14
                 font.weight: Font.DemiBold

@@ -788,7 +788,7 @@ ColumnLayout {
                                   ? qsTr("No monthly cap is set.")
                                   : ai.budget <= 0
                                   ? qsTr("Cloud spending is paused ($0 budget).")
-                                  : qsTr("Dogear stops and asks before going over.")
+                                  : qsTr("Clothbound stops and asks before going over.")
                             color: theme.ink4
                             font.pixelSize: 11
                             wrapMode: Text.Wrap
@@ -847,7 +847,7 @@ ColumnLayout {
         text: (ai.preset === "local" && ai.hasLocal && ai.localIsLoopback
                ? qsTr("Running on this computer with %1: nothing is sent anywhere.").arg(ai.localName)
                : ai.privacyNote)
-              + " " + qsTr("Dogear sends only what a feature needs, and never text past where you're reading.")
+              + " " + qsTr("Clothbound sends only what a feature needs, and never text past where you're reading.")
         color: theme.ink4
         font.pixelSize: 12
         wrapMode: Text.Wrap

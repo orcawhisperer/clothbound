@@ -19,10 +19,10 @@ ApplicationWindow {
     minimumWidth: 720
     minimumHeight: 480
     visible: true
-    title: readerOpen ? reader.title + " — Dogear" : "Dogear"
+    title: readerOpen ? reader.title + " — Clothbound" : "Clothbound"
     color: theme.ground
 
-    // The Dogear style reads these roles (see src/style/Dogear/README.md);
+    // The Clothbound style reads these roles (see src/style/Clothbound/README.md);
     // every control and popup in the window inherits them.
     palette.window: theme.ground
     palette.windowText: theme.ink1
@@ -86,7 +86,7 @@ ApplicationWindow {
     }
 
     // Closing the window while a book is read aloud leaves the voice reading:
-    // Dogear waits in the bar's tray until it's shown again, or the reading
+    // Clothbound waits in the bar's tray until it's shown again, or the reading
     // ends. Closed otherwise, it quits.
     onClosing: (close) => {
         win.saveWindowGeometry()
@@ -102,8 +102,8 @@ ApplicationWindow {
         win.hide()
         if (!backgroundTold) {
             backgroundTold = true
-            desktop.notify(qsTr("Dogear keeps reading"),
-                           qsTr("Click here, or open Dogear again, to bring the book back. The media keys and the bar's media panel still control the voice."),
+            desktop.notify(qsTr("Clothbound keeps reading"),
+                           qsTr("Click here, or open Clothbound again, to bring the book back. The media keys and the bar's media panel still control the voice."),
                            true)
         }
     }
@@ -123,8 +123,8 @@ ApplicationWindow {
     }
     Platform.SystemTrayIcon {
         visible: !win.visible && narration.active
-        icon.source: "qrc:/dogear.svg"
-        tooltip: narration.active ? qsTr("Dogear is reading %1").arg(reader.title) : "Dogear"
+        icon.source: "qrc:/clothbound.svg"
+        tooltip: narration.active ? qsTr("Clothbound is reading %1").arg(reader.title) : "Clothbound"
         onActivated: win.showAgain()
         menu: Platform.Menu {
             Platform.MenuItem {
@@ -141,7 +141,7 @@ ApplicationWindow {
             }
             Platform.MenuSeparator {}
             Platform.MenuItem {
-                text: qsTr("Show Dogear")
+                text: qsTr("Show Clothbound")
                 onTriggered: win.showAgain()
             }
             Platform.MenuItem {
@@ -674,7 +674,7 @@ ApplicationWindow {
             toast.show(text, qsTr("Got it"), () => {})
     }
     // A first launch is welcomed; a new version (for someone who has read
-    // with Dogear before) gets What's new. Never pop over a CLI-opened book.
+    // with Clothbound before) gets What's new. Never pop over a CLI-opened book.
     function greet() {
         if (win.readerOpen)
             return
@@ -692,7 +692,7 @@ ApplicationWindow {
         onTriggered: win.greet()
     }
 
-    // How pages look, kept between sessions in ~/.config/dogear/settings.ini.
+    // How pages look, kept between sessions in ~/.config/clothbound/settings.ini.
     Settings {
         id: readingSettings
         location: settingsUrl

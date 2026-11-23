@@ -91,7 +91,7 @@ PortalFileFilters bookFilters() {
 }
 
 QString portalToken() {
-    return QStringLiteral("dogear_%1").arg(QRandomGenerator::global()->generate());
+    return QStringLiteral("clothbound_%1").arg(QRandomGenerator::global()->generate());
 }
 
 QByteArray portalPathBytes(const QString &path) {
