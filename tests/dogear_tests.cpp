@@ -463,7 +463,63 @@ private slots:
         QCOMPARE(theme.accentForeground(), QString("black"));
         QVERIFY(!theme.omarchy());
         QVERIFY(!theme.light());
-        QCOMPARE(theme.background(), QString("#0e0e10"));
+        QCOMPARE(theme.background(), QString("#121214"));
+        // Without Omarchy the tokens are the design's neutrals.
+        QCOMPARE(theme.ground(), QString("#121214"));
+        QCOMPARE(theme.sidebar(), QString("#18181b"));
+        QCOMPARE(theme.ink1(), QString("#f2f2f3"));
+        QCOMPARE(theme.ink3(), QString("#a1a1aa"));
+    }
+
+    void themeTokensKeepTextReadableInEveryOmarchyTheme() {
+        // Every theme Omarchy ships, plus a deliberately washed-out one: body
+        // text must reach WCAG AA on the ground, headings 7:1, hints 3:1, and
+        // the accent as ink 4.5:1.
+        QList<QHash<QString, QString>> palettes;
+        const QDir themes(QStringLiteral("/usr/share/omarchy/themes"));
+        for (const QString &name : themes.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
+            const auto palette = Theme::readPalette(themes.filePath(name + "/colors.toml"));
+            if (palette.contains("background") && palette.contains("foreground"))
+                palettes.append(palette);
+        }
+        palettes.append({{"mode", "dark"}, {"background", "#303030"}, {"foreground", "#5a5a5a"}, {"accent", "#3a3a6a"}});
+        palettes.append({{"mode", "light"}, {"background", "#f0f0f0"}, {"foreground", "#b0b0b0"}, {"accent", "#ffe066"}});
+        for (const auto &palette : palettes) {
+            const bool light = palette.value("mode") == "light";
+            const auto t = Theme::deriveTokens(palette, light, true);
+            const QString what = palette.value("background") + " / " + palette.value("foreground");
+            QVERIFY2(Theme::contrast(t["ink1"], t["ground"]) >= 7.0 - 1e-6, qPrintable(what));
+            QVERIFY2(Theme::contrast(t["ink2"], t["ground"]) >= 4.5 - 1e-6, qPrintable(what));
+            QVERIFY2(Theme::contrast(t["ink3"], t["ground"]) >= 4.5 - 1e-6, qPrintable(what));
+            QVERIFY2(Theme::contrast(t["ink4"], t["ground"]) >= 3.0 - 1e-6, qPrintable(what));
+            QVERIFY2(Theme::contrast(t["accentInk"], t["ground"]) >= 4.5 - 1e-6, qPrintable(what));
+            QVERIFY2(Theme::contrast(t["positive"], t["ground"]) >= 4.5 - 1e-6, qPrintable(what));
+            QVERIFY2(Theme::contrast(t["cloud"], t["ground"]) >= 4.5 - 1e-6, qPrintable(what));
+            QCOMPARE(t["ground"], palette.value("background"));
+        }
+        QVERIFY(palettes.size() >= 2);
+    }
+
+    void themeAppearanceCanOverrideTheDesktop() {
+        QTemporaryDir dir;
+        QDir(dir.path()).mkpath("theme");
+        write(dir.path() + "/theme/colors.toml", "mode = \"dark\"\naccent = \"#7aa2f7\"\n"
+                                                 "background = \"#1a1b26\"\nforeground = \"#a9b1d6\"\n");
+        Theme theme(dir.path());
+        QVERIFY(!theme.light());
+        QCOMPARE(theme.ground(), QString("#1a1b26"));
+        QSignalSpy changed(&theme, &Theme::changed);
+        theme.setAppearance("light");
+        QVERIFY(changed.count() >= 1);
+        QVERIFY(theme.light());
+        // Forced light sets the dark theme's palette aside but keeps its accent,
+        // darkened where it is used as ink on the light ground.
+        QCOMPARE(theme.ground(), QString("#fbfbfc"));
+        QCOMPARE(theme.accent(), QString("#7aa2f7"));
+        QVERIFY(Theme::contrast(theme.accentInk(), theme.ground()) >= 4.5);
+        theme.setAppearance("bogus");
+        QCOMPARE(theme.appearance(), QString("match"));
+        QCOMPARE(theme.ground(), QString("#1a1b26"));
     }
 
     void themeReadsThePalette() {

@@ -134,7 +134,8 @@ bin/translate  # translate what's new into Omarchy's languages (needs GEMINI_API
 ## Credits
 
 Dogear is MIT licensed. It reads with Qt (LGPL) and Chromium's engine, and
-sets books in Literata (SIL Open Font License). Built-in voices are made by
+sets books in Literata and its interface in Inter (both SIL Open Font License).
+Built-in voices are made by
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0) with
 [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0),
 [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) by Kyutai (CC BY 4.0) and

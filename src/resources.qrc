@@ -47,6 +47,7 @@
         <file alias="skill.md">skill.md</file>
         <file alias="fonts/Literata.ttf">fonts/Literata.ttf</file>
         <file alias="fonts/Literata-Italic.ttf">fonts/Literata-Italic.ttf</file>
+        <file alias="fonts/Inter.ttf">fonts/Inter.ttf</file>
         <file alias="i18n/ar.json">i18n/ar.json</file>
         <file alias="i18n/bg.json">i18n/bg.json</file>
         <file alias="i18n/bn.json">i18n/bn.json</file>
