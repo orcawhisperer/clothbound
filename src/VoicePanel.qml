@@ -120,6 +120,7 @@ FocusScope {
             voices.loadStudioVoices()
         if (ai.hasKey)
             voices.refresh()
+        voiceList.positionViewAtBeginning()
         sampleWanted()
         forceActiveFocus()
     }
@@ -946,17 +947,24 @@ FocusScope {
             NumberAnimation { duration: 320; easing.type: Easing.OutQuart }
         }
 
-        // Deep modal shadow.
-        Rectangle {
-            z: -1
-            anchors.fill: parent
-            anchors.topMargin: 18
-            anchors.bottomMargin: -14
-            anchors.leftMargin: -6
-            anchors.rightMargin: -6
-            radius: parent.radius > 0 ? parent.radius + 6 : 0
-            color: theme.shadow
-            opacity: 0.65
+        // Soft layered modal shadow (works identically in rounded and sharp modes).
+        Repeater {
+            model: [
+                { spread: 2, yOff: 4, alpha: 0.30 },
+                { spread: 6, yOff: 9, alpha: 0.18 },
+                { spread: 12, yOff: 15, alpha: 0.09 }
+            ]
+            Rectangle {
+                required property var modelData
+                z: -1
+                x: -modelData.spread
+                y: modelData.yOff
+                width: sheetCard.width + modelData.spread * 2
+                height: sheetCard.height + modelData.spread
+                radius: sheetCard.radius > 0 ? sheetCard.radius + modelData.spread : 0
+                color: theme.shadow
+                opacity: modelData.alpha
+            }
         }
 
         // Keep clicks/wheels inside the modal card.
@@ -1224,8 +1232,13 @@ FocusScope {
                         ScrollBar.vertical: ScrollBar {}
 
                         header: Item {
+                            readonly property bool hasAlert:
+                                (voicePacks.supported && panel.source === "builtin" && (voicePacks.busy || voicePacks.problem !== ""))
+                                || (panel.source === "gemini" && (!ai.hasKey || voices.loading || voices.problem !== ""))
+                                || (panel.source === "studio" && (ai.localSpeechModel === "" || voices.problem !== ""))
                             width: voiceList.width
-                            implicitHeight: headerAlerts.implicitHeight > 0 ? headerAlerts.implicitHeight + 8 : 0
+                            visible: hasAlert
+                            implicitHeight: hasAlert ? headerAlerts.implicitHeight + 8 : 0
                             height: implicitHeight
 
                             ColumnLayout {

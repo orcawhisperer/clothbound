@@ -12,7 +12,10 @@
 #include <QCryptographicHash>
 #include <QProcess>
 #include <QPromise>
+#include <QQmlComponent>
+#include <QQmlEngine>
 #include <QQuickItem>
+#include <QQuickStyle>
 #include <QQuickTextureFactory>
 #include <QQuickWindow>
 #include <QRegularExpression>
@@ -6068,6 +6071,815 @@ const flushRaf = () => {
         QVERIFY2(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
                  stderrOut.isEmpty() ? "node reader.js harness failed" : stderrOut.constData());
     }
+
+    // --- Wave 2 regression tests ------------------------------------------
+
+    void wave2LibraryCancelScanAudioShelvesFinderAndIndexScoping() {
+        QTemporaryDir dir;
+        const QString dataDir = dir.filePath("data");
+        const QString cacheDir = dir.filePath("cache");
+        const QString booksDir = dir.filePath("books");
+        QVERIFY(QDir().mkpath(booksDir));
+
+        const QString epubA = booksDir + QStringLiteral("/alpha.epub");
+        const QString epubB = booksDir + QStringLiteral("/beta.epub");
+        const QString pdfPath = booksDir + QStringLiteral("/manual.pdf");
+        QVERIFY(TestBooks::write(epubA, TestBooks::epub2(png(20, 30))));
+        QVERIFY(TestBooks::write(epubB, TestBooks::epub3(adobeObfuscate(fontPayload()))));
+        QVERIFY(TestBooks::write(pdfPath, TestBooks::pdf("Grid Systems", "Josef")));
+
+        Library library(dataDir, cacheDir);
+        QVERIFY2(library.open(), qPrintable(library.errorString()));
+
+        // 1. cancelScan(): safe no-op while idle, stops an active scan cleanly.
+        QVERIFY(!library.scanning());
+        library.cancelScan();
+        QVERIFY(!library.scanning());
+
+        QSignalSpy scanningSpy(&library, &Library::scanningChanged);
+        library.addFolder(booksDir);
+        QVERIFY(library.scanning());
+        library.cancelScan();
+        QVERIFY(!library.scanning());
+        QVERIFY(scanningSpy.count() >= 2);
+        library.rescan();
+        QVERIFY(library.scanning());
+        library.cancelScan();
+        QVERIFY(!library.scanning());
+
+        // 2. Audio shelves ("audio_downloaded", "audiobook_saved"), shelfCounts, and book enrichment.
+        const int idA = library.addBookFile(epubA);
+        const int idB = library.addBookFile(epubB);
+        const int idPdf = library.addBookFile(pdfPath);
+        QVERIFY(idA > 0 && idB > 0 && idPdf > 0);
+
+        QVariantMap counts = library.shelfCounts();
+        QCOMPARE(counts.value(QStringLiteral("all")).toInt(), 3);
+        QCOMPARE(counts.value(QStringLiteral("pdf")).toInt(), 1);
+        QCOMPARE(counts.value(QStringLiteral("downloaded")).toInt(), 0);
+        QCOMPARE(counts.value(QStringLiteral("audiobooks")).toInt(), 0);
+
+        library.markOpened(idA);
+        library.savePosition(idA, QStringLiteral(R"({"chapter":0,"offset":12,"title":"Chapter One","snippet":"A lantern   in the fog."})"), 0.25);
+        Marks marks(&library);
+        marks.setBook(idA);
+        QVERIFY(marks.addHighlight(0, 0, 10, QStringLiteral("The lamp"), QStringLiteral("yellow"), QStringLiteral("Ch 1")) > 0);
+        QVERIFY(marks.addHighlight(0, 12, 20, QStringLiteral("sea wind"), QStringLiteral("blue"), QStringLiteral("Ch 1")) > 0);
+        library.setBookSetting(idA, QStringLiteral("voiceName"), QStringLiteral("Emma"));
+        library.setBookSetting(idA, QStringLiteral("audio_downloaded"), QStringLiteral("1"));
+        library.setBookSetting(idB, QStringLiteral("audiobook_saved"), QStringLiteral("1"));
+
+        const QVariantMap mapA = library.book(idA);
+        QCOMPARE(mapA.value(QStringLiteral("downloaded")).toBool(), true);
+        QCOMPARE(mapA.value(QStringLiteral("hasAudiobook")).toBool(), false);
+        QCOMPARE(mapA.value(QStringLiteral("highlightCount")).toInt(), 2);
+        QCOMPARE(mapA.value(QStringLiteral("voiceName")).toString(), QStringLiteral("Emma"));
+        QCOMPARE(mapA.value(QStringLiteral("snippet")).toString(), QStringLiteral("A lantern in the fog."));
+
+        const QVariantList cont = library.continueReading();
+        QVERIFY(!cont.isEmpty());
+        QCOMPARE(cont.first().toMap().value(QStringLiteral("id")).toInt(), idA);
+        QCOMPARE(cont.first().toMap().value(QStringLiteral("highlightCount")).toInt(), 2);
+        QCOMPARE(cont.first().toMap().value(QStringLiteral("voiceName")).toString(), QStringLiteral("Emma"));
+        QCOMPARE(cont.first().toMap().value(QStringLiteral("snippet")).toString(), QStringLiteral("A lantern in the fog."));
+
+        counts = library.shelfCounts();
+        QCOMPARE(counts.value(QStringLiteral("downloaded")).toInt(), 1);
+        QCOMPARE(counts.value(QStringLiteral("audiobooks")).toInt(), 1);
+
+        library.works()->setStatusFilter(QStringLiteral("downloaded"));
+        QTRY_COMPARE(library.works()->count(), 1);
+        QCOMPARE(library.works()->get(0).value(QStringLiteral("bookId")).toInt(), idA);
+        QCOMPARE(library.works()->data(library.works()->index(0), WorksModel::DownloadedRole).toBool(), true);
+
+        library.works()->setStatusFilter(QStringLiteral("audiobooks"));
+        QTRY_COMPARE(library.works()->count(), 1);
+        QCOMPARE(library.works()->get(0).value(QStringLiteral("bookId")).toInt(), idB);
+        QCOMPARE(library.works()->data(library.works()->index(0), WorksModel::AudiobookRole).toBool(), true);
+
+        // Clearing audio_downloaded removes the book from the Downloaded shelf live.
+        library.works()->setStatusFilter(QStringLiteral("downloaded"));
+        QTRY_COMPARE(library.works()->count(), 1);
+        library.setBookSetting(idA, QStringLiteral("audio_downloaded"), QStringLiteral("0"));
+        QTRY_COMPARE(library.works()->count(), 0);
+        QCOMPARE(library.shelfCounts().value(QStringLiteral("downloaded")).toInt(), 0);
+
+        // Audio badges persist across restart via loadAudioBadges().
+        {
+            Library reopened(dataDir, cacheDir);
+            QVERIFY(reopened.open());
+            QCOMPARE(reopened.shelfCounts().value(QStringLiteral("audiobooks")).toInt(), 1);
+            QCOMPARE(reopened.book(idB).value(QStringLiteral("hasAudiobook")).toBool(), true);
+            reopened.works()->setStatusFilter(QStringLiteral("audiobooks"));
+            QCOMPARE(reopened.works()->count(), 1);
+            QCOMPARE(reopened.works()->get(0).value(QStringLiteral("bookId")).toInt(), idB);
+        }
+
+        // 3. LibraryFinder::countByFormat + countBooks compat + search() format breakdown.
+        const QString home = dir.filePath("finder-home");
+        for (const QString &rel : {QStringLiteral("Books/a.epub"), QStringLiteral("Books/sub/b.EPUB"),
+                                   QStringLiteral("Books/c.PDF"), QStringLiteral("Books/notes.txt"),
+                                   QStringLiteral("Books/1/2/3/4/5/deep.epub")}) {
+            QVERIFY(QDir().mkpath(QFileInfo(home + QLatin1Char('/') + rel).absolutePath()));
+            write(home + QLatin1Char('/') + rel, "x");
+        }
+        const LibraryFinder::FormatCounts fmt = LibraryFinder::countByFormat(home + QStringLiteral("/Books"));
+        QCOMPARE(fmt.epub, 2);
+        QCOMPARE(fmt.pdf, 1);
+        QCOMPARE(fmt.total(), 3);
+        QCOMPARE(LibraryFinder::countBooks(home + QStringLiteral("/Books")), 3);
+        QCOMPARE(LibraryFinder::countBooks(home + QStringLiteral("/Books"), 4, 2), 2);
+        const QVariantList found = LibraryFinder::search({home + QStringLiteral("/Books")}, {}, home);
+        QCOMPARE(found.size(), 1);
+        QCOMPARE(found.first().toMap().value(QStringLiteral("count")).toInt(), 3);
+        QCOMPARE(found.first().toMap().value(QStringLiteral("epubCount")).toInt(), 2);
+        QCOMPARE(found.first().toMap().value(QStringLiteral("pdfCount")).toInt(), 1);
+
+        // 4. LibraryIndex::search(query, limit, bookId) scoping.
+        const QString idxPath = dir.filePath("scoped-index.sqlite");
+        LibraryIndex index(idxPath);
+        if (index.available()) {
+            const QString epub1 = dir.filePath("s1.epub");
+            const QString epub2 = dir.filePath("s2.epub");
+            auto simpleEpub = [](const QByteArray &title, const QByteArray &body) {
+                return TestBooks::epub({
+                    {"OEBPS/content.opf",
+                     "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+                     "<package version=\"2.0\" xmlns=\"http://www.idpf.org/opf\">"
+                     "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>" + title + "</dc:title></metadata>"
+                     "<manifest><item id=\"c\" href=\"c.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>"
+                     "<spine><itemref idref=\"c\"/></spine></package>"},
+                    {"OEBPS/c.xhtml", TestBooks::chapter(title, body)},
+                });
+            };
+            QVERIFY(TestBooks::write(epub1, simpleEpub("One", "<p>The brass compass pointed toward the lighthouse.</p>")));
+            QVERIFY(TestBooks::write(epub2, simpleEpub("Two", "<p>Another brass compass lay upon the wooden chart.</p>")));
+            QVERIFY(LibraryIndex::indexBook(idxPath, {11, epub1, QStringLiteral("epub"), 100}));
+            QVERIFY(LibraryIndex::indexBook(idxPath, {22, epub2, QStringLiteral("epub"), 100}));
+
+            const QVariantList allHits = index.search(QStringLiteral("compass"), 8);
+            QCOMPARE(allHits.size(), 2);
+            const QVariantList only11 = index.search(QStringLiteral("compass"), 8, 11);
+            QCOMPARE(only11.size(), 1);
+            QCOMPARE(only11.first().toMap().value(QStringLiteral("bookId")).toInt(), 11);
+            const QVariantList only22 = index.search(QStringLiteral("compass"), 8, 22);
+            QCOMPARE(only22.size(), 1);
+            QCOMPARE(only22.first().toMap().value(QStringLiteral("bookId")).toInt(), 22);
+            QVERIFY(index.search(QStringLiteral("compass"), 8, 999).isEmpty());
+        }
+    }
+
+    void wave2ReaderBookPagesPreviousOpenedAtAndSurfaceProtections() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath("pages.epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+
+        // Build a 4-page PDF for PDF bookPageStart/bookPageEnd/previousOpenedAt tests.
+        const QString pdfPath = dir.filePath("four.pdf");
+        {
+            QPdfWriter writer(pdfPath);
+            writer.setPageSize(QPageSize(QPageSize::A5));
+            writer.setResolution(72);
+            QPainter painter(&writer);
+            for (int p = 0; p < 4; ++p) {
+                if (p > 0)
+                    writer.newPage();
+                painter.drawText(QPointF(30, 60), QStringLiteral("PDF page %1 content.").arg(p + 1));
+            }
+        }
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int epubId = library.addBookFile(epubPath);
+        const int pdfId = library.addBookFile(pdfPath);
+        QVERIFY(epubId > 0 && pdfId > 0);
+        // 6600 total chars / 1650 chars-per-page = 4 estimated book pages.
+        library.setChapterLengths(epubId, {3300, 3300});
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QCOMPARE(reader.paragraphSpacing(), 0.0);
+
+        // Fresh EPUB open: previousOpenedAt == 0, then markOpened sets openedAt > 0.
+        QVERIFY(reader.openBook(epubId));
+        QCOMPARE(reader.previousOpenedAt(), qint64(0));
+        QVERIFY(library.record(epubId).openedAt > 0);
+
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"page", 0}, {"pages", 2}, {"columns", 1}});
+        QCOMPARE(reader.visibleColumns(), 1);
+        QCOMPARE(reader.bookPages(), 4);
+        QCOMPARE(reader.bookPageStart(), 1);
+        QCOMPARE(reader.bookPageEnd(), 1);
+
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"page", 0}, {"pages", 1}, {"columns", 2}});
+        QCOMPARE(reader.visibleColumns(), 2);
+        QCOMPARE(reader.bookPageStart(), 1);
+        QCOMPARE(reader.bookPageEnd(), 2);
+
+        reader.relocated({{"chapter", 1}, {"offset", 1650}, {"page", 0}, {"pages", 1}, {"columns", 2}, {"atEnd", true}});
+        QCOMPARE(reader.bookPageStart(), 3);
+        QCOMPARE(reader.bookPageEnd(), 4);
+
+        reader.close();
+        QCOMPARE(reader.previousOpenedAt(), qint64(0));
+        QCOMPARE(reader.bookPages(), 1);
+        QCOMPARE(reader.visibleColumns(), 1);
+
+        // Seed past opened_at timestamps and verify previousOpenedAt captures them BEFORE markOpened().
+        {
+            QSqlQuery q(library.database());
+            QVERIFY(q.exec(QStringLiteral("UPDATE books SET opened_at = 1700000123 WHERE id = %1").arg(epubId)));
+            QVERIFY(q.exec(QStringLiteral("UPDATE books SET opened_at = 1700000456 WHERE id = %1").arg(pdfId)));
+        }
+        Library reopened(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(reopened.open());
+        Reader reader2(&reopened, &scheme);
+
+        QVERIFY(reader2.openBook(epubId));
+        QCOMPARE(reader2.previousOpenedAt(), qint64(1700000123));
+        QVERIFY(reopened.record(epubId).openedAt > 1700000123);
+        reader2.close();
+
+        QVERIFY(reader2.openBook(pdfId));
+        QCOMPARE(reader2.previousOpenedAt(), qint64(1700000456));
+        QVERIFY(reopened.record(pdfId).openedAt > 1700000456);
+        reader2.relocated({{"chapter", 1}, {"offset", 0}, {"page", 1}, {"pages", 4}, {"columns", 1}});
+        QCOMPARE(reader2.bookPages(), 4);
+        QCOMPARE(reader2.bookPageStart(), 2);
+        QCOMPARE(reader2.bookPageEnd(), 2);
+        reader2.relocated({{"chapter", 1}, {"offset", 0}, {"page", 1}, {"pages", 4}, {"columns", 2}, {"visiblePageEnd", 2}});
+        QCOMPARE(reader2.visibleColumns(), 2);
+        QCOMPARE(reader2.bookPageStart(), 2);
+        QCOMPARE(reader2.bookPageEnd(), 3);
+        reader2.close();
+
+        // reader.js Node VM test: singleColumn docking, dg-spoken dimming/clearing, and 2-column bleed containment.
+        const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
+        if (node.isEmpty())
+            QSKIP("node executable not available");
+        const QString readerJsPath = QFINDTESTDATA("../src/reader.js");
+        const QString harness = QStringLiteral(R"JS(
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+let domReady = null;
+
+function makeStyle() {
+    const props = {};
+    return {
+        props, cssText: '', opacity: '', transform: '', backgroundColor: '',
+        left: '', top: '', width: '', height: '',
+        setProperty(k, v, prio) { this[k] = v; props[k] = { value: v, prio: prio || '' }; },
+    };
+}
+
+const stageEl = {
+    clientWidth: 1400, clientHeight: 800,
+    addEventListener() {},
+    getBoundingClientRect() { return { left: 0, top: 0, width: this.clientWidth, height: this.clientHeight }; },
+};
+
+const styleNodes = new Map();
+const textNode = { nodeType: 3, data: 'Filmer worked in Shoreditch and Dymchurch on his machine.', parentElement: null };
+const nowrapP = { localName: 'p', _ws: 'nowrap', style: makeStyle() };
+const preDiv = { localName: 'div', _ws: 'pre', style: makeStyle() };
+const tableCell = { localName: 'td', _ws: 'nowrap', style: makeStyle() };
+const preEl = { localName: 'pre', _ws: 'pre', style: makeStyle() };
+const bodyEl = {
+    childNodes: [textNode],
+    lastElementChild: {
+        getClientRects() { return [{ left: 0, right: 600, top: 0, bottom: 24, width: 600, height: 24 }]; },
+        getBoundingClientRect() { return { left: 0, right: 600, top: 0, bottom: 24, width: 600, height: 24 }; },
+    },
+};
+textNode.parentElement = bodyEl;
+
+const chapterDocEl = {
+    style: makeStyle(), scrollWidth: 1400, scrollHeight: 692, scrollLeft: 0, scrollTop: 0,
+    scrollTo(opts) {
+        if (opts && typeof opts.left === 'number') this.scrollLeft = opts.left;
+        if (opts && typeof opts.top === 'number') this.scrollTop = opts.top;
+    },
+    appendChild() {},
+};
+
+const highlights = new Map();
+const chapterDoc = {
+    URL: 'dogear://book/1/ch1.xhtml',
+    documentElement: chapterDocEl,
+    head: { appendChild(el) { styleNodes.set(el.id, el); } },
+    body: bodyEl,
+    scrollingElement: chapterDocEl,
+    fonts: { ready: Promise.resolve() },
+    images: [],
+    defaultView: {
+        getComputedStyle(el) {
+            return { writingMode: 'horizontal-tb', direction: 'ltr', textAlign: 'start',
+                     whiteSpace: (el && el._ws) || 'normal' };
+        },
+        CSS: { highlights },
+        Highlight: class { constructor(...ranges) { this.ranges = ranges; this.priority = 0; } },
+    },
+    getElementById(id) { return styleNodes.get(id) || null; },
+    createElementNS(_ns, tag) { return { localName: tag, id: '', textContent: '', style: makeStyle() }; },
+    querySelector() { return null; },
+    querySelectorAll(sel) {
+        if (sel === 'body *') return [nowrapP, preDiv, tableCell, preEl];
+        return [];
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    createTreeWalker() {
+        let done = false;
+        return { nextNode() { if (done) return null; done = true; return textNode; } };
+    },
+    createRange() {
+        return {
+            start: 0, end: 0,
+            selectNodeContents() {},
+            setStart(_n, o) { this.start = o; },
+            setEnd(_n, o) { this.end = o; },
+            getClientRects() { return [{ left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }]; },
+            getBoundingClientRect() { return { left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }; },
+        };
+    },
+    getSelection() { return { isCollapsed: true, removeAllRanges() {} }; },
+};
+
+const classes = new Set();
+const frameEl = {
+    style: makeStyle(),
+    classList: { add(c) { classes.add(c); }, remove(c) { classes.delete(c); }, contains(c) { return classes.has(c); } },
+    contentDocument: chapterDoc,
+    contentWindow: chapterDoc.defaultView,
+    onload: null,
+    _src: '',
+    set src(v) { this._src = v; if (typeof this.onload === 'function') queueMicrotask(() => this.onload()); },
+    get src() { return this._src; },
+    getBoundingClientRect() { return { left: 0, top: 54, width: 1200, height: 692 }; },
+};
+
+const overlayEl = { appendChild() {} };
+const docEl = { style: makeStyle() };
+const documentMock = {
+    documentElement: docEl,
+    body: { appendChild(el) { return el; } },
+    getElementById(id) {
+        if (id === 'stage') return stageEl;
+        if (id === 'book') return frameEl;
+        if (id === 'overlay') return overlayEl;
+        return null;
+    },
+    createElement(tag) { return { tagName: tag.toUpperCase(), id: '', style: makeStyle(), setAttribute() {} }; },
+    addEventListener(type, fn) { if (type === 'DOMContentLoaded') domReady = fn; },
+};
+
+let lastLoc = null;
+const bridge = {
+    surfaceLoaded() {},
+    relocated(loc) { lastLoc = loc; },
+    log(msg) { throw new Error('reader.js log error: ' + msg); },
+};
+
+const sandbox = {
+    console, setTimeout, clearTimeout, performance, Promise, URL,
+    Node: { TEXT_NODE: 3 },
+    NodeFilter: { SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, FILTER_ACCEPT: 1, FILTER_REJECT: 2 },
+    CSS: { escape: s => s },
+    Hyphenation: { load: async () => false, node() {} },
+    document: documentMock,
+    window: { innerWidth: 1400, innerHeight: 800 },
+    qt: { webChannelTransport: {} },
+    QWebChannel: function(_t, cb) { cb({ objects: { bridge } }); },
+    ResizeObserver: class { observe() {} },
+    matchMedia: () => ({ matches: false }),
+    requestAnimationFrame: fn => { fn(performance.now()); return 1; },
+    fetch: async () => ({ ok: true, text: async () => '', headers: { get: () => '' } }),
+};
+sandbox.globalThis = sandbox;
+
+const ctx = vm.createContext(sandbox);
+const dogear = vm.runInContext(source + '\n;dogear;', ctx);
+domReady();
+
+(async () => {
+    const book = { session: 1, base: 'dogear://book/1/', language: 'en', rtl: false,
+                   spine: [{ href: 'ch1.xhtml', linear: true }], pageTargets: [] };
+    const baseStyle = {
+        theme: { bg: '#fbfaf6', fg: '#23221f', link: '#8a6a2a', accentInk: '#7a5a1a', muted: '#6f6b63',
+                 popover: '#fff', border: 'rgba(0,0,0,0.12)', selection: '#cde', search: '#ff0', found: '#fa0',
+                 markYellow: '#ff0', markGreen: '#0f0', markBlue: '#00f', markPink: '#f0f',
+                 speaking: '#eef', dark: false },
+        font: 'Literata', fontScale: 1.0, fontWeight: 400, lineHeight: 1.5, paragraphSpacing: 0.0,
+        margin: 0.06, measure: 34, justify: true, hyphenate: false, layout: 'double', singleColumn: false,
+        animate: false, publisher: false, marginTop: 54, marginBottom: 54, radius: 0,
+        listening: false, strings: { goToNote: 'Go', listenFromHere: 'Listen' },
+    };
+
+    await dogear.open(book, { chapter: 0, offset: 0 }, baseStyle);
+    assert.strictEqual(lastLoc.columns, 2, 'double layout on 1400px uses 2 columns');
+
+    // Verify 2-column horizontal bleed containment CSS & fitBlocks nowrap/pre neutralization.
+    const typoCss = styleNodes.get('dg-typography').textContent;
+    const layCss = styleNodes.get('dg-layout').textContent;
+    assert.ok(typoCss.includes('overflow-wrap: break-word'), 'typographyCss enables break-word');
+    assert.ok(typoCss.includes('text-wrap-mode: wrap !important'), 'typographyCss forces wrap mode');
+    assert.ok(typoCss.includes('nobr { white-space: normal !important; }'), 'typographyCss neutralizes nobr');
+    assert.ok(layCss.includes('column-span: none !important'), 'layoutCss blocks column-span');
+    assert.ok(layCss.includes('max-width: 100% !important'), 'layoutCss caps child max-width');
+    assert.ok(layCss.includes('overflow-x: clip'), 'layoutCss clips column horizontal overflow');
+    assert.deepStrictEqual(nowrapP.style.props['white-space'], { value: 'normal', prio: 'important' });
+    assert.deepStrictEqual(preDiv.style.props['white-space'], { value: 'pre-wrap', prio: 'important' });
+    assert.strictEqual(tableCell.style.props['white-space'], undefined, 'table cells untouched');
+    assert.strictEqual(preEl.style.props['white-space'], undefined, 'pre blocks handled by CSS');
+
+    // Companion docked seam: singleColumn forces 1 column even in layout=double, then restores 2.
+    await dogear.setStyle({ ...baseStyle, singleColumn: true });
+    assert.strictEqual(lastLoc.columns, 1, 'singleColumn forces 1 column');
+    await dogear.setStyle({ ...baseStyle, singleColumn: false });
+    assert.strictEqual(lastLoc.columns, 2, 'clearing singleColumn restores 2 columns');
+
+    // dg-spoken dims prior text [0, start) at priority 0 < marks (1) < dg-speaking (2) < dg-search (3) < dg-found (4).
+    dogear.highlight('dg-mark-yellow', [{ start: 0, end: 6 }]);
+    dogear.found([{ start: 7, end: 13 }], { start: 7, end: 13 });
+    dogear.speak(15, 28, false);
+    assert.ok(highlights.has('dg-spoken'), 'dg-spoken added for start > 0');
+    assert.ok(highlights.has('dg-speaking'), 'dg-speaking added');
+    assert.strictEqual(highlights.get('dg-spoken').priority, 0);
+    assert.strictEqual(highlights.get('dg-mark-yellow').priority, 1);
+    assert.strictEqual(highlights.get('dg-speaking').priority, 2);
+    assert.strictEqual(highlights.get('dg-search').priority, 3);
+    assert.strictEqual(highlights.get('dg-found').priority, 4);
+    assert.strictEqual(highlights.get('dg-spoken').ranges[0].start, 0);
+    assert.strictEqual(highlights.get('dg-spoken').ranges[0].end, 15);
+
+    // Clearing dg-speaking automatically clears dg-spoken as well.
+    dogear.highlight('dg-speaking', []);
+    assert.ok(!highlights.has('dg-speaking'));
+    assert.ok(!highlights.has('dg-spoken'), 'dg-spoken cleared when dg-speaking clears');
+
+    // Speaking at offset 0 creates no dg-spoken range.
+    dogear.speak(0, 6, false);
+    assert.ok(highlights.has('dg-speaking'));
+    assert.ok(!highlights.has('dg-spoken'));
+    process.exit(0);
+})().catch(err => { console.error(err); process.exit(1); });
+)JS");
+        QProcess proc;
+        proc.start(node, {QStringLiteral("-e"), harness, readerJsPath});
+        QVERIFY2(proc.waitForFinished(10000), "node wave2 reader.js harness timed out");
+        const QByteArray stderrOut = proc.readAllStandardError();
+        QVERIFY2(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
+                 stderrOut.isEmpty() ? "node wave2 reader.js harness failed" : stderrOut.constData());
+    }
+
+    void wave2NarrationScrubberVoiceAccentAndAudioBadgesPersistence() {
+        // 1. VoicePacks::accentFor + curated note/suggested/accent search.
+        QCOMPARE(VoicePacks::accentFor(QStringLiteral("en-GB")), QStringLiteral("British"));
+        QCOMPARE(VoicePacks::accentFor(QStringLiteral("en-US")), QStringLiteral("American"));
+        QCOMPARE(VoicePacks::accentFor(QStringLiteral("en-AU")), QStringLiteral("Australian"));
+        QCOMPARE(VoicePacks::accentFor(QStringLiteral("pt-BR")), QStringLiteral("Brazilian"));
+        QCOMPARE(VoicePacks::accentFor(QStringLiteral("fr-CA")), QStringLiteral("Canadian French"));
+        QCOMPARE(VoicePacks::accentFor(QStringLiteral("en-GB"), QStringLiteral("builtin:piper:en_GB-alba-medium")),
+                 QStringLiteral("Scottish"));
+
+        QTemporaryDir dir;
+        VoicePacks packs(dir.filePath("voices"), nullptr, QStringLiteral("aarch64"), packsManifest("http://x"));
+        const QVariantMap heart = packs.voice(QStringLiteral("builtin:kokoro:af_heart"));
+        QCOMPARE(heart.value(QStringLiteral("accent")).toString(), QStringLiteral("American"));
+        QCOMPARE(heart.value(QStringLiteral("note")).toString(), QStringLiteral("clear, friendly"));
+        QCOMPARE(heart.value(QStringLiteral("suggested")).toBool(), true);
+        QVERIFY(!packs.searchVoices(QStringLiteral("British")).isEmpty());
+        QVERIFY(!packs.searchVoices(QStringLiteral("friendly")).isEmpty());
+
+        // 2. Narration: positionUs, durationUs, timeChanged, seekToUs, voiceAccent.
+        const QString epubPath = dir.filePath("audio.epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+        AudioCache cache(dir.filePath("audio"), library.database().connectionName());
+
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        QCOMPARE(narration.voiceAccent(), QStringLiteral("British"));
+        narration.setVoice(QStringLiteral("builtin:kokoro:af_heart"), QStringLiteral("Heart"));
+        QCOMPARE(narration.voiceAccent(), QStringLiteral("American"));
+        narration.setVoice(QStringLiteral("sulafat"), QStringLiteral("Sulafat"));
+        QCOMPARE(narration.voiceAccent(), QStringLiteral("Warm"));
+        narration.setVoice(QStringLiteral("studio:v1"), QStringLiteral("Studio 1"));
+        QCOMPARE(narration.voiceAccent(), QStringLiteral("Studio"));
+
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        QSignalSpy timeSpy(&narration, &Narration::timeChanged);
+        narration.start(0, 0);
+        QJsonArray arr;
+        qint64 off = 0;
+        for (int i = 0; i < 2; ++i) {
+            const QString para = QStringLiteral("Paragraph %1 sentence one. ").arg(i) + QString(700, QLatin1Char('b')) + QLatin1Char('.');
+            arr.append(QJsonObject{{"start", double(off)}, {"end", double(off + para.size())}, {"text", para}, {"kind", "text"}});
+            off += para.size() + 1;
+        }
+        narration.addBlocks(0, QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+        QTRY_VERIFY_WITH_TIMEOUT(narration.m_clips.size() == 2 &&
+                                     narration.m_clips[0].state == Narration::Clip::Complete &&
+                                     narration.m_clips[1].state == Narration::Clip::Complete,
+                                 5000);
+        QVERIFY(timeSpy.count() >= 1);
+
+        // Pin both clips to exact 10s (240,000 samples @ 24kHz) -> 20,000,000 us total duration.
+        for (int i = 0; i < 2; ++i) {
+            narration.m_clips[i].pcm = QByteArray(240000 * 2, '\0');
+            narration.m_clips[i].samples = 240000;
+        }
+        narration.heard(narration.m_clips[0].id, 0);
+        QCOMPARE(narration.durationUs(), qint64(20000000));
+        QCOMPARE(narration.positionUs(), qint64(0));
+
+        const int beforeSeek = timeSpy.count();
+        narration.seekToUs(12500000);  // 12.5s -> clip 1 @ 2.5s (60,000 samples)
+        QCOMPARE(narration.m_current, 1);
+        QCOMPARE(narration.m_currentSample, qint64(60000));
+        QCOMPARE(narration.positionUs(), qint64(12500000));
+        QVERIFY(timeSpy.count() > beforeSeek);
+
+        // heard() across a whole-second boundary emits timeChanged.
+        const int beforeHeard = timeSpy.count();
+        narration.heard(narration.m_clips[1].id, 96000);  // 14.0s
+        QCOMPARE(narration.positionUs(), qint64(14000000));
+        QVERIFY(timeSpy.count() > beforeHeard);
+
+        // setRate emits timeChanged while preserving 1.0x microsecond semantics.
+        const int beforeRate = timeSpy.count();
+        narration.setRate(1.5);
+        QVERIFY(timeSpy.count() > beforeRate);
+        QCOMPARE(narration.durationUs(), qint64(20000000));
+        narration.setRate(1.0);
+
+        const int beforeStop = timeSpy.count();
+        narration.stop();
+        QVERIFY(timeSpy.count() > beforeStop);
+        QCOMPARE(narration.positionUs(), qint64(0));
+
+        // 3. Download completion persists "audio_downloaded"="1" and Audiobook save persists "audiobook_saved"="1".
+        if (!QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty()) {
+            const QString musicDir = dir.filePath("music");
+            QVERIFY(QDir().mkpath(musicDir));
+            const QString userDirsPath = QString::fromUtf8(qgetenv("XDG_CONFIG_HOME")) + QStringLiteral("/user-dirs.dirs");
+            const bool hadUserDirs = QFile::exists(userDirsPath);
+            QByteArray prevUserDirs;
+            if (hadUserDirs) {
+                QFile f(userDirsPath);
+                if (f.open(QIODevice::ReadOnly))
+                    prevUserDirs = f.readAll();
+            }
+            auto restoreUserDirs = qScopeGuard([&] {
+                if (hadUserDirs)
+                    write(userDirsPath, prevUserDirs);
+                else
+                    QFile::remove(userDirsPath);
+            });
+            write(userDirsPath, QStringLiteral("XDG_MUSIC_DIR=\"%1\"\n").arg(musicDir).toUtf8());
+
+            Download dl(&services, &cache, &reader, &narration);
+            dl.start(0, 0);
+            dl.addBlocks(0, R"([{"start":0,"end":18,"text":"Opening test line.","kind":"text"}])");
+            QTRY_VERIFY_WITH_TIMEOUT(dl.finished(), 15000);
+            QCOMPARE(library.bookSetting(bookId, QStringLiteral("audio_downloaded")), QStringLiteral("1"));
+            QCOMPARE(library.shelfCounts().value(QStringLiteral("downloaded")).toInt(), 1);
+
+            Audiobook ab(&cache, &dl, &reader, &library);
+            ab.save();
+            QTRY_VERIFY_WITH_TIMEOUT(!ab.busy(), 15000);
+            QVERIFY2(ab.problem().isEmpty(), qPrintable(ab.problem()));
+            QCOMPARE(library.bookSetting(bookId, QStringLiteral("audiobook_saved")), QStringLiteral("1"));
+            QCOMPARE(library.shelfCounts().value(QStringLiteral("audiobooks")).toInt(), 1);
+        }
+    }
+
+    void wave2CompanionMigrationWhereLocalSuggestionsAiServicesAndSystemCheck() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath("comp.epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restoreAiSettings = qScopeGuard([&] {
+            QSettings(settingsPath, QSettings::IniFormat).remove(QStringLiteral("ai"));
+        });
+
+        // 1. Seed a legacy companion_threads table WITHOUT provenance / is_local columns to verify additive migration.
+        {
+            QSqlQuery q(library.database());
+            QVERIFY(q.exec(QStringLiteral(
+                "CREATE TABLE companion_threads ("
+                " id INTEGER PRIMARY KEY,"
+                " book_id INTEGER NOT NULL,"
+                " seq INTEGER NOT NULL,"
+                " from_user INTEGER NOT NULL,"
+                " text TEXT NOT NULL,"
+                " sources TEXT NOT NULL DEFAULT '[]',"
+                " created_at INTEGER NOT NULL)")));
+            QVERIFY(q.exec(QStringLiteral(
+                "INSERT INTO companion_threads (book_id, seq, from_user, text, sources, created_at) "
+                "VALUES (%1, 0, 1, 'Earlier question?', '[]', 100)").arg(bookId)));
+        }
+
+        FakeServer cloudServer;
+        FakeServer localServer;
+        GeminiProvider gemini(nullptr, cloudServer.endpoint());
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        services.setLocalModels(&local);
+
+        // 2. AiServices: routeFor("illustrate"), whereFor("illustrate"), friendlyModelTitle, localModelsSummary.
+        QCOMPARE(AiServices::friendlyModelTitle(QStringLiteral("qwen3.5:4b")), QStringLiteral("Qwen3.5 4B"));
+        QCOMPARE(AiServices::friendlyModelTitle(QStringLiteral("embeddinggemma:latest")), QStringLiteral("EmbeddingGemma"));
+        QCOMPARE(AiServices::friendlyModelTitle(QStringLiteral("custom:latest")), QStringLiteral("custom"));
+        QCOMPARE(services.routeFor(QStringLiteral("illustrate")), QString());
+
+        gemini.setKey(QStringLiteral("cloud-key"));
+        services.setPreset(QStringLiteral("cloud"));
+        QCOMPARE(services.routeFor(QStringLiteral("illustrate")), QStringLiteral("cloud"));
+        QVERIFY(services.whereFor(QStringLiteral("illustrate")).contains(QStringLiteral("Gemini")));
+        services.setOverride(QStringLiteral("illustrate"), QStringLiteral("local"));
+        QCOMPARE(services.routeFor(QStringLiteral("illustrate")), QString());
+        services.clearOverrides();
+        services.setPreset(QStringLiteral("local"));
+        QCOMPARE(services.routeFor(QStringLiteral("illustrate")), QString());
+        QVERIFY(services.whereFor(QStringLiteral("illustrate")).contains(QStringLiteral("Unavailable")));
+
+        LocalModels::Server where;
+        where.kind = LocalModels::Ollama;
+        where.url = QUrl(localServer.origin());
+        local.configure(where, QStringLiteral("qwen3.5:4b"), QStringLiteral("qwen3-embedding:0.6b"));
+        QCOMPARE(services.localModelsSummary(), QStringLiteral("Qwen3.5 4B · Qwen3-Embedding 0.6B"));
+
+        // 3. Companion additive migration check + local ask provenance + persistence + reload.
+        Companion companion(&services, &reader, library.database().connectionName());
+        {
+            QSqlQuery info(library.database());
+            QVERIFY(info.exec(QStringLiteral("PRAGMA table_info(companion_threads)")));
+            QSet<QString> cols;
+            while (info.next())
+                cols.insert(info.value(1).toString());
+            QVERIFY(cols.contains(QStringLiteral("provenance")));
+            QVERIFY(cols.contains(QStringLiteral("is_local")));
+        }
+        QCOMPARE(companion.conversation().size(), 1);
+        QCOMPARE(companion.conversation().first().toMap().value(QStringLiteral("provenance")).toString(), QString());
+        QCOMPARE(companion.conversation().first().toMap().value(QStringLiteral("local")).toBool(), false);
+
+        // Configure text-only local model for Ask so Companion uses word search (deterministic 1-request FakeServer).
+        local.configure(where, QStringLiteral("qwen3.5:4b"));
+        localServer.responses.append({200, "application/x-ndjson",
+                                      "{\"message\":{\"content\":\"The lamp shines by the sea.\"},\"done\":false}\n"
+                                      "{\"message\":{\"content\":\"\"},\"done\":true}\n"});
+        companion.ask(QStringLiteral("What shines by the sea?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QCOMPARE(companion.whereLocal(), true);
+        QCOMPARE(companion.conversation().size(), 3);
+        const QVariantMap localTurn = companion.conversation().last().toMap();
+        QVERIFY(localTurn.value(QStringLiteral("provenance")).toString().contains(QStringLiteral("On this computer")));
+        QCOMPARE(localTurn.value(QStringLiteral("local")).toBool(), true);
+        {
+            Companion reloaded(&services, &reader, library.database().connectionName());
+            QCOMPARE(reloaded.conversation().size(), 3);
+            QCOMPARE(reloaded.conversation().last().toMap().value(QStringLiteral("local")).toBool(), true);
+            QVERIFY(reloaded.conversation().last().toMap().value(QStringLiteral("provenance")).toString()
+                        .contains(QStringLiteral("On this computer")));
+        }
+
+        // 4. whereLocal == false on cloud Gemini reply, and whereLocal == true on offline sdcv Define even in Cloud mode.
+        services.setPreset(QStringLiteral("cloud"));
+        cloudServer.responses.append({200, "text/event-stream", fixture("text-stream.sse")});
+        companion.ask(QStringLiteral("Tell me more in cloud mode."));
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QCOMPARE(companion.whereLocal(), false);
+        QVERIFY(companion.conversation().last().toMap().value(QStringLiteral("provenance")).toString()
+                    .contains(QStringLiteral("Gemini")));
+        QCOMPARE(companion.conversation().last().toMap().value(QStringLiteral("local")).toBool(), false);
+
+        // Hermetic fake sdcv executable on PATH verifies offline dictionary sets whereLocal=true even in Cloud preset.
+        const QString fakeBin = dir.filePath("fake-bin");
+        QVERIFY(QDir().mkpath(fakeBin));
+        const QString sdcvPath = fakeBin + QStringLiteral("/sdcv");
+        write(sdcvPath, "#!/bin/sh\nprintf '[{\"word\":\"lamp\",\"dict\":\"LocalDict\",\"definition\":\"A vessel of light.\"}]'\n");
+        QVERIFY(QFile::setPermissions(sdcvPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner));
+        const QByteArray origPath = qgetenv("PATH");
+        auto restorePath = qScopeGuard([&] { qputenv("PATH", origPath); });
+        qputenv("PATH", fakeBin.toUtf8() + ":" + origPath);
+
+        companion.define(QStringLiteral("lamp"), 0, 4);
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QCOMPARE(companion.whereLocal(), true);
+        QCOMPARE(companion.where(), QStringLiteral("Dictionary on this computer"));
+        QVERIFY(companion.answer().contains(QStringLiteral("A vessel of light.")));
+
+        // 5. Spoiler-safe suggestions() uses loaded people + chapter title and skips already-asked prompts.
+        services.setPreset(QStringLiteral("local"));
+        companion.newConversation();
+        localServer.responses.append({200, "application/x-ndjson",
+                                      "{\"message\":{\"content\":\"{\\\"people\\\":[{\\\"name\\\":\\\"Ada Marsh\\\","
+                                      "\\\"also\\\":\\\"\\\",\\\"who\\\":\\\"Keeper.\\\",\\\"chapter\\\":\\\"Chapter One\\\"}]}\"},\"done\":true}\n"});
+        companion.whosWho();
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        const QStringList firstSuggestions = companion.suggestions();
+        QCOMPARE(firstSuggestions.size(), 2);
+        QCOMPARE(firstSuggestions[0], QStringLiteral("Who is Ada Marsh?"));
+        QVERIFY(firstSuggestions[1].contains(QStringLiteral("Chapter One")));
+
+        // After asking about Ada Marsh, suggestions() skips that character and rotates cleanly.
+        localServer.responses.append({200, "application/x-ndjson",
+                                      "{\"message\":{\"content\":\"She tends the lantern.\"},\"done\":true}\n"});
+        companion.ask(QStringLiteral("Who is Ada Marsh?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        const QStringList nextSuggestions = companion.suggestions();
+        QCOMPARE(nextSuggestions.size(), 2);
+        QVERIFY(!nextSuggestions.contains(QStringLiteral("Who is Ada Marsh?")));
+
+        // 6. SystemCheck::summaryVerdicts populates 3 rows on refresh() and live-updates on routing changes.
+        LocalModels freshLocal;
+        AiServices checkAi(&gemini, &keys, library.database().connectionName());
+        checkAi.setLocalModels(&freshLocal);
+        SystemCheck check(&checkAi, nullptr);
+        check.refresh();
+        QTRY_COMPARE_WITH_TIMEOUT(check.summaryVerdicts().size(), 3, 5000);
+        QCOMPARE(check.summaryVerdicts()[0].toMap().value(QStringLiteral("feature")).toString(), QStringLiteral("Narration"));
+        QCOMPARE(check.summaryVerdicts()[1].toMap().value(QStringLiteral("feature")).toString(), QStringLiteral("Define, translate"));
+        QCOMPARE(check.summaryVerdicts()[2].toMap().value(QStringLiteral("feature")).toString(), QStringLiteral("Ask the whole book"));
+
+        QSignalSpy checkSpy(&check, &SystemCheck::changed);
+        freshLocal.configure(where, QStringLiteral("qwen3.5:4b"));
+        emit checkAi.routingChanged();
+        QTRY_VERIFY_WITH_TIMEOUT(checkSpy.count() >= 1, 2000);
+        QCOMPARE(check.summaryVerdicts()[1].toMap().value(QStringLiteral("detail")).toString(), QStringLiteral("a few seconds"));
+    }
+
+    void wave2QmlComponentsCompileCleanlyAndListColumnsAligned() {
+        QQmlEngine engine;
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QVERIFY(QFileInfo::exists(srcRoot));
+        engine.addImportPath(srcRoot + QStringLiteral("/style"));
+
+        QStringList qmlFiles;
+        for (const QString &name : QDir(srcRoot).entryList({QStringLiteral("*.qml")}, QDir::Files, QDir::Name))
+            qmlFiles.append(srcRoot + QLatin1Char('/') + name);
+        const QString styleRoot = srcRoot + QStringLiteral("/style/Dogear");
+        for (const QString &name : QDir(styleRoot).entryList({QStringLiteral("*.qml")}, QDir::Files, QDir::Name))
+            qmlFiles.append(styleRoot + QLatin1Char('/') + name);
+
+        QVERIFY2(qmlFiles.size() >= 65, qPrintable(QString::number(qmlFiles.size())));
+        QStringList failures;
+        for (const QString &file : qmlFiles) {
+            QQmlComponent component(&engine, QUrl::fromLocalFile(file));
+            if (component.isError() || component.status() != QQmlComponent::Ready)
+                failures.append(QFileInfo(file).fileName() + QStringLiteral(": ") + component.errorString().trimmed());
+        }
+        QVERIFY2(failures.isEmpty(), qPrintable(failures.join(QLatin1Char('\n'))));
+
+        // Regression check for All Books list mode column alignment in LibraryView.qml.
+        QFile listFile(srcRoot + QStringLiteral("/LibraryView.qml"));
+        QVERIFY(listFile.open(QIODevice::ReadOnly));
+        const QString qml = QString::fromUtf8(listFile.readAll());
+        QVERIFY(qml.contains(QStringLiteral("Layout.preferredWidth: 48")));
+        QVERIFY(qml.contains(QStringLiteral("Layout.minimumWidth: 48")));
+        QVERIFY(qml.contains(QStringLiteral("Layout.maximumWidth: 48")));
+        QVERIFY(qml.contains(QStringLiteral("Layout.preferredWidth: 112")));
+        QVERIFY(qml.contains(QStringLiteral("Layout.minimumWidth: 112")));
+        QVERIFY(qml.contains(QStringLiteral("Layout.maximumWidth: 112")));
+        QVERIFY(qml.contains(QStringLiteral("Layout.preferredWidth: 0")));
+        QVERIFY(qml.contains(QStringLiteral("Layout.minimumWidth: 0")));
+    }
 };
 
 int main(int argc, char *argv[]) {
@@ -6087,6 +6899,7 @@ int main(int argc, char *argv[]) {
     QGuiApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("dogear"));
     app.setAttribute(Qt::AA_Use96Dpi, true);
+    QQuickStyle::setStyle(QStringLiteral("Dogear"));
     QTEST_SET_MAIN_SOURCE_PATH
     DogearTests tc;
     return QTest::qExec(&tc, argc, argv);

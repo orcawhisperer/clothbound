@@ -783,7 +783,10 @@ FocusScope {
 
                 CoverImage {
                     Layout.preferredWidth: 36
+                    Layout.minimumWidth: 36
+                    Layout.maximumWidth: 36
                     Layout.preferredHeight: 52
+                    Layout.alignment: Qt.AlignVCenter
                     source: listRow.cover
                     title: listRow.title
                     author: listRow.author
@@ -791,13 +794,20 @@ FocusScope {
 
                 ColumnLayout {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.preferredWidth: 0
+                    Layout.alignment: Qt.AlignVCenter
                     spacing: 2
 
                     RowLayout {
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.preferredWidth: 0
                         spacing: 8
                         Label {
                             Layout.fillWidth: true
+                            Layout.minimumWidth: 0
+                            Layout.preferredWidth: 0
                             text: listRow.title
                             textFormat: Text.PlainText
                             color: listRow.problem !== "" ? theme.ink3 : theme.ink1
@@ -807,10 +817,12 @@ FocusScope {
                         }
                         Label {
                             visible: listRow.series !== ""
+                            Layout.maximumWidth: 180
                             text: listRow.seriesIndex > 0
                                 ? (listRow.series + " #" + (Math.floor(listRow.seriesIndex) === listRow.seriesIndex ? Math.floor(listRow.seriesIndex) : listRow.seriesIndex))
                                 : listRow.series
                             textFormat: Text.PlainText
+                            elide: Text.ElideRight
                             color: theme.accentInk
                             font.pixelSize: 11
                             leftPadding: 7
@@ -826,6 +838,8 @@ FocusScope {
 
                     Label {
                         Layout.fillWidth: true
+                        Layout.minimumWidth: 0
+                        Layout.preferredWidth: 0
                         text: {
                             if (listRow.problem !== "")
                                 return listRow.problem
@@ -845,8 +859,13 @@ FocusScope {
                     }
                 }
 
-                // Format badge
+                // Format badge (fixed-width column so EPUB / PDF align across all rows)
                 Label {
+                    Layout.preferredWidth: 48
+                    Layout.minimumWidth: 48
+                    Layout.maximumWidth: 48
+                    Layout.alignment: Qt.AlignVCenter
+                    horizontalAlignment: Text.AlignHCenter
                     text: listRow.format.toUpperCase()
                     color: theme.ink3
                     font.pixelSize: 10
@@ -865,6 +884,9 @@ FocusScope {
                 // Progress / status column
                 ColumnLayout {
                     Layout.preferredWidth: 112
+                    Layout.minimumWidth: 112
+                    Layout.maximumWidth: 112
+                    Layout.alignment: Qt.AlignVCenter
                     spacing: 4
 
                     RowLayout {

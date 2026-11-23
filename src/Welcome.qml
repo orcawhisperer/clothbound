@@ -115,14 +115,23 @@ FocusScope {
             NumberAnimation { duration: 180; easing.type: Easing.OutQuart }
         }
 
-        // Shadow (0 30px 90px rgba(0,0,0,0.55)).
-        Rectangle {
-            anchors.fill: parent
-            anchors.topMargin: 18
-            anchors.margins: -8
-            radius: card.radius > 0 ? card.radius + 8 : 0
-            color: theme.shadow
-            opacity: 0.55
+        // Soft layered modal shadow (works identically in rounded and sharp modes).
+        Repeater {
+            model: [
+                { spread: 2, yOff: 4, alpha: 0.28 },
+                { spread: 6, yOff: 9, alpha: 0.16 },
+                { spread: 12, yOff: 15, alpha: 0.08 }
+            ]
+            Rectangle {
+                required property var modelData
+                x: -modelData.spread
+                y: modelData.yOff
+                width: frame.width + modelData.spread * 2
+                height: frame.height + modelData.spread
+                radius: card.radius > 0 ? card.radius + modelData.spread : 0
+                color: theme.shadow
+                opacity: modelData.alpha
+            }
         }
 
         Rectangle {

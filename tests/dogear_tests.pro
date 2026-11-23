@@ -1,4 +1,4 @@
-QT += core gui quick quickcontrols2 testlib dbus sql concurrent network multimedia pdf webenginecore
+QT += core gui qml quick quickcontrols2 testlib dbus sql concurrent network multimedia pdf webenginecore webenginequick webchannel
 CONFIG += c++20 testcase
 TARGET = dogear_tests
 TEMPLATE = app

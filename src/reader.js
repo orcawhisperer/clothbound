@@ -151,6 +151,12 @@ const dogear = (() => {
                        box-sizing: border-box !important; margin: 0 !important; padding: 0 ${g.gap / 2}px !important;
                        column-count: ${g.columns} !important; column-width: auto !important;
                        column-gap: ${g.gap}px !important; column-fill: auto !important; overflow: hidden !important; }
+                body * { column-span: none !important; }
+                p, li, dd, dt, blockquote, div, section, article, aside, header, footer, main, nav, figure, figcaption,
+                h1, h2, h3, h4, h5, h6 {
+                    max-width: 100% !important; min-width: 0; box-sizing: border-box;
+                    overflow-x: clip; overflow-clip-margin: 4px;
+                }
                 img, svg, video, object, embed { max-height: ${g.height - 6}px !important; }`
     }
 
@@ -204,7 +210,12 @@ html { background: ${t.bg} !important; color: ${t.fg} !important; font-size: ${s
        -webkit-text-size-adjust: none; text-rendering: optimizeLegibility; font-kerning: normal;
        font-variant-ligatures: common-ligatures; font-optical-sizing: auto; }
 body { margin: 0 !important; padding: 0 !important; width: auto !important; max-width: none !important;
-       min-height: 0 !important; height: auto !important; background: transparent !important; }
+       min-height: 0 !important; height: auto !important; background: transparent !important;
+       overflow-wrap: break-word; }
+body, body :not(table):not(thead):not(tbody):not(tfoot):not(tr):not(td):not(th) {
+    text-wrap-mode: wrap !important;
+}
+nobr { white-space: normal !important; }
 ${colorRules}
 a, a * { color: ${t.link} !important; }
 a { text-decoration: none !important; }
@@ -286,11 +297,28 @@ ${literaryIndent}
     }
 
     // Prevent tall <pre>/<table>/<figure> blocks from clipping off multi-column
-    // pages and let overly wide tables scroll horizontally. Batches all layout
-    // reads before attribute writes to avoid reflow thrashing.
+    // pages, let overly wide tables scroll horizontally, and force any author
+    // nowrap/pre inline or block styles to wrap inside the column. Batches all
+    // layout reads before DOM writes to avoid reflow thrashing.
     function fitBlocks(doc, g) {
         if (!doc || !g)
             return
+        const view = doc.defaultView
+        if (view && !g.scroll && !g.vertical) {
+            const nowrapFixes = []
+            for (const el of doc.querySelectorAll('body *')) {
+                const tag = el.localName
+                if (tag === 'table' || tag === 'thead' || tag === 'tbody' || tag === 'tfoot' || tag === 'tr' || tag === 'td' || tag === 'th' || tag === 'pre')
+                    continue
+                const ws = view.getComputedStyle(el).whiteSpace
+                if (ws === 'nowrap')
+                    nowrapFixes.push([el, 'normal'])
+                else if (ws === 'pre')
+                    nowrapFixes.push([el, 'pre-wrap'])
+            }
+            for (const [el, mode] of nowrapFixes)
+                el.style.setProperty('white-space', mode, 'important')
+        }
         const blocks = [...doc.querySelectorAll('pre, table, figure')]
         if (!blocks.length)
             return

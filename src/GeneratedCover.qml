@@ -35,10 +35,10 @@ Rectangle {
     color: cloth
     clip: true
 
-    // Top-aligned title in Literata.
+    // Top-aligned title in Literata (clears top corner badges on library cards).
     Text {
         anchors.top: parent.top
-        anchors.topMargin: generated.padY
+        anchors.topMargin: generated.tiny ? generated.padY : Math.min(32, Math.max(generated.padY, Math.round(generated.height * 0.145)))
         anchors.left: parent.left
         anchors.leftMargin: generated.padX + 2
         anchors.right: parent.right
