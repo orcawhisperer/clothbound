@@ -368,3 +368,5 @@ QString Reader::passageFrom(int chapter, int maxChars) const {
     }
     return text.trimmed();
 }
+
+QString Reader::bookPath() const { return m_book ? m_book->filePath() : QString(); }

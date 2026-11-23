@@ -20,6 +20,7 @@ HEADERS += \
     src/bookname.h \
     src/bookrecord.h \
     src/bookscheme.h \
+    src/booksearch.h \
     src/cli.h \
     src/epubbook.h \
     src/filepicker.h \
@@ -51,6 +52,7 @@ SOURCES += \
     src/bookinfo.cpp \
     src/bookname.cpp \
     src/bookscheme.cpp \
+    src/booksearch.cpp \
     src/cli.cpp \
     src/epubbook.cpp \
     src/gemini.cpp \

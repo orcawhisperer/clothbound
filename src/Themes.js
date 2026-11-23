@@ -30,7 +30,8 @@ function palette(id, theme) {
               popover: theme.surface, dark: !theme.light }
     p.id = order.indexOf(id) >= 0 ? id : "omarchy"
     p.selection = css(tint(p.link, p.dark ? 0.38 : 0.26))
-    p.search = css(tint(p.dark ? "#f5c542" : "#ffcc00", p.dark ? 0.42 : 0.5))
+    p.search = css(tint(p.dark ? "#f5c542" : "#ffcc00", p.dark ? 0.32 : 0.4))
+    p.found = css(tint(p.dark ? "#ff9f0a" : "#ff8c00", p.dark ? 0.7 : 0.6))
     p.speaking = css(tint(p.link, p.dark ? 0.26 : 0.18))
     p.border = css(tint(p.fg, 0.14))
     return p

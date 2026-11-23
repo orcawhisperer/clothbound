@@ -114,6 +114,7 @@ a, a * { color: ${t.link} !important; }
 a { text-decoration: none !important; }
 ::selection { background: ${t.selection}; }
 ::highlight(dg-search) { background-color: ${t.search}; }
+::highlight(dg-found) { background-color: ${t.found}; }
 ::highlight(dg-speaking) { background-color: ${t.speaking}; }
 img, svg, video { max-width: 100% !important; object-fit: contain; break-inside: avoid; }
 img { height: auto; }
@@ -1108,10 +1109,20 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             if (!state.index || !view || !view.CSS || !view.CSS.highlights)
                 return
             const ranges = (spans || []).map(span => rangeFor(span.start, span.end)).filter(Boolean)
-            if (ranges.length)
-                view.CSS.highlights.set(name, new view.Highlight(...ranges))
-            else
+            if (ranges.length) {
+                const highlight = new view.Highlight(...ranges)
+                // The hit gone to shows over the others, and over the voice.
+                highlight.priority = name === 'dg-found' ? 2 : name === 'dg-speaking' ? 1 : 0
+                view.CSS.highlights.set(name, highlight)
+            } else {
                 view.CSS.highlights.delete(name)
+            }
+        },
+
+        // Search hits in the chapter shown, and the one gone to.
+        found(spans, current) {
+            api.highlight('dg-search', spans)
+            api.highlight('dg-found', current ? [current] : [])
         },
 
         // The blocks to read aloud from a chapter, reported to the bridge

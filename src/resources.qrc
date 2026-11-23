@@ -4,6 +4,7 @@
         <file alias="LibraryView.qml">LibraryView.qml</file>
         <file alias="ListenBar.qml">ListenBar.qml</file>
         <file alias="VoicePanel.qml">VoicePanel.qml</file>
+        <file alias="SearchBar.qml">SearchBar.qml</file>
         <file alias="BookCard.qml">BookCard.qml</file>
         <file alias="BookDetails.qml">BookDetails.qml</file>
         <file alias="ContinueShelf.qml">ContinueShelf.qml</file>

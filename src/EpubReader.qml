@@ -19,7 +19,8 @@ FocusScope {
     readonly property var look: Themes.palette(settings.theme, theme)
     // For driving the panel from outside (and from tests).
     readonly property alias voicePanel: voicePanel
-    readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open
+    readonly property alias searchBar: searchBar
+    readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
     property bool chromeShown: false
     property bool surfaceReady: false
     property bool listening: false
@@ -92,10 +93,16 @@ FocusScope {
         appearance.close()
         goTo.close()
         voicePanel.close()
+        if (searchBar.editing)
+            searchBar.close()
     }
     function dismiss() {
         if (panelOpen) {
             closePanels()
+            return
+        }
+        if (searchBar.open) {
+            searchBar.close()
             return
         }
         js("dogear.escape()", function(closed) {
@@ -113,6 +120,34 @@ FocusScope {
     }
     function showContents() { contents.show() }
     function showAppearance() { appearance.show() }
+    // Search hits on the page: all of them in the chapter shown, and the one
+    // gone to.
+    property int foundChapter: -1
+    function markFound() {
+        foundChapter = reader.chapter
+        const hit = bookSearch.current >= 0 ? bookSearch.results[bookSearch.current] : null
+        const current = hit && hit.chapter === reader.chapter ? { start: hit.start, end: hit.end } : null
+        js("dogear.found(" + JSON.stringify(bookSearch.inChapter(reader.chapter)) + "," + JSON.stringify(current) + ")")
+    }
+    function showFound(hit) {
+        leaveVoice()
+        js("dogear.goTo(" + JSON.stringify({ chapter: hit.chapter, offset: hit.start, instant: true }) + ")"
+           + ".then(() => dogear.found(" + JSON.stringify(bookSearch.inChapter(hit.chapter)) + ","
+           + JSON.stringify({ start: hit.start, end: hit.end }) + "))")
+        foundChapter = hit.chapter
+    }
+    Connections {
+        target: bookSearch
+        function onChanged() { view.markFound() }
+    }
+    Connections {
+        target: reader
+        function onLocationChanged() {
+            if ((bookSearch.count > 0 || view.foundChapter >= 0) && reader.chapter !== view.foundChapter)
+                view.markFound()
+        }
+    }
+
     function showVoices() {
         contents.close()
         appearance.close()
@@ -527,6 +562,15 @@ FocusScope {
         settings: view.settings
     }
 
+    SearchBar {
+        id: searchBar
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: 64
+        z: 5
+        look: view.look
+        onJumped: (hit) => view.showFound(hit)
+    }
+
     GoToBox {
         id: goTo
         anchors.horizontalCenter: parent.horizontalCenter
@@ -545,6 +589,9 @@ FocusScope {
     Shortcut { sequence: "T"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: contents.show() }
     Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: appearance.show() }
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: goTo.show() }
+    Shortcut { sequences: ["/", StandardKey.Find]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: searchBar.show() }
+    Shortcut { sequence: "N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.next() }
+    Shortcut { sequence: "Shift+N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.previous() }
     Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.cycleTheme() }
     Shortcut { sequences: ["+", "=", "Ctrl++", "Ctrl+="]; context: Qt.ApplicationShortcut; enabled: view.visible; onActivated: view.resize(0.05) }
     Shortcut { sequences: ["-", "Ctrl+-"]; context: Qt.ApplicationShortcut; enabled: view.visible; onActivated: view.resize(-0.05) }

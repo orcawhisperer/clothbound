@@ -21,6 +21,7 @@
 #include "sseparser.h"
 #include "bookname.h"
 #include "bookscheme.h"
+#include "booksearch.h"
 #include "library.h"
 #include "reader.h"
 #include "epubbook.h"
@@ -754,6 +755,82 @@ private slots:
         QCOMPARE(library.record(id).position, QString(R"({"chapter":1,"offset":3,"snippet":"note"})"));
     }
 
+
+    // --- Search --------------------------------------------------------
+
+    void searchIgnoresCaseAccentsAndQuotes() {
+        const QString text = QString::fromUtf8("The naïve Café — don’t “Look” Ǖ");
+        const QString folded = BookSearch::fold(text);
+        QCOMPARE(folded.size(), text.size());
+        QCOMPARE(folded, QString("the naive cafe - don't \"look\" u"));
+        QCOMPARE(BookSearch::matches(folded, BookSearch::fold("NAIVE"), 10).value(0).first, 4);
+        QCOMPARE(BookSearch::matches(folded, BookSearch::fold("don't"), 10).size(), 1);
+        // Every occurrence, not overlapping, up to the limit.
+        QCOMPARE(BookSearch::matches("aaaa", "aa", 10).size(), 2);
+        QCOMPARE(BookSearch::matches("ab ab ab", "ab", 2).size(), 2);
+    }
+
+    void searchShowsAHitInContext() {
+        const QString text = "It was a dark and stormy night; the rain fell in torrents, except at occasional intervals, "
+                             "when it was checked by a violent gust of wind which swept up the streets.";
+        const qint64 start = text.indexOf("rain");
+        const QVariantMap hit = BookSearch::hit(text, 3, start, start + 4);
+        QCOMPARE(hit.value("chapter").toInt(), 3);
+        QCOMPARE(hit.value("match").toString(), QString("rain"));
+        QVERIFY(hit.value("before").toString().endsWith("the "));
+        QVERIFY(hit.value("after").toString().startsWith(" fell"));
+        QVERIFY(hit.value("after").toString().endsWith(QChar(0x2026)));
+        // Cut at words, not inside them.
+        QVERIFY(!hit.value("after").toString().contains("swep…"));
+    }
+
+    void searchFindsWordsAcrossTheBook() {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("book.epub");
+        QVERIFY(TestBooks::write(path, TestBooks::epub2(png(20, 30))));
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int id = library.addBookFile(path);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(id));
+        BookSearch search(&reader);
+
+        search.find("STORM");
+        QVERIFY(search.searching());
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+        const QVariantMap storm = search.results().value(0).toMap();
+        QCOMPARE(storm.value("chapter").toInt(), 0);
+        QCOMPARE(storm.value("match").toString(), QString("storm"));
+        QCOMPARE(search.inChapter(0).size(), 1);
+        QCOMPARE(search.inChapter(1).size(), 0);
+
+        // "the lamp's" finds "The lamp’s", and the notes chapter is searched too.
+        search.find("the lamp's");
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+        search.find("note");
+        QTRY_VERIFY(!search.searching());
+        QCOMPARE(search.count(), 1);
+        QCOMPARE(search.results().value(0).toMap().value("chapter").toInt(), 1);
+
+        // Stepping wraps around.
+        search.find("a");
+        QCOMPARE(search.count(), 0);  // too short to search
+        search.find("in");
+        QTRY_VERIFY(!search.searching());
+        QVERIFY(search.count() >= 2);
+        search.setCurrent(-1);
+        QCOMPARE(search.current(), search.count() - 1);
+        search.setCurrent(search.count());
+        QCOMPARE(search.current(), 0);
+
+        // Another book clears it.
+        reader.close();
+        QCOMPARE(search.count(), 0);
+        QVERIFY(search.query().isEmpty());
+    }
 
     // --- Intelligence ------------------------------------------------------
 

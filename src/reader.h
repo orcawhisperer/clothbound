@@ -51,6 +51,8 @@ public:
     QString title() const { return m_title; }
     QString author() const { return m_author; }
     QString language() const { return m_language; }
+    // The open book's file.
+    QString bookPath() const;
     QVariantMap manifest() const { return m_manifest; }
     QVariantList contents() const { return m_contents; }
     QVariantList chapterMarks() const;

@@ -23,6 +23,7 @@ HEADERS += \
     ../src/bookname.h \
     ../src/bookrecord.h \
     ../src/bookscheme.h \
+    ../src/booksearch.h \
     ../src/library.h \
     ../src/librarymodel.h \
     ../src/reader.h \
@@ -49,6 +50,7 @@ SOURCES += \
     ../src/bookinfo.cpp \
     ../src/bookname.cpp \
     ../src/bookscheme.cpp \
+    ../src/booksearch.cpp \
     ../src/library.cpp \
     ../src/librarymodel.cpp \
     ../src/reader.cpp \
