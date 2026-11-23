@@ -287,7 +287,7 @@ FocusScope {
                                     Label {
                                         id: customCountLabel
                                         anchors.centerIn: parent
-                                        text: qsTr("%Ln custom", "", ai.overrideCount)
+                                        text: qsTr("%1 custom").arg(ai.overrideCount.toLocaleString(Qt.locale(), 'f', 0))
                                         color: theme.accent
                                         font.pixelSize: 11
                                         font.weight: Font.Medium
