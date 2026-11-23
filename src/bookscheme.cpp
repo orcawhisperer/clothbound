@@ -72,6 +72,7 @@ const QHash<QString, QPair<QString, QByteArray>> &appFiles() {
         {"qwebchannel.js", {":/qtwebchannel/qwebchannel.js", "text/javascript"}},
         {"fonts/Literata.ttf", {":/fonts/Literata.ttf", "font/ttf"}},
         {"fonts/Literata-Italic.ttf", {":/fonts/Literata-Italic.ttf", "font/ttf"}},
+        {"fonts/Inter.ttf", {":/fonts/Inter.ttf", "font/ttf"}},
     };
     return files;
 }
