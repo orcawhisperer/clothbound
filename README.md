@@ -10,6 +10,8 @@ files.
 
 ## What it does
 
+![The library: shelves, collections, and the book read last](screenshot-library.png)
+
 - **A library** of your EPUB and PDF books, found in the watched folders you
   manage (on first run Dogear offers the folder your books are already in),
   with covers, editions grouped together, a sidebar of shelves (Reading now,
@@ -19,11 +21,13 @@ files.
   14-day activity, and pace). `Ctrl+B` folds the sidebar.
 - **Command Palette (`Ctrl+K`)**: instant search across your books' titles,
   **the words inside every book** (a full-text index kept on this computer),
+  passages close **in meaning** across every book prepared for it,
   the current book's chapters, cross-book highlights & notes, page/percentage
   jumps, and every app or reader action.
 - **Light and dark**, following your Omarchy theme as it changes (or set in
   Settings), with Dogear's own controls set in Inter.
-- **A page to read on**: EPUB in columns or scrolling, with your typeface,
+- **A page to read on**: EPUB in columns or scrolling, with drop caps, notes
+  beside their highlights when the margin has room, your typeface,
   size, spacing and theme; PDF pages recolored to the reading theme with
   their blank margins cut, one at a time, two side by side, or scrolling.
 - **Highlights, notes and bookmarks**, with W3C text-quote anchoring, undo,
