@@ -514,17 +514,14 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         return earlier.length ? earlier[earlier.length - 1].label : ''
     }
 
+    // A turn under way lands at once (another turn, or a jump, overtakes it).
     function cancelAnimation() {
-        if (state.animation) {
-            cancelAnimationFrame(state.animation.frame)
-            const el = scroller()
-            if (state.geometry.scroll)
-                el.scrollTop = state.animation.target
-            else
-                el.scrollLeft = state.animation.target
-            state.animation.resolve()
-            state.animation = null
-        }
+        const animation = state.animation
+        if (!animation)
+            return
+        state.animation = null
+        scroller().scrollTo({ [state.geometry.scroll ? 'top' : 'left']: animation.target, behavior: 'instant' })
+        animation.finish()
     }
 
     function turnTo(page, animate) {
@@ -533,34 +530,33 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         state.page = clamp(page, 0, state.pages - 1)
         const el = scroller()
         const target = state.page * g.step
+        const axis = g.scroll ? 'top' : 'left'
+        const now = g.scroll ? el.scrollTop : el.scrollLeft
         const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
-        if (!animate || !state.style.animate || reduced) {
-            if (g.scroll)
-                el.scrollTop = target
-            else
-                el.scrollLeft = target
+        if (!animate || !state.style.animate || reduced || Math.abs(target - now) < 1) {
+            el.scrollTo({ [axis]: target, behavior: 'instant' })
             return Promise.resolve()
         }
-        const from = g.scroll ? el.scrollTop : el.scrollLeft
-        const distance = target - from
-        const duration = g.scroll ? 260 : 230
+        // Chromium's own smooth scroll runs on its compositor, so a turn stays
+        // fluid however busy the page is (a new chapter's hyphens, the
+        // voice's highlight moving on).
         return new Promise(resolve => {
-            const started = performance.now()
-            const step = now => {
-                const t = Math.min(1, (now - started) / duration)
-                const eased = 1 - Math.pow(1 - t, 3)
-                if (g.scroll)
-                    el.scrollTop = from + distance * eased
-                else
-                    el.scrollLeft = from + distance * eased
-                if (t < 1) {
-                    state.animation.frame = requestAnimationFrame(step)
-                } else {
+            const doc = chapterDocument()
+            let timer = 0
+            const finish = () => {
+                clearTimeout(timer)
+                doc.removeEventListener('scrollend', finish)
+                if (state.animation && state.animation.finish === finish)
                     state.animation = null
-                    resolve()
-                }
+                // Land exactly on the page, whatever the scroll settled on.
+                if (Math.abs((g.scroll ? el.scrollTop : el.scrollLeft) - target) > 0.5)
+                    el.scrollTo({ [axis]: target, behavior: 'instant' })
+                resolve()
             }
-            state.animation = { frame: requestAnimationFrame(step), target, resolve }
+            timer = setTimeout(finish, 700)
+            doc.addEventListener('scrollend', finish)
+            state.animation = { target, finish }
+            el.scrollTo({ [axis]: target, behavior: 'smooth' })
         })
     }
 
@@ -897,18 +893,63 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 state.bridge.tapped('center')
             return
         }
-        if (fraction < 0.28)
+        // A turn the reader makes leaves the voice to read on unfollowed.
+        if (fraction < 0.28) {
+            if (state.bridge)
+                state.bridge.tapped('turn')
             api.prev()
-        else if (fraction > 0.72)
+        } else if (fraction > 0.72) {
+            if (state.bridge)
+                state.bridge.tapped('turn')
             api.next()
-        else if (state.bridge)
+        } else if (state.bridge) {
             state.bridge.tapped('center')
+        }
     }
 
     let wheelTotal = 0, wheelQuietUntil = 0, wheelReset = 0
+    let swipe = null, swipeEnd = 0
+
+    // A sideways swipe on a touchpad moves the page with the fingers; when
+    // they lift it settles on the next page, or back if it went only a little.
+    function settleSwipe() {
+        const moved = scroller().scrollLeft - swipe.from
+        const page = swipe.page
+        swipe = null
+        const threshold = state.geometry.step * 0.12
+        const forward = moved > threshold, backward = moved < -threshold
+        if (forward && page + 1 >= state.pages) {
+            turnTo(page, true).then(() => { if (state.bridge) state.bridge.tapped('turn'); api.next() })
+            return
+        }
+        if (backward && page === 0) {
+            turnTo(page, true).then(() => { if (state.bridge) state.bridge.tapped('turn'); api.prev() })
+            return
+        }
+        const target = forward ? page + 1 : backward ? page - 1 : page
+        if (target !== page && state.bridge)
+            state.bridge.tapped('turn')
+        turnTo(target, true).then(report)
+    }
+
     function onWheel(event) {
         if (!state.geometry)
             return
+        if (!state.geometry.scroll && event.deltaMode === 0 && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
+            event.preventDefault()
+            const el = scroller()
+            if (!swipe) {
+                cancelAnimation()
+                swipe = { from: el.scrollLeft, page: state.page }
+            }
+            // Never more than a page either way.
+            const step = state.geometry.step
+            const next = clamp(el.scrollLeft + event.deltaX, swipe.from - step, swipe.from + step)
+            el.scrollTo({ left: next, behavior: 'instant' })
+            clearTimeout(swipeEnd)
+            swipeEnd = setTimeout(settleSwipe, 90)
+            return
+        }
         if (state.geometry.scroll) {
             const el = scroller()
             const atTop = el.scrollTop <= 0 && event.deltaY < 0
@@ -932,6 +973,8 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         clearTimeout(wheelReset)
         wheelReset = setTimeout(() => { wheelTotal = 0 }, 200)
         if (Math.abs(wheelTotal) >= 40) {
+            if (state.bridge)
+                state.bridge.tapped('turn')
             wheelTotal > 0 ? api.next() : api.prev()
             wheelTotal = 0
             wheelQuietUntil = now + 300

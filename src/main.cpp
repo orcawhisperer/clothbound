@@ -16,6 +16,7 @@
 #include "marks.h"
 #include "localspeech.h"
 #include "voicepacks.h"
+#include "pointerdriver.h"
 #include "portalfilepicker.h"
 #include "reader.h"
 #include "theme.h"
@@ -93,6 +94,15 @@ int main(int argc, char *argv[]) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
     } else {
         registerBookScheme();
+        // The page keeps drawing while the window is on another workspace,
+        // so coming back shows it at once rather than a blank frame first.
+        QByteArray flags = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+        for (const QByteArray &flag : {QByteArray("--disable-renderer-backgrounding"),
+                                      QByteArray("--disable-backgrounding-occluded-windows"),
+                                      QByteArray("--disable-background-timer-throttling")})
+            if (!flags.contains(flag))
+                flags += ' ' + flag;
+        qputenv("QTWEBENGINE_CHROMIUM_FLAGS", flags.trimmed());
         QtWebEngineQuick::initialize();
     }
 
@@ -214,6 +224,16 @@ int main(int argc, char *argv[]) {
         return 1;
     if (bookToOpen)
         QMetaObject::invokeMethod(engine.rootObjects().first(), "openBook", Q_ARG(QVariant, bookToOpen));
+    // What the window has drawn is kept while it's away (on another
+    // workspace), so it comes back as it was instead of black for a moment.
+    if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
+        window->setPersistentGraphics(true);
+        window->setPersistentSceneGraph(true);
+    }
+    // While debugging, a pointer that --run can move.
+    if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
+        window && qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
+        engine.rootContext()->setContextProperty("pointer", new PointerDriver(window, &app));
     // The desktop's media controls can ask for the window.
     if (auto *window = qobject_cast<QWindow *>(engine.rootObjects().first()))
         QObject::connect(&mpris, &Mpris::raiseRequested, window, [window] {

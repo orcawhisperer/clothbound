@@ -1,4 +1,4 @@
-QT += core gui qml quick quickcontrols2 dbus sql concurrent network multimedia pdf webenginecore webenginequick webchannel
+QT += core gui gui-private qml quick quickcontrols2 dbus sql concurrent network multimedia pdf webenginecore webenginequick webchannel
 
 CONFIG += c++20 release
 TARGET = dogear
@@ -34,6 +34,7 @@ HEADERS += \
     src/director.h \
     src/download.h \
     src/mpris.h \
+    src/pointerdriver.h \
     src/pdfbook.h \
     src/portalfilepicker.h \
     src/reader.h \

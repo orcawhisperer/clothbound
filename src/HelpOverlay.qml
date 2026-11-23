@@ -14,6 +14,12 @@ Rectangle {
     color: Ui.tint("black", 0.72)
 
     TapHandler { onTapped: help.dismissed() }
+    // The page underneath doesn't turn while the shortcuts are shown.
+    MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.NoButton
+        onWheel: (wheel) => wheel.accepted = true
+    }
 
     readonly property var librarySection: [
         { keys: "← → ↑ ↓  h j k l", action: qsTr("Move between books") },

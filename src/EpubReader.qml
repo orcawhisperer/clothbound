@@ -91,6 +91,11 @@ FocusScope {
                 narration.start(place.chapter, place.offset)
         })
     }
+    // Keys and the mouse go back to the page when what was open closes.
+    function focusPage() {
+        if (!panelOpen)
+            web.forceActiveFocus()
+    }
     function closePanels() {
         contents.close()
         appearance.close()
@@ -100,6 +105,7 @@ FocusScope {
         noteEditor.close()
         if (searchBar.editing)
             searchBar.close()
+        web.forceActiveFocus()
     }
     function dismiss() {
         if (panelOpen) {
@@ -167,6 +173,9 @@ FocusScope {
                 view.decorate()
                 if (bookSearch.count > 0 || view.foundChapter >= 0)
                     view.markFound()
+                // Back in the chapter being read aloud: its sentence at once.
+                if (narration.active && narration.chapter === reader.chapter && narration.sentenceStart >= 0)
+                    view.js("dogear.speak(" + narration.sentenceStart + "," + narration.sentenceEnd + ",false)")
             }
         }
         function onBookChanged() { view.decoratedChapter = -1 }
@@ -289,7 +298,9 @@ FocusScope {
             }
         }
         function onTap(zone) {
-            if (zone === "center")
+            if (zone === "turn")
+                view.leaveVoice()
+            else if (zone === "center")
                 view.chromeShown ? (view.chromeShown = false) : view.showChrome()
         }
         function onExternalLink(url) {
@@ -330,8 +341,9 @@ FocusScope {
         anchors.fill: parent
         profile: readerProfile
         backgroundColor: view.look.bg
-        activeFocusOnPress: false
-        focus: false
+        // Chromium only takes the mouse (selecting words, a tap on the
+        // margin) when it has focus; the window's shortcuts still come first.
+        activeFocusOnPress: true
         webChannel: channel
         url: "dogear://local/app/reader.html"
         settings.javascriptCanOpenWindows: false
@@ -436,6 +448,23 @@ FocusScope {
             color: view.look.muted
             font.pixelSize: 12
         }
+    }
+
+    // While a panel or a dialog is open the page underneath is left alone:
+    // the wheel does nothing there, and a click outside closes what's open
+    // (a note being written is never thrown away by a stray click).
+    MouseArea {
+        id: scrim
+        anchors.fill: parent
+        visible: view.panelOpen
+        acceptedButtons: Qt.AllButtons
+        hoverEnabled: true
+        onPressed: (mouse) => {
+            mouse.accepted = true
+            if (!noteEditor.open)
+                view.closePanels()
+        }
+        onWheel: (wheel) => wheel.accepted = true
     }
 
     // --- Chrome ------------------------------------------------------------
@@ -622,6 +651,7 @@ FocusScope {
 
     ContentsPanel {
         id: contents
+        onClosed: view.focusPage()
         height: parent.height
         look: view.look
         onChosen: (chapter, fragment) => view.goTo({ chapter: chapter, fragment: fragment, instant: true })
@@ -629,6 +659,7 @@ FocusScope {
 
     VoicePanel {
         id: voicePanel
+        onClosed: view.focusPage()
         height: parent.height
         look: view.look
         onSampleWanted: view.js("dogear.sampleText()", function(text) {
@@ -640,6 +671,7 @@ FocusScope {
 
     AppearancePanel {
         id: appearance
+        onClosed: view.focusPage()
         height: parent.height
         look: view.look
         settings: view.settings
@@ -719,6 +751,7 @@ FocusScope {
 
     NoteEditor {
         id: noteEditor
+        onClosed: view.focusPage()
         anchors.centerIn: parent
         z: 7
         look: view.look
@@ -726,6 +759,7 @@ FocusScope {
 
     MarksPanel {
         id: marksPanel
+        onClosed: view.focusPage()
         height: parent.height
         look: view.look
         onChosen: (chapter, offset) => view.goTo({ chapter: chapter, offset: offset, instant: true })
@@ -742,6 +776,7 @@ FocusScope {
 
     GoToBox {
         id: goTo
+        onClosed: view.focusPage()
         anchors.horizontalCenter: parent.horizontalCenter
         y: 96
         look: view.look
@@ -750,6 +785,9 @@ FocusScope {
 
     // --- Keys ----------------------------------------------------------------
     readonly property bool keys: visible && !panelOpen && !win.helpVisible
+    // Listening keys work with a panel open too, unless a field is taking typing.
+    readonly property bool typing: win.activeFocusItem !== null && win.activeFocusItem.cursorPosition !== undefined
+    readonly property bool listenKeys: visible && !win.helpVisible && !typing
     Shortcut { sequences: ["Right", "PgDown", "L", "J", "Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.next() }
     Shortcut { sequences: ["Left", "PgUp", "H", "K", "Shift+Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prev() }
     Shortcut { sequence: "]"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.nextChapter() }
@@ -772,13 +810,13 @@ FocusScope {
     Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: view.visible && !win.helpVisible; onActivated: view.dismiss() }
     // Listening.
     // P listens from the page in view, then pauses and goes on; ⇧P stops.
-    Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: narration.active ? narration.toggle() : view.listen() }
-    Shortcut { sequence: "Shift+P"; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.stop() }
+    Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.listenKeys; onActivated: narration.active ? narration.toggle() : view.listen() }
+    Shortcut { sequence: "Shift+P"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.stop() }
     Shortcut { sequence: "V"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showVoices() }
-    Shortcut { sequence: ","; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.previousParagraph() }
-    Shortcut { sequence: "."; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.nextParagraph() }
-    Shortcut { sequences: ["<", "Shift+,"]; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.rate = narration.rate - 0.1 }
-    Shortcut { sequences: [">", "Shift+."]; context: Qt.ApplicationShortcut; enabled: view.keys && narration.active; onActivated: narration.rate = narration.rate + 0.1 }
+    Shortcut { sequence: ","; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.previousParagraph() }
+    Shortcut { sequence: "."; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.nextParagraph() }
+    Shortcut { sequences: ["<", "Shift+,"]; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.rate = narration.rate - 0.1 }
+    Shortcut { sequences: [">", "Shift+."]; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.rate = narration.rate + 0.1 }
     Shortcut { sequence: "Media Play"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.resume() }
     Shortcut { sequence: "Media Pause"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.pause() }
     Shortcut { sequence: "Toggle Media Play/Pause"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.toggle() }

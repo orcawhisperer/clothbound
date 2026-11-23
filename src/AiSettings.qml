@@ -56,6 +56,12 @@ FocusScope {
         anchors.fill: parent
         color: Ui.tint("black", theme.light ? 0.25 : 0.55)
         TapHandler { onTapped: sheet.close() }
+        // The page underneath doesn't turn while the sheet is open.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.NoButton
+            onWheel: (wheel) => wheel.accepted = true
+        }
     }
 
     Rectangle {

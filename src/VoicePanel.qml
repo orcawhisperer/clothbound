@@ -164,6 +164,12 @@ FocusScope {
         color: panel.look.popover
         Rectangle { width: 1; height: parent.height; color: panel.look.border }
     }
+    // The panel keeps its clicks and the wheel: nothing falls through to the page.
+    MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        onWheel: (wheel) => wheel.accepted = true
+    }
     Rectangle {
         anchors.right: parent.left
         width: 18
