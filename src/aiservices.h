@@ -32,7 +32,12 @@ class AiServices : public QObject {
     Q_PROPERTY(QVariantList usageThisMonth READ usageThisMonth NOTIFY usageChanged)
 
 public:
+    // The key is read from `keys` before this returns, as commands need it.
     AiServices(Ai::Provider *provider, KeyStore *keys, const QString &databaseConnection, QObject *parent = nullptr);
+
+    // The window's way: the key arrives from `keys` when they answer, which
+    // a keyring starting up (or waiting to be unlocked) can take a while to.
+    void lookUpKeyIn(KeyStore *keys);
 
     Ai::Provider *provider() const { return m_provider; }
     Ai::TextModel *text() const { return m_provider->hasKey() ? m_provider->text() : nullptr; }
@@ -99,6 +104,10 @@ private:
     bool m_checking = false;
     bool m_connected = false;
     bool m_fromEnvironment = false;
+    // The key as the keyring has it, to go back to when a new one fails.
+    QString m_savedKey;
+    // A key typed or forgotten here outranks a lookup still under way.
+    bool m_keyChangedHere = false;
     QString m_status;
     double m_budget = 10;
 };

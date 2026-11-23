@@ -8,6 +8,8 @@
 #include "keystore.h"
 
 #include <QCoreApplication>
+#include <QThreadPool>
+#include <QtConcurrent>
 
 namespace {
 const SecretSchema *schema() {
@@ -21,7 +23,14 @@ const SecretSchema *schema() {
 }
 }
 
-QString SecretKeyStore::load(const QString &provider) {
+QFuture<QString> SecretKeyStore::loadLater(const QString &provider) {
+    // A pool of its own that quitting never waits for: a keyring that doesn't
+    // answer mustn't keep Dogear running after it's closed.
+    static QThreadPool *pool = new QThreadPool;
+    return QtConcurrent::run(pool, &SecretKeyStore::lookup, provider);
+}
+
+QString SecretKeyStore::lookup(const QString &provider) {
     GError *error = nullptr;
     gchar *secret = secret_password_lookup_sync(schema(), nullptr, &error, "provider", provider.toUtf8().constData(), nullptr);
     if (error)

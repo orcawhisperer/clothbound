@@ -7,6 +7,7 @@
 #include <QNetworkReply>
 #include <QCryptographicHash>
 #include <QProcess>
+#include <QPromise>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -40,6 +41,17 @@
 #include "translator.h"
 #include "voicecatalog.h"
 #include "ziparchive.h"
+
+// A keyring that answers when told to, like one starting up or waiting to be
+// unlocked.
+class SlowKeyStore : public MemoryKeyStore {
+public:
+    QPromise<QString> answer;
+    QFuture<QString> loadLater(const QString &) override {
+        answer.start();
+        return answer.future();
+    }
+};
 
 class DogearTests : public QObject {
     Q_OBJECT
@@ -1067,6 +1079,37 @@ private slots:
         // Its pace here is kept.
         local.noteSpeed(packs.model("builtin:kokoro:bm_george")->key, 3.0);
         QCOMPARE(local.speedOf("builtin:kokoro:bm_george"), 3.0);
+    }
+
+    // The window doesn't wait for the keyring: the key arrives when it
+    // answers, and one typed in meanwhile outranks it.
+    void keyArrivesWhenTheKeyringAnswers() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        SlowKeyStore keys;
+        AiServices services(&gemini, nullptr, library.database().connectionName());
+        services.lookUpKeyIn(&keys);
+        QVERIFY(!services.hasKey());
+        QCOMPARE(services.status(), QString("Looking in your keyring…"));
+        QSignalSpy changed(&services, &AiServices::changed);
+        keys.answer.addResult(QString("from-keyring"));
+        keys.answer.finish();
+        QVERIFY(changed.wait(2000));
+        QVERIFY(services.hasKey());
+        QCOMPARE(services.status(), QString("Ready"));
+
+        GeminiProvider other;
+        SlowKeyStore late;
+        AiServices typed(&other, nullptr, library.database().connectionName());
+        typed.lookUpKeyIn(&late);
+        typed.forgetKey();
+        late.answer.addResult(QString("stale"));
+        late.answer.finish();
+        QTest::qWait(50);
+        QVERIFY(!typed.hasKey());
     }
 
     void voicesAreSpokenByTheirOwnProvider() {

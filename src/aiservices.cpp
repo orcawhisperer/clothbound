@@ -2,6 +2,7 @@
 
 #include "keystore.h"
 
+#include <QFutureWatcher>
 #include <QJsonArray>
 #include <QSettings>
 #include <QStandardPaths>
@@ -23,9 +24,28 @@ AiServices::AiServices(Ai::Provider *provider, KeyStore *keys, const QString &da
         provider->setKey(QString::fromUtf8(environment));
         m_fromEnvironment = true;
     } else if (keys) {
-        provider->setKey(keys->load(provider->id()));
+        m_savedKey = keys->load(provider->id());
+        provider->setKey(m_savedKey);
     }
     m_status = provider->hasKey() ? tr("Ready") : tr("No key yet");
+}
+
+void AiServices::lookUpKeyIn(KeyStore *keys) {
+    m_keys = keys;
+    if (!keys || m_fromEnvironment)
+        return;
+    m_status = tr("Looking in your keyring…");
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
+        watcher->deleteLater();
+        if (m_keyChangedHere)
+            return;
+        m_savedKey = watcher->result();
+        m_provider->setKey(m_savedKey);
+        m_status = m_provider->hasKey() ? tr("Ready") : tr("No key yet");
+        emit changed();
+    });
+    watcher->setFuture(keys->loadLater(m_provider->id()));
 }
 
 QString AiServices::keyLocation() const {
@@ -72,6 +92,7 @@ void AiServices::setKey(const QString &key) {
     if (trimmed.isEmpty())
         return;
     m_provider->setKey(trimmed);
+    m_keyChangedHere = true;
     m_checking = true;
     m_status = tr("Checking the key…");
     emit changed();
@@ -81,8 +102,7 @@ void AiServices::setKey(const QString &key) {
         m_checking = false;
         if (reply->error()) {
             // A key that doesn't work isn't kept, and the one before stays.
-            m_provider->setKey(m_fromEnvironment ? QString::fromUtf8(qgetenv("GEMINI_API_KEY"))
-                                                 : (m_keys ? m_keys->load(m_provider->id()) : QString()));
+            m_provider->setKey(m_fromEnvironment ? QString::fromUtf8(qgetenv("GEMINI_API_KEY")) : m_savedKey);
             m_connected = false;
             m_status = describe(reply->error().kind, reply->error().message);
             emit changed();
@@ -91,6 +111,8 @@ void AiServices::setKey(const QString &key) {
         }
         QString problem;
         const bool saved = m_keys && m_keys->save(m_provider->id(), trimmed, &problem);
+        if (saved)
+            m_savedKey = trimmed;
         m_fromEnvironment = false;
         m_connected = true;
         m_status = saved ? tr("Connected") : tr("Connected for now; the key couldn't be saved in your keyring (%1).").arg(problem);
@@ -102,6 +124,8 @@ void AiServices::setKey(const QString &key) {
 void AiServices::forgetKey() {
     if (m_keys)
         m_keys->remove(m_provider->id());
+    m_savedKey.clear();
+    m_keyChangedHere = true;
     m_provider->setKey({});
     m_fromEnvironment = false;
     m_connected = false;

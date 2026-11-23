@@ -193,7 +193,8 @@ int main(int argc, char *argv[]) {
     // with its key in the keyring. Features only ever see AiServices.
     GeminiProvider gemini;
     SecretKeyStore keys;
-    AiServices ai(&gemini, &keys, library.database().connectionName());
+    AiServices ai(&gemini, nullptr, library.database().connectionName());
+    ai.lookUpKeyIn(&keys);
     // Built-in voices: made on this computer, from voices downloaded on request.
     VoicePacks voicePacks(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/voices"));
     LocalSpeech localSpeech(&voicePacks);
