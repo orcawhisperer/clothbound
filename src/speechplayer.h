@@ -85,6 +85,7 @@ signals:
     void sinkError(const QString &message);
 
 private:
+    friend class DogearTests;
     struct Track {
         int id = 0;
         QByteArray pcm;

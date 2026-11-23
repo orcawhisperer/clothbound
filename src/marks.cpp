@@ -60,23 +60,63 @@ QString safeFileName(QString title) {
 }
 
 // Scores how closely `haystack` around [pos, pos + len) matches expected prefix/suffix.
+// Tolerates boundary and internal whitespace differences since stored marks simplify context.
 int contextScore(const QString &haystack, qsizetype pos, qsizetype len, const QString &prefix, const QString &suffix) {
     int score = 0;
     if (!prefix.isEmpty()) {
-        const qsizetype avail = qMin(pos, prefix.size());
+        qsizetype h = pos;
+        if (!prefix.back().isSpace())
+            while (h > 0 && haystack[h - 1].isSpace())
+                --h;
+        qsizetype p = prefix.size();
         qsizetype matched = 0;
-        while (matched < avail && haystack[pos - 1 - matched] == prefix[prefix.size() - 1 - matched])
-            ++matched;
+        while (p > 0 && h > 0) {
+            if (prefix[p - 1].isSpace()) {
+                if (!haystack[h - 1].isSpace())
+                    break;
+                while (h > 0 && haystack[h - 1].isSpace())
+                    --h;
+                while (p > 0 && prefix[p - 1].isSpace()) {
+                    --p;
+                    ++matched;
+                }
+            } else {
+                if (haystack[h - 1] != prefix[p - 1])
+                    break;
+                --h;
+                --p;
+                ++matched;
+            }
+        }
         score += int(matched) * 4;
         if (matched == prefix.size())
             score += 40;
     }
     if (!suffix.isEmpty()) {
-        const qsizetype afterPos = pos + len;
-        const qsizetype avail = qMin(haystack.size() - afterPos, suffix.size());
+        qsizetype h = pos + len;
+        if (!suffix.front().isSpace())
+            while (h < haystack.size() && haystack[h].isSpace())
+                ++h;
+        qsizetype p = 0;
         qsizetype matched = 0;
-        while (matched < avail && haystack[afterPos + matched] == suffix[matched])
-            ++matched;
+        while (p < suffix.size() && h < haystack.size()) {
+            if (suffix[p].isSpace()) {
+                if (!haystack[h].isSpace())
+                    break;
+                while (h < haystack.size() && haystack[h].isSpace())
+                    ++h;
+                while (p < suffix.size() && suffix[p].isSpace()) {
+                    ++p;
+                    ++matched;
+                }
+            } else {
+                if (haystack[h] != suffix[p])
+                    break;
+                ++h;
+                ++p;
+                ++matched;
+            }
+        }
         score += int(matched) * 4;
         if (matched == suffix.size())
             score += 40;

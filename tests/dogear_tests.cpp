@@ -3792,6 +3792,1501 @@ private slots:
             QVERIFY2(out.contains("attached_pic=1"), out.constData());
         }
     }
+
+    // --- Round 4 regression tests: Reader / PDF ----------------------------
+
+    void readerPerBookAppearanceRoundTripAndIsolation() {
+        QTemporaryDir dir;
+        const QString epubA = dir.filePath("bookA.epub");
+        const QString epubB = dir.filePath("bookB.epub");
+        QVERIFY(TestBooks::write(epubA, TestBooks::epub2(png(20, 30))));
+        QVERIFY(TestBooks::write(epubB, TestBooks::epub3(adobeObfuscate(fontPayload()))));
+
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restoreTypography = qScopeGuard([&] {
+            QSettings s(settingsPath, QSettings::IniFormat);
+            s.remove(QStringLiteral("typography"));
+        });
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int idA = library.addBookFile(epubA);
+        const int idB = library.addBookFile(epubB);
+        QVERIFY(idA > 0 && idB > 0 && idA != idB);
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+
+        // Global typography controls clamp cleanly.
+        reader.setFontWeight(900);
+        QCOMPARE(reader.fontWeight(), 700);
+        reader.setFontWeight(100);
+        QCOMPARE(reader.fontWeight(), 300);
+        reader.setFontWeight(450);
+        QCOMPARE(reader.fontWeight(), 450);
+
+        reader.setParagraphSpacing(2.5);
+        QCOMPARE(reader.paragraphSpacing(), 1.2);
+        reader.setParagraphSpacing(-0.5);
+        QCOMPARE(reader.paragraphSpacing(), 0.0);
+        reader.setParagraphSpacing(0.65);
+        QCOMPARE(reader.paragraphSpacing(), 0.65);
+
+        // Book A starts without per-book override.
+        QVERIFY(reader.openBook(idA));
+        QVERIFY(!reader.bookAppearanceOverride());
+        QVERIFY(reader.bookAppearance().isEmpty());
+
+        // Saving per-book appearance clamps typography bounds and persists in book_settings.
+        QSignalSpy appearanceSpy(&reader, &Reader::appearanceChanged);
+        reader.saveBookAppearance({{QStringLiteral("fontWeight"), 950},
+                                   {QStringLiteral("paragraphSpacing"), 3.0},
+                                   {QStringLiteral("font"), QStringLiteral("Literata")},
+                                   {QStringLiteral("fontScale"), 1.25}});
+        QVERIFY(reader.bookAppearanceOverride());
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("fontWeight")).toInt(), 700);
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("paragraphSpacing")).toDouble(), 1.2);
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("font")).toString(), QStringLiteral("Literata"));
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("fontScale")).toDouble(), 1.25);
+        QVERIFY(!library.bookSetting(idA, QStringLiteral("appearance")).isEmpty());
+        QVERIFY(appearanceSpy.count() >= 1);
+
+        // Lower-bound clamping on saveBookAppearance.
+        reader.saveBookAppearance({{QStringLiteral("fontWeight"), 150},
+                                   {QStringLiteral("paragraphSpacing"), -0.4},
+                                   {QStringLiteral("font"), QStringLiteral("Literata")}});
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("fontWeight")).toInt(), 300);
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("paragraphSpacing")).toDouble(), 0.0);
+
+        // Switching to Book B isolates per-book appearance completely.
+        QVERIFY(reader.openBook(idB));
+        QVERIFY(!reader.bookAppearanceOverride());
+        QVERIFY(reader.bookAppearance().isEmpty());
+        QVERIFY(library.bookSetting(idB, QStringLiteral("appearance")).isEmpty());
+
+        // setBookAppearanceOverride(true) seeds from global defaults for Book B.
+        reader.setBookAppearanceOverride(true);
+        QVERIFY(reader.bookAppearanceOverride());
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("fontWeight")).toInt(), 450);
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("paragraphSpacing")).toDouble(), 0.65);
+
+        // Cold reload into a fresh Reader restores Book A's saved appearance.
+        reader.close();
+        Reader reloaded(&library, &scheme);
+        QVERIFY(reloaded.openBook(idA));
+        QVERIFY(reloaded.bookAppearanceOverride());
+        QCOMPARE(reloaded.bookAppearance().value(QStringLiteral("fontWeight")).toInt(), 300);
+        QCOMPARE(reloaded.bookAppearance().value(QStringLiteral("paragraphSpacing")).toDouble(), 0.0);
+        QCOMPARE(reloaded.bookAppearance().value(QStringLiteral("font")).toString(), QStringLiteral("Literata"));
+
+        // Clearing Book A removes its override without affecting Book B.
+        reloaded.clearBookAppearance();
+        QVERIFY(!reloaded.bookAppearanceOverride());
+        QVERIFY(reloaded.bookAppearance().isEmpty());
+        QVERIFY(library.bookSetting(idA, QStringLiteral("appearance")).isEmpty());
+
+        QVERIFY(reloaded.openBook(idB));
+        QVERIFY(reloaded.bookAppearanceOverride());
+        QCOMPARE(reloaded.bookAppearance().value(QStringLiteral("fontWeight")).toInt(), 450);
+        reloaded.setBookAppearanceOverride(false);
+        QVERIFY(!reloaded.bookAppearanceOverride());
+        QVERIFY(library.bookSetting(idB, QStringLiteral("appearance")).isEmpty());
+    }
+
+    void pdfBookPageLinksAndSelectWordBounds() {
+        // Build a 2-page PDF with an internal GoTo link, an external HTTPS link,
+        // an unsafe javascript: link (must be filtered out), and text with a contraction.
+        auto linkedPdf = [] {
+            QByteArray out = "%PDF-1.4\n";
+            QList<qsizetype> offsets;
+            auto object = [&](const QByteArray &body) {
+                offsets.append(out.size());
+                out += QByteArray::number(offsets.size()) + " 0 obj\n" + body + "\nendobj\n";
+            };
+            object("<< /Type /Catalog /Pages 2 0 R >>");                                       // 1
+            object("<< /Type /Pages /Kids [3 0 R 9 0 R] /Count 2 >>");                         // 2
+            object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents 4 0 R "
+                   "/Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R 7 0 R 8 0 R] >>");   // 3 (page 0)
+            const QByteArray s1 = "BT /F1 12 Tf 20 250 Td (Hello reader's world) Tj ET";
+            object("<< /Length " + QByteArray::number(s1.size()) + " >>\nstream\n" + s1 + "\nendstream");  // 4
+            object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");                               // 5
+            object("<< /Type /Annot /Subtype /Link /Rect [20 240 120 265] /A << /S /GoTo /D [9 0 R /XYZ 0 300 1] >> >>");  // 6
+            object("<< /Type /Annot /Subtype /Link /Rect [20 200 140 220] "
+                   "/A << /S /URI /URI (https://example.org/dogear) >> >>");                                // 7
+            object("<< /Type /Annot /Subtype /Link /Rect [20 160 140 180] "
+                   "/A << /S /URI /URI (javascript:alert\\(1\\)) >> >>");                                   // 8
+            object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents 10 0 R "
+                   "/Resources << /Font << /F1 5 0 R >> >> >>");                                            // 9 (page 1)
+            const QByteArray s2 = "BT /F1 12 Tf 20 250 Td (Second destination page) Tj ET";
+            object("<< /Length " + QByteArray::number(s2.size()) + " >>\nstream\n" + s2 + "\nendstream");  // 10
+            const qsizetype xref = out.size();
+            out += "xref\n0 " + QByteArray::number(offsets.size() + 1) + "\n0000000000 65535 f \n";
+            for (const qsizetype off : offsets)
+                out += QByteArray::number(off).rightJustified(10, '0') + " 00000 n \n";
+            out += "trailer\n<< /Size " + QByteArray::number(offsets.size() + 1) + " /Root 1 0 R >>\n";
+            out += "startxref\n" + QByteArray::number(xref) + "\n%%EOF\n";
+            return out;
+        };
+
+        QTemporaryDir dir;
+        const QString pdfPath = dir.filePath("linked.pdf");
+        QVERIFY(TestBooks::write(pdfPath, linkedPdf()));
+
+        PdfBook pdf(pdfPath);
+        QVERIFY2(pdf.open(), qPrintable(pdf.errorString()));
+        QCOMPARE(pdf.pageCount(), 2);
+
+        // Out-of-bounds pages return empty link lists and invalid word selections.
+        QVERIFY(pdf.pageLinks(-1).isEmpty());
+        QVERIFY(pdf.pageLinks(2).isEmpty());
+        QVERIFY(pdf.pageLinks(99).isEmpty());
+        QCOMPARE(pdf.selectWord(-1, QPointF(0.2, 0.2)).start, qint64(-1));
+        QCOMPARE(pdf.selectWord(2, QPointF(0.2, 0.2)).start, qint64(-1));
+        QVERIFY(pdf.selectWord(0, QPointF(-0.5, -0.5)).text.isEmpty());
+        QVERIFY(pdf.selectWord(0, QPointF(2.0, 2.0)).text.isEmpty());
+        QVERIFY(pdf.selectWord(0, QPointF(0.95, 0.95)).text.isEmpty());
+
+        // Page 0 exposes internal + external HTTPS links and strips javascript: links.
+        const QList<PdfLinkEntry> links = pdf.pageLinks(0);
+        QCOMPARE(links.size(), 2);
+        bool sawInternal = false, sawExternal = false;
+        for (const PdfLinkEntry &entry : links) {
+            QVERIFY(!entry.rects.isEmpty());
+            for (const QRectF &r : entry.rects) {
+                QVERIFY(r.x() >= 0.0 && r.x() <= 1.0);
+                QVERIFY(r.y() >= 0.0 && r.y() <= 1.0);
+                QVERIFY(r.width() > 0.0 && r.height() > 0.0);
+                QVERIFY(r.right() <= 1.0001 && r.bottom() <= 1.0001);
+            }
+            if (entry.page == 1 && entry.url.isEmpty())
+                sawInternal = true;
+            if (entry.page == -1 && entry.url == QUrl(QStringLiteral("https://example.org/dogear")))
+                sawExternal = true;
+            QVERIFY(entry.url.scheme() != QLatin1String("javascript"));
+        }
+        QVERIFY(sawInternal);
+        QVERIFY(sawExternal);
+
+        // selectWord() expands across the full word including internal apostrophes (Type1 Helvetica maps ' to U+2019).
+        const QString p0Text = pdf.pageText(0);
+        QString targetWord = QStringLiteral("reader\u2019s");
+        qsizetype wordIdx = p0Text.indexOf(targetWord);
+        if (wordIdx < 0) {
+            targetWord = QStringLiteral("reader's");
+            wordIdx = p0Text.indexOf(targetWord);
+        }
+        QVERIFY2(wordIdx >= 0, qPrintable(p0Text));
+        const QList<QRectF> wordRects = pdf.textRects(0, wordIdx, wordIdx + targetWord.size());
+        QVERIFY(!wordRects.isEmpty());
+        const QPointF center = wordRects.first().center();
+        const PdfBook::Selection sel = pdf.selectWord(0, center);
+        QCOMPARE(sel.text, targetWord);
+        QVERIFY(sel.start >= 0 && sel.end <= p0Text.size());
+        QCOMPARE(p0Text.mid(sel.start, sel.end - sel.start), sel.text);
+
+        // Reader exposes pdfLinks() and pdfSelectWord() cleanly with bounds checks.
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(pdfPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+        QCOMPARE(reader.pdfLinks(0).size(), 2);
+        QVERIFY(reader.pdfLinks(-1).isEmpty());
+        QVERIFY(reader.pdfLinks(5).isEmpty());
+        const QVariantMap rSel = reader.pdfSelectWord(0, center.x(), center.y());
+        QCOMPARE(rSel.value(QStringLiteral("text")).toString(), targetWord);
+        QCOMPARE(rSel.value(QStringLiteral("chapter")).toInt(), 0);
+        QVERIFY(reader.pdfSelectWord(5, 0.2, 0.2).isEmpty());
+    }
+
+    void readerRtlDirectionJumpBackAndWpmAutomatedExclusion() {
+        QTemporaryDir dir;
+        // Build an EPUB 3 book declaring page-progression-direction="rtl".
+        const QByteArray rtlOpf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"3.0\" unique-identifier=\"uid\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            "    <dc:identifier id=\"uid\">urn:uuid:rtl-test-001</dc:identifier>\n"
+            "    <dc:title>Vertical Tales</dc:title>\n"
+            "    <dc:creator>A. Author</dc:creator>\n"
+            "    <dc:language>ja</dc:language>\n"
+            "  </metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine page-progression-direction=\"rtl\"><itemref idref=\"c1\"/></spine>\n"
+            "</package>";
+        const QByteArray rtlNav =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\"><body>\n"
+            "<nav epub:type=\"toc\"><ol><li><a href=\"c1.xhtml\">Chapter One</a></li></ol></nav>\n"
+            "</body></html>";
+        const QByteArray longBody = "<p>" + QByteArray(1200, 'a') + "</p>";
+        const QString rtlPath = dir.filePath("rtl.epub");
+        QVERIFY(TestBooks::write(rtlPath, TestBooks::epub({
+                                              {"OEBPS/content.opf", rtlOpf},
+                                              {"OEBPS/nav.xhtml", rtlNav},
+                                              {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", longBody)},
+                                          })));
+        const QString ltrPath = dir.filePath("ltr.epub");
+        QVERIFY(TestBooks::write(ltrPath, TestBooks::epub2(png(20, 30))));
+
+        EpubBook rtlBook(rtlPath);
+        QVERIFY(rtlBook.open());
+        QVERIFY(rtlBook.isRightToLeft());
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int rtlId = library.addBookFile(rtlPath);
+        const int ltrId = library.addBookFile(ltrPath);
+        QVERIFY(rtlId > 0 && ltrId > 0);
+        // Pre-seed chapter lengths so globalOffset() is deterministic without waiting on background measurement.
+        library.setChapterLengths(rtlId, {4000});
+        library.setChapterLengths(ltrId, {4000, 1000});
+
+        BookScheme scheme;
+        Reader readerAuto(&library, &scheme);
+        QVERIFY(readerAuto.openBook(rtlId));
+        QVERIFY(readerAuto.rtl());
+        QVERIFY(readerAuto.manifest().value(QStringLiteral("rtl")).toBool());
+
+        // Dynamic CSS writing-mode (vertical-lr -> rtl=false, vertical-rl -> rtl=true) updates Reader::rtl.
+        QSignalSpy jumpSpy(&readerAuto, &Reader::jumpRecorded);
+        readerAuto.relocated({{"chapter", 0}, {"offset", 0}, {"end", 200}, {"page", 0}, {"pages", 4}, {"rtl", false}});
+        QVERIFY(!readerAuto.rtl());
+        readerAuto.relocated({{"chapter", 0}, {"offset", 100}, {"end", 300}, {"page", 1}, {"pages", 4},
+                              {"rtl", true}, {"canGoBack", true}, {"canGoForward", false},
+                              {"backChapter", 0}, {"backPageLabel", "12"}, {"jumped", true}});
+        QVERIFY(readerAuto.rtl());
+        QVERIFY(readerAuto.canGoBack());
+        QVERIFY(!readerAuto.canGoForward());
+        QCOMPARE(readerAuto.backLabel(), QStringLiteral("p. 12"));
+        QCOMPARE(jumpSpy.count(), 1);
+
+        // Start manual reader in parallel so one 2.1s wait verifies BOTH automated exclusion and manual inclusion.
+        Reader readerManual(&library, &scheme);
+        QVERIFY(readerManual.openBook(ltrId));
+        QVERIFY(!readerManual.rtl());
+        readerManual.relocated({{"chapter", 0}, {"offset", 0}, {"end", 200}, {"page", 0}, {"pages", 4}});
+
+        QTest::qWait(2100);
+
+        // Automated narration page turn must NOT accumulate visual reading time or WPM chars.
+        readerAuto.relocated({{"chapter", 0}, {"offset", 900}, {"end", 1100}, {"page", 2}, {"pages", 4},
+                              {"automated", true}});
+        // atEnd reports 0 minutes remaining in chapter and book.
+        readerAuto.relocated({{"chapter", 0}, {"offset", 3900}, {"end", 4000}, {"page", 3}, {"pages", 4},
+                              {"atEnd", true}, {"automated", true}});
+        QCOMPARE(readerAuto.minutesLeftInChapter(), 0);
+        QCOMPARE(readerAuto.minutesLeftInBook(), 0);
+        readerAuto.close();
+
+        // Non-automated manual page turn DOES accumulate reading time.
+        readerManual.relocated({{"chapter", 0}, {"offset", 900}, {"end", 1100}, {"page", 1}, {"pages", 4},
+                                {"automated", false}});
+        readerManual.close();
+
+        QCOMPARE(library.record(rtlId).secondsRead, qint64(0));
+        QVERIFY(library.record(ltrId).secondsRead >= 2);
+    }
+
+    // --- Round 4 regression tests: Companion / Search / LocalModels --------
+
+    void companionPersistsThreadsWhosWhoCascadesAndGuardsSpoilers() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath("story.epub");
+        const QByteArray opf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            "    <dc:title>Harbor Mystery</dc:title><dc:creator>Ada Marsh</dc:creator><dc:language>en</dc:language>\n"
+            "  </metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "    <item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/></spine>\n"
+            "</package>";
+        QVERIFY(TestBooks::write(
+            epubPath,
+            TestBooks::epub({
+                {"OEBPS/content.opf", opf},
+                {"OEBPS/c1.xhtml",
+                 TestBooks::chapter("Ch 1", "<p>Ada Marsh lit the brass lantern at dusk along the pier.</p>")},
+                {"OEBPS/c2.xhtml",
+                 TestBooks::chapter("Ch 2", "<p>Captain Reed arrived aboard the silver cutter at dawn.</p>")},
+            })));
+
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restorePreset = qScopeGuard([&] {
+            QSettings s(settingsPath, QSettings::IniFormat);
+            s.remove(QStringLiteral("ai/preset"));
+        });
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 55}, {"page", 0}, {"pages", 1}});
+
+        FakeServer server;
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        LocalModels::Server where;
+        where.kind = LocalModels::Ollama;
+        where.url = QUrl(server.origin());
+        local.configure(where, QStringLiteral("qwen3.5:4b"));
+        services.setLocalModels(&local);
+        services.setPreset(QStringLiteral("local"));
+
+        Companion companion(&services, &reader, library.database().connectionName());
+
+        // 1. Ask persists conversation turns + passage citations to SQLite `companion_threads`.
+        server.responses.append({200, "application/x-ndjson",
+                                 "{\"message\":{\"content\":\"Ada Marsh keeps the brass lantern.\"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"\"},\"done\":true}\n"});
+        companion.ask(QStringLiteral("Who lit the brass lantern?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QCOMPARE(companion.conversation().size(), 2);
+        QCOMPARE(companion.conversation()[0].toMap().value(QStringLiteral("text")).toString(),
+                 QStringLiteral("Who lit the brass lantern?"));
+        QCOMPARE(companion.conversation()[1].toMap().value(QStringLiteral("text")).toString(),
+                 QStringLiteral("Ada Marsh keeps the brass lantern."));
+        QVERIFY(!companion.conversation()[1].toMap().value(QStringLiteral("sources")).toList().isEmpty());
+
+        // A fresh Companion instance restores the persisted Ask thread from SQLite.
+        {
+            Companion restored(&services, &reader, library.database().connectionName());
+            QCOMPARE(restored.conversation().size(), 2);
+            QCOMPARE(restored.conversation()[1].toMap().value(QStringLiteral("text")).toString(),
+                     QStringLiteral("Ada Marsh keeps the brass lantern."));
+            QVERIFY(!restored.conversation()[1].toMap().value(QStringLiteral("sources")).toList().isEmpty());
+        }
+
+        // 2. Who's Who persists checkpoints to `companion_whoswho` with first-seen jump metadata.
+        const QByteArray ch0Who =
+            "{\"message\":{\"content\":\"{\\\"people\\\":[{\\\"name\\\":\\\"Ada Marsh\\\",\\\"also\\\":\\\"\\\","
+            "\\\"who\\\":\\\"Lantern keeper.\\\",\\\"chapter\\\":\\\"Chapter 1\\\"}]}\"},\"done\":true}\n";
+        server.responses.append({200, "application/x-ndjson", ch0Who});
+        companion.whosWho();
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY(companion.peopleLoaded());
+        QCOMPARE(companion.peopleChapter(), 0);
+        QCOMPARE(companion.people().size(), 1);
+        QCOMPARE(companion.people().first().toMap().value(QStringLiteral("chapterIndex")).toInt(), 0);
+        QCOMPARE(companion.people().first().toMap().value(QStringLiteral("offset")).toLongLong(), qint64(0));
+
+        // Advance to chapter 1 and save a second Who's Who checkpoint with Captain Reed.
+        reader.relocated({{"chapter", 1}, {"offset", 0}, {"end", 55}, {"page", 0}, {"pages", 1}});
+        const QByteArray ch1Who =
+            "{\"message\":{\"content\":\"{\\\"people\\\":[{\\\"name\\\":\\\"Ada Marsh\\\",\\\"also\\\":\\\"\\\","
+            "\\\"who\\\":\\\"Lantern keeper.\\\",\\\"chapter\\\":\\\"Chapter 1\\\"},"
+            "{\\\"name\\\":\\\"Captain Reed\\\",\\\"also\\\":\\\"\\\","
+            "\\\"who\\\":\\\"Cutter captain.\\\",\\\"chapter\\\":\\\"Chapter 2\\\"}]}\"},\"done\":true}\n";
+        server.responses.append({200, "application/x-ndjson", ch1Who});
+        companion.whosWho();
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QCOMPARE(companion.peopleChapter(), 1);
+        QCOMPARE(companion.people().size(), 2);
+
+        // Cold reload at chapter 1 hits SQLite checkpoint with zero network calls.
+        const int reqCountBefore = int(server.requests.size());
+        {
+            Companion reloaded(&services, &reader, library.database().connectionName());
+            QVERIFY(reloaded.peopleLoaded());
+            QCOMPARE(reloaded.peopleChapter(), 1);
+            QCOMPARE(reloaded.people().size(), 2);
+            reloaded.whosWho();
+            QVERIFY(!reloaded.busy());
+            QCOMPARE(int(server.requests.size()), reqCountBefore);
+        }
+
+        // 3. Backward-nav spoiler guard: jumping back to chapter 0 hides chapter 1's Captain Reed.
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 55}, {"page", 0}, {"pages", 1}});
+        QVERIFY(companion.peopleLoaded());
+        QCOMPARE(companion.peopleChapter(), 0);
+        QCOMPARE(companion.people().size(), 1);
+        QCOMPARE(companion.people().first().toMap().value(QStringLiteral("name")).toString(),
+                 QStringLiteral("Ada Marsh"));
+
+        // Navigating before the earliest saved offset (end=10 < saved offset 55) clears Who's Who completely.
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 10}, {"page", 0}, {"pages", 1}});
+        QVERIFY(!companion.peopleLoaded());
+        QVERIFY(companion.people().isEmpty());
+
+        // 4. AFTER DELETE ON books trigger cascades cleanup to companion_threads and companion_whoswho.
+        auto countRows = [&](const QString &table) {
+            QSqlQuery q(library.database());
+            q.prepare(QStringLiteral("SELECT COUNT(*) FROM %1 WHERE book_id = ?").arg(table));
+            q.addBindValue(bookId);
+            return (q.exec() && q.next()) ? q.value(0).toInt() : -1;
+        };
+        QCOMPARE(countRows(QStringLiteral("companion_threads")), 2);
+        QCOMPARE(countRows(QStringLiteral("companion_whoswho")), 2);
+
+        QSqlQuery delBook(library.database());
+        delBook.prepare(QStringLiteral("DELETE FROM books WHERE id = ?"));
+        delBook.addBindValue(bookId);
+        QVERIFY(delBook.exec());
+
+        QCOMPARE(countRows(QStringLiteral("companion_threads")), 0);
+        QCOMPARE(countRows(QStringLiteral("companion_whoswho")), 0);
+    }
+
+    void hybridSearchRrfSentenceSpanAndSpoilerFree() {
+        // 1. PassageIndex::fuseHybrid() RRF blending + matchKind classification + edge cases.
+        const QList<PassageIndex::Passage> passages{
+            {0, 0, 50, QStringLiteral("She calibrated the brass astrolabe for nocturnal navigation.")},
+            {0, 60, 120, QStringLiteral("They sailed under bright constellations across calm water.")},
+            {0, 130, 180, QStringLiteral("An antique astrolabe sat dusty on the library shelf.")},
+            {0, 190, 240, QStringLiteral("Morning bread baked slowly inside the quiet village oven.")},
+        };
+        const QList<double> cosines{0.85, 0.90, 0.10, 0.05};
+        const QList<PassageIndex::Hit> fused =
+            PassageIndex::fuseHybrid(passages, cosines, QStringLiteral("astrolabe navigation"), 4, 0.25);
+        QCOMPARE(fused.size(), 3);  // passage 3 excluded (low cosine + zero BM25)
+        // Passage 0 has both strong semantic (#2) and #1 lexical BM25 -> wins RRF over semantic-only passage 1!
+        QCOMPARE(fused[0].passage.start, qint64(0));
+        QCOMPARE(fused[0].matchKind, QStringLiteral("hybrid"));
+        QVERIFY(fused[0].semantic > 0.8 && fused[0].lexical > 0.0);
+        // Semantic-only passage 1 & lexical-only passage 2 both surface with proper matchKind.
+        QCOMPARE(fused[1].passage.start, qint64(60));
+        QCOMPARE(fused[1].matchKind, QStringLiteral("semantic"));
+        QCOMPARE(fused[1].lexical, 0.0);
+        QCOMPARE(fused[2].passage.start, qint64(130));
+        QCOMPARE(fused[2].matchKind, QStringLiteral("lexical"));
+        QVERIFY(fused[2].lexical > 0.0);
+        // Edge cases.
+        QVERIFY(PassageIndex::fuseHybrid(passages, {0.5}, QStringLiteral("astrolabe"), 4).isEmpty());
+        QVERIFY(PassageIndex::fuseHybrid({}, {}, QStringLiteral("astrolabe"), 4).isEmpty());
+        QVERIFY(PassageIndex::fuseHybrid(passages, cosines, QStringLiteral("astrolabe"), 0).isEmpty());
+
+        // 2. BookSearch::sentenceSpan() keeps abbreviations intact, picks best sentence, and caps long spans.
+        const QString chText = QStringLiteral(
+            "Dr. Wells examined the brass astrolabe at noon. Meanwhile Mr. Hyde waited quietly outside the gate. "
+            "The dense harbor fog thickened rapidly before midnight.");
+        const auto s1 = BookSearch::sentenceSpan(chText, 0, chText.size(), QStringLiteral("astrolabe"));
+        QCOMPARE(chText.mid(s1.first, s1.second - s1.first),
+                 QStringLiteral("Dr. Wells examined the brass astrolabe at noon."));
+        const auto s3 = BookSearch::sentenceSpan(chText, 0, chText.size(), QStringLiteral("harbor fog"));
+        QCOMPARE(chText.mid(s3.first, s3.second - s3.first),
+                 QStringLiteral("The dense harbor fog thickened rapidly before midnight."));
+        // Short sentence (<45 chars) coalesces with following sentence when total <= 240.
+        const QString shortPair = QStringLiteral("The key vanished. Nobody saw who unlocked the iron chest.");
+        const auto sp = BookSearch::sentenceSpan(shortPair, 0, shortPair.size(), QStringLiteral("key"));
+        QCOMPARE(shortPair.mid(sp.first, sp.second - sp.first), shortPair);
+        // Overlong punctuationless text caps cleanly <= 240 chars on a word boundary.
+        QString longRun;
+        for (int i = 0; i < 45; ++i)
+            longRun += QStringLiteral("harborlight ");
+        longRun = longRun.trimmed();
+        const auto capped = BookSearch::sentenceSpan(longRun, 0, longRun.size(), QStringLiteral("harborlight"));
+        QVERIFY(capped.second - capped.first <= 240);
+        QVERIFY(longRun.mid(capped.first, capped.second - capped.first).endsWith(QStringLiteral("harborlight")));
+
+        // 3. BookSearch::spoilerFree restricts semantic search strictly up to the reader's current place.
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath("spoiler.epub");
+        const QByteArray opf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>Vault</dc:title><dc:language>en</dc:language></metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "    <item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/></spine>\n"
+            "</package>";
+        QVERIFY(TestBooks::write(
+            epubPath,
+            TestBooks::epub({
+                {"OEBPS/content.opf", opf},
+                {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>A quiet morning over the misty harbor pier.</p>")},
+                {"OEBPS/c2.xhtml",
+                 TestBooks::chapter("Ch 2", "<p>The secret sapphire treasure lay hidden beneath the clocktower.</p>")},
+            })));
+
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restoreSettings = qScopeGuard([&] {
+            QSettings s(settingsPath, QSettings::IniFormat);
+            s.remove(QStringLiteral("ai/preset"));
+            s.remove(QStringLiteral("search/spoilerFree"));
+        });
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 46}, {"page", 0}, {"pages", 1}});
+
+        FakeServer server;
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        LocalModels::Server where;
+        where.kind = LocalModels::Ollama;
+        where.url = QUrl(server.origin());
+        local.configure(where, QStringLiteral("qwen3.5:4b"), QStringLiteral("qwen3-embedding:0.6b"));
+        services.setLocalModels(&local);
+        services.setPreset(QStringLiteral("local"));
+
+        BookSearch search(&reader);
+        search.setMeaning(&services, library.database().connectionName());
+        QVERIFY(search.canSearchByMeaning());
+        search.setByMeaning(true);
+        search.setSpoilerFree(true);
+        QVERIFY(search.spoilerFree());
+
+        // Build chapter 0 (1 passage) + query embedding; chapter 1 must NOT appear.
+        server.responses.append({200, "application/json", "{\"embeddings\":[[1,0]]}"});
+        server.responses.append({200, "application/json", "{\"embeddings\":[[0,1]]}"});
+        search.find(QStringLiteral("sapphire treasure"));
+        QTRY_VERIFY_WITH_TIMEOUT(!search.searching(), 5000);
+        QCOMPARE(search.count(), 0);
+
+        // Disabling spoilerFree re-runs the search across the full book and finds chapter 1!
+        server.responses.append({200, "application/json", "{\"embeddings\":[[0,1]]}"});  // embeds chapter 1 passage
+        server.responses.append({200, "application/json", "{\"embeddings\":[[0,1]]}"});  // query embedding
+        search.setSpoilerFree(false);
+        QTRY_VERIFY_WITH_TIMEOUT(!search.searching() && search.count() > 0, 5000);
+        QCOMPARE(search.results().first().toMap().value(QStringLiteral("chapter")).toInt(), 1);
+        QVERIFY(search.results().first().toMap().value(QStringLiteral("match")).toString().contains(
+            QStringLiteral("sapphire")));
+        QCOMPARE(search.results().first().toMap().value(QStringLiteral("matchKind")).toString(),
+                 QStringLiteral("hybrid"));
+    }
+
+    void localModelsNormalizesProxyUrlsAndParsesContextWindow() {
+        // 1. normalizeServerUrl() preserves reverse-proxy prefixes while stripping API suffixes/query/fragment.
+        QCOMPARE(LocalModels::normalizeServerUrl(QUrl(QStringLiteral("http://127.0.0.1:11434/api/tags"))).toString(),
+                 QStringLiteral("http://127.0.0.1:11434"));
+        QCOMPARE(LocalModels::normalizeServerUrl(
+                     QUrl(QStringLiteral("https://proxy.example.com/ollama/v1/chat/completions?foo=1#bar")))
+                     .toString(),
+                 QStringLiteral("https://proxy.example.com/ollama"));
+        QCOMPARE(LocalModels::normalizeServerUrl(QUrl(QStringLiteral("https://proxy.example.com/llm/v1/"))).toString(),
+                 QStringLiteral("https://proxy.example.com/llm"));
+        QCOMPARE(LocalModels::normalizeServerUrl(QUrl(QStringLiteral("https://proxy.example.com/llama/props"))).toString(),
+                 QStringLiteral("https://proxy.example.com/llama"));
+        QCOMPARE(LocalModels::normalizeServerUrl(QUrl(QStringLiteral("http://localhost:8080/nested/sub/v1/models")))
+                     .toString(),
+                 QStringLiteral("http://localhost:8080/nested/sub"));
+
+        // 2. parseContextWindow() parses Ollama /api/show and llama.cpp /props payloads accurately.
+        const QJsonObject ollamaModelInfo{
+            {"model_info", QJsonObject{{"qwen3.context_length", 131072}, {"general.architecture", "qwen3"}}},
+            {"parameters", "num_ctx 4096\ntemperature 0.7"},
+        };
+        QCOMPARE(LocalModels::parseContextWindow(LocalModels::Ollama, ollamaModelInfo), 131072);
+
+        const QJsonObject ollamaParamsOnly{{"parameters", "stop <|end|>\nnum_ctx 16384\n"}};
+        QCOMPARE(LocalModels::parseContextWindow(LocalModels::Ollama, ollamaParamsOnly), 16384);
+
+        const QJsonObject ollamaTopFallback{{"context_length", 8192}};
+        QCOMPARE(LocalModels::parseContextWindow(LocalModels::Ollama, ollamaTopFallback), 8192);
+
+        const QJsonObject llamaProps{{"default_generation_settings", QJsonObject{{"n_ctx", 65536}}}};
+        QCOMPARE(LocalModels::parseContextWindow(LocalModels::LlamaCpp, llamaProps), 65536);
+
+        const QJsonObject llamaTop{{"n_ctx", 4096}};
+        QCOMPARE(LocalModels::parseContextWindow(LocalModels::LlamaCpp, llamaTop), 4096);
+        QCOMPARE(LocalModels::parseContextWindow(LocalModels::Generic, llamaProps), 0);
+        QCOMPARE(LocalModels::parseContextWindow(LocalModels::Ollama, QJsonObject{}), 0);
+
+        // 3. Live reverse-proxy path preservation + queryContextWindow() against FakeServer.
+        FakeServer server;
+        LocalModels local;
+        LocalModels::Server proxyOllama;
+        proxyOllama.kind = LocalModels::Ollama;
+        proxyOllama.url = QUrl(server.origin() + QStringLiteral("/proxy/ollama/v1/chat/completions"));
+        local.configure(proxyOllama, QStringLiteral("qwen3.5:4b"));
+        QCOMPARE(local.server().url.path(), QStringLiteral("/proxy/ollama"));
+
+        server.responses.append({200, "application/json", "{\"models\":[{\"name\":\"qwen3.5:4b\"}]}"});
+        Ai::Reply *checkReply = local.check();
+        QTRY_VERIFY(checkReply->isFinished());
+        QVERIFY(!checkReply->error());
+        QCOMPARE(server.requests.last().path, QStringLiteral("/proxy/ollama/api/tags"));
+
+        server.responses.append({200, "application/json", "{\"model_info\":{\"qwen3.context_length\":16384}}"});
+        QSignalSpy ctxSpy(&local, &LocalModels::contextWindowChanged);
+        local.queryContextWindow();
+        QTRY_COMPARE(ctxSpy.count(), 1);
+        QCOMPARE(server.requests.last().path, QStringLiteral("/proxy/ollama/api/show"));
+        QCOMPARE(local.reportedContextWindow(), 16384);
+        QCOMPARE(local.contextWindow(false), 16384);
+        QCOMPARE(local.contextWindow(true), 8192);  // fast tier caps at min(8192, reported)
+
+        LocalModels::Server llamaServer;
+        llamaServer.kind = LocalModels::LlamaCpp;
+        llamaServer.url = QUrl(server.origin() + QStringLiteral("/edge/llama/props"));
+        local.configure(llamaServer, QStringLiteral("gemma-3"));
+        server.responses.append({200, "application/json", "{\"default_generation_settings\":{\"n_ctx\":12288}}"});
+        local.queryContextWindow();
+        QTRY_COMPARE(local.reportedContextWindow(), 12288);
+        QCOMPARE(server.requests.last().path, QStringLiteral("/edge/llama/props"));
+        QCOMPARE(local.contextWindow(false), 12288);
+    }
+
+    // --- Round 4 regression tests: Audio / Narration / Cast / Audiobook ----
+
+    void speechHeadingWhitelistAndDialogueSpanSplitting() {
+        // 1. spokenHeading() structural-word whitelist leaves names/pronouns untouched.
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("When I")), QStringLiteral("When I."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Henry V")), QStringLiteral("Henry V."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Louis XIV")), QStringLiteral("Louis XIV."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Appendix C")), QStringLiteral("Appendix C."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Chapter IV")), QStringLiteral("Chapter 4."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Part II — The Crossing")),
+                 QStringLiteral("Part 2 — The Crossing."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Chapitre IX")), QStringLiteral("Chapitre 9."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Kapitel III")), QStringLiteral("Kapitel 3."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Глава XII")), QStringLiteral("Глава 12."));
+        QCOMPARE(Speech::spokenHeading(QStringLiteral("Chapter CCX")), QStringLiteral("Chapter CCX."));
+
+        // 2. splitDialogueSpans() with curly quotes + narration attribution + exact offsets.
+        const SpeechBlock quoted = block(50, QStringLiteral("“Watch out!” Harry shouted. “It’s falling!”"));
+        const QList<DialogueSpan> qSpans = Speech::splitDialogueSpans(quoted);
+        QCOMPARE(qSpans.size(), 3);
+        QVERIFY(qSpans[0].dialogue);
+        QCOMPARE(qSpans[0].sentences.first().text, QStringLiteral("“Watch out!”"));
+        QVERIFY(!qSpans[1].dialogue);
+        QCOMPARE(qSpans[1].sentences.first().text, QStringLiteral("Harry shouted."));
+        QVERIFY(qSpans[2].dialogue);
+        QCOMPARE(qSpans[2].sentences.first().text, QStringLiteral("“It’s falling!”"));
+        for (const DialogueSpan &span : qSpans) {
+            for (const SpeechSentence &s : span.sentences)
+                QCOMPARE(quoted.text.mid(s.start - quoted.start, s.end - s.start), s.text);
+        }
+
+        // British single quotes do not break inside English contractions like "We’re".
+        const SpeechBlock british = block(0, QStringLiteral("‘We’re leaving now,’ she whispered."));
+        const QList<DialogueSpan> bSpans = Speech::splitDialogueSpans(british);
+        QCOMPARE(bSpans.size(), 2);
+        QVERIFY(bSpans[0].dialogue);
+        QCOMPARE(bSpans[0].sentences.first().text, QStringLiteral("‘We’re leaving now,’"));
+        QVERIFY(!bSpans[1].dialogue);
+        QCOMPARE(bSpans[1].sentences.first().text, QStringLiteral("she whispered."));
+
+        // Continental em-dash dialogue splits cleanly into alternating dialogue & narration spans.
+        const SpeechBlock emDash = block(10, QStringLiteral("— Watch out! — Harry shouted. — Run!"));
+        const QList<DialogueSpan> eSpans = Speech::splitDialogueSpans(emDash);
+        QCOMPARE(eSpans.size(), 3);
+        QVERIFY(eSpans[0].dialogue);
+        QVERIFY(!eSpans[1].dialogue);
+        QVERIFY(eSpans[2].dialogue);
+        QCOMPARE(eSpans[1].sentences.first().text, QStringLiteral("Harry shouted."));
+        for (const DialogueSpan &span : eSpans) {
+            for (const SpeechSentence &s : span.sentences)
+                QCOMPARE(emDash.text.mid(s.start - emDash.start, s.end - s.start), s.text);
+        }
+
+        // Speech::clips() splits inline dialogue spans into separate character and narrator clips.
+        const QList<SpeechClip> castClips =
+            Speech::clips(0, {quoted}, {}, 1500, 600, {{0, QStringLiteral("char_harry")}}, QStringLiteral("narrator"));
+        QCOMPARE(castClips.size(), 3);
+        QCOMPARE(castClips[0].voice, QStringLiteral("char_harry"));
+        QCOMPARE(castClips[1].voice, QStringLiteral("narrator"));
+        QCOMPARE(castClips[2].voice, QStringLiteral("char_harry"));
+    }
+
+    void speechPlayerOffThreadWsolaAndMidPlaybackRateRewind() {
+        constexpr int sr = 24000;
+        constexpr int totalSamples = sr * 2;  // 2 seconds of 220 Hz sine wave
+        QByteArray pcm(totalSamples * 2, '\0');
+        auto *samples = reinterpret_cast<qint16 *>(pcm.data());
+        for (int n = 0; n < totalSamples; ++n)
+            samples[n] = qint16(8000 * std::sin(2.0 * M_PI * 220.0 * n / sr));
+
+        SpeechPlayer player(sr);
+        player.setMuted(true);
+        player.addTrack(42);
+        player.appendAudio(42, pcm);
+        player.finishTrack(42);
+
+        // Drive the real off-thread WSOLA std::thread worker without opening a hardware QAudioSink.
+        {
+            QMutexLocker lock(&player.m_mutex);
+            player.m_headless = false;
+            player.m_playing = true;
+            player.startWorker();
+            player.m_cond.wakeOne();
+        }
+
+        // Wait for the off-thread worker to populate at least 2 ready chunks at 1.0x.
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            QMutexLocker lock(&player.m_mutex);
+            return player.m_ready.size() >= 2;
+        }()), 5000);
+
+        // Simulate sink consuming chunk 0; record exact sourceStart of the first unplayed chunk.
+        qint64 expectedRewind = -1;
+        {
+            QMutexLocker lock(&player.m_mutex);
+            const SpeechPlayer::ReadyChunk played = player.m_ready.takeFirst();
+            player.m_readySamples = qMax<qint64>(0, player.m_readySamples - played.bytes.size() / 2);
+            QVERIFY(!player.m_ready.isEmpty());
+            expectedRewind = player.m_ready.first().sourceStart;
+        }
+        QVERIFY(expectedRewind > 0 && expectedRewind < totalSamples);
+
+        // Mid-playback setRate(1.5) must discard stale ready chunks and rewind worker to expectedRewind.
+        player.setRate(1.5);
+        {
+            QMutexLocker lock(&player.m_mutex);
+            QCOMPARE(player.m_rate, 1.5);
+            QVERIFY(player.m_ready.isEmpty() || player.m_ready.first().sourceStart == expectedRewind);
+            if (player.m_ready.isEmpty()) {
+                QCOMPARE(player.m_workerIndex, 0);
+                QCOMPARE(player.m_workerRead, expectedRewind);
+            }
+        }
+
+        // Drain all 1.5x off-thread WSOLA chunks until track completion.
+        QVector<qint16> stretched;
+        bool sawFirstRateChunk = false;
+        bool allRateOk = true;
+        qint64 firstRateSourceStart = -1;
+        QTRY_VERIFY_WITH_TIMEOUT(([&] {
+            QMutexLocker lock(&player.m_mutex);
+            while (!player.m_ready.isEmpty()) {
+                const SpeechPlayer::ReadyChunk chunk = player.m_ready.takeFirst();
+                player.m_readySamples = qMax<qint64>(0, player.m_readySamples - chunk.bytes.size() / 2);
+                if (!chunk.bytes.isEmpty()) {
+                    if (!sawFirstRateChunk) {
+                        sawFirstRateChunk = true;
+                        firstRateSourceStart = chunk.sourceStart;
+                    }
+                    allRateOk = allRateOk && qFuzzyCompare(chunk.rate, 1.5);
+                    const qsizetype n = chunk.bytes.size() / 2;
+                    const qsizetype prev = stretched.size();
+                    stretched.resize(prev + n);
+                    std::memcpy(stretched.data() + prev, chunk.bytes.constData(), size_t(n) * sizeof(qint16));
+                }
+            }
+            player.m_cond.wakeOne();
+            return player.m_workerFinishedAll && player.m_ready.isEmpty();
+        }()), 5000);
+
+        player.stopWorker();
+
+        QVERIFY(sawFirstRateChunk);
+        QVERIFY(allRateOk);
+        QCOMPARE(firstRateSourceStart, expectedRewind);
+        const double expectedOutSamples = double(totalSamples - expectedRewind) / 1.5;
+        QVERIFY2(std::abs(double(stretched.size()) - expectedOutSamples) < 2400.0,
+                 qPrintable(QStringLiteral("got=%1 expected=%2").arg(stretched.size()).arg(expectedOutSamples)));
+
+        // Verify off-thread WSOLA kept the 220 Hz pitch intact.
+        int crossings = 0;
+        const int margin = sr / 10;
+        QVERIFY(stretched.size() > 3 * margin);
+        for (int n = margin; n + 1 < stretched.size() - margin; ++n)
+            crossings += (stretched[n] < 0) != (stretched[n + 1] < 0) ? 1 : 0;
+        const double hertz = crossings / 2.0 / (double(stretched.size() - 2 * margin) / sr);
+        QVERIFY2(std::abs(hertz - 220.0) < 8.0, qPrintable(QString::number(hertz)));
+    }
+
+    void narrationSkipSecondsSleepFadeRestoreAndPendingStart() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath("listen.epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+        AudioCache cache(dir.filePath("audio"), library.database().connectionName());
+
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+
+        // 1. hasPendingStart + startPending() when no key and no local voice pack installed yet.
+        QSignalSpy missingSpy(&narration, &Narration::voiceMissing);
+        narration.start(0, 42);
+        QVERIFY(!narration.active());
+        QVERIFY(narration.hasPendingStart());
+        QCOMPARE(missingSpy.count(), 1);
+
+        // Install offline voice pack, pick it, and invoke startPending().
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        narration.startPending();
+        QVERIFY(!narration.hasPendingStart());
+        QVERIFY(narration.active());
+        QCOMPARE(narration.m_startChapter, 0);
+        QCOMPARE(narration.m_startOffset, qint64(42));
+
+        // 2. skipSeconds(+15/-15) across clips & pause preservation.
+        // Feed 3 long blocks so each forms its own clip (~10s each via manual PCM sizing).
+        narration.stop();
+        narration.start(0, 0);
+        QJsonArray arr;
+        qint64 off = 0;
+        for (int i = 0; i < 3; ++i) {
+            const QString para = QStringLiteral("Clip %1 first sentence. Clip %1 second sentence. ").arg(i) +
+                                 QString(700, QLatin1Char('a')) + QStringLiteral(".");
+            arr.append(QJsonObject{{"start", double(off)}, {"end", double(off + para.size())},
+                                   {"text", para}, {"kind", "text"}});
+            off += para.size() + 1;
+        }
+        narration.addBlocks(0, QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+        QTRY_VERIFY_WITH_TIMEOUT(narration.m_clips.size() == 3 &&
+                                     narration.m_clips[0].state == Narration::Clip::Complete &&
+                                     narration.m_clips[1].state == Narration::Clip::Complete &&
+                                     narration.m_clips[2].state == Narration::Clip::Complete,
+                                 5000);
+        // Set exact 10-second (240,000-sample) PCM lengths on all 3 clips for deterministic ±15s checks.
+        for (int i = 0; i < 3; ++i) {
+            narration.m_clips[i].pcm = QByteArray(240000 * 2, '\0');
+            narration.m_clips[i].samples = 240000;
+        }
+        narration.heard(narration.m_clips[0].id, 0);
+        QCOMPARE(narration.m_current, 0);
+        QCOMPARE(narration.m_currentSample, qint64(0));
+
+        QSignalSpy seekSpy(&narration, &Narration::seeked);
+        narration.skipSeconds(15);  // +360,000 samples -> clip 1 @ 120,000 samples (5s into clip 1)
+        QCOMPARE(narration.m_current, 1);
+        QCOMPARE(narration.m_currentSample, qint64(120000));
+        QCOMPARE(seekSpy.count(), 1);
+
+        // Skipping while paused preserves paused state.
+        narration.pause();
+        QVERIFY(!narration.playing());
+        narration.skipSeconds(-15);  // back to clip 0 @ 0 samples
+        QCOMPARE(narration.m_current, 0);
+        QCOMPARE(narration.m_currentSample, qint64(0));
+        QVERIFY(!narration.playing());
+        narration.resume();
+
+        // 3. Sleep timer 10s quadratic fade-out + volume restore on resume() and cancel.
+        narration.setVolume(0.8);
+        QCOMPARE(narration.volume(), 0.8);
+        narration.sleepIn(1);
+        narration.m_sleepAt = QDateTime::currentDateTime().addMSecs(5000);  // halfway into 10s fade
+        narration.onSleepTick();
+        QVERIFY(narration.sleepFading());
+        QVERIFY2(narration.volume() > 0.12 && narration.volume() < 0.30,
+                 qPrintable(QString::number(narration.volume())));
+
+        narration.finishSleep();
+        QVERIFY(!narration.playing());
+        QVERIFY(!narration.sleepFading());
+        QCOMPARE(narration.volume(), 0.0);
+
+        // Resuming after sleep-pause restores the original pre-fade volume (0.8).
+        narration.resume();
+        QVERIFY(narration.playing());
+        QCOMPARE(narration.volume(), 0.8);
+
+        // Cancelling mid-fade via sleepIn(0) also restores the pre-fade volume immediately.
+        narration.sleepIn(1);
+        narration.m_sleepAt = QDateTime::currentDateTime().addMSecs(4000);
+        narration.onSleepTick();
+        QVERIFY(narration.sleepFading());
+        QVERIFY(narration.volume() < 0.5);
+        narration.sleepIn(0);
+        QVERIFY(!narration.sleepFading());
+        QCOMPARE(narration.volume(), 0.8);
+        narration.stop();
+    }
+
+    void directorPdfBatchRangeAndSplitMoodsByPage() {
+        // Build a 20-page PDF with outline sections starting at page 0 and page 10.
+        auto outlinedPdf = [] {
+            QByteArray out = "%PDF-1.4\n";
+            QList<qsizetype> offsets;
+            auto object = [&](const QByteArray &body) {
+                offsets.append(out.size());
+                out += QByteArray::number(offsets.size()) + " 0 obj\n" + body + "\nendobj\n";
+            };
+            constexpr int pages = 20;
+            // Obj 1: Catalog, Obj 2: Pages, Obj 3: Font, Obj 4: shared Content stream
+            // Obj 5..24: 20 Page objects (page p -> obj 5 + p)
+            // Obj 25: Outlines root, Obj 26: Outline "Part One" (page 0 -> obj 5), Obj 27: Outline "Part Two" (page 10 -> obj 15)
+            object("<< /Type /Catalog /Pages 2 0 R /Outlines 25 0 R >>");  // 1
+            QByteArray kids;
+            for (int p = 0; p < pages; ++p)
+                kids += QByteArray::number(5 + p) + " 0 R ";
+            object("<< /Type /Pages /Kids [ " + kids + "] /Count 20 >>");  // 2
+            object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");  // 3
+            const QByteArray stream = "BT /F1 12 Tf 20 250 Td (Batch page text.) Tj ET";
+            object("<< /Length " + QByteArray::number(stream.size()) + " >>\nstream\n" + stream + "\nendstream");  // 4
+            for (int p = 0; p < pages; ++p)
+                object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 300] /Contents 4 0 R "
+                       "/Resources << /Font << /F1 3 0 R >> >> >>");  // 5..24
+            object("<< /Type /Outlines /First 26 0 R /Last 27 0 R /Count 2 >>");                      // 25
+            object("<< /Title (Part One) /Parent 25 0 R /Next 27 0 R /Dest [5 0 R /XYZ 0 300 1] >>");        // 26 (page 0)
+            object("<< /Title (Part Two) /Parent 25 0 R /Prev 26 0 R /Dest [15 0 R /XYZ 0 300 1] >>");       // 27 (page 10)
+            const qsizetype xref = out.size();
+            out += "xref\n0 " + QByteArray::number(offsets.size() + 1) + "\n0000000000 65535 f \n";
+            for (const qsizetype off : offsets)
+                out += QByteArray::number(off).rightJustified(10, '0') + " 00000 n \n";
+            out += "trailer\n<< /Size " + QByteArray::number(offsets.size() + 1) + " /Root 1 0 R >>\n";
+            out += "startxref\n" + QByteArray::number(xref) + "\n%%EOF\n";
+            return out;
+        };
+
+        QTemporaryDir dir;
+        const QString pdfPath = dir.filePath("outlined.pdf");
+        QVERIFY(TestBooks::write(pdfPath, outlinedPdf()));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(pdfPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+        QCOMPARE(reader.chapterCount(), 20);
+
+        // Null reader returns single-page fallback.
+        QCOMPARE(Director::pdfBatchRange(nullptr, 5), (QPair<int, int>{5, 5}));
+        // Section 1 (pages 0..9): capped at 8 pages (0..7), then remainder bounded by outline at page 10 (8..9).
+        QCOMPARE(Director::pdfBatchRange(&reader, 0), (QPair<int, int>{0, 7}));
+        QCOMPARE(Director::pdfBatchRange(&reader, 7), (QPair<int, int>{0, 7}));
+        QCOMPARE(Director::pdfBatchRange(&reader, 8), (QPair<int, int>{8, 9}));
+        QCOMPARE(Director::pdfBatchRange(&reader, 9), (QPair<int, int>{8, 9}));
+        // Section 2 (pages 10..19): 10..17, then 18..19.
+        QCOMPARE(Director::pdfBatchRange(&reader, 10), (QPair<int, int>{10, 17}));
+        QCOMPARE(Director::pdfBatchRange(&reader, 17), (QPair<int, int>{10, 17}));
+        QCOMPARE(Director::pdfBatchRange(&reader, 18), (QPair<int, int>{18, 19}));
+        QCOMPARE(Director::pdfBatchRange(&reader, 19), (QPair<int, int>{18, 19}));
+
+        // splitMoodsByPage() maps global block indices to local per-page indices and carries active mood across pages.
+        const QMap<int, QString> combined{
+            {1, QStringLiteral("tense")},
+            {3, QString()},
+            {4, QStringLiteral("hushed")},
+        };
+        const QHash<int, QPair<int, int>> ranges{
+            {0, {0, 2}},  // blocks 0, 1
+            {1, {2, 3}},  // blocks 2, 3, 4
+            {2, {5, 2}},  // blocks 5, 6
+        };
+        const auto byPage = Director::splitMoodsByPage(combined, ranges, 0, 2);
+        QCOMPARE(byPage.value(0), (QMap<int, QString>{{1, QStringLiteral("tense")}}));
+        QCOMPARE(byPage.value(1), (QMap<int, QString>{{0, QStringLiteral("tense")},
+                                                      {1, QString()},
+                                                      {2, QStringLiteral("hushed")}}));
+        QCOMPARE(byPage.value(2), (QMap<int, QString>{{0, QStringLiteral("hushed")}}));
+    }
+
+    void audiobookSynthesizesPauseSilenceAndPartialChapterSuffix() {
+        if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty())
+            QSKIP("ffmpeg isn't installed");
+
+        QTemporaryDir dir;
+        const QString musicDir = dir.filePath("music");
+        QVERIFY(QDir().mkpath(musicDir));
+        const QString userDirsPath = QString::fromUtf8(qgetenv("XDG_CONFIG_HOME")) + QStringLiteral("/user-dirs.dirs");
+        const bool hadUserDirs = QFile::exists(userDirsPath);
+        QByteArray prevUserDirs;
+        if (hadUserDirs) {
+            QFile f(userDirsPath);
+            if (f.open(QIODevice::ReadOnly))
+                prevUserDirs = f.readAll();
+        }
+        auto restoreUserDirs = qScopeGuard([&] {
+            if (hadUserDirs)
+                write(userDirsPath, prevUserDirs);
+            else
+                QFile::remove(userDirsPath);
+        });
+        write(userDirsPath, QStringLiteral("XDG_MUSIC_DIR=\"%1\"\n").arg(musicDir).toUtf8());
+
+        // 4 linear chapters so partial exports trigger "(Ch X–Y)" and "(Ch X)" suffixes.
+        const QString epubPath = dir.filePath("four.epub");
+        const QByteArray opf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            "    <dc:title>Sea Voyages</dc:title><dc:creator>Ada Marsh</dc:creator><dc:language>en-GB</dc:language>\n"
+            "  </metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"c0\" href=\"c0.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "    <item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "    <item id=\"c3\" href=\"c3.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine><itemref idref=\"c0\"/><itemref idref=\"c1\"/><itemref idref=\"c2\"/><itemref idref=\"c3\"/></spine>\n"
+            "</package>";
+        QVERIFY(TestBooks::write(
+            epubPath,
+            TestBooks::epub({
+                {"OEBPS/content.opf", opf},
+                {"OEBPS/c0.xhtml", TestBooks::chapter("Ch 1", "<p>Opening harbor scene.</p>")},
+                {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 2", "<p>Before break.</p><p>* * *</p><p>After break.</p>")},
+                {"OEBPS/c2.xhtml", TestBooks::chapter("Ch 3", "<p>Third chapter line.</p>")},
+                {"OEBPS/c3.xhtml", TestBooks::chapter("Ch 4", "<p>Final epilogue line.</p>")},
+            })));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        library.setChapterLengths(bookId, {30, 40, 30, 30});
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+
+        AudioCache cache(dir.filePath("audio"), library.database().connectionName());
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+
+        // Export partial chapters 1..2 (1-based Ch 2–3) with a 1300 ms scene-break pause.
+        Download download(&services, &cache, &reader, &narration);
+        download.start(1, 2);
+        download.addBlocks(1, R"([
+            {"start":0,"end":13,"text":"Before break.","kind":"text"},
+            {"start":14,"end":19,"text":"* * *","kind":"break"},
+            {"start":20,"end":32,"text":"After break.","kind":"text"}
+        ])");
+        download.addBlocks(2, R"([{"start":0,"end":19,"text":"Third chapter line.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(download.finished(), 15000);
+        QVERIFY2(download.problem().isEmpty(), qPrintable(download.problem()));
+        QVERIFY(download.plannedKeys().value(1).contains(QStringLiteral("pause:1300")));
+
+        Audiobook audiobook(&cache, &download, &reader, &library);
+        audiobook.save();
+        QTRY_VERIFY_WITH_TIMEOUT(!audiobook.busy(), 15000);
+        QVERIFY2(audiobook.problem().isEmpty(), qPrintable(audiobook.problem()));
+        const QString expectedRange =
+            QDir(musicDir + QStringLiteral("/Dogear")).filePath(QStringLiteral("Sea Voyages (Ch 2\u20133).m4b"));
+        QCOMPARE(audiobook.saved(), expectedRange);
+        QVERIFY(QFileInfo(expectedRange).size() > 1000);
+
+        // Verify total duration includes the 3 half-second spoken clips (~1.5s) + 1.3s pause (>= 2.5s).
+        const QString ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+        if (!ffprobe.isEmpty()) {
+            QProcess probe;
+            probe.start(ffprobe, {QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-show_entries"),
+                                  QStringLiteral("format=duration"), QStringLiteral("-of"),
+                                  QStringLiteral("default=noprint_wrappers=1:nokey=1"), expectedRange});
+            QVERIFY(probe.waitForFinished(5000));
+            const double durationSec = QString::fromUtf8(probe.readAllStandardOutput()).trimmed().toDouble();
+            QVERIFY2(durationSec >= 2.5, qPrintable(QString::number(durationSec)));
+        }
+
+        // Export a single chapter (chapter 0 -> "(Ch 1).m4b").
+        Download single(&services, &cache, &reader, &narration);
+        single.start(0, 0);
+        single.addBlocks(0, R"([{"start":0,"end":21,"text":"Opening harbor scene.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(single.finished(), 15000);
+        Audiobook singleBook(&cache, &single, &reader, &library);
+        singleBook.save();
+        QTRY_VERIFY_WITH_TIMEOUT(!singleBook.busy(), 15000);
+        QVERIFY2(singleBook.problem().isEmpty(), qPrintable(singleBook.problem()));
+        const QString expectedSingle =
+            QDir(musicDir + QStringLiteral("/Dogear")).filePath(QStringLiteral("Sea Voyages (Ch 1).m4b"));
+        QCOMPARE(singleBook.saved(), expectedSingle);
+        QVERIFY(QFileInfo(expectedSingle).size() > 1000);
+    }
+
+    // --- Round 4 regression tests: Library / Marks / CLI -------------------
+
+    void librarySchemaMigrationsCollectionsStatsAndSeriesSort() {
+        QTemporaryDir dir;
+        const QString dataDir = dir.filePath("data");
+        const QString cacheDir = dir.filePath("cache");
+        QVERIFY(QDir().mkpath(dataDir));
+        const QString dbPath = dataDir + QStringLiteral("/library.sqlite");
+
+        // 1. Simulate a pre-v1 (user_version = 0) legacy database without fingerprint/collections/prefix/suffix.
+        {
+            QSqlDatabase legacy = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), QStringLiteral("legacy-v0"));
+            legacy.setDatabaseName(dbPath);
+            QVERIFY(legacy.open());
+            QSqlQuery q(legacy);
+            QVERIFY(q.exec(QStringLiteral("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")));
+            QVERIFY(q.exec(QStringLiteral(
+                "CREATE TABLE folders (id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, added_at INTEGER NOT NULL)")));
+            QVERIFY(q.exec(QStringLiteral(
+                "CREATE TABLE books ("
+                " id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, format TEXT NOT NULL,"
+                " size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,"
+                " title TEXT NOT NULL DEFAULT '', sort_title TEXT NOT NULL DEFAULT '',"
+                " author TEXT NOT NULL DEFAULT '', sort_author TEXT NOT NULL DEFAULT '',"
+                " editor TEXT NOT NULL DEFAULT '', publisher TEXT NOT NULL DEFAULT '', year INTEGER NOT NULL DEFAULT 0,"
+                " language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', subjects TEXT NOT NULL DEFAULT '',"
+                " isbn TEXT NOT NULL DEFAULT '', series TEXT NOT NULL DEFAULT '', series_index REAL NOT NULL DEFAULT 0,"
+                " work_key TEXT NOT NULL DEFAULT '', chapters INTEGER NOT NULL DEFAULT 0, pages INTEGER NOT NULL DEFAULT 0,"
+                " length INTEGER NOT NULL DEFAULT 0, cover TEXT NOT NULL DEFAULT '', problem TEXT NOT NULL DEFAULT '',"
+                " added_at INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL DEFAULT 0,"
+                " finished_at INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, position TEXT NOT NULL DEFAULT '',"
+                " seconds_read INTEGER NOT NULL DEFAULT 0, missing INTEGER NOT NULL DEFAULT 0,"
+                " hidden INTEGER NOT NULL DEFAULT 0, loose INTEGER NOT NULL DEFAULT 0)")));
+            QVERIFY(q.exec(QStringLiteral(
+                "CREATE TABLE annotations ("
+                " id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, kind TEXT NOT NULL,"
+                " chapter INTEGER NOT NULL DEFAULT 0, start INTEGER NOT NULL DEFAULT 0, finish INTEGER NOT NULL DEFAULT 0,"
+                " text TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '',"
+                " label TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)")));
+            QVERIFY(q.exec(QStringLiteral(
+                "INSERT INTO books (id, path, format, title, sort_title, author, sort_author, work_key, added_at) "
+                "VALUES (1, '/legacy/book.epub', 'epub', 'Legacy Book', 'legacy book', 'Old Author', 'author, old', 'wk1', 100)")));
+            QVERIFY(q.exec(QStringLiteral(
+                "INSERT INTO annotations (id, book_id, kind, chapter, start, finish, text, note, color, label, created_at, updated_at) "
+                "VALUES (1, 1, 'highlight', 0, 5, 15, 'kept quote', 'kept note', 'yellow', 'Ch 1', 100, 100)")));
+            QVERIFY(q.exec(QStringLiteral("PRAGMA user_version = 0")));
+            legacy.close();
+        }
+        QSqlDatabase::removeDatabase(QStringLiteral("legacy-v0"));
+
+        // Opening migrates v0 -> v1 -> v2 -> v3 cleanly while preserving legacy rows.
+        {
+            Library migrated(dataDir, cacheDir);
+            QVERIFY2(migrated.open(), qPrintable(migrated.errorString()));
+            QCOMPARE(migrated.schemaVersion(), 3);
+            QCOMPARE(migrated.record(1).title, QStringLiteral("Legacy Book"));
+
+            auto hasCol = [&](const QString &table, const QString &col) {
+                QSqlQuery info(migrated.database());
+                if (!info.exec(QStringLiteral("PRAGMA table_info(%1)").arg(table)))
+                    return false;
+                while (info.next())
+                    if (info.value(1).toString() == col)
+                        return true;
+                return false;
+            };
+            QVERIFY(hasCol(QStringLiteral("books"), QStringLiteral("fingerprint")));
+            QVERIFY(hasCol(QStringLiteral("annotations"), QStringLiteral("prefix")));
+            QVERIFY(hasCol(QStringLiteral("annotations"), QStringLiteral("suffix")));
+
+            QSqlQuery ann(migrated.database());
+            QVERIFY(ann.exec(QStringLiteral("SELECT text, note, prefix, suffix FROM annotations WHERE id = 1")));
+            QVERIFY(ann.next());
+            QCOMPARE(ann.value(0).toString(), QStringLiteral("kept quote"));
+            QCOMPARE(ann.value(1).toString(), QStringLiteral("kept note"));
+            QCOMPARE(ann.value(2).toString(), QString());
+            QCOMPARE(ann.value(3).toString(), QString());
+        }
+
+        // 2. Collections CRUD, readingStats(), and WorksModel series sort on a fresh Library.
+        QTemporaryDir freshDir;
+        Library library(freshDir.filePath("data"), freshDir.filePath("cache"));
+        QVERIFY(library.open());
+        QCOMPARE(library.schemaVersion(), 3);
+
+        auto makeSeriesEpub = [&](const QString &fileName, const QString &title, const QString &author,
+                                  const QString &series, double index) {
+            const QString path = freshDir.filePath(fileName);
+            const QString seriesMeta =
+                series.isEmpty()
+                    ? QString()
+                    : QStringLiteral("<meta name=\"calibre:series\" content=\"%1\"/>"
+                                     "<meta name=\"calibre:series_index\" content=\"%2\"/>")
+                          .arg(series)
+                          .arg(index);
+            const QByteArray opf =
+                QStringLiteral(
+                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                    "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+                    "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                    "    <dc:title>%1</dc:title><dc:creator>%2</dc:creator><dc:language>en</dc:language>\n"
+                    "    %3\n"
+                    "  </metadata>\n"
+                    "  <manifest><item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>\n"
+                    "  <spine><itemref idref=\"c1\"/></spine>\n"
+                    "</package>")
+                    .arg(title, author, seriesMeta)
+                    .toUtf8();
+            const bool ok = TestBooks::write(path, TestBooks::epub({
+                                                       {"OEBPS/content.opf", opf},
+                                                       {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>Text.</p>")},
+                                                   }));
+            return ok ? library.addBookFile(path) : 0;
+        };
+
+        const int bDune2 = makeSeriesEpub("d2.epub", "Dune Messiah", "Frank Herbert", "Dune", 2.0);
+        const int bDune1 = makeSeriesEpub("d1.epub", "Dune", "Frank Herbert", "Dune", 1.0);
+        const int bAlpha1 = makeSeriesEpub("a1.epub", "Alpha Rising", "Cara Lin", "Alpha", 1.0);
+        const int bStandalone = makeSeriesEpub("z1.epub", "Zeta Standalone", "Zed Author", "", 0.0);
+        QVERIFY(bDune2 > 0 && bDune1 > 0 && bAlpha1 > 0 && bStandalone > 0);
+
+        // Series sort places series books alphabetically by series then ascending by seriesIndex, standalones last.
+        library.works()->setSortOrder(QStringLiteral("series"));
+        QTRY_COMPARE(library.works()->count(), 4);
+        QCOMPARE(library.works()->get(0).value(QStringLiteral("bookId")).toInt(), bAlpha1);
+        QCOMPARE(library.works()->get(1).value(QStringLiteral("bookId")).toInt(), bDune1);
+        QCOMPARE(library.works()->get(2).value(QStringLiteral("bookId")).toInt(), bDune2);
+        QCOMPARE(library.works()->get(3).value(QStringLiteral("bookId")).toInt(), bStandalone);
+        QCOMPARE(library.works()->seriesList(), (QStringList{QStringLiteral("Alpha"), QStringLiteral("Dune")}));
+
+        library.works()->setSeriesFilter(QStringLiteral("Dune"));
+        QCOMPARE(library.works()->count(), 2);
+        QVERIFY(library.works()->hasActiveFilters());
+        library.works()->clearFilters();
+        QCOMPARE(library.works()->count(), 4);
+
+        // Collections CRUD + case-insensitive dedup + WorksModel filter + delete reset.
+        QCOMPARE(library.createCollection(QStringLiteral("   ")), 0);
+        const int colSciFi = library.createCollection(QStringLiteral("Sci-Fi"));
+        QVERIFY(colSciFi > 0);
+        QCOMPARE(library.createCollection(QStringLiteral("sci-fi")), colSciFi);
+        const int colFav = library.createCollection(QStringLiteral("Favorites"));
+        QVERIFY(colFav > 0 && colFav != colSciFi);
+
+        QVERIFY(library.addToCollection(bDune1, colSciFi));
+        QVERIFY(library.addToCollection(bDune2, colSciFi));
+        QVERIFY(library.isInCollection(bDune1, colSciFi));
+        QCOMPARE(library.collectionsForBook(bDune1).size(), 1);
+
+        library.works()->setCollectionId(colSciFi);
+        QCOMPARE(library.works()->count(), 2);
+
+        QVERIFY(!library.renameCollection(colSciFi, QStringLiteral("favorites")));  // duplicate conflict rejected
+        QVERIFY(library.renameCollection(colSciFi, QStringLiteral("Speculative")));
+        QCOMPARE(library.collectionsForBook(bDune1).first().toMap().value(QStringLiteral("name")).toString(),
+                 QStringLiteral("Speculative"));
+
+        QVERIFY(library.removeFromCollection(bDune2, colSciFi));
+        QVERIFY(!library.isInCollection(bDune2, colSciFi));
+        QCOMPARE(library.works()->count(), 1);
+
+        QVERIFY(library.deleteCollection(colSciFi));
+        QCOMPARE(library.works()->collectionId(), 0);
+        QCOMPARE(library.works()->count(), 4);
+        QVERIFY(library.collectionsForBook(bDune1).isEmpty());
+
+        // readingStats() aggregates book statuses, streaks, 14-day history, and bookReadingStats().
+        library.setFinished(bDune1, true);
+        library.markOpened(bDune2);
+        library.addReadingTime(bDune1, 600, 12000);  // today: 600s
+        const QDate today = QDate::currentDate();
+        auto addDay = [&](int daysAgo, int sec) {
+            QSqlQuery ins(library.database());
+            ins.prepare(QStringLiteral("INSERT OR REPLACE INTO reading_days (book_id, day, seconds) VALUES (?, ?, ?)"));
+            ins.addBindValue(bDune2);
+            ins.addBindValue(today.addDays(-daysAgo).toString(Qt::ISODate));
+            ins.addBindValue(sec);
+            QVERIFY(ins.exec());
+        };
+        // Current 3-day streak (today, -1, -2) and an older 4-day longest streak (-10..-7).
+        addDay(1, 300);
+        addDay(2, 200);
+        addDay(7, 100);
+        addDay(8, 100);
+        addDay(9, 100);
+        addDay(10, 100);
+
+        const QVariantMap stats = library.readingStats();
+        QCOMPARE(stats.value(QStringLiteral("totalBooks")).toInt(), 4);
+        QCOMPARE(stats.value(QStringLiteral("finishedBooks")).toInt(), 1);
+        QCOMPARE(stats.value(QStringLiteral("readingBooks")).toInt(), 1);
+        QCOMPARE(stats.value(QStringLiteral("unreadBooks")).toInt(), 2);
+        QCOMPARE(stats.value(QStringLiteral("todaySeconds")).toLongLong(), qint64(600));
+        QCOMPARE(stats.value(QStringLiteral("weekSeconds")).toLongLong(), qint64(1100));
+        QCOMPARE(stats.value(QStringLiteral("streakDays")).toInt(), 3);
+        QCOMPARE(stats.value(QStringLiteral("longestStreak")).toInt(), 4);
+        QCOMPARE(stats.value(QStringLiteral("activeDays")).toInt(), 7);
+        const QVariantList recent = stats.value(QStringLiteral("recentDays")).toList();
+        QCOMPARE(recent.size(), 14);
+        QCOMPARE(recent.last().toMap().value(QStringLiteral("seconds")).toLongLong(), qint64(600));
+
+        const QVariantMap bookStats = library.bookReadingStats(bDune1);
+        QCOMPARE(bookStats.value(QStringLiteral("secondsRead")).toLongLong(), qint64(600));
+        QVERIFY(bookStats.value(QStringLiteral("daysRead")).toInt() >= 1);
+    }
+
+    void marksW3cQuoteHealingCrossBookSearchAndObsidianExport() {
+        // 1. Marks::locateQuote() disambiguates repeated phrases by W3C prefix/suffix and handles whitespace drift.
+        const QString chapter = QStringLiteral("At dawn the harbor slept quietly. By noon the harbor roared with wind.");
+        const qint64 secondHarbor = chapter.indexOf(QStringLiteral("the harbor"), 15);
+        QVERIFY(secondHarbor > 15);
+        const auto disamb = Marks::locateQuote(chapter, QStringLiteral("the harbor"),
+                                               QStringLiteral("By noon "), QStringLiteral(" roared"), 0);
+        QCOMPARE(disamb.first, secondHarbor);
+        QCOMPARE(disamb.second, secondHarbor + 10);
+
+        const QString wrappedChapter = QStringLiteral("Intro text.\nThe\n  harbor   roared\tloudly.");
+        const auto wsHit = Marks::locateQuote(wrappedChapter, QStringLiteral("The harbor roared"),
+                                              QStringLiteral("Intro text."), QStringLiteral(" loudly"), -1);
+        QVERIFY(wsHit.first >= 0);
+        QCOMPARE(wrappedChapter.mid(wsHit.first, wsHit.second - wsHit.first),
+                 QStringLiteral("The\n  harbor   roared"));
+        QCOMPARE(Marks::locateQuote(chapter, QStringLiteral("nonexistent phrase"), {}, {}, 0),
+                 (QPair<qint64, qint64>{-1, -1}));
+
+        // 2. healChapter(), searchAll(), and Obsidian/Readwise exportMarkdownToFile().
+        QTemporaryDir dir;
+        const QString epub1 = dir.filePath("b1.epub");
+        const QString epub2 = dir.filePath("b2.epub");
+        QVERIFY(TestBooks::write(epub1, TestBooks::epub2(png(20, 30))));
+        QVERIFY(TestBooks::write(epub2, TestBooks::epub3(adobeObfuscate(fontPayload()))));
+
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        const int id1 = library.addBookFile(epub1);
+        const int id2 = library.addBookFile(epub2);
+        QVERIFY(id1 > 0 && id2 > 0);
+
+        Marks marks(&library);
+        marks.setBook(id1);
+        const int h1 = marks.addHighlight(0, 0, 10, QStringLiteral("the harbor"), QStringLiteral("blue"),
+                                          QStringLiteral("Ch. 1"), QStringLiteral("By noon "),
+                                          QStringLiteral(" roared"));
+        const int b1 = marks.addBookmark(0, 0, QStringLiteral("the harbor"), QStringLiteral("p. 1"),
+                                         QStringLiteral("At dawn "), QStringLiteral(" slept"));
+        marks.setNote(h1, QStringLiteral("Great café atmosphere"));
+
+        // resolveOffset() detects drift before healing.
+        const QVariantMap resolved = marks.resolveOffset(h1, chapter);
+        QVERIFY(resolved.value(QStringLiteral("found")).toBool());
+        QVERIFY(resolved.value(QStringLiteral("drifted")).toBool());
+        QCOMPARE(resolved.value(QStringLiteral("start")).toLongLong(), secondHarbor);
+        QCOMPARE(resolved.value(QStringLiteral("end")).toLongLong(), secondHarbor + 10);
+
+        // healChapter() fixes both highlight and bookmark, persists to SQLite, and is idempotent.
+        QCOMPARE(marks.healChapter(0, chapter), 2);
+        QCOMPARE(marks.healChapter(0, chapter), 0);
+        QCOMPARE(marks.mark(h1).value(QStringLiteral("start")).toLongLong(), secondHarbor);
+        QCOMPARE(marks.mark(h1).value(QStringLiteral("end")).toLongLong(), secondHarbor + 10);
+        const qint64 firstHarbor = chapter.indexOf(QStringLiteral("the harbor"));
+        QCOMPARE(marks.mark(b1).value(QStringLiteral("start")).toLongLong(), firstHarbor);
+        QCOMPARE(marks.mark(b1).value(QStringLiteral("end")).toLongLong(), firstHarbor);
+
+        // Reloading Marks verifies healed offsets persisted in SQLite.
+        {
+            Marks reloaded(&library);
+            reloaded.setBook(id1);
+            QCOMPARE(reloaded.mark(h1).value(QStringLiteral("start")).toLongLong(), secondHarbor);
+            QCOMPARE(reloaded.mark(b1).value(QStringLiteral("start")).toLongLong(), firstHarbor);
+        }
+
+        // Add a mark in Book 2 for cross-book searchAll().
+        marks.setBook(id2);
+        const int h2 = marks.addHighlight(0, 0, 12, QStringLiteral("Café on salt"), QStringLiteral("green"),
+                                          QStringLiteral("p. 7"));
+        QVERIFY(h2 > 0);
+        marks.setBook(id1);
+
+        // Accent-folded searchAll("cafe") returns hits from both books and prioritizes the active book + note match.
+        const QVariantList foundBoth = marks.searchAll(QStringLiteral("cafe"));
+        QCOMPARE(foundBoth.size(), 2);
+        QCOMPARE(foundBoth.first().toMap().value(QStringLiteral("bookId")).toInt(), id1);
+        QCOMPARE(foundBoth.last().toMap().value(QStringLiteral("bookId")).toInt(), id2);
+
+        // Hidden books are excluded from searchAll().
+        library.setHidden(id2, true);
+        const QVariantList foundVisible = marks.searchAll(QStringLiteral("cafe"));
+        QCOMPARE(foundVisible.size(), 1);
+        QCOMPARE(foundVisible.first().toMap().value(QStringLiteral("bookId")).toInt(), id1);
+
+        // Obsidian & Readwise exportMarkdownToFile() writes YAML frontmatter and metadata atomically.
+        const QString obsidianPath = dir.filePath("exports/notes-obsidian.md");
+        const QString writtenObs = marks.exportMarkdownToFile(
+            QUrl::fromLocalFile(obsidianPath).toString(), QStringLiteral("The \"Lantern\""),
+            QStringLiteral("Ada Marsh"), QStringLiteral("obsidian"));
+        QCOMPARE(writtenObs, obsidianPath);
+        QFile obsFile(obsidianPath);
+        QVERIFY(obsFile.open(QIODevice::ReadOnly));
+        const QString obsContent = QString::fromUtf8(obsFile.readAll());
+        QVERIFY(obsContent.startsWith(QStringLiteral("---\n")));
+        QVERIFY(obsContent.contains(QStringLiteral("title: \"The \\\"Lantern\\\"\"\n")));
+        QVERIFY(obsContent.contains(QStringLiteral("author: \"Ada Marsh\"\n")));
+        QVERIFY(obsContent.contains(QStringLiteral("tags:\n  - dogear\n  - reading-notes\n")));
+        QVERIFY(obsContent.contains(QStringLiteral("> the harbor\n")));
+        QVERIFY(obsContent.contains(QStringLiteral("Great café atmosphere\n")));
+        QVERIFY(obsContent.contains(QStringLiteral("— *Blue · Ch. 1 · ")));
+
+        const QString readwisePath = dir.filePath("exports/notes-readwise.md");
+        QCOMPARE(marks.exportMarkdownToFile(readwisePath, QStringLiteral("Lantern"), QStringLiteral("Ada Marsh"),
+                                            QStringLiteral("readwise")),
+                 readwisePath);
+        QFile rwFile(readwisePath);
+        QVERIFY(rwFile.open(QIODevice::ReadOnly));
+        QVERIFY(QString::fromUtf8(rwFile.readAll()).startsWith(QStringLiteral("---\n")));
+
+        const QString stdPath = dir.filePath("exports/notes-standard.md");
+        QCOMPARE(marks.exportMarkdownToFile(stdPath, QStringLiteral("Lantern"), QStringLiteral("Ada Marsh"),
+                                            QStringLiteral("standard")),
+                 stdPath);
+        QFile stdFile(stdPath);
+        QVERIFY(stdFile.open(QIODevice::ReadOnly));
+        const QString stdContent = QString::fromUtf8(stdFile.readAll());
+        QVERIFY(!stdContent.startsWith(QStringLiteral("---\n")));
+        QVERIFY(stdContent.startsWith(QStringLiteral("# Lantern\n")));
+    }
+
+    void cliVersionFastPathExitsCleanlyWithoutDisplay() {
+        const QString dogearBin = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../dogear"));
+        if (!QFileInfo::exists(dogearBin))
+            QSKIP("build/dogear binary not built yet");
+
+        QProcess proc;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.remove(QStringLiteral("DISPLAY"));
+        env.remove(QStringLiteral("WAYLAND_DISPLAY"));
+        env.remove(QStringLiteral("QT_QPA_PLATFORM"));
+        proc.setProcessEnvironment(env);
+
+        QElapsedTimer timer;
+        timer.start();
+        proc.start(dogearBin, {QStringLiteral("--version")});
+        QVERIFY(proc.waitForFinished(5000));
+        const qint64 elapsedMs = timer.elapsed();
+
+        QCOMPARE(proc.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(proc.exitCode(), 0);
+        const QString out = QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
+        const QString err = QString::fromUtf8(proc.readAllStandardError()).trimmed();
+        QVERIFY2(out.startsWith(QStringLiteral("dogear ")), qPrintable(out));
+        QVERIFY2(QRegularExpression(QStringLiteral("^dogear \\d+\\.\\d+\\.\\d+")).match(out).hasMatch(), qPrintable(out));
+        QVERIFY2(err.isEmpty(), qPrintable(err));
+        QVERIFY2(elapsedMs < 2000, qPrintable(QStringLiteral("slow --version: %1 ms").arg(elapsedMs)));
+
+        // --help also completes via the lightweight QCoreApplication fast path without display.
+        QProcess helpProc;
+        helpProc.setProcessEnvironment(env);
+        helpProc.start(dogearBin, {QStringLiteral("--help")});
+        QVERIFY(helpProc.waitForFinished(5000));
+        QCOMPARE(helpProc.exitStatus(), QProcess::NormalExit);
+        QCOMPARE(helpProc.exitCode(), 0);
+        const QString helpOut = QString::fromUtf8(helpProc.readAllStandardOutput());
+        QVERIFY(helpOut.contains(QStringLiteral("Usage:")));
+        QVERIFY(QString::fromUtf8(helpProc.readAllStandardError()).trimmed().isEmpty());
+    }
 };
 
 int main(int argc, char *argv[]) {

@@ -252,8 +252,8 @@ QList<PdfLinkEntry> PdfBook::pageLinks(int page) const {
     for (int row = 0; row < rows; ++row) {
         const QModelIndex idx = model.index(row, 0);
         const QPdfLink link = model.data(idx, int(QPdfLinkModel::Role::Link)).value<QPdfLink>();
-        if (!link.isValid())
-            continue;
+        // Note: Qt6's QPdfLink::isValid() only checks page() >= 0, which is false for
+        // external URI links (page == -1). Validate internal targetPage and external url directly.
         const int targetPage = link.page();
         const QUrl url = link.url();
         const bool internal = targetPage >= 0 && targetPage < total;
