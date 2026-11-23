@@ -1,6 +1,16 @@
 <RCC>
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
+        <file alias="SettingsView.qml">SettingsView.qml</file>
+        <file alias="SettingsCard.qml">SettingsCard.qml</file>
+        <file alias="SettingsRow.qml">SettingsRow.qml</file>
+        <file alias="SettingsGeneral.qml">SettingsGeneral.qml</file>
+        <file alias="SettingsReading.qml">SettingsReading.qml</file>
+        <file alias="SettingsListening.qml">SettingsListening.qml</file>
+        <file alias="SettingsIntelligence.qml">SettingsIntelligence.qml</file>
+        <file alias="SettingsShortcuts.qml">SettingsShortcuts.qml</file>
+        <file alias="SettingsAbout.qml">SettingsAbout.qml</file>
+        <file alias="Shortcuts.js">Shortcuts.js</file>
         <file alias="LibrarySidebar.qml">LibrarySidebar.qml</file>
         <file alias="KeyHint.qml">KeyHint.qml</file>
         <file alias="Segmented.qml">Segmented.qml</file>
@@ -24,7 +34,6 @@
         <file alias="EmptyLibrary.qml">EmptyLibrary.qml</file>
         <file alias="EpubReader.qml">EpubReader.qml</file>
         <file alias="AppearancePanel.qml">AppearancePanel.qml</file>
-        <file alias="AiSettings.qml">AiSettings.qml</file>
         <file alias="ContentsPanel.qml">ContentsPanel.qml</file>
         <file alias="GoToBox.qml">GoToBox.qml</file>
         <file alias="ProgressScrubber.qml">ProgressScrubber.qml</file>

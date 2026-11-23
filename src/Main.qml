@@ -150,7 +150,7 @@ ApplicationWindow {
     // Letters are text while any editable field or command palette has focus, not global shortcuts.
     readonly property bool typing: libraryView.typing || commandPalette.open
                                    || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined && !activeFocusItem.readOnly)
-    readonly property bool overlayOpen: helpVisible || libraryView.menuOpen || aiSettings.open || welcome.open
+    readonly property bool overlayOpen: helpVisible || libraryView.menuOpen || settingsView.open || welcome.open
                                         || commandPalette.open || libraryView.foldersOpen || libraryView.statsOpen
                                         || libraryView.collectionDialogOpen
     readonly property bool libraryKeys: !readerOpen && !typing && !overlayOpen && !libraryView.detailsOpen
@@ -238,7 +238,7 @@ ApplicationWindow {
                 toast.show(qsTr("%1 theme").arg(Themes.name(readingSettings.theme)))
             }
         } else if (actionId === "ai-settings") {
-            aiSettings.open ? aiSettings.close() : aiSettings.show()
+            settingsView.open ? settingsView.close() : settingsView.show()
         } else if (actionId === "fullscreen") {
             toggleFullScreen()
         } else if (actionId === "help") {
@@ -303,7 +303,7 @@ ApplicationWindow {
     Shortcut {
         sequence: "Esc"
         context: Qt.ApplicationShortcut
-        enabled: win.helpVisible || welcome.open || aiSettings.open || libraryView.detailsOpen
+        enabled: win.helpVisible || welcome.open || settingsView.open || libraryView.detailsOpen
                  || libraryView.foldersOpen || libraryView.statsOpen || libraryView.collectionDialogOpen
                  || commandPalette.open
         onActivated: {
@@ -313,8 +313,8 @@ ApplicationWindow {
                 commandPalette.close()
             else if (welcome.open)
                 welcome.close()
-            else if (aiSettings.open)
-                aiSettings.close()
+            else if (settingsView.open)
+                settingsView.close()
             else if (libraryView.collectionDialogOpen)
                 libraryView.closeCollectionDialog()
             else if (libraryView.statsOpen)
@@ -341,8 +341,8 @@ ApplicationWindow {
             }
         }
     }
-    Shortcut { sequences: ["Ctrl+,"]; context: Qt.ApplicationShortcut; onActivated: aiSettings.open ? aiSettings.close() : aiSettings.show() }
-    function showAiSettings() { aiSettings.show() }
+    Shortcut { sequences: ["Ctrl+,"]; context: Qt.ApplicationShortcut; onActivated: settingsView.open ? settingsView.close() : settingsView.show() }
+    function showAiSettings() { settingsView.show("intelligence") }
 
     // --- Library ---------------------------------------------------------
     Shortcut { sequence: "/"; context: Qt.ApplicationShortcut; enabled: win.libraryKeys; onActivated: libraryView.focusSearch() }
@@ -428,10 +428,11 @@ ApplicationWindow {
             }
         }
 
-        Toast { id: toast }
+        // Above everything, settings included.
+        Toast { id: toast; z: 70 }
 
-        AiSettings {
-            id: aiSettings
+        SettingsView {
+            id: settingsView
             anchors.fill: parent
             z: 55
             onClosed: {
