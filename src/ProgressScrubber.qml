@@ -26,7 +26,7 @@ Item {
         x: Math.max(0, Math.min(scrubber.width - width, track.x + track.width * scrubber.dragValue - width / 2))
         text: {
             const target = reader.targetForFraction(scrubber.dragValue)
-            const percent = Math.round(scrubber.dragValue * 100).toLocaleString(Qt.locale(translator.language), 'f', 0)
+            const percent = Math.round(scrubber.dragValue * 100).toLocaleString(Qt.locale(), 'f', 0)
             const title = reader.titleOfChapter(target.chapter)
             return title !== "" ? qsTr("%1 · %2%").arg(title).arg(percent) : qsTr("%1%").arg(percent)
         }

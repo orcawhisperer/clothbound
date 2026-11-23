@@ -17,8 +17,15 @@ FocusScope {
     property var settings
     property bool pdf: false
     property var pdfSurface: null
+    property bool bookOverride: false
 
+    signal settingChanged(string key, var value)
+    signal bookOverrideToggled(bool enabled)
     signal closed()
+
+    function update(key, value) {
+        settingChanged(key, value)
+    }
 
     function show() {
         open = true
@@ -177,7 +184,7 @@ FocusScope {
                         implicitHeight: 66
                         hoverEnabled: true
                         focusPolicy: Qt.NoFocus
-                        onClicked: panel.settings.theme = modelData
+                        onClicked: panel.update("theme", modelData)
                         background: Rectangle {
                             radius: Math.min(8, theme.radius)
                             color: swatch.colors.bg
@@ -204,7 +211,11 @@ FocusScope {
                 }
             }
 
-            Heading { visible: !panel.pdf; text: qsTr("Typeface") }
+            Heading {
+                visible: !panel.pdf
+                opacity: panel.settings.publisher ? 0.45 : 1
+                text: qsTr("Typeface")
+            }
             GridLayout {
                 visible: !panel.pdf
                 enabled: !panel.settings.publisher
@@ -216,7 +227,7 @@ FocusScope {
                 Choice {
                     text: qsTr("Book's own")
                     selected: panel.settings.font === "publisher"
-                    onClicked: panel.settings.font = "publisher"
+                    onClicked: panel.update("font", "publisher")
                 }
                 Repeater {
                     model: panel.fonts
@@ -225,7 +236,7 @@ FocusScope {
                         text: modelData
                         font.family: modelData
                         selected: panel.settings.font === modelData
-                        onClicked: panel.settings.font = modelData
+                        onClicked: panel.update("font", modelData)
                         contentItem: Label {
                             text: modelData
                             font.family: modelData
@@ -283,7 +294,7 @@ FocusScope {
                     look: panel.look
                     tip: qsTr("Smaller (−)")
                     contentItem: Label { text: "A"; font.family: "Literata"; font.pixelSize: 13; color: panel.look.fg; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    onClicked: panel.settings.fontScale = Math.max(0.7, Math.round((panel.settings.fontScale - 0.05) * 100) / 100)
+                    onClicked: panel.update("fontScale", Math.max(0.7, Math.round((panel.settings.fontScale - 0.05) * 100) / 100))
                 }
                 Slider {
                     Layout.fillWidth: true
@@ -292,13 +303,13 @@ FocusScope {
                     stepSize: 0.05
                     value: panel.settings.fontScale
                     focusPolicy: Qt.NoFocus
-                    onMoved: panel.settings.fontScale = Math.round(value * 100) / 100
+                    onMoved: panel.update("fontScale", Math.round(value * 100) / 100)
                 }
                 IconButton {
                     look: panel.look
                     tip: qsTr("Larger (+)")
                     contentItem: Label { text: "A"; font.family: "Literata"; font.pixelSize: 21; color: panel.look.fg; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                    onClicked: panel.settings.fontScale = Math.min(2.0, Math.round((panel.settings.fontScale + 0.05) * 100) / 100)
+                    onClicked: panel.update("fontScale", Math.min(2.0, Math.round((panel.settings.fontScale + 0.05) * 100) / 100))
                 }
                 Label {
                     Layout.preferredWidth: 44
@@ -309,17 +320,91 @@ FocusScope {
                 }
             }
 
-            Heading { visible: !panel.pdf; text: qsTr("Line spacing") }
-            Slider {
+            Heading {
                 visible: !panel.pdf
-                Layout.fillWidth: true
-                from: 1.2
-                to: 2.0
-                stepSize: 0.05
-                value: panel.settings.lineHeight
-                focusPolicy: Qt.NoFocus
+                opacity: panel.settings.publisher ? 0.45 : 1
+                text: qsTr("Font weight")
+            }
+            RowLayout {
+                visible: !panel.pdf
                 enabled: !panel.settings.publisher
-                onMoved: panel.settings.lineHeight = Math.round(value * 100) / 100
+                opacity: panel.settings.publisher ? 0.45 : 1
+                Layout.fillWidth: true
+                spacing: 10
+                Slider {
+                    Layout.fillWidth: true
+                    from: 300
+                    to: 700
+                    stepSize: 25
+                    value: panel.settings.fontWeight
+                    focusPolicy: Qt.NoFocus
+                    onMoved: panel.update("fontWeight", Math.round(value))
+                }
+                Label {
+                    Layout.preferredWidth: 44
+                    horizontalAlignment: Text.AlignRight
+                    text: Number(panel.settings.fontWeight).toLocaleString(Qt.locale(), 'f', 0)
+                    color: panel.look.muted
+                    font.pixelSize: 12
+                }
+            }
+
+            Heading {
+                visible: !panel.pdf
+                opacity: panel.settings.publisher ? 0.45 : 1
+                text: qsTr("Line spacing")
+            }
+            RowLayout {
+                visible: !panel.pdf
+                enabled: !panel.settings.publisher
+                opacity: panel.settings.publisher ? 0.45 : 1
+                Layout.fillWidth: true
+                spacing: 10
+                Slider {
+                    Layout.fillWidth: true
+                    from: 1.2
+                    to: 2.0
+                    stepSize: 0.05
+                    value: panel.settings.lineHeight
+                    focusPolicy: Qt.NoFocus
+                    onMoved: panel.update("lineHeight", Math.round(value * 100) / 100)
+                }
+                Label {
+                    Layout.preferredWidth: 44
+                    horizontalAlignment: Text.AlignRight
+                    text: Number(panel.settings.lineHeight).toLocaleString(Qt.locale(), 'f', 2)
+                    color: panel.look.muted
+                    font.pixelSize: 12
+                }
+            }
+
+            Heading {
+                visible: !panel.pdf
+                opacity: panel.settings.publisher ? 0.45 : 1
+                text: qsTr("Paragraph spacing")
+            }
+            RowLayout {
+                visible: !panel.pdf
+                enabled: !panel.settings.publisher
+                opacity: panel.settings.publisher ? 0.45 : 1
+                Layout.fillWidth: true
+                spacing: 10
+                Slider {
+                    Layout.fillWidth: true
+                    from: 0.0
+                    to: 1.2
+                    stepSize: 0.1
+                    value: panel.settings.paragraphSpacing
+                    focusPolicy: Qt.NoFocus
+                    onMoved: panel.update("paragraphSpacing", Math.round(value * 100) / 100)
+                }
+                Label {
+                    Layout.preferredWidth: 44
+                    horizontalAlignment: Text.AlignRight
+                    text: Number(panel.settings.paragraphSpacing).toLocaleString(Qt.locale(), 'f', 1) + " em"
+                    color: panel.look.muted
+                    font.pixelSize: 12
+                }
             }
 
             Heading { visible: !panel.pdf; text: qsTr("Margins") }
@@ -333,7 +418,7 @@ FocusScope {
                         required property var modelData
                         text: modelData.label
                         selected: panel.settings.margins === modelData.id
-                        onClicked: panel.settings.margins = modelData.id
+                        onClicked: panel.update("margins", modelData.id)
                     }
                 }
             }
@@ -351,7 +436,7 @@ FocusScope {
                         required property var modelData
                         text: modelData.label
                         selected: panel.settings.layout === modelData.id
-                        onClicked: panel.settings.layout = modelData.id
+                        onClicked: panel.update("layout", modelData.id)
                     }
                 }
             }
@@ -361,13 +446,13 @@ FocusScope {
                 visible: panel.pdf
                 text: qsTr("Trim margins")
                 checked: panel.settings.pdfCrop
-                onToggled: (on) => panel.settings.pdfCrop = on
+                onToggled: (on) => panel.update("pdfCrop", on)
             }
             Toggle {
                 visible: panel.pdf
                 text: qsTr("Original page colors")
                 checked: panel.settings.pdfOriginalColors
-                onToggled: (on) => panel.settings.pdfOriginalColors = on
+                onToggled: (on) => panel.update("pdfOriginalColors", on)
             }
             Label {
                 visible: panel.pdf
@@ -379,33 +464,55 @@ FocusScope {
             }
             Toggle {
                 visible: !panel.pdf
+                enabled: !panel.settings.publisher
+                opacity: enabled ? 1 : 0.45
                 text: qsTr("Justify text")
                 checked: panel.settings.justify
-                onToggled: (on) => panel.settings.justify = on
+                onToggled: (on) => panel.update("justify", on)
             }
             Toggle {
                 visible: !panel.pdf
+                enabled: !panel.settings.publisher && panel.settings.justify
+                opacity: enabled ? 1 : 0.45
                 text: qsTr("Hyphenate")
                 checked: panel.settings.hyphenate
-                enabled: panel.settings.justify
-                onToggled: (on) => panel.settings.hyphenate = on
+                onToggled: (on) => panel.update("hyphenate", on)
             }
             Toggle {
                 visible: !panel.pdf
                 text: qsTr("Animate page turns")
                 checked: panel.settings.animate
-                onToggled: (on) => panel.settings.animate = on
+                onToggled: (on) => panel.update("animate", on)
             }
             Toggle {
                 visible: !panel.pdf
                 text: qsTr("Use the book's own styles")
                 checked: panel.settings.publisher
-                onToggled: (on) => panel.settings.publisher = on
+                onToggled: (on) => panel.update("publisher", on)
             }
             Label {
                 visible: !panel.pdf
                 Layout.fillWidth: true
                 text: qsTr("Keeps the publisher's fonts, spacing, and layout; only the colors follow the theme.")
+                color: panel.look.muted
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.topMargin: 6
+                Layout.bottomMargin: 2
+                Layout.preferredHeight: 1
+                color: panel.look.border
+            }
+            Toggle {
+                text: qsTr("Custom settings for this book")
+                checked: panel.bookOverride
+                onToggled: (on) => panel.bookOverrideToggled(on)
+            }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Keeps separate appearance settings for this book without changing your defaults.")
                 color: panel.look.muted
                 font.pixelSize: 12
                 wrapMode: Text.Wrap

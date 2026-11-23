@@ -23,11 +23,17 @@ const dogear = (() => {
         chapter: -1,
         page: 0,
         pages: 1,
+        rtl: false,
+        vertical: '',
         geometry: null,
         index: null,
         labels: [],
         location: null,
         history: [],
+        forward: [],
+        justJumped: false,
+        prefetched: new Set(),
+        hyphenatedNodes: new Map(),
         animation: null,
         queue: Promise.resolve(),
         hyphenation: false,
@@ -66,10 +72,18 @@ const dogear = (() => {
         const em = 16 * s.fontScale
         const measure = s.measure * em
         const side = Math.max(20, Math.min(Math.round(W * s.margin), Math.floor((W - 120) / 2)))
+        if (state.vertical) {
+            const availH = Math.max(160, H - s.marginTop - s.marginBottom)
+            const height = Math.max(160, Math.min(Math.round(measure * 1.2), availH))
+            const width = Math.max(160, W - 2 * side)
+            return { scroll: s.layout === 'scroll', vertical: true, width, height,
+                     top: Math.max(s.marginTop, Math.round((H - height) / 2)),
+                     left: Math.round((W - width) / 2), columns: 1, gap: 2 * side, column: width, step: width }
+        }
         if (s.layout === 'scroll') {
             const column = Math.max(120, Math.floor(Math.min(measure, W - 2 * side)))
             const width = column + 2 * side
-            return { scroll: true, width, height: H, top: 0, left: Math.round((W - width) / 2), columns: 1,
+            return { scroll: true, vertical: false, width, height: H, top: 0, left: Math.round((W - width) / 2), columns: 1,
                      gap: 2 * side, column, step: Math.max(100, H - s.marginTop - s.marginBottom - 2 * em) }
         }
         const height = Math.max(160, H - s.marginTop - s.marginBottom)
@@ -82,19 +96,28 @@ const dogear = (() => {
             gap = Math.max(24, Math.floor((W - 240) / 2) & ~1)
         const column = Math.max(120, Math.floor(Math.min(measure, columns === 2 ? (W - 2 * gap) / 2 : W - gap)))
         const width = Math.max(120, columns * (column + gap))
-        return { scroll: false, width, height, top: s.marginTop, left: Math.round((W - width) / 2),
+        return { scroll: false, vertical: false, width, height, top: s.marginTop, left: Math.round((W - width) / 2),
                  columns, gap, column, step: width }
     }
 
     function layoutCss(g) {
         const s = state.style
+        if (g.vertical)
+            return `html { height: ${g.height}px !important; width: ${g.width}px !important;
+                           box-sizing: border-box !important; margin: 0 !important; padding: 0 !important;
+                           columns: auto !important;
+                           overflow-x: ${g.scroll ? 'auto' : 'hidden'} !important;
+                           overflow-y: hidden !important; }
+                    html::-webkit-scrollbar { display: none; }
+                    img, svg, video, object, embed { max-height: ${g.height - 6}px !important; max-width: ${g.width - 6}px !important; }`
+        const dirRule = state.rtl ? 'direction: rtl;' : ''
         if (g.scroll)
-            return `html { height: auto !important; columns: auto !important; overflow-x: hidden !important;
+            return `html { ${dirRule} height: auto !important; columns: auto !important; overflow-x: hidden !important;
                            overflow-y: auto !important; box-sizing: border-box !important; margin: 0 !important;
                            padding: ${s.marginTop}px ${g.gap / 2}px ${s.marginBottom}px !important; }
                     html::-webkit-scrollbar { display: none; }
                     img, svg, video { max-height: ${Math.round(g.height * 0.9)}px !important; }`
-        return `html { height: ${g.height}px !important; width: ${g.width}px !important;
+        return `html { ${dirRule} height: ${g.height}px !important; width: ${g.width}px !important;
                        box-sizing: border-box !important; margin: 0 !important; padding: 0 ${g.gap / 2}px !important;
                        column-count: ${g.columns} !important; column-width: auto !important;
                        column-gap: ${g.gap}px !important; column-fill: auto !important; overflow: hidden !important; }
@@ -107,6 +130,36 @@ const dogear = (() => {
         const s = state.style, t = s.theme
         const own = !s.publisher
         const family = own && s.font && s.font !== 'publisher' ? `"${s.font}", "Literata", serif` : ''
+        const weight = clamp(Math.round(s.fontWeight || 400), 300, 700)
+        const boldWeight = Math.min(900, weight + 250)
+        const headingWeight = Math.min(900, weight + 200)
+        const paragraphSpacing = clamp(s.paragraphSpacing !== undefined ? Number(s.paragraphSpacing) : 0.4, 0, 1.2)
+        const colorRules = own
+            ? `body *, body *::before, body *::after { color: inherit !important; background-color: transparent !important; }
+               pre { background-color: ${t.dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'} !important;
+                     padding: 0.7em 0.9em; border-radius: 6px; }
+               :not(pre) > code { background-color: ${t.dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.05)'} !important;
+                                  padding: 0.08em 0.28em; border-radius: 3px; }`
+            : t.dark
+                ? `body *, body *::before, body *::after { color: inherit !important; background-color: transparent !important; }
+                   pre, code, blockquote, aside, th, [class*="callout"], [class*="note"], [class*="box"], [class*="tip"], [class*="sidebar"] {
+                       background-color: rgba(255, 255, 255, 0.06) !important;
+                   }`
+                : `body *, body *::before, body *::after { color: inherit; }`
+        const darkMediaRules = t.dark ? `
+svg:not(:has(image)) { filter: invert(0.86) hue-rotate(180deg); }
+img[src$=".svg" i], img[src*=".svg?" i], img[src^="data:image/svg+xml" i], img[data-dg-lineart] {
+    filter: invert(0.86) hue-rotate(180deg) !important;
+}
+img[data-dg-matte] {
+    background-color: rgba(242, 239, 232, 0.86) !important;
+    border-radius: 4px;
+    padding: 3px;
+    filter: brightness(0.92) contrast(1.02) !important;
+}
+img:not([data-dg-lineart]):not([data-dg-matte]):not([src$=".svg" i]):not([src*=".svg?" i]):not([src^="data:image/svg+xml" i]) {
+    filter: brightness(0.88) contrast(1.04);
+}` : ''
         return `
 @font-face { font-family: "Literata"; src: url("dogear://local/app/fonts/Literata.ttf"); font-weight: 200 900; font-style: normal; font-display: block; }
 @font-face { font-family: "Literata"; src: url("dogear://local/app/fonts/Literata-Italic.ttf"); font-weight: 200 900; font-style: italic; font-display: block; }
@@ -115,7 +168,7 @@ html { background: ${t.bg} !important; color: ${t.fg} !important; font-size: ${s
        font-variant-ligatures: common-ligatures; font-optical-sizing: auto; }
 body { margin: 0 !important; padding: 0 !important; width: auto !important; max-width: none !important;
        min-height: 0 !important; height: auto !important; background: transparent !important; }
-body *, body *::before, body *::after { color: inherit !important; background-color: transparent !important; }
+${colorRules}
 a, a * { color: ${t.link} !important; }
 a { text-decoration: none !important; }
 ::selection { background: ${t.selection}; }
@@ -128,17 +181,28 @@ a { text-decoration: none !important; }
 ::highlight(dg-noted) { text-decoration: underline dotted ${t.link}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
 ::highlight(dg-speaking) { background-color: ${t.speaking}; }
 img, svg, video { max-width: 100% !important; object-fit: contain; break-inside: avoid; }
+img, svg { cursor: zoom-in; }
+a img, a svg { cursor: pointer; }
 img { height: auto; }
-${t.dark ? 'img { filter: brightness(0.88) contrast(1.04); }' : ''}
+math, math * { color: ${t.fg} !important; fill: currentColor; stroke: currentColor; }
+${darkMediaRules}
 h1, h2, h3, h4, h5, h6 { break-after: avoid; break-inside: avoid; }
 p { widows: 2; orphans: 2; }
-figure, table, pre { break-inside: avoid; }
+figure { break-inside: avoid; }
+figure[data-dg-tall] { break-inside: auto !important; }
+pre, table { break-inside: auto; max-width: 100%; }
+pre[data-dg-short], table[data-dg-short] { break-inside: avoid; }
+table[data-dg-wide] { display: block !important; max-width: 100% !important; overflow-x: auto !important; }
 pre, code, kbd, samp, tt { font-family: ui-monospace, "JetBrainsMono Nerd Font", monospace !important; }
-pre { white-space: pre-wrap !important; }
+pre { white-space: pre-wrap !important; overflow-wrap: anywhere; }
 ${family ? `body, body :not(pre):not(code):not(kbd):not(samp):not(tt) { font-family: ${family} !important; }` : ''}
-${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !important; }` : ''}
-[data-dg-flow] { text-align: ${s.justify ? 'justify' : 'left'} !important;
-                 ${s.justify && state.hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }
+${own ? `body, p, li, dd, dt, blockquote, td { font-weight: ${weight} !important; }
+b, strong, th { font-weight: ${boldWeight} !important; }
+h1, h2, h3, h4, h5, h6 { font-weight: ${headingWeight} !important; }
+p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !important; }
+p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
+[data-dg-flow] { text-align: ${s.justify ? 'justify' : 'start'} !important;
+                 ${s.justify && state.hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }` : ''}
 `
     }
 
@@ -177,25 +241,134 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         }
     }
 
+    // Prevent tall <pre>/<table>/<figure> blocks from clipping off multi-column
+    // pages and let overly wide tables scroll horizontally. Batches all layout
+    // reads before attribute writes to avoid reflow thrashing.
+    function fitBlocks(doc, g) {
+        if (!doc || !g)
+            return
+        const blocks = [...doc.querySelectorAll('pre, table, figure')]
+        if (!blocks.length)
+            return
+        const measurements = blocks.map(el => {
+            const rect = el.getBoundingClientRect()
+            return { el, tag: el.localName, height: Math.max(rect.height, el.scrollHeight || 0),
+                     width: Math.max(rect.width, el.scrollWidth || 0) }
+        })
+        const tallThreshold = g.height * 0.78
+        const shortThreshold = g.height * 0.6
+        for (const m of measurements) {
+            if (m.tag === 'figure') {
+                if (m.height > tallThreshold)
+                    m.el.setAttribute('data-dg-tall', '')
+                else
+                    m.el.removeAttribute('data-dg-tall')
+            } else {
+                if (!g.scroll && m.height > 0 && m.height <= shortThreshold)
+                    m.el.setAttribute('data-dg-short', '')
+                else
+                    m.el.removeAttribute('data-dg-short')
+            }
+            if (m.tag === 'table') {
+                if (m.width > g.column + 2)
+                    m.el.setAttribute('data-dg-wide', '')
+                else
+                    m.el.removeAttribute('data-dg-wide')
+            }
+        }
+    }
+
+    // Inspect decoded raster images once so transparent monochrome line-art /
+    // math equations invert cleanly in dark mode instead of disappearing.
+    let probeCanvas = null
+    function classifyImages(doc) {
+        if (!doc || !doc.images || !doc.images.length)
+            return
+        try {
+            if (!probeCanvas) {
+                probeCanvas = document.createElement('canvas')
+                probeCanvas.width = 32
+                probeCanvas.height = 32
+            }
+            const ctx = probeCanvas.getContext('2d', { willReadFrequently: true })
+            if (!ctx)
+                return
+            for (const img of doc.images) {
+                if (img.hasAttribute('data-dg-img-checked') || !img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0)
+                    continue
+                const src = img.currentSrc || img.src || ''
+                if (/\.svg(?:$|\?)|^data:image\/svg\+xml/i.test(src)) {
+                    img.setAttribute('data-dg-img-checked', '1')
+                    continue
+                }
+                img.setAttribute('data-dg-img-checked', '1')
+                const w = Math.min(32, img.naturalWidth), h = Math.min(32, img.naturalHeight)
+                ctx.clearRect(0, 0, w, h)
+                ctx.drawImage(img, 0, 0, w, h)
+                const data = ctx.getImageData(0, 0, w, h).data
+                const total = w * h
+                let transparent = 0, opaque = 0, darkLowChroma = 0
+                for (let i = 0; i < data.length; i += 4) {
+                    const a = data[i + 3]
+                    if (a < 200) {
+                        ++transparent
+                    } else {
+                        ++opaque
+                        const r = data[i], g = data[i + 1], b = data[i + 2]
+                        const luma = (r * 299 + g * 587 + b * 114) / 1000
+                        const chroma = Math.max(r, g, b) - Math.min(r, g, b)
+                        if (luma < 95 && chroma < 45)
+                            ++darkLowChroma
+                    }
+                }
+                if (transparent / total > 0.08 && opaque > 0) {
+                    const darkShare = darkLowChroma / opaque
+                    if (darkShare > 0.72)
+                        img.setAttribute('data-dg-lineart', '')
+                    else if (darkShare > 0.15)
+                        img.setAttribute('data-dg-matte', '')
+                }
+            }
+        } catch (e) { }
+    }
+
     // --- Preparing a chapter -----------------------------------------------
 
+    function detectDirection(doc) {
+        const view = doc.defaultView
+        const htmlStyle = view.getComputedStyle(doc.documentElement)
+        const bodyStyle = doc.body ? view.getComputedStyle(doc.body) : htmlStyle
+        const wm = bodyStyle.writingMode && bodyStyle.writingMode !== 'horizontal-tb'
+            ? bodyStyle.writingMode : (htmlStyle.writingMode || 'horizontal-tb')
+        state.vertical = wm === 'vertical-rl' || wm === 'vertical-lr' ? wm : ''
+        if (state.vertical) {
+            state.rtl = state.vertical === 'vertical-rl'
+        } else {
+            const bookRtl = !!(state.book && state.book.rtl)
+            const docRtl = htmlStyle.direction === 'rtl' || bodyStyle.direction === 'rtl'
+            state.rtl = bookRtl || docRtl
+        }
+    }
+
     // Running text is marked so the reader's alignment applies to it and
-    // not to centered headings, verse, or right-aligned signatures.
-    // Batch style reads before attribute writes to avoid O(N²) reflows.
+    // not to centered headings, verse, or end-aligned signatures.
+    // Batch all getComputedStyle reads before setAttribute writes to avoid O(N²) reflows.
     function markFlow(doc) {
         const view = doc.defaultView
-        const flow = []
+        const startEdge = state.rtl ? 'right' : 'left'
+        const candidates = []
         for (const element of doc.querySelectorAll('p, li, dd, blockquote, div')) {
-            let hasText = false
-            for (const child of element.childNodes)
+            for (const child of element.childNodes) {
                 if (child.nodeType === Node.TEXT_NODE && child.data.trim()) {
-                    hasText = true
+                    candidates.push(element)
                     break
                 }
-            if (!hasText)
-                continue
+            }
+        }
+        const flow = []
+        for (const element of candidates) {
             const align = view.getComputedStyle(element).textAlign
-            if (align === 'start' || align === 'left' || align === 'justify' || align === '-webkit-auto')
+            if (align === 'start' || align === startEdge || align === 'justify' || align === '-webkit-auto')
                 flow.push(element)
         }
         for (const element of flow)
@@ -206,9 +379,19 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         const walker = doc.createTreeWalker(doc.body || doc.documentElement, NodeFilter.SHOW_TEXT)
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
             const parent = node.parentElement
-            if (parent && parent.closest('[data-dg-flow]') && !parent.closest('a, code, pre, kbd, samp, tt'))
+            if (parent && parent.closest('[data-dg-flow]') && !parent.closest('a, code, pre, kbd, samp, tt')) {
+                const before = node.data
                 Hyphenation.node(node)
+                if (node.data !== before && !state.hyphenatedNodes.has(node))
+                    state.hyphenatedNodes.set(node, before)
+            }
         }
+    }
+
+    function unhyphenate() {
+        for (const [node, original] of state.hyphenatedNodes)
+            node.data = original
+        state.hyphenatedNodes.clear()
     }
 
     async function settle(doc) {
@@ -222,14 +405,14 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     }
 
     async function prepare(doc) {
-        applyTypography(doc)
+        state.hyphenatedNodes = new Map()
+        detectDirection(doc)
         markFlow(doc)
         const s = state.style
-        state.hyphenation = s.justify && s.hyphenate && await Hyphenation.load(state.book.language)
-        if (state.hyphenation) {
+        state.hyphenation = !s.publisher && s.justify && s.hyphenate && await Hyphenation.load(state.book.language)
+        if (state.hyphenation)
             hyphenate(doc)
-            applyTypography(doc)
-        }
+        applyTypography(doc)
         doc.addEventListener('click', onChapterClick, true)
         doc.addEventListener('wheel', onWheel, { passive: false })
         doc.addEventListener('keydown', onKey, true)
@@ -315,8 +498,16 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             return
         const frameRect = frame().getBoundingClientRect()
         const button = fromHereButton()
-        button.style.left = Math.max(4, frameRect.left + line.left - 34) + 'px'
-        button.style.top = (frameRect.top + line.top + line.height / 2 - 13) + 'px'
+        if (state.vertical) {
+            button.style.left = clamp(frameRect.left + line.left + line.width / 2 - 13, 4, window.innerWidth - 30) + 'px'
+            button.style.top = Math.max(4, frameRect.top + line.top - 32) + 'px'
+        } else if (state.rtl) {
+            button.style.left = Math.min(window.innerWidth - 30, frameRect.left + line.right + 8) + 'px'
+            button.style.top = (frameRect.top + line.top + line.height / 2 - 13) + 'px'
+        } else {
+            button.style.left = Math.max(4, frameRect.left + line.left - 34) + 'px'
+            button.style.top = (frameRect.top + line.top + line.height / 2 - 13) + 'px'
+        }
         button.classList.add('shown')
     }
 
@@ -501,8 +692,10 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     // The page a document position falls on.
     function pageAtPosition(x, y) {
         const g = state.geometry
-        if (g.scroll)
+        if (g.scroll && !g.vertical)
             return clamp(Math.floor((y + 1) / g.step), 0, state.pages - 1)
+        if (state.rtl)
+            return clamp(Math.floor((g.width - x) / g.step), 0, state.pages - 1)
         return clamp(Math.floor((x + 1) / g.step), 0, state.pages - 1)
     }
 
@@ -510,7 +703,8 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         if (!rect)
             return 0
         const el = scroller()
-        return pageAtPosition(rect.left + el.scrollLeft, rect.top + el.scrollTop)
+        const x = state.rtl ? (rect.left + rect.right) / 2 + el.scrollLeft : rect.left + el.scrollLeft
+        return pageAtPosition(x, rect.top + el.scrollTop)
     }
 
     function pageOfOffset(offset) { return pageOfRect(rectAt(offset)) }
@@ -532,14 +726,22 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     // The first character shown on the current screen.
     function firstVisibleOffset() {
         const g = state.geometry
-        const found = firstOffsetPast(rect => g.scroll ? rect.bottom > 1 : rect.right > 1)
+        const found = firstOffsetPast(rect => {
+            if (g.scroll && !g.vertical)
+                return rect.bottom > 1
+            return state.rtl ? rect.left < g.width - 1 : rect.right > 1
+        })
         return found === null ? 0 : found
     }
 
     // The first character of the next screen: where this one ends.
     function nextPageOffset() {
         const g = state.geometry
-        const found = firstOffsetPast(rect => g.scroll ? rect.top > g.height - 1 : rect.left > g.width - 1)
+        const found = firstOffsetPast(rect => {
+            if (g.scroll && !g.vertical)
+                return rect.top > g.height - 1
+            return state.rtl ? rect.right < 1 : rect.left > g.width - 1
+        })
         return found === null ? state.index.length : found
     }
 
@@ -637,7 +839,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     function measure() {
         const g = state.geometry
         const el = scroller()
-        if (g.scroll) {
+        if (g.scroll && !g.vertical) {
             state.pages = Math.max(1, Math.ceil((el.scrollHeight - 2) / g.step))
         } else {
             const end = Math.max(el.scrollWidth, ...lastBoxes())
@@ -651,7 +853,12 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             if (!element)
                 continue
             const rect = element.getBoundingClientRect()
-            state.labels.push({ label: target.label, at: g.scroll ? rect.top + el.scrollTop : rect.left + el.scrollLeft })
+            const at = (g.scroll && !g.vertical)
+                ? rect.top + el.scrollTop
+                : state.rtl
+                    ? g.width - ((rect.left + rect.right) / 2 + el.scrollLeft)
+                    : rect.left + el.scrollLeft
+            state.labels.push({ label: target.label, at })
         }
         state.labels.sort((a, b) => a.at - b.at)
     }
@@ -659,14 +866,14 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     // Where the last content box ends, for books whose final column is not
     // counted in the scroll width.
     function lastBoxes() {
-        const doc = chapterDocument(), el = scroller()
+        const doc = chapterDocument(), el = scroller(), g = state.geometry
         const body = doc.body || doc.documentElement
         const last = body.lastElementChild
         if (!last)
             return [0]
         const rects = last.getClientRects()
         const rect = rects.length ? rects[rects.length - 1] : last.getBoundingClientRect()
-        return [rect.right + el.scrollLeft]
+        return [state.rtl ? g.width - (rect.left + el.scrollLeft) : rect.right + el.scrollLeft]
     }
 
     function labelForPage(page) {
@@ -689,7 +896,8 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         if (!animation)
             return
         state.animation = null
-        scroller().scrollTo({ [state.geometry.scroll ? 'top' : 'left']: animation.target, behavior: 'instant' })
+        const horizontal = !state.geometry.scroll || state.geometry.vertical
+        scroller().scrollTo({ [horizontal ? 'left' : 'top']: animation.target, behavior: 'instant' })
         animation.finish()
     }
 
@@ -699,9 +907,10 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         const g = state.geometry
         state.page = clamp(page, 0, state.pages - 1)
         const el = scroller()
-        const target = state.page * g.step
-        const axis = g.scroll ? 'top' : 'left'
-        const now = g.scroll ? el.scrollTop : el.scrollLeft
+        const horizontal = !g.scroll || g.vertical
+        const target = horizontal && state.rtl ? -(state.page * g.step) : state.page * g.step
+        const axis = horizontal ? 'left' : 'top'
+        const now = horizontal ? el.scrollLeft : el.scrollTop
         const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
         if (!animate || !state.style.animate || reduced || Math.abs(target - now) < 1) {
             el.scrollTo({ [axis]: target, behavior: 'instant' })
@@ -719,7 +928,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 if (state.animation && state.animation.finish === finish)
                     state.animation = null
                 // Land exactly on the page, whatever the scroll settled on.
-                if (Math.abs((g.scroll ? el.scrollTop : el.scrollLeft) - target) > 0.5)
+                if (Math.abs((horizontal ? el.scrollLeft : el.scrollTop) - target) > 0.5)
                     el.scrollTo({ [axis]: target, behavior: 'instant' })
                 resolve()
             }
@@ -748,11 +957,33 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         return -1
     }
 
-    function report() {
+    // Warm the next chapter in BookScheme and Chromium's memory cache when
+    // approaching the end of the current chapter so chapter turns feel instant.
+    function prefetchAdjacent() {
+        if (!state.book || state.chapter < 0)
+            return
+        if (state.pages > 2 && state.page < state.pages - 2)
+            return
+        const nextChapter = linearAfter(state.chapter)
+        if (nextChapter < 0 || state.prefetched.has(nextChapter))
+            return
+        state.prefetched.add(nextChapter)
+        const url = state.book.base + state.book.spine[nextChapter].href
+        const kick = () => fetch(url, { priority: 'low' }).catch(() => { })
+        if (typeof requestIdleCallback === 'function')
+            requestIdleCallback(kick, { timeout: 600 })
+        else
+            setTimeout(kick, 120)
+    }
+
+    function report(automated = false) {
         hideFromHere(0)
         if (!state.index)
             return
         const offset = firstVisibleOffset()
+        const backEntry = state.history.length ? state.history[state.history.length - 1] : null
+        const jumped = state.justJumped
+        state.justJumped = false
         state.location = {
             chapter: state.chapter,
             offset,
@@ -762,10 +993,19 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             pages: state.pages,
             pageLabel: labelForPage(state.page),
             atEnd: state.page >= state.pages - 1 && linearAfter(state.chapter) < 0,
+            rtl: state.rtl,
+            canGoBack: state.history.length > 0,
+            canGoForward: state.forward.length > 0,
+            backChapter: backEntry ? backEntry.chapter : -1,
+            backPage: backEntry ? backEntry.page : 0,
+            backPageLabel: backEntry ? (backEntry.pageLabel || '') : '',
+            jumped,
+            automated: !!automated,
             session: sessionId(),
         }
         if (state.bridge)
             state.bridge.relocated(state.location)
+        prefetchAdjacent()
     }
 
     async function load(chapter) {
@@ -781,9 +1021,10 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         state.chapter = chapter
         state.index = null
         await prepare(doc)
-        state.geometry = computeGeometry()
         applyLayout()
         await settle(doc)
+        classifyImages(doc)
+        fitBlocks(doc, state.geometry)
         state.index = buildIndex(doc)
         measure()
         restoreDecorations()
@@ -820,15 +1061,32 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         }
         await turnTo(page, animate)
         frame().classList.add('shown')
-        report()
+        report(!!place.automated)
+    }
+
+    function snapshotLocation() {
+        if (!state.location)
+            return null
+        return {
+            chapter: state.location.chapter,
+            offset: state.location.offset,
+            snippet: state.location.snippet,
+            page: state.location.page,
+            pageLabel: state.location.pageLabel || '',
+        }
     }
 
     function remember() {
-        if (state.location)
-            state.history.push({ chapter: state.location.chapter, offset: state.location.offset,
-                                 snippet: state.location.snippet })
+        const snap = snapshotLocation()
+        if (!snap)
+            return
+        const top = state.history[state.history.length - 1]
+        if (!top || top.chapter !== snap.chapter || Math.abs(top.offset - snap.offset) > 40)
+            state.history.push(snap)
         if (state.history.length > 50)
             state.history.shift()
+        state.forward = []
+        state.justJumped = true
     }
 
     // --- Links and notes -------------------------------------------------------
@@ -946,7 +1204,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         const view = document.createElement('iframe')
         view.setAttribute('sandbox', 'allow-same-origin')
         view.style.colorScheme = t.dark ? 'dark' : 'light'
-        view.srcdoc = `<!doctype html><html><head><base href="${escapeAttr(url.origin + url.pathname)}"><style>${noteCss()}</style></head><body>${html}</body></html>`
+        view.srcdoc = `<!doctype html><html dir="${state.rtl ? 'rtl' : 'ltr'}"><head><base href="${escapeAttr(url.origin + url.pathname)}"><style>${noteCss()}</style></head><body>${html}</body></html>`
         const actions = document.createElement('div')
         actions.className = 'actions'
         const go = document.createElement('button')
@@ -1013,6 +1271,59 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
 
     // --- Input ---------------------------------------------------------------
 
+    function captionFor(media) {
+        const figure = media.closest ? media.closest('figure') : null
+        const figcap = figure ? figure.querySelector('figcaption') : null
+        const figText = figcap ? figcap.textContent.replace(/\s+/g, ' ').trim() : ''
+        const alt = (media.getAttribute('alt') || media.getAttribute('aria-label') || media.getAttribute('title') || '').trim()
+        return figText || alt
+    }
+
+    function toBase64Utf8(text) {
+        const bytes = new TextEncoder().encode(text)
+        let binary = ''
+        for (let i = 0; i < bytes.length; i += 0x8000)
+            binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+        return btoa(binary)
+    }
+
+    function extractImage(media) {
+        const rect = media.getBoundingClientRect()
+        const caption = captionFor(media)
+        if (media.localName === 'svg') {
+            const inner = media.querySelector('image')
+            if (inner) {
+                const href = inner.getAttribute('href') || inner.getAttributeNS(XLINK, 'href') || ''
+                if (href) {
+                    try {
+                        return { url: new URL(href, media.ownerDocument.baseURI).href, caption, session: sessionId() }
+                    } catch (e) { }
+                }
+            }
+            if (rect.width < 32 && rect.height < 32)
+                return null
+            const clone = media.cloneNode(true)
+            clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg')
+            if (!clone.getAttribute('viewBox') && rect.width > 0 && rect.height > 0)
+                clone.setAttribute('viewBox', `0 0 ${Math.round(rect.width)} ${Math.round(rect.height)}`)
+            if (!clone.getAttribute('width') || clone.getAttribute('width').endsWith('%'))
+                clone.setAttribute('width', String(Math.max(120, Math.round(rect.width || 600))))
+            if (!clone.getAttribute('height') || clone.getAttribute('height').endsWith('%'))
+                clone.setAttribute('height', String(Math.max(120, Math.round(rect.height || 600))))
+            const xml = new XMLSerializer().serializeToString(clone)
+            return { dataUrl: 'data:image/svg+xml;base64,' + toBase64Utf8(xml), caption, session: sessionId() }
+        }
+        if (media.localName === 'img') {
+            if (rect.width < 32 && rect.height < 32 && (media.naturalWidth || 0) < 48 && (media.naturalHeight || 0) < 48)
+                return null
+            const url = media.currentSrc || media.src || ''
+            if (!url)
+                return null
+            return { url, caption, session: sessionId() }
+        }
+        return null
+    }
+
     function onChapterClick(event) {
         const doc = event.currentTarget
         if (state.note && !event.target.closest?.('.note')) {
@@ -1046,6 +1357,16 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 state.bridge.markClicked(mark.id, { x: frameRect.left + rect.left, y: frameRect.top + rect.top,
                                                     width: rect.width, height: rect.height, session: sessionId() })
             return
+        }
+        const media = event.target.closest ? event.target.closest('img, svg') : null
+        if (media && state.bridge && state.bridge.imageClicked) {
+            const info = extractImage(media)
+            if (info) {
+                event.preventDefault()
+                event.stopPropagation()
+                state.bridge.imageClicked(info)
+                return
+            }
         }
         const fraction = event.clientX / state.geometry.width
         tap(fraction)
@@ -1082,14 +1403,15 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             return
         }
         // A turn the reader makes leaves the voice to read on unfollowed.
+        // In RTL (and vertical-rl), the left edge advances and the right edge goes back.
         if (fraction < 0.28) {
             if (state.bridge)
                 state.bridge.tapped('turn')
-            api.prev()
+            state.rtl ? api.next() : api.prev()
         } else if (fraction > 0.72) {
             if (state.bridge)
                 state.bridge.tapped('turn')
-            api.next()
+            state.rtl ? api.prev() : api.next()
         } else if (state.bridge) {
             state.bridge.tapped('center')
         }
@@ -1109,7 +1431,8 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         swipe = null
         // At page 0 or the final page, scrollLeft clamps to the edge; fall
         // back to accumulated deltaX so swiping still crosses chapter bounds.
-        const effective = Math.abs(moved) > 1 ? moved : rawDelta
+        const sign = state.rtl ? -1 : 1
+        const effective = (Math.abs(moved) > 1 ? moved : rawDelta) * sign
         const threshold = state.geometry.step * 0.12
         const forward = effective > threshold, backward = effective < -threshold
         if (forward || backward)
@@ -1125,7 +1448,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         const target = forward ? page + 1 : backward ? page - 1 : page
         if (target !== page && state.bridge)
             state.bridge.tapped('turn')
-        turnTo(target, true).then(report)
+        turnTo(target, true).then(() => report())
     }
 
     function onWheel(event) {
@@ -1151,15 +1474,33 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         }
         if (state.geometry.scroll) {
             const el = scroller()
-            const atTop = el.scrollTop <= 0 && event.deltaY < 0
-            const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2 && event.deltaY > 0
-            if (!atTop && !atBottom) {
-                clearTimeout(wheelReset)
-                wheelReset = setTimeout(() => {
-                    state.page = pageAtPosition(0, el.scrollTop)
-                    report()
-                }, 180)
-                return
+            if (state.geometry.vertical) {
+                const raw = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+                    ? event.deltaX : (state.rtl ? -event.deltaY : event.deltaY)
+                const atStart = state.rtl ? el.scrollLeft >= -1 && raw > 0 : el.scrollLeft <= 1 && raw < 0
+                const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth)
+                const atEnd = state.rtl ? el.scrollLeft <= -maxScroll + 2 && raw < 0 : el.scrollLeft >= maxScroll - 2 && raw > 0
+                if (!atStart && !atEnd) {
+                    event.preventDefault()
+                    el.scrollLeft += raw
+                    clearTimeout(wheelReset)
+                    wheelReset = setTimeout(() => {
+                        state.page = clamp(Math.floor((Math.abs(el.scrollLeft) + 1) / state.geometry.step), 0, state.pages - 1)
+                        report()
+                    }, 180)
+                    return
+                }
+            } else {
+                const atTop = el.scrollTop <= 0 && event.deltaY < 0
+                const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 2 && event.deltaY > 0
+                if (!atTop && !atBottom) {
+                    clearTimeout(wheelReset)
+                    wheelReset = setTimeout(() => {
+                        state.page = pageAtPosition(0, el.scrollTop)
+                        report()
+                    }, 180)
+                    return
+                }
             }
         }
         event.preventDefault()
@@ -1167,7 +1508,8 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         if (now < wheelQuietUntil)
             return
         const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 400 : 1
-        const delta = (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY) * scale
+        const horiz = Math.abs(event.deltaX) > Math.abs(event.deltaY)
+        const delta = (horiz ? event.deltaX * (state.rtl ? -1 : 1) : event.deltaY) * scale
         wheelTotal += delta
         clearTimeout(wheelReset)
         wheelReset = setTimeout(() => { wheelTotal = 0 }, 200)
@@ -1241,6 +1583,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         closeNote()
         const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
         applyLayout()
+        fitBlocks(chapterDocument(), state.geometry)
         measure()
         await show(place, false)
     }
@@ -1304,7 +1647,13 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 hideFromHere(0)
                 state.book = book
                 state.style = style
+                state.rtl = !!(book && book.rtl)
+                state.vertical = ''
                 state.history = []
+                state.forward = []
+                state.justJumped = false
+                state.prefetched = new Set()
+                state.hyphenatedNodes = new Map()
                 state.chapter = -1
                 state.index = null
                 state.location = null
@@ -1323,6 +1672,8 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 hideFromHere(0)
                 clearTimeout(selectionTimer)
                 state.book = null
+                state.rtl = false
+                state.vertical = ''
                 state.chapter = -1
                 state.index = null
                 state.location = null
@@ -1330,6 +1681,10 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 state.decorations = {}
                 state.marks = []
                 state.history = []
+                state.forward = []
+                state.justJumped = false
+                state.prefetched = new Set()
+                state.hyphenatedNodes = new Map()
                 const f = frame()
                 f.classList.remove('shown')
                 f.onload = null
@@ -1339,23 +1694,45 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
 
         setStyle(style) {
             return run(async () => {
-                const reload = !state.style || style.hyphenate !== state.style.hyphenate || style.justify !== state.style.justify ||
-                               style.font !== state.style.font || style.publisher !== state.style.publisher
+                const prev = state.style
                 state.style = style
                 applyPageColors()
                 if (!state.index || !state.location)
                     return
-                const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
-                if (reload) {
-                    state.index = null
-                    await show(place, false)
+                const doc = chapterDocument()
+                const layoutKeys = ['font', 'fontScale', 'fontWeight', 'lineHeight', 'paragraphSpacing',
+                                    'margin', 'measure', 'justify', 'hyphenate', 'layout', 'publisher',
+                                    'marginTop', 'marginBottom']
+                const layoutChanged = !prev || layoutKeys.some(k => prev[k] !== style[k])
+                if (!layoutChanged) {
+                    applyTypography(doc)
                     return
                 }
-                applyTypography(chapterDocument())
-                await settle(chapterDocument())
+                const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
+                const wantHyphen = !style.publisher && style.justify && style.hyphenate
+                if (wantHyphen && !state.hyphenation) {
+                    state.hyphenation = await Hyphenation.load(state.book.language)
+                    if (state.hyphenation) {
+                        hyphenate(doc)
+                        state.index = buildIndex(doc)
+                        restoreDecorations()
+                    }
+                } else if (!wantHyphen && state.hyphenation) {
+                    unhyphenate()
+                    state.hyphenation = false
+                    state.index = buildIndex(doc)
+                    restoreDecorations()
+                }
+                applyTypography(doc)
+                if (!prev || prev.font !== style.font || prev.publisher !== style.publisher) {
+                    try { await doc.fonts.ready } catch (e) { }
+                }
                 applyLayout()
+                fitBlocks(doc, state.geometry)
                 measure()
-                await show(place, false)
+                const page = pageOfOffset(resolveOffset(place.offset, place.snippet))
+                await turnTo(page, false)
+                report()
             })
         },
 
@@ -1420,12 +1797,37 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         back() {
             return run(async () => {
                 const place = state.history.pop()
-                if (place)
-                    await show(place, false)
+                if (!place)
+                    return
+                const current = snapshotLocation()
+                if (current) {
+                    state.forward.push(current)
+                    if (state.forward.length > 50)
+                        state.forward.shift()
+                }
+                state.justJumped = false
+                await show(place, false)
+            })
+        },
+
+        forward() {
+            return run(async () => {
+                const place = state.forward.pop()
+                if (!place)
+                    return
+                const current = snapshotLocation()
+                if (current) {
+                    state.history.push(current)
+                    if (state.history.length > 50)
+                        state.history.shift()
+                }
+                state.justJumped = false
+                await show(place, false)
             })
         },
 
         canGoBack() { return state.history.length > 0 },
+        canGoForward() { return state.forward.length > 0 },
 
         // Closes the note pop-over or the selection; false when there was
         // nothing to close, so the window can go back to the library.
@@ -1535,7 +1937,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             if (page !== state.page)
                 run(async () => {
                     await turnTo(page, true)
-                    report()
+                    report(true)
                 })
         },
 

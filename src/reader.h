@@ -46,9 +46,18 @@ class Reader : public QObject {
     Q_PROPERTY(int minutesLeftInBook READ minutesLeftInBook NOTIFY locationChanged)
     Q_PROPERTY(bool atStart READ atStart NOTIFY locationChanged)
     Q_PROPERTY(bool atEnd READ atEnd NOTIFY locationChanged)
+    Q_PROPERTY(bool rtl READ rtl NOTIFY locationChanged)
+    Q_PROPERTY(bool canGoBack READ canGoBack NOTIFY locationChanged)
+    Q_PROPERTY(bool canGoForward READ canGoForward NOTIFY locationChanged)
+    Q_PROPERTY(QString backLabel READ backLabel NOTIFY locationChanged)
     // Incremented only when the active surface reports a real location,
     // distinguishing post-load syncs from openBook()'s initial signal.
     Q_PROPERTY(int relocationSeq READ relocationSeq NOTIFY locationChanged)
+    // Typographic controls & per-book appearance overrides (stored in book_settings).
+    Q_PROPERTY(int fontWeight READ fontWeight WRITE setFontWeight NOTIFY appearanceChanged)
+    Q_PROPERTY(double paragraphSpacing READ paragraphSpacing WRITE setParagraphSpacing NOTIFY appearanceChanged)
+    Q_PROPERTY(bool bookAppearanceOverride READ bookAppearanceOverride WRITE setBookAppearanceOverride NOTIFY appearanceChanged)
+    Q_PROPERTY(QVariantMap bookAppearance READ bookAppearance NOTIFY appearanceChanged)
     // A PDF: the surface's image source for its pages, and the crop that
     // cuts the margins the same on every page (parts of a page).
     Q_PROPERTY(QString pdfSource READ pdfSource NOTIFY bookChanged)
@@ -92,7 +101,20 @@ public:
     int minutesLeftInBook() const;
     bool atStart() const { return m_chapter <= m_firstLinear && m_page <= 0; }
     bool atEnd() const { return m_atEnd; }
+    bool rtl() const { return m_rtl; }
+    bool canGoBack() const { return m_canGoBack; }
+    bool canGoForward() const { return m_canGoForward; }
+    QString backLabel() const { return m_backLabel; }
     int relocationSeq() const { return m_relocationSeq; }
+    int fontWeight() const { return m_fontWeight; }
+    void setFontWeight(int weight);
+    double paragraphSpacing() const { return m_paragraphSpacing; }
+    void setParagraphSpacing(double spacing);
+    bool bookAppearanceOverride() const { return m_bookAppearanceOverride; }
+    void setBookAppearanceOverride(bool enabled);
+    QVariantMap bookAppearance() const { return m_bookAppearance; }
+    Q_INVOKABLE void saveBookAppearance(const QVariantMap &appearance);
+    Q_INVOKABLE void clearBookAppearance();
 
     Q_INVOKABLE bool openBook(int bookId);
     Q_INVOKABLE void close();
@@ -118,6 +140,10 @@ public:
     Q_INVOKABLE QVariantMap pdfPageSize(int page) const;
     // The words between two points (parts of the page): {chapter, start, end, text}.
     Q_INVOKABLE QVariantMap pdfSelect(int page, qreal x1, qreal y1, qreal x2, qreal y2) const;
+    // The word under a point (parts of the page): {chapter, start, end, text}.
+    Q_INVOKABLE QVariantMap pdfSelectWord(int page, qreal x, qreal y) const;
+    // Clickable internal/external links on a page: [{x, y, width, height, page, url}].
+    Q_INVOKABLE QVariantList pdfLinks(int page) const;
     // Where a stretch of a page's text is: [{x, y, width, height}] in parts of the page.
     Q_INVOKABLE QVariantList pdfRects(int page, qint64 start, qint64 end) const;
     Q_INVOKABLE QString pdfPageLabel(int page) const;
@@ -131,6 +157,7 @@ public:
     // What the reader has selected on the page ({} when nothing is).
     Q_INVOKABLE void selectionChanged(const QVariantMap &selection);
     Q_INVOKABLE void markClicked(int id, const QVariantMap &rect);
+    Q_INVOKABLE void imageClicked(const QVariantMap &info);
     // The reader asked to listen from a paragraph.
     Q_INVOKABLE void listenFrom(int chapter, qint64 offset) { emit listenRequested(chapter, offset); }
     Q_INVOKABLE void listenFromSession(qint64 session, int chapter, qint64 offset);
@@ -142,6 +169,9 @@ signals:
     void bookChanged();
     void lengthsChanged();
     void locationChanged();
+    void appearanceChanged();
+    void jumpRecorded(const QString &label);
+    void imageChosen(const QString &source, const QString &caption);
     void surfaceReady();
     void tap(const QString &zone);
     void externalLink(const QString &url);
@@ -157,6 +187,8 @@ private:
     void savePosition();
     void flushReadingTime();
     void measureChapters();
+    void loadBookAppearance(int bookId);
+    QString formatBackLabel(int chapter, const QString &pageLabel) const;
     qint64 globalOffset(int chapter, qint64 offset) const;
 
     Library *m_library;
@@ -195,6 +227,14 @@ private:
     double m_progress = 0;
     QString m_pageLabel;
     bool m_atEnd = false;
+    bool m_rtl = false;
+    bool m_canGoBack = false;
+    bool m_canGoForward = false;
+    QString m_backLabel;
+    int m_fontWeight = 400;
+    double m_paragraphSpacing = 0.4;
+    bool m_bookAppearanceOverride = false;
+    QVariantMap m_bookAppearance;
 
     QTimer m_saveTimer;
     QElapsedTimer m_sinceTurn;
