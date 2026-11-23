@@ -47,13 +47,17 @@ QList<SpeechSentence> sentences(const SpeechBlock &block);
 // ("CHAPTER V" says "Chapter 5"), capitals that would sound like shouting
 // in ordinary case, and a full stop so the title that follows gets a beat.
 QString spokenHeading(const QString &text);
-// Clips for a chapter from `from` on. A chapter's number and title are read
-// together; the first passage of text can be a single sentence, so
-// listening starts in about a second.
-// Blocks in `breaks` (where the mood of the reading changes) always begin a
-// clip, so each clip is read in one mood.
-QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, qint64 from, bool firstShort,
-                        int longest = 1500, int merge = 600, const QSet<int> &breaks = {});
+// A chapter's clips, always cut the same way from its start, so audio made
+// once (heard, or downloaded) is found again whenever the chapter is read.
+// A chapter's number and title are read together; short paragraphs share a
+// clip; long ones are split between sentences. Blocks in `breaks` (where
+// the mood of the reading changes) always begin a clip, so each clip is
+// read in one mood.
+QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, const QSet<int> &breaks = {},
+                        int longest = 1500, int merge = 600);
+// The clips to read from `from` on: the chapter's own clips, with the one
+// `from` falls in begun at its sentence.
+QList<SpeechClip> clipsFrom(int chapter, const QList<SpeechBlock> &blocks, qint64 from, const QSet<int> &breaks = {});
 // The moods a director can ask for, from a fixed list so the same scene is
 // always read the same way (and found again in the cache).
 QStringList moods();

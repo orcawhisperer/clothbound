@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ai.h"
 #include "speech.h"
 
 #include <QDateTime>
@@ -127,6 +128,11 @@ private:
     qint64 expectedSamples(const Clip &clip) const;
     void setBuffering(bool buffering);
     void setProblem(const QString &problem);
+    Ai::TextRequest directionsRequest(int chapter) const;
+    QString directionsKey(const Ai::TextRequest &request) const;
+    static QMap<int, QString> parseDirections(const QString &json, int blocks);
+    bool keptDirections(int chapter);
+    QSet<int> breaksFor(int chapter) const;
     void requestDirections(int chapter);
     void applyMoods(int chapter, const QMap<int, QString> &moods);
     bool waitingForDirections(const Clip &clip) const;

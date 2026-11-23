@@ -250,9 +250,12 @@ void Narration::addBlocks(int chapter, const QString &json) {
     m_lastChapter = qMax(m_lastChapter, chapter);
     const QList<SpeechBlock> blocks = Speech::parseBlocks(json);
     m_blocks.insert(chapter, blocks);
+    // Direction kept from an earlier reading shapes the clips from the
+    // start, so they match the audio made then.
+    const bool kept = directed() && m_ai->text() && keptDirections(chapter);
     const qint64 from = chapter == m_startChapter ? m_startOffset : 0;
     const bool firstOfSession = m_clips.isEmpty();
-    const QList<SpeechClip> made = Speech::clips(chapter, blocks, from, firstOfSession);
+    const QList<SpeechClip> made = Speech::clipsFrom(chapter, blocks, from, breaksFor(chapter));
     const int before = int(m_clips.size());
     for (const SpeechClip &spoken : made) {
         Clip clip;
@@ -260,12 +263,12 @@ void Narration::addBlocks(int chapter, const QString &json) {
         clip.spans = Speech::timeline(clip);
         m_clips.append(clip);
     }
-    // The first few clips go ahead without the director's notes, so the
-    // voice starts at once and never waits on them.
-    if (firstOfSession)
+    // Otherwise the first few clips go ahead without direction, so the
+    // voice starts at once and never waits on the director.
+    if (firstOfSession && !kept)
         for (int i = before; i < qMin<qsizetype>(before + 3, m_clips.size()); ++i)
             m_clips[i].immediate = true;
-    if (directed() && m_ai->text() && !made.isEmpty())
+    if (directed() && m_ai->text() && !made.isEmpty() && !kept)
         requestDirections(chapter);
     if (m_current < 0 && !m_clips.isEmpty())
         m_current = 0;
@@ -663,15 +666,15 @@ int Narration::sleepMinutes() const {
     return qMax(1, int(std::ceil(QDateTime::currentDateTime().secsTo(m_sleepAt) / 60.0)));
 }
 
-void Narration::requestDirections(int chapter) {
+Ai::TextRequest Narration::directionsRequest(int chapter) const {
     const QList<SpeechBlock> blocks = m_blocks.value(chapter);
     QString paragraphs;
     for (int i = 0; i < blocks.size(); ++i)
         if (blocks[i].kind != QStringLiteral("break"))
             paragraphs += QStringLiteral("[%1] %2\n").arg(i).arg(blocks[i].text.simplified().left(1600));
-    if (paragraphs.isEmpty())
-        return;
     Ai::TextRequest request;
+    if (paragraphs.isEmpty())
+        return request;
     request.feature = QStringLiteral("director");
     request.fast = true;
     request.effort = QStringLiteral("low");
@@ -692,38 +695,65 @@ void Narration::requestDirections(int chapter) {
                                   {"required", QJsonArray{"paragraph", "mood"}}}}}}}},
         {"required", QJsonArray{"changes"}},
     };
+    return request;
+}
 
-    // The same chapter, performance, prompt and model always get the same
-    // direction: asked once, then kept.
-    const QString key = AudioCache::keyFor(m_ai->provider()->id(), m_ai->text()->textModelName(true),
-                                           QStringLiteral("director"), request.system, request.messages.first().text);
-    auto parse = [blocks](const QString &json) {
-        QMap<int, QString> changes;
-        for (const auto &value : QJsonDocument::fromJson(json.toUtf8()).object().value("changes").toArray()) {
-            const QJsonObject change = value.toObject();
-            const int paragraph = change.value("paragraph").toInt(-1);
-            const QString mood = change.value("mood").toString();
-            if (paragraph >= 0 && paragraph < blocks.size() && Speech::moods().contains(mood))
-                changes.insert(paragraph, mood == QStringLiteral("neutral") ? QString() : mood);
-        }
-        return changes;
-    };
-    const QString kept = m_cache->directions(key);
-    if (!kept.isEmpty()) {
-        trace(QStringLiteral("director (kept): %1 changes for chapter %2").arg(parse(kept).size()).arg(chapter));
-        applyMoods(chapter, parse(kept));
-        return;
+// The same chapter, performance, prompt and model always get the same
+// direction: asked once, then kept.
+QString Narration::directionsKey(const Ai::TextRequest &request) const {
+    return AudioCache::keyFor(m_ai->provider()->id(), m_ai->text()->textModelName(true), QStringLiteral("director"),
+                              request.system, request.messages.value(0).text);
+}
+
+QMap<int, QString> Narration::parseDirections(const QString &json, int blocks) {
+    QMap<int, QString> changes;
+    for (const auto &value : QJsonDocument::fromJson(json.toUtf8()).object().value("changes").toArray()) {
+        const QJsonObject change = value.toObject();
+        const int paragraph = change.value("paragraph").toInt(-1);
+        const QString mood = change.value("mood").toString();
+        if (paragraph >= 0 && paragraph < blocks && Speech::moods().contains(mood))
+            changes.insert(paragraph, mood == QStringLiteral("neutral") ? QString() : mood);
     }
+    return changes;
+}
+
+bool Narration::keptDirections(int chapter) {
+    const Ai::TextRequest request = directionsRequest(chapter);
+    if (request.messages.isEmpty())
+        return false;
+    const QString kept = m_cache->directions(directionsKey(request));
+    if (kept.isEmpty())
+        return false;
+    const QMap<int, QString> changes = parseDirections(kept, int(m_blocks.value(chapter).size()));
+    trace(QStringLiteral("director (kept): %1 changes for chapter %2").arg(changes.size()).arg(chapter));
+    m_moods.insert(chapter, changes);
+    return true;
+}
+
+QSet<int> Narration::breaksFor(int chapter) const {
+    QSet<int> breaks;
+    const QMap<int, QString> moods = m_moods.value(chapter);
+    for (auto it = moods.cbegin(); it != moods.cend(); ++it)
+        breaks.insert(it.key());
+    return breaks;
+}
+
+void Narration::requestDirections(int chapter) {
+    const Ai::TextRequest request = directionsRequest(chapter);
+    if (request.messages.isEmpty())
+        return;
+    const QString key = directionsKey(request);
+    const int blocks = int(m_blocks.value(chapter).size());
     m_directionsAsked.insert(chapter, nowMs());
     Ai::Reply *reply = m_ai->text()->generate(request);
     m_ai->track(reply);
-    connect(reply, &Ai::Reply::finished, this, [this, reply, chapter, key, parse] {
+    connect(reply, &Ai::Reply::finished, this, [this, reply, chapter, key, blocks] {
         reply->deleteLater();
         if (!m_active || !m_blocks.contains(chapter))
             return;
         QMap<int, QString> changes;
         if (!reply->error()) {
-            changes = parse(reply->text());
+            changes = parseDirections(reply->text(), blocks);
             m_cache->storeDirections(key, reply->text());
         }
         QStringList said;
@@ -751,10 +781,7 @@ void Narration::applyMoods(int chapter, const QMap<int, QString> &moods) {
         const QList<SpeechBlock> blocks = m_blocks.value(chapter);
         const Clip &first = m_clips[from];
         const qint64 offset = first.pauseMs > 0 ? blocks.value(first.block).start : first.start();
-        QSet<int> breaks;
-        for (auto it = moods.cbegin(); it != moods.cend(); ++it)
-            breaks.insert(it.key());
-        const QList<SpeechClip> remade = Speech::clips(chapter, blocks, offset, false, 1500, 600, breaks);
+        const QList<SpeechClip> remade = Speech::clipsFrom(chapter, blocks, offset, breaksFor(chapter));
         m_clips.remove(from, end - from);
         int at = from;
         for (const SpeechClip &spoken : remade) {

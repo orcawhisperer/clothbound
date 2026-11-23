@@ -170,38 +170,44 @@ private slots:
                                   block(15, first + rest), block(200, "“Yes,” he said."),
                                   block(220, "“No.”"), block(230, "* * *", "break"),
                                   block(240, "Morning came.")};
-        QList<SpeechClip> made = Speech::clips(3, blocks, 0, true);
-        // The number and title together, then one sentence to start at once,
-        // then the rest of the paragraph.
+        const QList<SpeechClip> made = Speech::clips(3, blocks);
+        // The number and title together, then the paragraph, with the short
+        // lines of dialogue after it (so a page of conversation isn't a
+        // request a line), then a pause for the scene break.
         QCOMPARE(made[0].text, QString("5. The Golden Age."));
         QCOMPARE(made[0].sentences.size(), 2);
         QCOMPARE(made[0].block, 0);
-        QCOMPARE(made[1].text, first);
+        QCOMPARE(made[1].text, first + rest + " “Yes,” he said. “No.”");
         QCOMPARE(made[1].block, 2);
-        // Short lines of dialogue join the clip before them, so a page of
-        // conversation isn't a request a line.
-        QCOMPARE(made[2].text, rest.trimmed() + " “Yes,” he said. “No.”");
-        QCOMPARE(made[2].block, 2);
-        // A scene break is a pause.
-        QCOMPARE(made[3].pauseMs, 1300);
-        QCOMPARE(made[4].text, QString("Morning came."));
-        QCOMPARE(made.size(), 5);
-        for (const SpeechClip &clip : std::as_const(made))
+        QCOMPARE(made[2].pauseMs, 1300);
+        QCOMPARE(made[3].text, QString("Morning came."));
+        QCOMPARE(made.size(), 4);
+        for (const SpeechClip &clip : made)
             QCOMPARE(clip.chapter, 3);
 
-        // From the middle of a paragraph: from the sentence there on, and
-        // past the headings.
-        made = Speech::clips(3, blocks, 15 + first.size() + 5, false);
-        QVERIFY(made[0].text.startsWith(rest.trimmed()));
-        QCOMPARE(made[0].block, 2);
+        // From the start, or from a clip's start: exactly the chapter's own
+        // clips, so audio made before is found again.
+        QCOMPARE(Speech::clipsFrom(3, blocks, 0).size(), made.size());
+        QList<SpeechClip> from = Speech::clipsFrom(3, blocks, made[1].start());
+        QCOMPARE(from.size(), 3);
+        QCOMPARE(from[0].text, made[1].text);
+        // From the middle of a clip: a lead-in from that sentence, then the
+        // chapter's own clips again.
+        from = Speech::clipsFrom(3, blocks, 15 + first.size() + 5);
+        QCOMPARE(from[0].text, rest.trimmed() + " “Yes,” he said. “No.”");
+        QCOMPARE(from[0].block, 2);
+        QCOMPARE(from[1].pauseMs, 1300);
+        QCOMPARE(from[2].text, made[3].text);
+        // Past a scene break, the pause isn't read.
+        QCOMPARE(Speech::clipsFrom(3, blocks, 240).size(), 1);
     }
 
     void speechBeginsAClipWhereTheMoodChanges() {
         const QList<SpeechBlock> blocks{block(0, "It was quiet."), block(20, "“Hush,” she said."),
                                         block(40, "They waited."), block(60, "Then the door burst open.")};
         // Short paragraphs share a clip, unless the mood changes between them.
-        QCOMPARE(Speech::clips(0, blocks, 0, false).size(), 1);
-        const QList<SpeechClip> made = Speech::clips(0, blocks, 0, false, 1500, 600, {1, 3});
+        QCOMPARE(Speech::clips(0, blocks).size(), 1);
+        const QList<SpeechClip> made = Speech::clips(0, blocks, {1, 3});
         QCOMPARE(made.size(), 3);
         QCOMPARE(made[0].block, 0);
         QCOMPARE(made[1].block, 1);
@@ -225,11 +231,8 @@ private slots:
         QString text;
         for (int i = 0; i < 60; ++i)
             text += QStringLiteral("Sentence number %1 goes on for a little while longer. ").arg(i);
-        const QList<SpeechClip> made = Speech::clips(0, {block(0, text.trimmed())}, 0, true, 1500, 600);
-        QVERIFY(made.size() > 3);
-        QCOMPARE(made[0].sentences.size(), 1);
-        QVERIFY(made[1].text.size() <= 400);
-        QVERIFY(made[2].text.size() <= 900);
+        const QList<SpeechClip> made = Speech::clips(0, {block(0, text.trimmed())});
+        QVERIFY(made.size() >= 3);
         qsizetype total = 0;
         for (const SpeechClip &clip : made) {
             QVERIFY(clip.text.size() <= 1500);

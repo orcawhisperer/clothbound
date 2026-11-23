@@ -199,8 +199,8 @@ QString moodAt(const QMap<int, QString> &changes, int block) {
     return at == changes.begin() ? QString() : std::prev(at).value();
 }
 
-QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, qint64 from, bool firstShort, int longest,
-                        int merge, const QSet<int> &breaks) {
+QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, const QSet<int> &breaks, int longest,
+                        int merge) {
     auto empty = [chapter](int block) {
         SpeechClip clip;
         clip.chapter = chapter;
@@ -211,7 +211,6 @@ QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, qint64 fr
     SpeechClip current = empty(-1);
     qsizetype currentLength = 0;
     bool currentHeading = false;
-    int passages = 0;  // clips of text made so far (headings and pauses aside)
     auto flush = [&] {
         if (!current.sentences.isEmpty()) {
             QStringList parts;
@@ -219,25 +218,13 @@ QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, qint64 fr
                 parts.append(sentence.text);
             current.text = parts.join(' ');
             result.append(current);
-            if (!currentHeading)
-                ++passages;
         }
         current = empty(-1);
         currentLength = 0;
         currentHeading = false;
     };
-    // Listening ramps up: one sentence to start at once, then clips that
-    // grow, each made while the one before it plays.
-    auto limit = [&]() -> qsizetype {
-        if (!firstShort)
-            return longest;
-        return passages == 0 ? 1 : passages == 1 ? qMin<qsizetype>(400, longest)
-                             : passages == 2 ? qMin<qsizetype>(900, longest) : longest;
-    };
     for (int b = 0; b < blocks.size(); ++b) {
         const SpeechBlock &block = blocks[b];
-        if (block.end <= from)
-            continue;
         if (block.kind == QStringLiteral("break")) {
             flush();
             SpeechClip pause = empty(b);
@@ -245,13 +232,10 @@ QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, qint64 fr
             result.append(pause);
             continue;
         }
-        QList<SpeechSentence> said;
+        const QList<SpeechSentence> said = sentences(block);
         qsizetype blockLength = 0;
-        for (const auto &sentence : sentences(block))
-            if (sentence.end > from) {
-                said.append(sentence);
-                blockLength += sentence.text.size();
-            }
+        for (const auto &sentence : said)
+            blockLength += sentence.text.size();
         if (said.isEmpty())
             continue;
         // Consecutive headings (a chapter's number, then its title) are one
@@ -277,17 +261,43 @@ QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, qint64 fr
             flush();
         for (const auto &sentence : std::as_const(said)) {
             // (Sentences are joined with a space.)
-            if (!current.sentences.isEmpty() && currentLength + 1 + sentence.text.size() > limit())
+            if (!current.sentences.isEmpty() && currentLength + 1 + sentence.text.size() > longest)
                 flush();
             if (current.sentences.isEmpty())
                 current.block = b;
             currentLength += sentence.text.size() + (current.sentences.isEmpty() ? 0 : 1);
             current.sentences.append(sentence);
-            if (firstShort && passages == 0)
-                flush();
         }
     }
     flush();
+    return result;
+}
+
+QList<SpeechClip> clipsFrom(int chapter, const QList<SpeechBlock> &blocks, qint64 from, const QSet<int> &breaks) {
+    const QList<SpeechClip> all = clips(chapter, blocks, breaks);
+    // Where a clip ends: its last sentence, or for a pause its break.
+    auto ends = [&blocks](const SpeechClip &clip) {
+        return clip.sentences.isEmpty() ? blocks.value(clip.block).end : clip.end();
+    };
+    qsizetype first = 0;
+    while (first < all.size() && ends(all[first]) <= from)
+        ++first;
+    QList<SpeechClip> result = all.mid(first);
+    if (!result.isEmpty() && !result.first().sentences.isEmpty() && result.first().start() < from) {
+        // A lead-in: the rest of the clip `from` falls in, from its sentence.
+        SpeechClip &lead = result.first();
+        lead.sentences.removeIf([from](const SpeechSentence &sentence) { return sentence.end <= from; });
+        QStringList parts;
+        for (const auto &sentence : std::as_const(lead.sentences))
+            parts.append(sentence.text);
+        lead.text = parts.join(' ');
+        // Its first block, for the director, is the one it now begins in.
+        for (int b = lead.block; b < blocks.size(); ++b)
+            if (blocks[b].end > lead.sentences.first().start) {
+                lead.block = b;
+                break;
+            }
+    }
     return result;
 }
 
