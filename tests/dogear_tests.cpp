@@ -1,13 +1,20 @@
 #include <QBuffer>
 #include <QDir>
 #include <QFile>
+#include <QFontDatabase>
+#include <QGuiApplication>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QNetworkReply>
 #include <QCryptographicHash>
 #include <QProcess>
 #include <QPromise>
+#include <QQuickWindow>
+#include <QRegularExpression>
+#include <QSet>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -18,6 +25,7 @@
 #include "audiocache.h"
 #include "aiusage.h"
 #include "bookinfo.h"
+#include "cli.h"
 #include "fakeserver.h"
 #include "gemini.h"
 #include "localmodels.h"
@@ -34,6 +42,9 @@
 #include "instance.h"
 #include "keystore.h"
 #include "localspeech.h"
+#include "notifier.h"
+#include "pointerdriver.h"
+#include "portalfilepicker.h"
 #include "voicepacks.h"
 #include "sseparser.h"
 #include "bookname.h"
@@ -445,16 +456,22 @@ private slots:
         QDir(dir.path()).mkpath("theme");
         write(dir.path() + "/theme/colors.toml", "mode = \"light\"\naccent = \"#112233\"\n"
                                                  "background = \"#fffcf0\"\nforeground = \"#100f0f\"\n"
-                                                 "lighter_background = \"#e6e4d9\"\n");
+                                                 "lighter_background = \"#e6e4d9\"\n"
+                                                 "bad_quotes = \"#ff0000'\n"
+                                                 "[terminal]\nbackground = \"#000000\"\nforeground = \"#ffffff\"\n");
         Theme theme(dir.path());
         QCOMPARE(theme.accent(), QString("#112233"));
         QCOMPARE(theme.accentForeground(), QString("white"));
         QVERIFY(theme.omarchy());
         QVERIFY(theme.light());
+        // Keys inside [terminal] must not clobber top-level palette keys.
         QCOMPARE(theme.background(), QString("#fffcf0"));
+        QCOMPARE(theme.text(), QString("#100f0f"));
         QCOMPARE(theme.surface(), QString("#e6e4d9"));
-        // Keys the theme leaves out come from the fallback.
-        QCOMPARE(theme.selection(), Theme::fallbackPalette().value("selection"));
+        // Partial light themes fall back to the light palette (high contrast on light bg).
+        QCOMPARE(theme.selection(), Theme::fallbackLightPalette().value("selection"));
+        QCOMPARE(theme.textSecondary(), Theme::fallbackLightPalette().value("light_foreground"));
+        QCOMPARE(Theme::readableOn(theme.textSecondary()), QString("white"));
     }
 
     void themeFollowsChanges() {
@@ -470,14 +487,35 @@ private slots:
 
     void themeFollowsHyprlandRounding() {
         QTemporaryDir dir;
-        const QString response = dir.filePath("response.json"), command = dir.filePath("hyprctl");
-        write(command, "#!/bin/sh\ncat '" + response.toUtf8() + "'\n");
-        QVERIFY(QFile::setPermissions(command, QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
-        write(response, "{\"int\":0}");
+        int rounding = 0;
+        QLocalServer requestServer, eventServer;
+        QVERIFY(requestServer.listen(dir.filePath(".socket.sock")));
+        QVERIFY(eventServer.listen(dir.filePath(".socket2.sock")));
 
-        Theme theme(dir.path(), nullptr, command);
+        QObject::connect(&requestServer, &QLocalServer::newConnection, &requestServer, [&] {
+            while (QLocalSocket *client = requestServer.nextPendingConnection()) {
+                QObject::connect(client, &QLocalSocket::readyRead, client, [client, &rounding] {
+                    const QByteArray cmd = client->readAll();
+                    if (cmd.contains("decoration:rounding"))
+                        client->write(QStringLiteral("{\"int\":%1}").arg(rounding).toUtf8());
+                    client->disconnectFromServer();
+                });
+                QObject::connect(client, &QLocalSocket::disconnected, client, &QObject::deleteLater);
+            }
+        });
+
+        QPointer<QLocalSocket> eventClient;
+        QObject::connect(&eventServer, &QLocalServer::newConnection, &eventServer, [&] {
+            eventClient = eventServer.nextPendingConnection();
+        });
+
+        Theme theme(dir.path(), nullptr, dir.path());
+        QTRY_VERIFY(eventClient != nullptr);
         QCOMPARE(theme.radius(), 0);
-        write(response, "{\"int\":6}");
+
+        rounding = 6;
+        eventClient->write("configreloaded>>\n");
+        eventClient->flush();
         QTRY_COMPARE(theme.radius(), 6);
     }
 
@@ -492,7 +530,7 @@ private slots:
 
     void translatorFollowsTheLanguageFile() {
         QTemporaryDir dir;
-        write(dir.path() + "/language", "pt-BR\n");
+        write(dir.path() + "/language", "pt_BR\n");
         write(dir.path() + "/pt.json", R"({"Save": "Guardar", "Open": "Abrir"})");
         write(dir.path() + "/pt-BR.json", R"({"Save": "Salvar"})");
 
@@ -501,34 +539,131 @@ private slots:
         QCOMPARE(translator.translate("Main", "Save"), QString("Salvar"));
         QCOMPARE(translator.translate("Main", "Open"), QString("Abrir"));
         QVERIFY(translator.translate("Main", "Quit").isNull());
+
+        // BCP-47 script tags are accepted too.
+        write(dir.path() + "/language", "zh-Hans\n");
+        QCOMPARE(Translator::readLanguage(dir.path() + "/language"), QString("zh-Hans"));
     }
 
     void translatorPicksPluralForms() {
         QTemporaryDir dir;
         write(dir.path() + "/language", "ru\n");
         write(dir.path() + "/en.json", R"({"%n books": {"one": "%n book", "other": "%n books"}})");
-        write(dir.path() + "/ru.json", R"({"%n books": {"one": "%n книга", "few": "%n книги", "many": "%n книг", "other": "%n книги"}})");
+        write(dir.path() + "/ru.json", R"({"%n books": {"one": "%n книга", "few": "%n книги", "many": "%n книг", "other": "%n книг"}, "%n pages": {"one": "%n страница", "many": "%n страниц"}})");
 
         Translator translator(dir.path() + "/language", dir.path());
         QCOMPARE(translator.translate("Main", "%n books", nullptr, 21), QString("%n книга"));
         QCOMPARE(translator.translate("Main", "%n books", nullptr, 22), QString("%n книги"));
         QCOMPARE(translator.translate("Main", "%n books", nullptr, 25), QString("%n книг"));
+        // Missing "other" falls back to "many" rather than blank text.
+        QCOMPARE(translator.translate("Main", "%n pages", nullptr, -1), QString("%n страниц"));
         QCOMPARE(Translator::pluralCategory("ar", 11), QString("many"));
         QCOMPARE(Translator::pluralCategory("ja", 1), QString("other"));
+        QCOMPARE(Translator::pluralCategory("es", 1000000), QString("many"));
+        // Unset OMARCHY_PATH never breaks formatLocale.
+        const QByteArray prevOmarchy = qgetenv("OMARCHY_PATH");
+        qunsetenv("OMARCHY_PATH");
+        QCOMPARE(Translator::formatLocale("fr").language(), QLocale::French);
+        if (!prevOmarchy.isEmpty())
+            qputenv("OMARCHY_PATH", prevOmarchy);
     }
 
     void shippedCatalogsAreValidJson() {
-        const QDir catalogs(":/i18n");
-        // Catalogs are compiled into the app, not the tests; check the sources.
         const QDir sources(QFINDTESTDATA("../src/i18n"));
-        for (const QString &name : sources.entryList({"*.json"})) {
+        const QStringList files = sources.entryList({"*.json"});
+        QCOMPARE(files.size(), 50);
+
+        // Read English plural catalog first: must include Format.js plurals too.
+        QFile enFile(sources.filePath("en.json"));
+        QVERIFY(enFile.open(QIODevice::ReadOnly));
+        QJsonParseError enError;
+        const QJsonObject enObj = QJsonDocument::fromJson(enFile.readAll(), &enError).object();
+        QVERIFY2(enError.error == QJsonParseError::NoError, qPrintable(enError.errorString()));
+        QVERIFY(enObj.contains("%n min"));
+        QVERIFY(enObj.contains("%n h"));
+        QVERIFY(enObj.contains("%n books"));
+
+        static const QRegularExpression phRe(QStringLiteral("%L?[0-9n]"));
+        static const QRegularExpression tagRe(QStringLiteral("</?([a-zA-Z0-9]+)(?:\\s[^>]*)?>"));
+        auto normalizedPh = [](const QString &s) {
+            QStringList out;
+            auto it = phRe.globalMatch(s);
+            while (it.hasNext()) {
+                QString p = it.next().captured();
+                out.append((p == "%Ln") ? QStringLiteral("%n") : p);
+            }
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        auto htmlTags = [](const QString &s) {
+            QStringList out;
+            auto it = tagRe.globalMatch(s);
+            while (it.hasNext())
+                out.append(it.next().captured(1));
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+
+        const QHash<QString, QStringList> requiredForms{
+            {"ja", {"other"}}, {"ko", {"other"}}, {"zh-CN", {"other"}}, {"zh-TW", {"other"}},
+            {"th", {"other"}}, {"vi", {"other"}}, {"id", {"other"}}, {"ms", {"other"}},
+            {"fr", {"one", "many", "other"}}, {"pt-BR", {"one", "many", "other"}},
+            {"ca", {"one", "many", "other"}}, {"es-MX", {"one", "many", "other"}},
+            {"it", {"one", "many", "other"}}, {"pt", {"one", "many", "other"}},
+            {"cs", {"one", "few", "other"}}, {"sk", {"one", "few", "other"}},
+            {"pl", {"one", "few", "many", "other"}}, {"ru", {"one", "few", "many", "other"}},
+            {"uk", {"one", "few", "many", "other"}}, {"hr", {"one", "few", "other"}},
+            {"sr", {"one", "few", "other"}}, {"sl", {"one", "two", "few", "other"}},
+            {"lt", {"one", "few", "other"}}, {"lv", {"zero", "one", "other"}},
+            {"ro", {"one", "few", "other"}}, {"ar", {"zero", "one", "two", "few", "many", "other"}},
+            {"he", {"one", "two", "other"}}, {"ga", {"one", "two", "few", "many", "other"}},
+        };
+        const QHash<QString, QSet<QString>> exactNumberForms{
+            {"ar", {"zero", "one", "two"}}, {"he", {"one", "two"}}, {"ro", {"one"}}, {"ga", {"one", "two"}},
+        };
+
+        for (const QString &name : files) {
+            const QString code = QFileInfo(name).baseName();
             QFile file(sources.filePath(name));
             QVERIFY(file.open(QIODevice::ReadOnly));
             QJsonParseError error;
-            QJsonDocument::fromJson(file.readAll(), &error);
+            const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
             QVERIFY2(error.error == QJsonParseError::NoError, qPrintable(name + ": " + error.errorString()));
+            QVERIFY2(doc.isObject(), qPrintable(name));
+            const QJsonObject obj = doc.object();
+            if (code == "en")
+                continue;
+            const QStringList forms = requiredForms.value(code, {"one", "other"});
+            for (auto it = obj.cbegin(); it != obj.cend(); ++it) {
+                const QString key = it.key();
+                const bool counted = enObj.contains(key) || key.contains("%n") || key.contains("%Ln");
+                const QStringList expPh = normalizedPh(key);
+                const QStringList expTags = htmlTags(key);
+                if (counted) {
+                    QVERIFY2(it.value().isObject(), qPrintable(code + ": counted key is not object: " + key));
+                    const QJsonObject dict = it.value().toObject();
+                    QVERIFY2(dict.contains("other"), qPrintable(code + ": missing 'other' for " + key));
+                    for (const QString &form : forms) {
+                        const QString val = dict.value(form).toString();
+                        QVERIFY2(!val.trimmed().isEmpty(), qPrintable(code + ": empty form " + form + " for " + key));
+                        QCOMPARE(htmlTags(val), expTags);
+                        const QStringList gotPh = normalizedPh(val);
+                        if (gotPh != expPh) {
+                            const bool okExact = exactNumberForms.value(code).contains(form);
+                            QStringList expNoN = expPh, gotNoN = gotPh;
+                            expNoN.removeAll("%n");
+                            QVERIFY2(okExact && !gotNoN.contains("%n") && gotNoN == expNoN,
+                                     qPrintable(code + " [" + form + "] placeholder mismatch for " + key + ": " + val));
+                        }
+                    }
+                } else {
+                    const QString val = it.value().toString();
+                    QVERIFY2(!val.trimmed().isEmpty(), qPrintable(code + ": empty value for " + key));
+                    QCOMPARE(normalizedPh(val), expPh);
+                    QCOMPARE(htmlTags(val), expTags);
+                }
+            }
         }
-        Q_UNUSED(catalogs);
     }
 
     // --- ZIP -----------------------------------------------------------
@@ -967,7 +1102,8 @@ private slots:
             tar.start("tar", {"-cjf", dir.filePath(folder + ".tar.bz2"), "-C", dir.filePath("src"), folder});
             tar.waitForFinished();
             QFile made(dir.filePath(folder + ".tar.bz2"));
-            made.open(QIODevice::ReadOnly);
+            if (!made.open(QIODevice::ReadOnly))
+                return QByteArray();
             return made.readAll();
         };
         const QByteArray engine = archive("engine-arm", "libsherpa-onnx-c-api.so");
@@ -1464,7 +1600,9 @@ private slots:
             writer.setPageSize(QPageSize(QPageSize::A5));
             writer.setResolution(72);
             QPainter painter(&writer);
-            painter.setFont(QFont("DejaVu Serif", 14));
+            const int fontId = QFontDatabase::addApplicationFont(QFINDTESTDATA("../src/fonts/Literata.ttf"));
+            const QString family = fontId >= 0 ? QFontDatabase::applicationFontFamilies(fontId).value(0) : QString();
+            painter.setFont(family.isEmpty() ? QFont(QStringLiteral("serif"), 14) : QFont(family, 14));
             painter.drawText(QPointF(40, 80), "Weena was a little creature.");
             painter.drawText(QPointF(40, 120), "The Morlocks came at night.");
         }
@@ -2137,7 +2275,131 @@ private slots:
         // Without a window there's nothing to show, and nothing fails.
         running.bringBack();
     }
+
+    void instanceFocusesHyprlandOverSocketWithoutMutatingEnv() {
+        QTemporaryDir dir;
+        const QString sockPath = dir.filePath(".socket.sock");
+        QLocalServer server;
+        QVERIFY(server.listen(sockPath));
+        QStringList commands;
+        QObject::connect(&server, &QLocalServer::newConnection, &server, [&] {
+            while (QLocalSocket *client = server.nextPendingConnection()) {
+                QObject::connect(client, &QLocalSocket::readyRead, client, [client, &commands] {
+                    const QByteArray cmd = client->readAll();
+                    commands.append(QString::fromUtf8(cmd));
+                    if (cmd == "j/clients") {
+                        const QByteArray json = QStringLiteral("[{\"pid\":%1,\"address\":\"0xdeadbeef\"}]")
+                                                    .arg(QCoreApplication::applicationPid())
+                                                    .toUtf8();
+                        client->write(json);
+                    } else if (cmd.contains("hl.dsp.focus")) {
+                        client->write("unknown request");
+                    } else {
+                        client->write("ok");
+                    }
+                    client->disconnectFromServer();
+                });
+                QObject::connect(client, &QLocalSocket::disconnected, client, &QObject::deleteLater);
+            }
+        });
+
+        qunsetenv("XDG_ACTIVATION_TOKEN");
+        QWindow win;
+        win.show();
+        Instance inst;
+        inst.setWindow(&win);
+        inst.setHyprSocketForTesting(sockPath);
+        inst.bringBack(QStringLiteral("test-activation-token"));
+        // bringBack() must never mutate environ after threads may be running.
+        QVERIFY(!qEnvironmentVariableIsSet("XDG_ACTIVATION_TOKEN"));
+        QTRY_COMPARE(commands.size(), 3);
+        QCOMPARE(commands[0], QString("j/clients"));
+        QVERIFY(commands[1].contains("address:0xdeadbeef"));
+        QCOMPARE(commands[2], QString("dispatch focuswindow address:0xdeadbeef"));
+    }
+
+    void notifierTracksTokensPerIdAndCleansClosed() {
+        Notifier notifier;
+        QSignalSpy clicked(&notifier, &Notifier::clicked);
+        // Simulate clickable IDs via public slots (no live notification daemon required).
+        notifier.onActivationToken(10, QStringLiteral("ignored-unknown"));
+        notifier.onActionInvoked(10, QStringLiteral("default"));
+        QCOMPARE(clicked.count(), 0);
+        notifier.onNotificationClosed(10, 2);
+        QCOMPARE(notifier.pendingCount(), 0);
+    }
+
+    void pointerDriverSendsPublicEvents() {
+        QQuickWindow win;
+        win.resize(400, 300);
+        PointerDriver driver(&win);
+        driver.press(10, 10);
+        driver.move(20, 20);
+        driver.release(20, 20);
+        driver.wheel(20, 20, -120, 0);
+        driver.key(Qt::Key_Space, QStringLiteral(" "));
+        driver.drag(10, 10, 30, 30, 0);  // steps <= 0 clamped safely
+        QTest::qWait(80);
+        QVERIFY(true);
+    }
+
+    void cliCommandsHandleEdgeCases() {
+        QVERIFY(isCliCommand("add"));
+        QVERIFY(isCliCommand("ai"));
+        QVERIFY(!isCliCommand("open"));
+
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath("Marsh, Ada - Lantern Keeper, The (Harbor, 1911).epub");
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+
+        // Single-pass info succeeds on a valid EPUB.
+        QCOMPARE(runCli({"dogear", "info", "--json", epubPath}), 0);
+        QCOMPARE(runCli({"dogear", "help", "open"}), 0);
+
+        // Add book once, then re-add: idempotent, no crash/hang.
+        QCOMPARE(runCli({"dogear", "add", "--json", epubPath}), 0);
+        QCOMPARE(runCli({"dogear", "add", "--json", epubPath}), 0);
+
+        // Add multiple folders in one call: batches into one scan, never hangs.
+        const QString dir1 = dir.filePath("d1"), dir2 = dir.filePath("d2");
+        QDir().mkpath(dir1);
+        QDir().mkpath(dir2);
+        QCOMPARE(runCli({"dogear", "add", "--json", dir1, dir2}), 0);
+
+        // notes: must not collide with a same-named directory in CWD, and 0 marks exits 0.
+        const QString prevCwd = QDir::currentPath();
+        QDir().mkpath(dir.filePath("lantern"));
+        QVERIFY(QDir::setCurrent(dir.path()));
+        const int notesPlain = runCli({"dogear", "notes", "lantern"});
+        const int notesJson = runCli({"dogear", "notes", "--json", "lantern"});
+        QVERIFY(QDir::setCurrent(prevCwd));
+        QCOMPARE(notesPlain, 0);
+        QCOMPARE(notesJson, 0);
+
+        // ai local runs without opening SQLite or libsecret keyring.
+        QCOMPARE(runCli({"dogear", "ai", "local", "--json"}), 0);
+    }
 };
 
-QTEST_MAIN(DogearTests)
+int main(int argc, char *argv[]) {
+    // Always avoid GTK3 platform theme (crashes headless without a display).
+    qputenv("QT_QPA_PLATFORMTHEME", "generic");
+    // Hermetic XDG isolation: tests never touch ~/.config/dogear/settings.ini
+    // or collide with a live Dogear D-Bus instance.
+    QTemporaryDir testXdg;
+    if (testXdg.isValid()) {
+        QDir(testXdg.path()).mkpath("config");
+        QDir(testXdg.path()).mkpath("data");
+        QDir(testXdg.path()).mkpath("cache");
+        qputenv("XDG_CONFIG_HOME", testXdg.filePath("config").toUtf8());
+        qputenv("XDG_DATA_HOME", testXdg.filePath("data").toUtf8());
+        qputenv("XDG_CACHE_HOME", testXdg.filePath("cache").toUtf8());
+    }
+    QGuiApplication app(argc, argv);
+    app.setApplicationName(QStringLiteral("dogear"));
+    app.setAttribute(Qt::AA_Use96Dpi, true);
+    QTEST_SET_MAIN_SOURCE_PATH
+    DogearTests tc;
+    return QTest::qExec(&tc, argc, argv);
+}
 #include "dogear_tests.moc"

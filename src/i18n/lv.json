@@ -4,7 +4,11 @@
  "%1 MB": "%1 MB",
  "%1 MB to download": "Lejupielādei nepieciešami %1 MB",
  "%1 at %2": "%1 vietā %2",
- "%1 at %2 · %n models": "%1 vietā %2 · %n modeļi",
+ "%1 at %2 · %n models": {
+  "zero": "%1 vietā %2 · %n modeļi",
+  "one": "%1 vietā %2 · %n modeļi",
+  "other": "%1 vietā %2 · %n modeļi"
+ },
  "%1 at %2 · no models yet": "%1 vietā %2 · vēl nav modeļu",
  "%1 can't do this.": "%1 to nevar izdarīt.",
  "%1 couldn't be unpacked: %2": "Neizdevās atpakot %1: %2",
@@ -16,8 +20,16 @@
  "%1 of %2 ready": "Gatavi %1 no %2",
  "%1 theme": "%1 motīvs",
  "%1 · %2%": "%1 · %2%",
- "%1 · %n min of audio": "%1 · %n minūšu audioieraksta",
- "%1 · %n requests": "%1 · %n pieprasījumu",
+ "%1 · %n min of audio": {
+  "zero": "%1 · %n minūšu audioieraksta",
+  "one": "%1 · %n minūšu audioieraksta",
+  "other": "%1 · %n minūšu audioieraksta"
+ },
+ "%1 · %n requests": {
+  "zero": "%1 · %n pieprasījumu",
+  "one": "%1 · %n pieprasījumu",
+  "other": "%1 · %n pieprasījumu"
+ },
  "%1 · the book so far, about %Ln words · about %2 a question": {
   "zero": "%1 · grāmata līdz šim, aptuveni %Ln vārdu · aptuveni %2 par jautājumu",
   "one": "%1 · grāmata līdz šim, aptuveni %Ln vārds · aptuveni %2 par jautājumu",
@@ -49,7 +61,11 @@
   "one": "%n nodaļa",
   "other": "%n nodaļas"
  },
- "%n cores": "%n kodoli",
+ "%n cores": {
+  "zero": "%n kodoli",
+  "one": "%n kodoli",
+  "other": "%n kodoli"
+ },
  "%n editions": {
   "zero": "%n izdevumu",
   "one": "%n izdevums",
@@ -76,8 +92,16 @@
  "A whole book is too long for a model on this computer: %1 reads the passages that match.": "Pilna grāmata ir par garu šī datora modelim: %1 lasa atbilstošos fragmentus.",
  "About %1": "Aptuveni %1",
  "About %1 of your %2 budget": "Aptuveni %1 no jūsu %2 budžeta",
- "About %n s per answer": "Aptuveni %n s atbildei",
- "About %n s per answer with %1": "Aptuveni %n s atbildei ar %1",
+ "About %n s per answer": {
+  "zero": "Aptuveni %n s atbildei",
+  "one": "Aptuveni %n s atbildei",
+  "other": "Aptuveni %n s atbildei"
+ },
+ "About %n s per answer with %1": {
+  "zero": "Aptuveni %n s atbildei ar %1",
+  "one": "Aptuveni %n s atbildei ar %1",
+  "other": "Aptuveni %n s atbildei ar %1"
+ },
  "About this book": "Par šo grāmatu",
  "Add": "Pievienot",
  "Add Books": "Pievienot grāmatas",
@@ -441,7 +465,11 @@
  "Saving… %1%": "Saglabā… %1%",
  "Scroll": "Ritiniet",
  "Search": "Meklēt",
- "Search %Ln voices": "Meklēt %Ln balsis",
+ "Search %Ln voices": {
+  "zero": "Meklēt %Ln balsis",
+  "one": "Meklēt %Ln balsis",
+  "other": "Meklēt %Ln balsis"
+ },
  "Search by meaning": "Meklēt pēc nozīmes",
  "Search by meaning, a full cast, Studio and Pocket TTS voices, and audiobooks (M4B) from downloads.": "Meklēšana pēc nozīmes, pilns tēlu sastāvs, Studio un Pocket TTS balsis, kā arī lejupielādētas audiogrāmatas (M4B).",
  "Search by meaning, and audiobooks to keep.": "Meklēšana pēc nozīmes un paturamas audiogrāmatas.",

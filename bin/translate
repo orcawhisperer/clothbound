@@ -2,13 +2,15 @@
 """Dogear's translations, kept up to date with Gemini.
 
     bin/translate extract            list the strings to translate (and how many each language lacks)
+    bin/translate check              validate all catalogs offline (JSON, types, plural forms, placeholders)
     bin/translate [code ...]         translate what's missing into these languages (all of Omarchy's by default)
 
-Strings come from qsTr() in the QML, tr() and translate() in the C++, and the
-.desktop entry. Each language's catalog is src/i18n/<code>.json: English text
-to its translation, or, for a counted string (%n), an object of the
-language's plural forms. Only what's missing is sent, so running it again
-after a change costs a few cents. It needs GEMINI_API_KEY in the environment.
+Strings come from qsTr() in the QML and JS, tr(), translate(), and QT_TR_NOOP()
+in the C++, and the .desktop entry. Each language's catalog is
+src/i18n/<code>.json: English text to its translation, or, for a counted string
+(%n/%Ln), an object of the language's plural forms (always including "other").
+Only what's missing or malformed is sent, so running it again after a change
+costs a few cents. It needs GEMINI_API_KEY in the environment.
 """
 
 import json
@@ -24,20 +26,31 @@ I18N = SRC / "i18n"
 LOCALES = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy")) / "default/i18n/locales.json"
 MODEL = os.environ.get("DOGEAR_TRANSLATE_MODEL", "gemini-3.5-flash-lite")
 
-# CLDR plural categories each language uses (as src/translator.cpp chooses them).
+# CLDR plural categories each language uses (always including "other" as fallback
+# for Translator::translate()).
 PLURALS = {
     "ja": ["other"], "ko": ["other"], "zh-CN": ["other"], "zh-TW": ["other"], "th": ["other"], "vi": ["other"],
     "id": ["other"], "ms": ["other"], "fr": ["one", "many", "other"], "pt-BR": ["one", "many", "other"],
-    "ca": ["one", "many", "other"], "es-MX": ["one", "many", "other"], "it": ["one", "many", "other"],
-    "pt": ["one", "many", "other"], "cs": ["one", "few", "other"], "sk": ["one", "few", "other"],
-    "pl": ["one", "few", "many"], "ru": ["one", "few", "many"], "uk": ["one", "few", "many"],
-    "hr": ["one", "few", "other"], "sr": ["one", "few", "other"], "sl": ["one", "two", "few", "other"],
-    "lt": ["one", "few", "other"], "lv": ["zero", "one", "other"], "ro": ["one", "few", "other"],
-    "ar": ["zero", "one", "two", "few", "many", "other"], "he": ["one", "two", "other"],
-    "ga": ["one", "two", "few", "many", "other"],
+    "ca": ["one", "many", "other"], "es": ["one", "many", "other"], "es-MX": ["one", "many", "other"],
+    "it": ["one", "many", "other"], "pt": ["one", "many", "other"], "cs": ["one", "few", "other"],
+    "sk": ["one", "few", "other"], "pl": ["one", "few", "many", "other"], "ru": ["one", "few", "many", "other"],
+    "uk": ["one", "few", "many", "other"], "hr": ["one", "few", "other"], "sr": ["one", "few", "other"],
+    "sl": ["one", "two", "few", "other"], "lt": ["one", "few", "other"], "lv": ["zero", "one", "other"],
+    "ro": ["one", "few", "other"], "ar": ["zero", "one", "two", "few", "many", "other"],
+    "he": ["one", "two", "other"], "ga": ["one", "two", "few", "many", "other"],
 }
 
 LITERAL = r'"((?:[^"\\]|\\.)*)"'
+PLACEHOLDER = re.compile(r"%L?[0-9n]")
+HTML_TAG = re.compile(r"</?([a-zA-Z0-9]+)(?:\s[^>]*)?>")
+# Categories where omitting %n/%Ln in exact single-value forms is valid only for
+# languages whose pluralCategory maps them to exact 0, 1, or 2.
+EXACT_NUMBER_FORMS = {
+    "ar": {"zero", "one", "two"},
+    "he": {"one", "two"},
+    "ro": {"one"},
+    "ga": {"one", "two"},
+}
 
 
 def unescape(text):
@@ -48,20 +61,59 @@ def extract():
     """{english: plural?} for every visible string."""
     strings = {}
     qml = re.compile(r"qsTr\(\s*" + LITERAL + r"(\s*,\s*" + LITERAL + r"\s*,)?")
-    for path in sorted(SRC.glob("*.qml")):
+    for path in sorted(list(SRC.glob("*.qml")) + list(SRC.glob("*.js"))):
         for match in qml.finditer(path.read_text()):
             text = unescape(match.group(1))
             strings[text] = strings.get(text, False) or bool(match.group(2)) or "%n" in text or "%Ln" in text
-    # C++: tr("…") and translate("Context", "…"), with adjacent literals joined.
+    # C++: tr("…"), translate("Context", "…"), and QT_TR_NOOP("…"), with adjacent literals joined.
     joined = r'((?:"(?:[^"\\]|\\.)*"\s*)+)'
-    cpp = re.compile(r"\btr\(\s*" + joined + r"|translate\(\s*" + LITERAL + r"\s*,\s*" + joined)
+    cpp = re.compile(r"\btr\(\s*" + joined + r"|translate\(\s*" + LITERAL + r"\s*,\s*" + joined + r"|QT_TR_NOOP\(\s*" + joined)
     for path in sorted(list(SRC.glob("*.cpp")) + list(SRC.glob("*.h"))):
         for match in cpp.finditer(path.read_text()):
-            raw = match.group(1) or match.group(3)
+            raw = match.group(1) or match.group(3) or match.group(4)
             text = "".join(unescape(part) for part in re.findall(LITERAL, raw))
             if text:
-                strings[text] = strings.get(text, False) or "%n" in text
+                strings[text] = strings.get(text, False) or "%n" in text or "%Ln" in text
     return strings
+
+
+def placeholders(text):
+    return sorted(PLACEHOLDER.findall(text))
+
+
+def normalize_count_placeholders(ph_list):
+    """Treat %n and %Ln as equivalent count placeholders when validating."""
+    return sorted("%n" if p in ("%n", "%Ln") else p for p in ph_list)
+
+
+def valid_form(code, source, translated, form=None):
+    if not isinstance(translated, str) or not translated.strip():
+        return False
+    if sorted(HTML_TAG.findall(source)) != sorted(HTML_TAG.findall(translated)):
+        return False
+    exp = normalize_count_placeholders(placeholders(source))
+    got = normalize_count_placeholders(placeholders(translated))
+    if got == exp:
+        return True
+    if form and form in EXACT_NUMBER_FORMS.get(code, set()):
+        exp_no_n = [p for p in exp if p != "%n"]
+        got_no_n = [p for p in got if p != "%n"]
+        return got_no_n == exp_no_n and "%n" not in got
+    return False
+
+
+def is_valid_entry(code, text, counted, value):
+    forms = PLURALS.get(code, ["one", "other"])
+    if counted:
+        if not isinstance(value, dict):
+            return False
+        if "other" not in value:
+            return False
+        for form in forms:
+            if form not in value or not valid_form(code, text, value[form], form=form):
+                return False
+        return True
+    return valid_form(code, text, value)
 
 
 def catalog(code):
@@ -114,7 +166,8 @@ def ask(prompt):
 
 
 def translate(code, name, strings, existing):
-    missing = [text for text in strings if text not in existing]
+    missing = [text for text, counted in strings.items()
+               if text not in existing or not is_valid_entry(code, text, counted, existing[text])]
     if not missing:
         return existing, 0
     forms = PLURALS.get(code, ["one", "other"])
@@ -128,7 +181,7 @@ Rules:
 - Natural, friendly, concise {name}, as a native speaker would write a well-made desktop app; keep the same tone (plain, warm, no jargon).
 - Keep placeholders exactly: %1, %2, %n, %Ln, and keep HTML tags, URLs, and keyboard keys (P, ⇧, Ctrl, Esc, Super W) as they are.
 - Keep brand and product names as they are: Dogear, Omarchy, Gemini, Google, Kokoro, Piper, Ollama, llama.cpp, LM Studio, MLX, vLLM, EPUB, PDF, M4B, MPRIS.
-- For an entry with "counted": true, give "forms": the plural forms {name} uses ({", ".join(forms)}), each containing %n (or %Ln) where the number goes. Otherwise give "translation".
+- For an entry with "counted": true, give "forms": the plural forms {name} uses ({", ".join(forms)}), ALWAYS including "other", each containing %n (or %Ln) where the number goes. Otherwise give "translation".
 
 Answer with a JSON array: for each entry, its "i" and its translation.
 
@@ -137,14 +190,22 @@ Answer with a JSON array: for each entry, its "i" and its translation.
         for i, text in enumerate(batch):
             item = answer.get(i, {})
             value, plural = item.get("translation"), item.get("forms")
-            given = [plural.get(form) for form in forms if isinstance(plural, dict) and plural.get(form)]
-            if strings[text] and given:
-                # A form left out takes the most general one given.
-                fallback = plural.get("other") or given[-1]
-                done[text] = {form: plural.get(form) or fallback for form in forms}
-            elif isinstance(value, str) and value.strip():
-                # A counted string given as one translation serves every form.
-                done[text] = {form: value for form in forms} if strings[text] else value
+            if strings[text]:
+                if isinstance(plural, dict):
+                    # Never fabricate "other" from exact-singular/dual forms ("one"/"two"/"zero").
+                    fallback = plural.get("other") or plural.get("many")
+                    if fallback and valid_form(code, text, fallback, form="other"):
+                        built = {}
+                        for form in forms:
+                            candidate = plural.get(form)
+                            built[form] = candidate if valid_form(code, text, candidate, form=form) else fallback
+                        if is_valid_entry(code, text, True, built):
+                            done[text] = built
+                            continue
+                if isinstance(value, str) and valid_form(code, text, value, form="other"):
+                    done[text] = {form: value for form in forms}
+            elif isinstance(value, str) and valid_form(code, text, value):
+                done[text] = value
         print(f"  {code}: {min(start + 100, len(missing))} of {len(missing)}", flush=True)
     return done, len(missing)
 
@@ -152,7 +213,8 @@ Answer with a JSON array: for each entry, its "i" and its translation.
 def english(strings):
     """English plural forms, so "%n models" reads "1 model"."""
     entries = catalog("en")
-    counted = [text for text, plural in strings.items() if plural and text not in entries]
+    counted = [text for text, plural in strings.items()
+               if plural and (text not in entries or not is_valid_entry("en", text, True, entries[text]))]
     if counted:
         listed = [{"i": i, "text": text} for i, text in enumerate(counted)]
         answer = ask("For each English interface string below, give \"forms\" with its \"one\" (singular) and "
@@ -160,9 +222,38 @@ def english(strings):
                      "entry, its \"i\" and \"forms\".\n\n" + json.dumps(listed))
         for i, text in enumerate(counted):
             forms = answer.get(i, {}).get("forms") or {}
-            if forms.get("other"):
-                entries[text] = {"one": forms.get("one") or forms["other"], "other": forms["other"]}
+            if forms.get("other") and valid_form("en", text, forms["other"], form="other"):
+                one = forms.get("one") if valid_form("en", text, forms.get("one"), form="one") else forms["other"]
+                entries[text] = {"one": one, "other": forms["other"]}
     save("en", entries)
+
+
+def check(strings):
+    """Offline validation of all catalogs."""
+    errors = []
+    en = catalog("en")
+    for text, counted in sorted(strings.items()):
+        if counted and (text not in en or not is_valid_entry("en", text, True, en[text])):
+            errors.append(f"en: missing or invalid plural entry for {text!r}")
+    for path in sorted(I18N.glob("*.json")):
+        code = path.stem
+        if code == "en":
+            continue
+        try:
+            entries = json.loads(path.read_text())
+        except ValueError as err:
+            errors.append(f"{code}: invalid JSON: {err}")
+            continue
+        for text, value in entries.items():
+            counted = strings.get(text, "%n" in text or "%Ln" in text)
+            if not is_valid_entry(code, text, counted, value):
+                errors.append(f"{code}: invalid entry for {text!r}: {value!r}")
+    if errors:
+        for err in errors:
+            print(err, file=sys.stderr)
+        return 1
+    print(f"Checked {len(list(I18N.glob('*.json')))} catalogs: all entries valid.")
+    return 0
 
 
 def register(codes):
@@ -198,8 +289,12 @@ def main():
         print(f"{len(strings)} strings, {sum(strings.values())} counted")
         for code in sorted(locales):
             if code != "en":
-                print(f"  {code}: {len([t for t in strings if t not in catalog(code)])} to translate")
+                cat = catalog(code)
+                missing = [t for t, c in strings.items() if t not in cat or not is_valid_entry(code, t, c, cat[t])]
+                print(f"  {code}: {len(missing)} to translate")
         return
+    if sys.argv[1:2] == ["check"]:
+        sys.exit(check(strings))
     codes = sys.argv[1:] or [code for code in locales if code != "en"]
     english(strings)
     for code in codes:

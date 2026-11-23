@@ -34,8 +34,9 @@
 
 #include <QCommandLineParser>
 #include <QDBusConnection>
-#include <QWindow>
 #include <QDBusMessage>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
 #include <QDBusVariant>
 #include <QFileInfo>
 #include <QFont>
@@ -48,9 +49,11 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QStandardPaths>
-#include <QtWebEngineQuick/QQuickWebEngineProfile>
 #include <QTimer>
+#include <QUrl>
 #include <QWebEngineUrlScheme>
+#include <QWindow>
+#include <QtWebEngineQuick/QQuickWebEngineProfile>
 #include <QtWebEngineQuick/qtwebenginequickglobal.h>
 #include <cstdio>
 
@@ -59,23 +62,53 @@
 [[maybe_unused]] static const char *const qtStrings[] = {QT_TR_NOOP("Cut"), QT_TR_NOOP("Copy"), QT_TR_NOOP("Paste"),
                                                          QT_TR_NOOP("Select All")};
 
+// Normalizes either a local file path or a file:// URI to an absolute path.
+static QString normalizeBookArg(const QString &arg) {
+    if (arg.isEmpty())
+        return {};
+    if (arg.startsWith(QLatin1String("file://"), Qt::CaseInsensitive)) {
+        QUrl url = QUrl::fromEncoded(arg.toUtf8(), QUrl::StrictMode);
+        if (!url.isValid())
+            url = QUrl(arg);
+        if (url.isLocalFile())
+            return QFileInfo(url.toLocalFile()).absoluteFilePath();
+    }
+    return QFileInfo(arg).absoluteFilePath();
+}
+
+static bool passBooksToRunning(const QStringList &books) {
+    if (books.isEmpty())
+        return Instance::passToRunning({});
+    bool handed = false;
+    for (const QString &book : books)
+        handed = Instance::passToRunning(book) || handed;
+    return handed;
+}
+
 // The desktop's interface font, e.g. "Adwaita Sans 11", from the settings
-// portal (as Hype does). Without a portal Qt's default font stays.
-static void adoptDesktopFont() {
+// portal (as Hype does), queried asynchronously so cold start never blocks.
+static void adoptDesktopFont(QObject *context) {
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected())
+        return;
     auto call = QDBusMessage::createMethodCall("org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop",
                                                "org.freedesktop.portal.Settings", "ReadOne");
     call.setArguments({"org.gnome.desktop.interface", "font-name"});
-    const auto reply = QDBusConnection::sessionBus().call(call, QDBus::Block, 500);
-    if (reply.type() != QDBusMessage::ReplyMessage || reply.arguments().isEmpty())
-        return;
-    const QString name = reply.arguments().first().value<QDBusVariant>().variant().toString();
-    const int space = name.lastIndexOf(' ');
-    const double size = name.mid(space + 1).toDouble();
-    if (space <= 0 || size <= 0)
-        return;
-    QFont font(name.left(space));
-    font.setPointSizeF(size);
-    QGuiApplication::setFont(font);
+    auto *watcher = new QDBusPendingCallWatcher(bus.asyncCall(call), context);
+    QObject::connect(watcher, &QDBusPendingCallWatcher::finished, context, [](QDBusPendingCallWatcher *pending) {
+        const QDBusPendingReply<QDBusVariant> reply = *pending;
+        pending->deleteLater();
+        if (!reply.isValid())
+            return;
+        const QString name = reply.value().variant().toString();
+        const int space = name.lastIndexOf(' ');
+        const double size = name.mid(space + 1).toDouble();
+        if (space <= 0 || size <= 0)
+            return;
+        QFont font(name.left(space));
+        font.setPointSizeF(size);
+        QGuiApplication::setFont(font);
+    });
 }
 
 // Book pages and the reading surface are served from one origin, so the
@@ -105,15 +138,6 @@ int main(int argc, char *argv[]) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
     } else {
         registerBookScheme();
-        // The page keeps drawing while the window is on another workspace,
-        // so coming back shows it at once rather than a blank frame first.
-        QByteArray flags = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
-        for (const QByteArray &flag : {QByteArray("--disable-renderer-backgrounding"),
-                                      QByteArray("--disable-backgrounding-occluded-windows"),
-                                      QByteArray("--disable-background-timer-throttling")})
-            if (!flags.contains(flag))
-                flags += ' ' + flag;
-        qputenv("QTWEBENGINE_CHROMIUM_FLAGS", flags.trimmed());
         QtWebEngineQuick::initialize();
     }
 
@@ -137,7 +161,7 @@ int main(int argc, char *argv[]) {
     args.setApplicationDescription("An ebook reader for Omarchy.\n\n" + cliSummary());
     args.addHelpOption();
     args.addVersionOption();
-    args.addPositionalArgument("book", "An EPUB or PDF to open", "[book]");
+    args.addPositionalArgument("book", "One or more EPUB or PDF books to open", "[book...]");
     args.addOption({"screenshot", "Save a screenshot of the window and exit", "file"});
     // For tests and the README: QML run in the window, step by step, before
     // the screenshot is taken.
@@ -156,23 +180,23 @@ int main(int argc, char *argv[]) {
     // One Dogear per library: opened again (the launcher, a terminal, a book
     // file), it hands over to the one running, which comes back as it was,
     // reading aloud or not, and opens the book if one was named. Scripted runs
-    // (--run, --screenshot) never hand over, so they stay their own.
+    // (--run, --screenshot) never claim the name or hand over.
     const bool scripted = args.isSet(runOption) || args.isSet("screenshot");
-    QString bookFile;
-    if (!args.positionalArguments().isEmpty())
-        bookFile = QFileInfo(args.positionalArguments().first()).absoluteFilePath();
+    QStringList bookFiles;
+    for (const QString &arg : args.positionalArguments())
+        bookFiles.append(normalizeBookArg(arg));
     Instance instance;
-    if (!scripted && Instance::passToRunning(bookFile))
+    if (!scripted && passBooksToRunning(bookFiles))
         return 0;
     // Of two opened at once, the one that doesn't get the name hands over.
-    if (!instance.claim() && !scripted && Instance::passToRunning(bookFile))
+    if (!scripted && !instance.claim() && passBooksToRunning(bookFiles))
         return 0;
 
     // Installed before anything is translated, and every qsTr() binding is
     // re-evaluated when the Omarchy language changes.
     Translator translator;
     app.installTranslator(&translator);
-    adoptDesktopFont();
+    adoptDesktopFont(&app);
     for (const char *font : {":/fonts/Literata.ttf", ":/fonts/Literata-Italic.ttf"})
         QFontDatabase::addApplicationFont(font);
     QQuickStyle::setStyle("Material");
@@ -214,9 +238,17 @@ int main(int argc, char *argv[]) {
                           library.database().connectionName());
     SystemCheck systemCheck(&ai, &localSpeech);
     LocalSetup localSetup(&ai);
+    VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
+                        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/voices.json"));
+    // Constructed before Narration and Download so Cast outlives both during
+    // stack unwinding (avoiding dangling m_cast pointers on shutdown).
+    Cast cast(&ai, &audioCache, &reader, &library, &voices, &voicePacks);
     Narration narration(&ai, &audioCache, &reader, &library);
     Mpris mpris(&narration, &reader, &library);
     Download download(&ai, &audioCache, &reader, &narration);
+    narration.setCast(&cast);
+    download.setCast(&cast);
+    Audiobook audiobook(&audioCache, &download, &reader, &library);
     BookSearch bookSearch(&reader);
     bookSearch.setMeaning(&ai, library.database().connectionName());
     Marks marks(&library);
@@ -224,20 +256,20 @@ int main(int argc, char *argv[]) {
     Illustrator illustrator(&ai, &reader, library.database().connectionName(),
                             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/illustrations"));
     QObject::connect(&reader, &Reader::bookChanged, &marks, [&marks, &reader] { marks.setBook(reader.bookId()); });
-    VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
-                        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/voices.json"));
-    // A full cast, when a book has it on: characters in voices of their own.
-    Cast cast(&ai, &audioCache, &reader, &library, &voices, &voicePacks);
-    narration.setCast(&cast);
-    download.setCast(&cast);
-    Audiobook audiobook(&audioCache, &download, &reader, &library);
-    // A book named on the command line joins the library (it may live
-    // anywhere) and opens.
+
+    // Books named on the command line join the library (they may live
+    // anywhere), and the first valid one opens.
     int bookToOpen = 0;
-    if (!args.positionalArguments().isEmpty()) {
-        bookToOpen = library.addBookFile(args.positionalArguments().first());
-        if (!bookToOpen)
+    QStringList startupErrors;
+    for (const QString &file : std::as_const(bookFiles)) {
+        const int id = library.addBookFile(file);
+        if (id) {
+            if (!bookToOpen)
+                bookToOpen = id;
+        } else {
             fprintf(stderr, "%s\n", qPrintable(library.errorString()));
+            startupErrors.append(library.errorString());
+        }
     }
 
     QQmlApplicationEngine engine;
@@ -280,14 +312,17 @@ int main(int argc, char *argv[]) {
         return 1;
     if (bookToOpen)
         QMetaObject::invokeMethod(engine.rootObjects().first(), "openBook", Q_ARG(QVariant, bookToOpen));
+    if (!startupErrors.isEmpty())
+        notifier.notify(QObject::tr("Dogear can't open this book"), startupErrors.first());
     // Opened again: the window comes back (Instance), and a book named then
     // joins the library and opens.
     if (QObject *root = engine.rootObjects().first()) {
         instance.setWindow(qobject_cast<QWindow *>(root));
         QObject::connect(&instance, &Instance::activated, root, [&library, &notifier, root](const QString &book) {
-            if (book.isEmpty())
+            const QString file = normalizeBookArg(book);
+            if (file.isEmpty())
                 return;
-            if (const int id = library.addBookFile(book))
+            if (const int id = library.addBookFile(file))
                 QMetaObject::invokeMethod(root, "openBook", Q_ARG(QVariant, id));
             else
                 notifier.notify(QObject::tr("Dogear can't open this book"), library.errorString());

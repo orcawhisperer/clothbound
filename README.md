@@ -108,7 +108,7 @@ dogear add <folder-or-book>...      # add books to the library
 dogear list                         # the books, with reading progress
 dogear info <book>                  # metadata and table of contents
 dogear notes <book>                 # highlights, notes and bookmarks, as Markdown
-dogear voices [list|install|bench]  # built-in voices and their speed here
+dogear voices [list|install|remove|bench] # built-in voices and their speed here
 dogear ai [status|key|forget|local] # Gemini key and costs, and models on this computer
 dogear skill [install]              # the skill for coding agents
 ```

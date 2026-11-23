@@ -3,29 +3,32 @@
 
 #include "aiservices.h"
 #include "bookinfo.h"
+#include "bookname.h"
+#include "epubbook.h"
 #include "gemini.h"
 #include "keystore.h"
-#include "localmodels.h"
-#include "epubbook.h"
 #include "library.h"
-#include "marks.h"
+#include "localmodels.h"
 #include "localspeech.h"
+#include "marks.h"
+#include "pdfbook.h"
 #include "speech.h"
 #include "voicepacks.h"
-#include "pdfbook.h"
 
 #include <QCommandLineParser>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
-#include <QStandardPaths>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QTextStream>
+#include <QUrl>
 #include <cstdio>
 
 namespace {
@@ -45,8 +48,16 @@ struct Command {
         parser.setApplicationDescription(description);
         parser.addHelpOption();
         parser.addPositionalArgument(name, description, name);
-        if (!positional.isEmpty())
-            parser.addPositionalArgument(positional.mid(1, positional.size() - 2), positional, positional);
+        if (!positional.isEmpty()) {
+            QString label = positional;
+            if (label.startsWith('<'))
+                label.remove(0, 1);
+            if (label.endsWith("..."))
+                label.chop(3);
+            if (label.endsWith('>'))
+                label.chop(1);
+            parser.addPositionalArgument(label, positional, positional);
+        }
     }
     void json() { parser.addOption({"json", "Print the result as JSON"}); }
     bool asJson() const { return parser.isSet("json"); }
@@ -88,25 +99,56 @@ int info(const QStringList &arguments) {
     const QString path = command.argument(1);
     if (path.isEmpty())
         return fail("Name an EPUB or PDF book.");
-    if (!QFileInfo::exists(path))
+    const QFileInfo file(path);
+    if (!file.exists())
         return fail(path + ": no such file");
     if (!BookFiles::isBook(path))
         return fail(path + ": Dogear reads EPUB and PDF books.");
 
-    const BookInfo book = BookFiles::read(path);
-    QJsonObject object = identityJson(book);
+    // Open and parse the book once for both metadata and table of contents.
+    BookInfo book;
+    book.path = file.absoluteFilePath();
+    book.format = BookFiles::formatOf(path);
+    book.size = file.size();
+    book.modified = file.lastModified();
     QJsonArray contents;
     if (book.format == "epub") {
         EpubBook epub(path);
-        if (epub.open())
+        if (!epub.open()) {
+            book.problem = epub.errorString();
+            book.identity = BookName::identify(path, {}, {}, {}, {}, {});
+        } else {
+            const EpubMetadata &meta = epub.metadata();
+            book.identity = BookName::identify(path, meta.title, meta.authors, meta.editors, meta.publisher, meta.date);
+            book.language = meta.language;
+            book.description = meta.description;
+            book.isbn = meta.isbn;
+            book.series = meta.series;
+            book.seriesIndex = meta.seriesIndex;
+            book.subjects = meta.subjects;
+            book.chapters = int(epub.spine().size());
+            book.pages = int(epub.pageList().size());
+            if (epub.isDrmProtected())
+                book.problem = QStringLiteral("This book is protected by DRM.");
             for (const auto &entry : epub.toc())
                 contents.append(QJsonObject{{"title", entry.title}, {"depth", entry.depth}, {"chapter", entry.spine}});
+        }
     } else if (book.format == "pdf") {
         PdfBook pdf(path);
-        if (pdf.open())
-            for (const auto &entry : pdf.outline())
+        if (!pdf.open()) {
+            book.problem = pdf.errorString();
+            book.identity = BookName::identify(path, {}, {}, {}, {}, {});
+        } else {
+            book.identity = BookName::identify(path, pdf.title(), pdf.authors(), pdf.editors(), {}, {});
+            book.description = pdf.subject();
+            book.pages = pdf.pageCount();
+            const auto outline = pdf.outline();
+            book.chapters = int(outline.size());
+            for (const auto &entry : outline)
                 contents.append(QJsonObject{{"title", entry.title}, {"depth", entry.depth}, {"page", entry.page + 1}});
+        }
     }
+    QJsonObject object = identityJson(book);
     object.insert("contents", contents);
 
     if (command.asJson()) {
@@ -161,7 +203,7 @@ QJsonObject bookJson(const Library &library, const BookRecord &book) {
 
 int add(const QStringList &arguments) {
     Command command("add", "Add folders or book files to the library and read them in. Files are never changed.",
-                    "<folder-or-book>");
+                    "<folder-or-book>...");
     command.json();
     command.parser.process(arguments);
     const QStringList paths = command.parser.positionalArguments().mid(1);
@@ -172,37 +214,59 @@ int add(const QStringList &arguments) {
         return 1;
 
     QEventLoop loop;
+    bool ok = true;
     QObject::connect(&library, &Library::scanFinished, &loop, &QEventLoop::quit);
-    QObject::connect(&library, &Library::problem, [](const QString &message) { print(stderr, message); });
+    QObject::connect(&library, &Library::problem, [&ok](const QString &message) {
+        print(stderr, message);
+        ok = false;
+    });
     if (!command.asJson())
         QObject::connect(&library, &Library::scanProgressChanged, [&library] {
             fprintf(stderr, "\rReading %d of %d books…", library.scanDone(), library.scanTotal());
         });
-    bool scanning = false, ok = true;
-    QList<int> files;
+
+    QList<QUrl> folderUrls;
+    int fileAdded = 0, fileUpdated = 0;
     for (const QString &path : paths) {
-        const QFileInfo info(path);
-        if (info.isDir()) {
-            library.addFolder(info.absoluteFilePath());
-            scanning = true;
-        } else if (const int id = library.addBookFile(path)) {
-            files.append(id);
+        const QFileInfo fi(path);
+        if (fi.isDir()) {
+            folderUrls.append(QUrl::fromLocalFile(fi.absoluteFilePath()));
+            continue;
+        }
+        const QString canonical = fi.canonicalFilePath().isEmpty() ? fi.absoluteFilePath() : fi.canonicalFilePath();
+        const int existingId = library.idForPath(canonical);
+        const BookRecord before = existingId ? library.record(existingId) : BookRecord();
+        if (const int id = library.addBookFile(path)) {
+            if (!existingId) {
+                ++fileAdded;
+            } else {
+                const BookRecord after = library.record(id);
+                if (before.missing || before.size != after.size || before.mtime != after.mtime)
+                    ++fileUpdated;
+            }
         } else {
             print(stderr, path + ": " + library.errorString());
             ok = false;
         }
     }
-    int added = 0, updated = 0;
-    if (scanning) {
+
+    int scanAdded = 0, scanUpdated = 0;
+    if (!folderUrls.isEmpty()) {
         QObject::connect(&library, &Library::scanFinished, [&](int a, int u) {
-            added = a;
-            updated = u;
+            scanAdded = a;
+            scanUpdated = u;
         });
-        loop.exec();
-        if (!command.asJson())
-            fprintf(stderr, "\n");
+        // Batch all folders into one addUrls() call so rescan() runs once.
+        library.addUrls(folderUrls);
+        if (library.scanning()) {
+            loop.exec();
+            if (!command.asJson())
+                fprintf(stderr, "\n");
+        }
     }
-    added += int(files.size());
+
+    const int added = scanAdded + fileAdded;
+    const int updated = scanUpdated + fileUpdated;
     if (command.asJson()) {
         print(QJsonObject{{"added", added}, {"updated", updated}, {"books", library.bookCount()},
                           {"folders", QJsonArray::fromStringList(library.folders())}});
@@ -264,9 +328,11 @@ int notes(const QStringList &arguments) {
         return 1;
     QList<BookRecord> found;
     const QFileInfo file(wanted);
+    const bool byFile = file.isFile() && BookFiles::isBook(wanted);
+    const QString wantedCanonical = byFile ? file.canonicalFilePath() : QString();
     for (const BookRecord &book : library.records()) {
-        if (file.exists() ? QFileInfo(book.path).canonicalFilePath() == file.canonicalFilePath()
-                          : (book.title + ' ' + book.author).contains(wanted, Qt::CaseInsensitive))
+        if (byFile ? (!wantedCanonical.isEmpty() && QFileInfo(book.path).canonicalFilePath() == wantedCanonical)
+                   : (book.title + ' ' + book.author).contains(wanted, Qt::CaseInsensitive))
             found.append(book);
     }
     if (found.isEmpty())
@@ -293,8 +359,10 @@ int notes(const QStringList &arguments) {
         print(QJsonObject{{"book", bookJson(library, book)}, {"marks", array}});
         return 0;
     }
-    if (marks.count() == 0)
-        return fail(QStringLiteral("Nothing is marked in “%1” yet.").arg(book.title));
+    if (marks.count() == 0) {
+        print(stderr, QStringLiteral("Nothing is marked in “%1” yet.").arg(book.title));
+        return 0;
+    }
     fprintf(stdout, "%s", qPrintable(marks.markdown(book.title, book.author)));
     return 0;
 }
@@ -303,9 +371,9 @@ int notes(const QStringList &arguments) {
 // are, installing one, and how fast one speaks here.
 int voices(const QStringList &arguments) {
     Command command("voices", "Built-in voices, made on this computer: list, install, remove, bench.");
-    command.parser.addPositionalArgument("action", "list (default), install <voice>, remove <pack>, or bench <voice>",
+    command.parser.addPositionalArgument("action", "list (default), install <voice>, remove <voice-or-pack>, or bench <voice>",
                                          "[action]");
-    command.parser.addPositionalArgument("voice", "A voice id, such as builtin:kokoro:af_heart", "[voice]");
+    command.parser.addPositionalArgument("voice", "A voice id (such as builtin:kokoro:af_heart) or pack id", "[voice]");
     command.parser.addOption({"language", "Only voices that speak this language (en, en-GB, de…)", "language"});
     command.json();
     command.parser.process(arguments);
@@ -334,35 +402,60 @@ int voices(const QStringList &arguments) {
         return 0;
     }
     if (action == "install") {
-        if (packs.voice(target).isEmpty())
+        const QVariantMap voice = packs.voice(target);
+        if (voice.isEmpty())
             return fail("No built-in voice is called " + target + ". See: dogear voices list");
         QEventLoop loop;
         int result = 0;
+        QString errorText;
         QObject::connect(&packs, &VoicePacks::ready, &loop, [&loop] { loop.quit(); });
-        QObject::connect(&packs, &VoicePacks::failed, &loop, [&loop, &result](const QString &message) {
-            print(stderr, message);
+        QObject::connect(&packs, &VoicePacks::failed, &loop, [&loop, &result, &errorText](const QString &message) {
+            errorText = message;
             result = 1;
             loop.quit();
         });
         int shown = -1;
-        QObject::connect(&packs, &VoicePacks::progressChanged, &loop, [&packs, &shown] {
-            const int percent = int(packs.progress() * 100);
-            if (!packs.installing().isEmpty() && percent != shown) {
-                shown = percent;
-                fprintf(stderr, "\r%s %3d%%", qPrintable(packs.installing()), percent);
-            }
-        });
+        if (!command.asJson()) {
+            QObject::connect(&packs, &VoicePacks::progressChanged, &loop, [&packs, &shown] {
+                const int percent = int(packs.progress() * 100);
+                if (!packs.installing().isEmpty() && percent != shown) {
+                    shown = percent;
+                    fprintf(stderr, "\r%s %3d%%", qPrintable(packs.installing()), percent);
+                }
+            });
+        }
         packs.installVoice(target);
-        if (!packs.busy())
-            return packs.model(target) ? 0 : fail(packs.problem());
-        loop.exec();
-        fprintf(stderr, "\n");
+        if (packs.busy()) {
+            loop.exec();
+            if (!command.asJson())
+                fprintf(stderr, "\n");
+        } else if (!packs.model(target)) {
+            errorText = packs.problem();
+            result = 1;
+        }
+        if (command.asJson()) {
+            QJsonObject out{{"voice", target}, {"pack", voice.value("pack").toString()}, {"installed", result == 0}};
+            if (!errorText.isEmpty())
+                out.insert("error", errorText);
+            print(out);
+            return result;
+        }
+        if (result != 0 && !errorText.isEmpty())
+            print(stderr, errorText);
         return result;
     }
     if (action == "remove") {
-        if (!packs.isInstalled(target))
+        QString packId = target;
+        if (!packs.isInstalled(packId)) {
+            const QString mapped = packs.voice(target).value("pack").toString();
+            if (!mapped.isEmpty())
+                packId = mapped;
+        }
+        if (!packs.isInstalled(packId))
             return fail(target + " isn't installed.");
-        packs.remove(target);
+        packs.remove(packId);
+        if (command.asJson())
+            print(QJsonObject{{"target", target}, {"pack", packId}, {"removed", true}});
         return 0;
     }
     if (action == "bench") {
@@ -401,29 +494,26 @@ int voices(const QStringList &arguments) {
     return fail("Unknown action " + action + ". See: dogear help voices");
 }
 
-// dogear ai: the reader's Gemini key and what it has cost. The key is read
-// from standard input, so it never appears in the shell's history.
+// dogear ai: the reader's Gemini key, costs, and local model servers. The key
+// is read from standard input, so it never appears in the shell's history.
 int ai(const QStringList &arguments) {
-    Command command("ai", "Gemini for Dogear's listening and companion: status, key, forget.");
+    Command command("ai", "Intelligence for Dogear: status, key, forget, or local.");
     command.parser.addPositionalArgument("action", "status (default), key (read from standard input), forget, or local (find model servers on this computer)", "[action]");
     command.json();
     command.parser.process(arguments);
     const QString action = command.argument(1).isEmpty() ? QStringLiteral("status") : command.argument(1);
 
-    Library library;
-    if (!openLibrary(library))
-        return 1;
-    GeminiProvider gemini;
-    SecretKeyStore keys;
-    AiServices services(&gemini, &keys, library.database().connectionName());
-    LocalModels local;
-    services.setLocalModels(&local);
-
+    // Probing local model servers needs neither the library database nor the
+    // desktop keyring.
     if (action == "local") {
+        const QSettings settings(
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini"),
+            QSettings::IniFormat);
+        const QString configuredUrl = settings.value(QStringLiteral("local/url")).toString();
         ServerFinder finder;
         QEventLoop loop;
         QObject::connect(&finder, &ServerFinder::finished, &loop, &QEventLoop::quit);
-        finder.find(services.localUrl().isEmpty() ? QList<QUrl>() : QList<QUrl>{QUrl(services.localUrl())});
+        finder.find(configuredUrl.isEmpty() ? QList<QUrl>() : QList<QUrl>{QUrl(configuredUrl)});
         loop.exec();
         QJsonArray found;
         for (const LocalModels::Server &server : finder.servers())
@@ -434,7 +524,7 @@ int ai(const QStringList &arguments) {
                                      {"embeddingModels", QJsonArray::fromStringList(server.embeddingModels)},
                                      {"speechModels", QJsonArray::fromStringList(server.speechModels)}});
         if (command.asJson()) {
-            print(QJsonObject{{"servers", found}, {"using", services.localUrl()}});
+            print(QJsonObject{{"servers", found}, {"using", configuredUrl}});
             return 0;
         }
         if (found.isEmpty())
@@ -442,7 +532,7 @@ int ai(const QStringList &arguments) {
         for (const QJsonValue &value : found) {
             const QJsonObject server = value.toObject();
             print(stdout, server["name"].toString() + " at " + server["url"].toString() +
-                              (server["url"].toString() == services.localUrl() ? " (in use)" : ""));
+                              (server["url"].toString() == configuredUrl ? " (in use)" : ""));
             for (const char *role : {"textModels", "embeddingModels", "speechModels"}) {
                 QStringList models;
                 for (const QJsonValue &model : server[role].toArray())
@@ -454,9 +544,27 @@ int ai(const QStringList &arguments) {
         return 0;
     }
 
+    if (action != "status" && action != "key" && action != "forget")
+        return fail("Use dogear ai status, dogear ai key, dogear ai forget, or dogear ai local.");
+
+    Library library;
+    if (!openLibrary(library))
+        return 1;
+    GeminiProvider gemini;
+    SecretKeyStore keys;
+    AiServices services(&gemini, &keys, library.database().connectionName());
+    LocalModels local;
+    services.setLocalModels(&local);
+
     if (action == "forget") {
         services.forgetKey();
-        print(stdout, "The Gemini key is gone from your keyring.");
+        const bool fromEnv = !qgetenv("GEMINI_API_KEY").trimmed().isEmpty();
+        if (command.asJson()) {
+            print(QJsonObject{{"removed", true}, {"environmentKeySet", fromEnv}});
+            return 0;
+        }
+        print(stdout, fromEnv ? QStringLiteral("The Gemini key is gone from your keyring (GEMINI_API_KEY is still set in your environment).")
+                              : QStringLiteral("The Gemini key is gone from your keyring."));
         return 0;
     }
     if (action == "key") {
@@ -474,11 +582,13 @@ int ai(const QStringList &arguments) {
         });
         services.setKey(key);
         loop.exec();
+        if (command.asJson()) {
+            print(QJsonObject{{"ok", ok}, {"message", message}});
+            return ok ? 0 : 1;
+        }
         print(ok ? stdout : stderr, message);
         return ok ? 0 : 1;
     }
-    if (action != "status")
-        return fail("Use dogear ai status, dogear ai key, or dogear ai forget.");
 
     if (services.hasKey()) {
         QEventLoop loop;
@@ -562,24 +672,28 @@ int skill(const QStringList &arguments) {
 
 int help(const QStringList &arguments) {
     const QString topic = arguments.value(2);
+    if (topic == "open") {
+        print(stdout, "Usage: dogear [open] [book...]\n\nOpen the library, or add and open one or more EPUB or PDF books.");
+        return 0;
+    }
     if (isCliCommand(topic) && topic != "help")
         return runCli({arguments[0], topic, "--help"});
-    print(stdout, "Usage: dogear [open] [book]\n       dogear <command> [options]\n\n" + cliSummary());
+    print(stdout, "Usage: dogear [open] [book...]\n       dogear <command> [options]\n\n" + cliSummary());
     return 0;
 }
-}
+}  // namespace
 
 QString cliSummary() {
     return "Reader:\n"
-           "  open [book]                     Open the library, or a book where you left off\n\n"
+           "  open [book...]                         Open the library, or books where you left off\n\n"
            "Commands that need no display (dogear help <command> for options):\n"
-           "  add <folder-or-book>...         Add books to the library; files are never changed\n"
-           "  list                            The books in the library, with reading progress\n"
-           "  info <book>                     Metadata and table of contents of an EPUB or PDF\n"
-           "  notes <book>                    A book's highlights, notes and bookmarks, as Markdown\n"
-           "  voices [list|install|bench]     Built-in voices, made on this computer, and their speed\n"
-           "  ai [status|key|forget|local]    Intelligence: the Gemini key and costs, and models on this computer\n"
-           "  skill [install]                 Print the skill for coding agents, or install it";
+           "  add <folder-or-book>...                Add books to the library; files are never changed\n"
+           "  list                                   The books in the library, with reading progress\n"
+           "  info <book>                            Metadata and table of contents of an EPUB or PDF\n"
+           "  notes <book>                           A book's highlights, notes and bookmarks, as Markdown\n"
+           "  voices [list|install|remove|bench]     Built-in voices, made on this computer, and their speed\n"
+           "  ai [status|key|forget|local]           Intelligence: the Gemini key and costs, and models on this computer\n"
+           "  skill [install]                        Print the skill for coding agents, or install it";
 }
 
 bool isCliCommand(const QString &word) {

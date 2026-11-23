@@ -7,7 +7,8 @@
  "%1 at %2 · %n models": {
   "one": "%1 z %2 · %n model",
   "few": "%1 z %2 · %n modeli",
-  "many": "%1 z %2 · %n modeli"
+  "many": "%1 z %2 · %n modeli",
+  "other": "%1 z %2 · %n modeli"
  },
  "%1 at %2 · no models yet": "%1 na %2 · brak modeli",
  "%1 can't do this.": "%1 nie może tego zrobić.",
@@ -20,9 +21,24 @@
  "%1 of %2 ready": "Gotowe %1 z %2",
  "%1 theme": "Motyw %1",
  "%1 · %2%": "%1 · %2%",
- "%1 · %n min of audio": "%1 · %n min audio",
- "%1 · %n requests": "%1 · %n żądań",
- "%1 · the book so far, about %Ln words · about %2 a question": "%1 · dotychczasowa treść książki, około %Ln słów · około %2 za pytanie",
+ "%1 · %n min of audio": {
+  "one": "%1 · %n min audio",
+  "few": "%1 · %n min audio",
+  "many": "%1 · %n min audio",
+  "other": "%1 · %n min audio"
+ },
+ "%1 · %n requests": {
+  "one": "%1 · %n żądań",
+  "few": "%1 · %n żądań",
+  "many": "%1 · %n żądań",
+  "other": "%1 · %n żądań"
+ },
+ "%1 · the book so far, about %Ln words · about %2 a question": {
+  "one": "%1 · dotychczasowa treść książki, około %Ln słów · około %2 za pytanie",
+  "few": "%1 · dotychczasowa treść książki, około %Ln słów · około %2 za pytanie",
+  "many": "%1 · dotychczasowa treść książki, około %Ln słów · około %2 za pytanie",
+  "other": "%1 · dotychczasowa treść książki, około %Ln słów · około %2 za pytanie"
+ },
  "%1 · the passages that matter, found in the book so far": "%1 · ważne fragmenty znalezione w dotychczasowej treści książki",
  "%1%": "%1%",
  "%1% read": "Przeczytano %1%",
@@ -32,31 +48,51 @@
  "%Ln found": {
   "one": "Znaleziono %Ln",
   "few": "Znaleziono %Ln",
-  "many": "Znaleziono %Ln"
+  "many": "Znaleziono %Ln",
+  "other": "Znaleziono %Ln"
  },
  "%Ln marks": {
   "one": "%Ln zakładka",
   "few": "%Ln zakładek",
-  "many": "%Ln zakładek"
+  "many": "%Ln zakładek",
+  "other": "%Ln zakładek"
  },
  "%n books": {
   "one": "%n książka",
   "few": "%n książek",
-  "many": "%n książek"
+  "many": "%n książek",
+  "other": "%n książek"
  },
- "%n chapters": "%n rozdziałów",
+ "%n chapters": {
+  "one": "%n rozdziałów",
+  "few": "%n rozdziałów",
+  "many": "%n rozdziałów",
+  "other": "%n rozdziałów"
+ },
  "%n cores": {
   "one": "%n rdzeń",
   "few": "%n rdzeni",
-  "many": "%n rdzeni"
+  "many": "%n rdzeni",
+  "other": "%n rdzeni"
  },
- "%n editions": "%n edycji",
+ "%n editions": {
+  "one": "%n edycji",
+  "few": "%n edycji",
+  "many": "%n edycji",
+  "other": "%n edycji"
+ },
  "%n matches": {
   "one": "%n wynik",
   "few": "%n wyników",
-  "many": "%n wyników"
+  "many": "%n wyników",
+  "other": "%n wyników"
  },
- "%n pages": "%n stron",
+ "%n pages": {
+  "one": "%n stron",
+  "few": "%n stron",
+  "many": "%n stron",
+  "other": "%n stron"
+ },
  ", and . skip a paragraph, < and > change the speed. Close the window and the reading goes on.": ", a . pomijają akapit, < i > zmieniają prędkość. Zamknij okno, a czytanie będzie trwać nadal.",
  "40%": "40%",
  "87, or 40%": "87 lub 40%",
@@ -71,12 +107,14 @@
  "About %n s per answer": {
   "one": "Około %n s na odpowiedź",
   "few": "Około %n s na odpowiedź",
-  "many": "Około %n s na odpowiedź"
+  "many": "Około %n s na odpowiedź",
+  "other": "Około %n s na odpowiedź"
  },
  "About %n s per answer with %1": {
   "one": "Około %n s na odpowiedź przy użyciu %1",
   "few": "Około %n s na odpowiedź przy użyciu %1",
-  "many": "Około %n s na odpowiedź przy użyciu %1"
+  "many": "Około %n s na odpowiedź przy użyciu %1",
+  "other": "Około %n s na odpowiedź przy użyciu %1"
  },
  "About this book": "O tej książce",
  "Add": "Dodaj",
@@ -95,7 +133,8 @@
  "Added %n books": {
   "one": "Dodano %n książkę",
   "few": "Dodano %n książek",
-  "many": "Dodano %n książek"
+  "many": "Dodano %n książek",
+  "other": "Dodano %n książek"
  },
  "Again": "Jeszcze raz",
  "All": "Wszystkie",
@@ -103,7 +142,8 @@
  "All books · %n works": {
   "one": "Wszystkie książki · %n dzieło",
   "few": "Wszystkie książki · %n dzieł",
-  "many": "Wszystkie książki · %n dzieł"
+  "many": "Wszystkie książki · %n dzieł",
+  "other": "Wszystkie książki · %n dzieł"
  },
  "All files": "Wszystkie pliki",
  "Already run llama.cpp, LM Studio, MLX or vLLM? Start it, then Find, or give its address below.": "Używasz już llama.cpp, LM Studio, MLX lub vLLM? Uruchom to, kliknij „Znajdź” lub podaj adres poniżej.",
@@ -276,7 +316,8 @@
  "In %n minutes": {
   "one": "Za %n minutę",
   "few": "Za %n minut",
-  "many": "Za %n minut"
+  "many": "Za %n minut",
+  "other": "Za %n minut"
  },
  "Install Ollama": "Zainstaluj Ollama",
  "Install Ollama, llama.cpp or LM Studio with a model such as %1, then Find again.": "Zainstaluj Ollama, llama.cpp lub LM Studio z modelem takim jak %1, a następnie wyszukaj ponownie.",
@@ -444,7 +485,8 @@
  "Search %Ln voices": {
   "one": "Przeszukaj %Ln głos",
   "few": "Przeszukaj %Ln głosów",
-  "many": "Przeszukaj %Ln głosów"
+  "many": "Przeszukaj %Ln głosów",
+  "other": "Przeszukaj %Ln głosów"
  },
  "Search by meaning": "Szukaj według znaczenia",
  "Search by meaning, a full cast, Studio and Pocket TTS voices, and audiobooks (M4B) from downloads.": "Wyszukiwanie znaczeniowe, pełna obsada głosowa, głosy z Studio i Pocket TTS oraz audiobooki (M4B) z pobranych plików.",
@@ -465,7 +507,8 @@
  "Showing the first %Ln. A few more words will narrow it down.": {
   "one": "Wyświetlanie pierwszego %Ln. Kilka słów więcej pomoże zwęzić wyniki.",
   "few": "Wyświetlanie pierwszych %Ln. Kilka słów więcej pomoże zwęzić wyniki.",
-  "many": "Wyświetlanie pierwszych %Ln. Kilka słów więcej pomoże zwęzić wyniki."
+  "many": "Wyświetlanie pierwszych %Ln. Kilka słów więcej pomoże zwęzić wyniki.",
+  "other": "Wyświetlanie pierwszych %Ln. Kilka słów więcej pomoże zwęzić wyniki."
  },
  "Size": "Rozmiar",
  "Skip": "Pomiń",
@@ -491,7 +534,8 @@
  "Stopping in %n min": {
   "one": "Zatrzymanie za %n min",
   "few": "Zatrzymanie za %n min",
-  "many": "Zatrzymanie za %n min"
+  "many": "Zatrzymanie za %n min",
+  "other": "Zatrzymanie za %n min"
  },
  "Studio": "Studio",
  "Studio voice, made on this computer": "Głos studyjny, utworzony na tym komputerze",

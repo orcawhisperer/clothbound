@@ -22,17 +22,47 @@
  "%1 of %2 ready": "%1 as %2 réidh",
  "%1 theme": "Téama %1",
  "%1 · %2%": "%1 · %2%",
- "%1 · %n min of audio": "%1 · %n nóiméad d'fhuaim",
- "%1 · %n requests": "%1 · %n iarratas",
- "%1 · the book so far, about %Ln words · about %2 a question": "%1 · an leabhar go dtí seo, thart ar %Ln focal · thart ar %2 in aghaidh na ceiste",
+ "%1 · %n min of audio": {
+  "one": "%1 · %n nóiméad d'fhuaim",
+  "two": "%1 · %n nóiméad d'fhuaim",
+  "few": "%1 · %n nóiméad d'fhuaim",
+  "many": "%1 · %n nóiméad d'fhuaim",
+  "other": "%1 · %n nóiméad d'fhuaim"
+ },
+ "%1 · %n requests": {
+  "one": "%1 · %n iarratas",
+  "two": "%1 · %n iarratas",
+  "few": "%1 · %n iarratas",
+  "many": "%1 · %n iarratas",
+  "other": "%1 · %n iarratas"
+ },
+ "%1 · the book so far, about %Ln words · about %2 a question": {
+  "one": "%1 · an leabhar go dtí seo, thart ar %Ln focal · thart ar %2 in aghaidh na ceiste",
+  "two": "%1 · an leabhar go dtí seo, thart ar %Ln focal · thart ar %2 in aghaidh na ceiste",
+  "few": "%1 · an leabhar go dtí seo, thart ar %Ln focal · thart ar %2 in aghaidh na ceiste",
+  "many": "%1 · an leabhar go dtí seo, thart ar %Ln focal · thart ar %2 in aghaidh na ceiste",
+  "other": "%1 · an leabhar go dtí seo, thart ar %Ln focal · thart ar %2 in aghaidh na ceiste"
+ },
  "%1 · the passages that matter, found in the book so far": "%1 · na sleachta is tábhachtaí, a aimsíodh sa leabhar go dtí seo",
  "%1%": "%1%",
  "%1% read": "%1% léite",
  "%1% · %2 left": "%1% · %2 fágtha",
  "%1× faster than real time: plays as you listen": "%1× níos tapúla ná an fíor-am: seolann sé agus tú ag éisteacht",
  "%1× real time here": "%1× am réadach anseo",
- "%Ln found": "Aimsíodh %Ln",
- "%Ln marks": "%Ln marc",
+ "%Ln found": {
+  "one": "Aimsíodh %Ln",
+  "two": "Aimsíodh %Ln",
+  "few": "Aimsíodh %Ln",
+  "many": "Aimsíodh %Ln",
+  "other": "Aimsíodh %Ln"
+ },
+ "%Ln marks": {
+  "one": "%Ln marc",
+  "two": "%Ln marc",
+  "few": "%Ln marc",
+  "many": "%Ln marc",
+  "other": "%Ln marc"
+ },
  "%n books": {
   "one": "%n leabhar",
   "two": "%n leabhar",
@@ -40,7 +70,13 @@
   "many": "%n leabhar",
   "other": "%n leabhar"
  },
- "%n chapters": "%n caibidil",
+ "%n chapters": {
+  "one": "%n caibidil",
+  "two": "%n caibidil",
+  "few": "%n caibidil",
+  "many": "%n caibidil",
+  "other": "%n caibidil"
+ },
  "%n cores": {
   "one": "%n chroí amháin",
   "two": "%n chroí",
@@ -48,9 +84,27 @@
   "many": "%n chroí",
   "other": "%n chroí"
  },
- "%n editions": "%n eagrán",
- "%n matches": "%n t-amharc",
- "%n pages": "%n leathanach",
+ "%n editions": {
+  "one": "%n eagrán",
+  "two": "%n eagrán",
+  "few": "%n eagrán",
+  "many": "%n eagrán",
+  "other": "%n eagrán"
+ },
+ "%n matches": {
+  "one": "%n t-amharc",
+  "two": "%n t-amharc",
+  "few": "%n t-amharc",
+  "many": "%n t-amharc",
+  "other": "%n t-amharc"
+ },
+ "%n pages": {
+  "one": "%n leathanach",
+  "two": "%n leathanach",
+  "few": "%n leathanach",
+  "many": "%n leathanach",
+  "other": "%n leathanach"
+ },
  ", and . skip a paragraph, < and > change the speed. Close the window and the reading goes on.": "Léim , agus . thar alt, athraíonn < agus > an luas. Dún an fuinneog agus leanann an léamh ar aghaidh.",
  "40%": "40%",
  "87, or 40%": "87, nó 40%",
@@ -90,11 +144,23 @@
  "Add the folder your books are in, and new ones there join by themselves.": "Cuir an fillteán ina bhfuil do leabhair leis, agus téann cinn nua an ann go huathoibríoch.",
  "Add your Gemini key to use this.": "Cuir d'eochair Gemini leis chun é seo a úsáid.",
  "Add your key": "Cuir d'eochair leis",
- "Added %n books": "Cuireadh %n leabhar leis",
+ "Added %n books": {
+  "one": "Cuireadh %n leabhar leis",
+  "two": "Cuireadh %n leabhar leis",
+  "few": "Cuireadh %n leabhar leis",
+  "many": "Cuireadh %n leabhar leis",
+  "other": "Cuireadh %n leabhar leis"
+ },
  "Again": "Arís",
  "All": "Uile",
  "All books": "Gach leabhar",
- "All books · %n works": "Gach leabhar · %n saothar",
+ "All books · %n works": {
+  "one": "Gach leabhar · %n saothar",
+  "two": "Gach leabhar · %n saothar",
+  "few": "Gach leabhar · %n saothar",
+  "many": "Gach leabhar · %n saothar",
+  "other": "Gach leabhar · %n saothar"
+ },
  "All files": "Gach comhad",
  "Already run llama.cpp, LM Studio, MLX or vLLM? Start it, then Find, or give its address below.": "Ar rith tú llama.cpp, LM Studio, MLX nó vLLM cheana féin? Tosaigh é, ansin Aimsigh, nó tabhair a sheoladh thíos.",
  "An even, clear reading with no direction. Good for study and reference.": "Léamh cothrom, soiléir gan stiúir. Maith le haghaidh staidéir agus tagartha.",
@@ -263,7 +329,13 @@
  "Illustrate this page": "Léaráidigh an leathanach seo",
  "Illustrations": "Léaráidí",
  "Imagining the picture…": "Ag samhlú an phictiúir…",
- "In %n minutes": "I gceann %n nóiméad",
+ "In %n minutes": {
+  "one": "I gceann %n nóiméad",
+  "two": "I gceann %n nóiméad",
+  "few": "I gceann %n nóiméad",
+  "many": "I gceann %n nóiméad",
+  "other": "I gceann %n nóiméad"
+ },
  "Install Ollama": "Suiteáil Ollama",
  "Install Ollama, llama.cpp or LM Studio with a model such as %1, then Find again.": "Suiteáil Ollama, llama.cpp nó LM Studio le samhail mar %1, ansin aimsigh arís.",
  "Install one in the Narrator panel (V).": "Suiteáil ceann sa phainéal Narrator (V).",
@@ -450,7 +522,13 @@
  "Show Dogear": "Taispeáin Dogear",
  "Show file": "Taispeáin comhad",
  "Show these shortcuts": "Taispeáin na haicearraí seo",
- "Showing the first %Ln. A few more words will narrow it down.": "Ag taispeáint an chéad %Ln. Cabhróidh cúpla focal eile le toradh a chur air.",
+ "Showing the first %Ln. A few more words will narrow it down.": {
+  "one": "Ag taispeáint an chéad %Ln. Cabhróidh cúpla focal eile le toradh a chur air.",
+  "two": "Ag taispeáint an chéad %Ln. Cabhróidh cúpla focal eile le toradh a chur air.",
+  "few": "Ag taispeáint an chéad %Ln. Cabhróidh cúpla focal eile le toradh a chur air.",
+  "many": "Ag taispeáint an chéad %Ln. Cabhróidh cúpla focal eile le toradh a chur air.",
+  "other": "Ag taispeáint an chéad %Ln. Cabhróidh cúpla focal eile le toradh a chur air."
+ },
  "Size": "Méid",
  "Skip": "Scipeáil",
  "Sleep timer": "Uaineadóir codlata",
@@ -472,7 +550,13 @@
  "Stop listening (⇧P)": "Stop an éisteacht (⇧P)",
  "Stop using it": "Scoir de bheith á úsáid",
  "Stopping at the end of the chapter": "Ag stad ag deireadh an chaibidil",
- "Stopping in %n min": "Ag stad i gceann %n nóiméad",
+ "Stopping in %n min": {
+  "one": "Ag stad i gceann %n nóiméad",
+  "two": "Ag stad i gceann %n nóiméad",
+  "few": "Ag stad i gceann %n nóiméad",
+  "many": "Ag stad i gceann %n nóiméad",
+  "other": "Ag stad i gceann %n nóiméad"
+ },
  "Studio": "Studio",
  "Studio voice, made on this computer": "Guth Studio, déanta ar an ríomhaire seo",
  "Style": "Stíl",
