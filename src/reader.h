@@ -36,6 +36,11 @@ class Reader : public QObject {
     Q_PROPERTY(int contentsIndex READ contentsIndex NOTIFY locationChanged)
     Q_PROPERTY(int page READ page NOTIFY locationChanged)
     Q_PROPERTY(int pages READ pages NOTIFY locationChanged)
+    Q_PROPERTY(int bookPageStart READ bookPageStart NOTIFY locationChanged)
+    Q_PROPERTY(int bookPageEnd READ bookPageEnd NOTIFY locationChanged)
+    Q_PROPERTY(int bookPages READ bookPages NOTIFY locationChanged)
+    Q_PROPERTY(int visibleColumns READ visibleColumns NOTIFY locationChanged)
+    Q_PROPERTY(qint64 previousOpenedAt READ previousOpenedAt NOTIFY bookChanged)
     Q_PROPERTY(double progress READ progress NOTIFY locationChanged)
     Q_PROPERTY(QString pageLabel READ pageLabel NOTIFY locationChanged)
     // Where the page in view starts and ends in its chapter, and its first words.
@@ -95,6 +100,11 @@ public:
     int contentsIndex() const;
     int page() const { return m_page; }
     int pages() const { return m_pages; }
+    int bookPageStart() const { return m_bookPageStart; }
+    int bookPageEnd() const { return m_bookPageEnd; }
+    int bookPages() const { return m_bookPages; }
+    int visibleColumns() const { return m_visibleColumns; }
+    qint64 previousOpenedAt() const { return m_previousOpenedAt; }
     double progress() const { return m_progress; }
     QString pageLabel() const { return m_pageLabel; }
     int minutesLeftInChapter() const;
@@ -187,6 +197,7 @@ private:
     void savePosition();
     void flushReadingTime();
     void measureChapters();
+    void updateBookPages();
     void loadBookAppearance(int bookId);
     QString formatBackLabel(int chapter, const QString &pageLabel) const;
     qint64 globalOffset(int chapter, qint64 offset) const;
@@ -224,6 +235,12 @@ private:
     QString m_snippet;
     int m_page = 0;
     int m_pages = 1;
+    int m_bookPageStart = 1;
+    int m_bookPageEnd = 1;
+    int m_bookPages = 1;
+    int m_visibleColumns = 1;
+    int m_visiblePageEnd = -1;
+    qint64 m_previousOpenedAt = 0;
     double m_progress = 0;
     QString m_pageLabel;
     bool m_atEnd = false;
@@ -232,7 +249,7 @@ private:
     bool m_canGoForward = false;
     QString m_backLabel;
     int m_fontWeight = 400;
-    double m_paragraphSpacing = 0.4;
+    double m_paragraphSpacing = 0.0;
     bool m_bookAppearanceOverride = false;
     QVariantMap m_bookAppearance;
 

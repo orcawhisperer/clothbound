@@ -39,15 +39,43 @@ FocusScope {
     }
 
     visible: open
-    width: Math.min(parent.width - 48, 520)
+    width: Math.min(parent ? parent.width - 48 : 520, 520)
     height: column.implicitHeight + 36
 
+    // Soft elevation shadow.
+    Rectangle {
+        z: -2
+        anchors.fill: parent
+        anchors.leftMargin: -4
+        anchors.rightMargin: -4
+        anchors.topMargin: 10
+        anchors.bottomMargin: -16
+        radius: cardBg.radius > 0 ? cardBg.radius + 4 : 0
+        color: "black"
+        opacity: editor.look.dark ? 0.42 : 0.14
+    }
+    Rectangle {
+        z: -1
+        anchors.fill: parent
+        anchors.topMargin: 4
+        anchors.bottomMargin: -6
+        radius: cardBg.radius
+        color: "black"
+        opacity: editor.look.dark ? 0.30 : 0.08
+    }
 
     Rectangle {
+        id: cardBg
         anchors.fill: parent
-        radius: Math.min(12, theme.radius)
+        radius: Ui.radius(12, theme.radius)
         color: editor.look.popover
+        border.width: 1
         border.color: editor.look.line
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onWheel: (wheel) => wheel.accepted = true
+        }
     }
 
     ColumnLayout {
@@ -63,18 +91,18 @@ FocusScope {
             color: editor.look.muted
             font.family: "Literata"
             font.italic: true
-            font.pixelSize: 14
+            font.pixelSize: 13.5
             wrapMode: Text.Wrap
             maximumLineCount: 4
             elide: Text.ElideRight
         }
         Rectangle {
             Layout.fillWidth: true
-            implicitHeight: Math.max(110, input.implicitHeight + 20)
-            radius: Math.min(8, theme.radius)
+            implicitHeight: Math.max(108, input.implicitHeight + 20)
+            radius: Ui.radius(7, theme.radius)
             color: Ui.tint(editor.look.fg, 0.05)
-            border.width: input.activeFocus ? 1.5 : 0
-            border.color: editor.look.link
+            border.width: input.activeFocus ? 1.5 : 1
+            border.color: input.activeFocus ? editor.look.link : editor.look.line
             TextEdit {
                 id: input
                 anchors.fill: parent
@@ -82,7 +110,7 @@ FocusScope {
                 color: editor.look.fg
                 selectionColor: Ui.tint(editor.look.link, 0.4)
                 selectedTextColor: editor.look.fg
-                font.pixelSize: 15
+                font.pixelSize: 13
                 wrapMode: TextEdit.Wrap
                 Keys.onPressed: (event) => {
                     if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
@@ -97,25 +125,37 @@ FocusScope {
                     visible: !parent.text
                     text: qsTr("What you thought…")
                     color: editor.look.muted
-                    font.pixelSize: 15
+                    font.pixelSize: 13
                 }
             }
         }
         RowLayout {
             Layout.fillWidth: true
-            Label {
+            spacing: 8
+            Row {
                 Layout.fillWidth: true
-                text: qsTr("Ctrl+Enter to keep it")
-                color: editor.look.muted
-                font.pixelSize: 12
+                spacing: 6
+                KeyHint {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Ctrl ↵")
+                    keycap: true
+                }
+                Label {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("to keep it")
+                    color: editor.look.muted
+                    font.pixelSize: 12
+                }
             }
-            Button {
-                flat: true
+            TextButton {
+                ghost: true
+                look: editor.look
                 text: qsTr("Cancel")
                 onClicked: editor.close()
             }
-            Button {
-                highlighted: true
+            TextButton {
+                primary: true
+                look: editor.look
                 text: qsTr("Keep")
                 onClicked: editor.save()
             }

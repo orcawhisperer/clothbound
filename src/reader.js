@@ -112,14 +112,19 @@ const dogear = (() => {
                      gap: 2 * side, column, step: Math.max(100, H - s.marginTop - s.marginBottom - 2 * em) }
         }
         const height = Math.max(160, H - s.marginTop - s.marginBottom)
-        const twoFit = (W - 4 * side) / 2 >= 22 * em
-        // Fall back to one column when tiled too narrow for two readable columns.
-        const wantDouble = s.layout === 'double' || (s.layout === 'auto' && twoFit && W > H * 1.15)
+        const singleForced = !!s.singleColumn
+        const twoGap = clamp(Math.round(W * 0.0875), 56, 112)
+        const twoFit = !singleForced && (W - 2 * side - twoGap) / 2 >= 21 * em
+        // Fall back to one column when tiled too narrow or while Companion is docked.
+        const wantDouble = !singleForced && (s.layout === 'double' || (s.layout === 'auto' && twoFit && W > H * 1.15))
         const columns = wantDouble && W >= 360 ? 2 : 1
-        let gap = columns === 2 ? clamp(2 * side, 56, 160) : 2 * side
+        let gap = columns === 2 ? twoGap : 2 * side
         if (columns === 2 && W - 2 * gap < 240)
             gap = Math.max(24, Math.floor((W - 240) / 2) & ~1)
-        const column = Math.max(120, Math.floor(Math.min(measure, columns === 2 ? (W - 2 * gap) / 2 : W - gap)))
+        const maxCol = columns === 2
+            ? Math.min(measure, (W - 2 * side - gap) / 2, (W - 2 * gap) / 2)
+            : Math.min(measure, W - 2 * side)
+        const column = Math.max(120, Math.floor(maxCol))
         const width = Math.max(120, columns * (column + gap))
         return { scroll: false, vertical: false, width, height, top: s.marginTop, left: Math.round((W - width) / 2),
                  columns, gap, column, step: width }
@@ -157,8 +162,15 @@ const dogear = (() => {
         const family = own && s.font && s.font !== 'publisher' ? `"${s.font}", "Literata", serif` : ''
         const weight = clamp(Math.round(s.fontWeight || 400), 300, 700)
         const boldWeight = Math.min(900, weight + 250)
-        const headingWeight = Math.min(900, weight + 200)
-        const paragraphSpacing = clamp(s.paragraphSpacing !== undefined ? Number(s.paragraphSpacing) : 0.4, 0, 1.2)
+        const headingWeight = clamp(weight + 100, 500, 700)
+        const accentInk = t.accentInk || t.link
+        const searchUnderline = t.searchUnderline || t.link
+        const paragraphSpacing = clamp(s.paragraphSpacing !== undefined ? Number(s.paragraphSpacing) : 0.0, 0, 1.2)
+        const literaryIndent = own && paragraphSpacing <= 0.15
+            ? `p[data-dg-flow] + p[data-dg-flow] { text-indent: 1.4em; }
+h1 + p[data-dg-flow], h2 + p[data-dg-flow], h3 + p[data-dg-flow], h4 + p[data-dg-flow],
+hr + p[data-dg-flow], blockquote + p[data-dg-flow], [data-dg-dropcap] { text-indent: 0 !important; }`
+            : ''
         const colorRules = own
             ? `body *, body *::before, body *::after { color: inherit !important; background-color: transparent !important; }
                pre { background-color: ${t.dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'} !important;
@@ -197,14 +209,15 @@ ${colorRules}
 a, a * { color: ${t.link} !important; }
 a { text-decoration: none !important; }
 ::selection { background: ${t.selection}; }
-::highlight(dg-search) { background-color: ${t.search}; }
-::highlight(dg-found) { background-color: ${t.found}; }
-::highlight(dg-mark-yellow) { background-color: ${t.markYellow}; }
-::highlight(dg-mark-green) { background-color: ${t.markGreen}; }
-::highlight(dg-mark-blue) { background-color: ${t.markBlue}; }
-::highlight(dg-mark-pink) { background-color: ${t.markPink}; }
-::highlight(dg-noted) { text-decoration: underline dotted ${t.link}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
-::highlight(dg-speaking) { background-color: ${t.speaking}; }
+::highlight(dg-spoken) { color: ${t.muted}; }
+::highlight(dg-search) { background-color: transparent; text-decoration: underline solid ${searchUnderline}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+::highlight(dg-found) { background-color: ${t.selection}; text-decoration: underline solid ${searchUnderline}; text-decoration-thickness: 2.5px; text-underline-offset: 3px; }
+::highlight(dg-mark-yellow) { background-color: ${t.markYellow}; color: ${t.fg}; }
+::highlight(dg-mark-green) { background-color: ${t.markGreen}; color: ${t.fg}; }
+::highlight(dg-mark-blue) { background-color: ${t.markBlue}; color: ${t.fg}; }
+::highlight(dg-mark-pink) { background-color: ${t.markPink}; color: ${t.fg}; }
+::highlight(dg-noted) { text-decoration: underline dotted ${accentInk}; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+::highlight(dg-speaking) { background-color: ${t.speaking}; color: ${t.fg}; }
 img, svg, video { max-width: 100% !important; object-fit: contain; break-inside: avoid; }
 img, svg { cursor: zoom-in; }
 a img, a svg { cursor: pointer; }
@@ -224,9 +237,11 @@ ${family ? `body, body :not(pre):not(code):not(kbd):not(samp):not(tt) { font-fam
 ${own ? `body, p, li, dd, dt, blockquote, td { font-weight: ${weight} !important; }
 b, strong, th { font-weight: ${boldWeight} !important; }
 h1, h2, h3, h4, h5, h6 { font-weight: ${headingWeight} !important; }
+h1, h2 { line-height: 1.2 !important; letter-spacing: -0.01em; }
 p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !important; }
 p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
-[data-dg-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; margin-inline-end: 0.06em; }
+${literaryIndent}
+[data-dg-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; color: ${accentInk} !important; margin-inline-end: 0.14em; }
 [data-dg-flow] { text-align: ${s.justify ? 'justify' : 'start'} !important;
                  ${s.justify && state.hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }` : ''}
 `
@@ -944,6 +959,8 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
         if (!animation)
             return
         state.animation = null
+        if (animation.raf && typeof cancelAnimationFrame === 'function')
+            cancelAnimationFrame(animation.raf)
         const horizontal = !state.geometry.scroll || state.geometry.vertical
         scroller().scrollTo({ [horizontal ? 'left' : 'top']: animation.target, behavior: 'instant' })
         animation.finish()
@@ -959,31 +976,39 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
         const target = horizontal && state.rtl ? -(state.page * g.step) : state.page * g.step
         const axis = horizontal ? 'left' : 'top'
         const now = horizontal ? el.scrollLeft : el.scrollTop
-        const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches
-        if (!animate || !state.style.animate || reduced || Math.abs(target - now) < 1) {
+        const reduced = !!state.style.reducedMotion || matchMedia('(prefers-reduced-motion: reduce)').matches
+        if (!animate || !state.style.animate || Math.abs(target - now) < 1) {
             el.scrollTo({ [axis]: target, behavior: 'instant' })
             return Promise.resolve()
         }
-        // Chromium's own smooth scroll runs on its compositor, so a turn stays
-        // fluid however busy the page is (a new chapter's hyphens, the
-        // voice's highlight moving on).
+        if (reduced) {
+            const f = frame()
+            f.classList.remove('shown')
+            el.scrollTo({ [axis]: target, behavior: 'instant' })
+            requestAnimationFrame(() => f.classList.add('shown'))
+            return Promise.resolve()
+        }
+        // Crisp 180 ms cubic-out page slide, immediately interruptible on fast turns.
         return new Promise(resolve => {
-            const doc = chapterDocument()
-            let timer = 0
-            const finish = () => {
-                clearTimeout(timer)
-                doc.removeEventListener('scrollend', finish)
-                if (state.animation && state.animation.finish === finish)
+            const duration = 180
+            const startTime = performance.now()
+            const anim = { target, raf: 0, finish: resolve }
+            const step = ts => {
+                if (state.animation !== anim)
+                    return
+                const t = clamp((ts - startTime) / duration, 0, 1)
+                const eased = 1 - Math.pow(1 - t, 3)
+                el.scrollTo({ [axis]: now + (target - now) * eased, behavior: 'instant' })
+                if (t < 1) {
+                    anim.raf = requestAnimationFrame(step)
+                } else {
                     state.animation = null
-                // Land exactly on the page, whatever the scroll settled on.
-                if (Math.abs((horizontal ? el.scrollLeft : el.scrollTop) - target) > 0.5)
                     el.scrollTo({ [axis]: target, behavior: 'instant' })
-                resolve()
+                    resolve()
+                }
             }
-            timer = setTimeout(finish, 700)
-            doc.addEventListener('scrollend', finish)
-            state.animation = { target, finish }
-            el.scrollTo({ [axis]: target, behavior: 'smooth' })
+            state.animation = anim
+            anim.raf = requestAnimationFrame(step)
         })
     }
 
@@ -1039,6 +1064,8 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
             snippet: state.index.text.slice(offset, offset + 48),
             page: state.page,
             pages: state.pages,
+            columns: state.geometry ? state.geometry.columns : 1,
+            textInset: state.geometry ? Math.max(24, Math.round(state.geometry.left + state.geometry.gap / 2)) : 28,
             pageLabel: labelForPage(state.page),
             atEnd: state.page >= state.pages - 1 && linearAfter(state.chapter) < 0,
             rtl: state.rtl,
@@ -1078,12 +1105,10 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
         restoreDecorations()
     }
 
-    // Notes beside their highlights, in the outer margin of the page they're
-    // on, when that margin can hold a readable card (otherwise a note shows as
-    // the highlight's dotted underline, and opens with a click). Cards on one
-    // side stack downwards rather than overlap. Laid out again on every turn,
-    // resize and change of marks.
-    const marginNoteMinimum = 140
+    // Compact 22×22 note badges beside noted highlights in the outer margin
+    // (02_reading.html); clicking opens the mark popover/editor. Badges on one
+    // side stack downwards rather than overlap.
+    const marginNoteMinimum = 34
     let marginNotesFrame = 0
     function scheduleMarginNotes() {
         if (marginNotesFrame)
@@ -1103,8 +1128,6 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
             return
         const frameRect = frame().getBoundingClientRect()
         const g = state.geometry
-        // The text block's outer edges in the window: the left of the first
-        // column and the right of the last (the frame holds the gaps around them).
         const textLeft = frameRect.left + g.gap / 2, textRight = frameRect.left + frameRect.width - g.gap / 2
         const cards = []
         for (const span of noted) {
@@ -1115,36 +1138,42 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
                 && r.right > 0 && r.left < frameRect.width && r.bottom > 0 && r.top < frameRect.height)
             if (!line)
                 continue
-            // On a spread, the left page's notes go in the left margin.
             const leftPage = g.columns > 1 && (line.left + line.right) / 2 < frameRect.width / 2
-            const room = leftPage ? textLeft - 20 : window.innerWidth - textRight - 20
+            const room = leftPage ? textLeft - 8 : window.innerWidth - textRight - 8
             if (room < marginNoteMinimum)
                 continue
-            cards.push({ span, line, leftPage, width: Math.min(220, room - 8) })
+            cards.push({ span, line, leftPage })
         }
         cards.sort((a, b) => a.line.top - b.line.top)
         const bottoms = { left: -Infinity, right: -Infinity }
-        for (const { span, line, leftPage, width } of cards) {
-            const card = document.createElement('div')
-            card.className = 'margin-note'
-            card.textContent = span.note
-            card.style.width = width + 'px'
-            card.style.left = (leftPage ? textLeft - 16 - width : textRight + 16) + 'px'
+        for (const { span, line, leftPage } of cards) {
+            const badge = document.createElement('button')
+            badge.type = 'button'
+            badge.className = 'margin-note-badge'
+            badge.title = span.note
+            badge.setAttribute('aria-label', 'Note: ' + span.note)
+            badge.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 7h14M5 12h14M5 17h8"/></svg>'
+            const badgeSize = 22
+            const left = leftPage
+                ? Math.max(8, textLeft - 14 - badgeSize)
+                : Math.min(window.innerWidth - badgeSize - 8, textRight + 14)
+            badge.style.left = left + 'px'
             const mark = state.style.theme['mark' + span.color.charAt(0).toUpperCase() + span.color.slice(1)]
             if (mark)
-                card.style.setProperty('--dg-mark', mark)
-            card.addEventListener('click', event => {
+                badge.style.setProperty('--dg-mark', mark)
+            badge.addEventListener('click', event => {
                 event.preventDefault()
+                event.stopPropagation()
                 if (state.bridge)
                     state.bridge.markClicked(span.id, { x: frameRect.left + line.left, y: frameRect.top + line.top,
                                                         width: line.width, height: line.height, session: sessionId() })
             })
-            overlay().appendChild(card)
-            marginCards.push(card)
+            overlay().appendChild(badge)
+            marginCards.push(badge)
             const side = leftPage ? 'left' : 'right'
-            const top = Math.max(frameRect.top + line.top - 2, bottoms[side] + 8)
-            card.style.top = top + 'px'
-            bottoms[side] = top + card.offsetHeight
+            const top = Math.max(frameRect.top + line.top + Math.max(0, (line.height - badgeSize) / 2), bottoms[side] + 6)
+            badge.style.top = top + 'px'
+            bottoms[side] = top + badgeSize
         }
     }
 
@@ -1884,7 +1913,7 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
                 const doc = chapterDocument()
                 const layoutKeys = ['font', 'fontScale', 'fontWeight', 'lineHeight', 'paragraphSpacing',
                                     'margin', 'measure', 'justify', 'hyphenate', 'layout', 'publisher',
-                                    'marginTop', 'marginBottom', 'dropCap']
+                                    'marginTop', 'marginBottom', 'dropCap', 'singleColumn']
                 const layoutChanged = !prev || layoutKeys.some(k => prev[k] !== style[k])
                 if (layoutChanged && (!prev || prev.dropCap !== style.dropCap || prev.publisher !== style.publisher))
                     markDropCap(doc)
@@ -2054,12 +2083,17 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
             const ranges = (spans || []).map(span => rangeFor(span.start, span.end)).filter(Boolean)
             if (ranges.length) {
                 const highlight = new view.Highlight(...ranges)
-                // The hit gone to shows over the others, and over the voice.
-                highlight.priority = name === 'dg-found' ? 2 : name === 'dg-speaking' ? 1 : 0
+                // Priority order: spoken dimming < user marks < active sentence < search < current match.
+                highlight.priority = name === 'dg-found' ? 4
+                    : name === 'dg-search' ? 3
+                    : name === 'dg-speaking' ? 2
+                    : name === 'dg-spoken' ? 0 : 1
                 view.CSS.highlights.set(name, highlight)
             } else {
                 view.CSS.highlights.delete(name)
             }
+            if (name === 'dg-speaking' && !(spans && spans.length))
+                api.highlight('dg-spoken', [])
         },
 
         // The chapter's highlights, each in its color; those with notes are
@@ -2110,11 +2144,12 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
             return state.location ? { chapter: state.location.chapter, offset: state.location.offset } : null
         },
 
-        // The sentence being spoken: highlighted, and the page turned to it
-        // when `follow` is set.
+        // The sentence being spoken: highlighted, with already-spoken text before
+        // it dimmed to muted ink, and the page turned to it when `follow` is set.
         speak(start, end, follow) {
             if (!state.index)
                 return
+            api.highlight('dg-spoken', start > 0 ? [{ start: 0, end: start }] : [])
             api.highlight('dg-speaking', [{ start, end }])
             if (!follow)
                 return
@@ -2229,13 +2264,18 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
     function applyPageColors() {
         const t = state.style.theme
         const root = document.documentElement.style
+        const r = state.style.radius || 0
         root.setProperty('--dg-bg', t.bg)
         root.setProperty('--dg-fg', t.fg)
-        root.setProperty('--dg-link', t.link)
+        root.setProperty('--dg-ink-soft', t.inkSoft || t.fg)
+        root.setProperty('--dg-link', t.accentInk || t.link)
         root.setProperty('--dg-muted', t.muted)
         root.setProperty('--dg-popover', t.popover)
+        root.setProperty('--dg-highlight', t.highlight || t.markYellow || '#F7DE8A')
         root.setProperty('--dg-border', t.border)
-        root.setProperty('--dg-radius', (state.style.radius || 0) + 'px')
+        root.setProperty('--dg-radius', (r > 0 ? Math.min(7, r) : 0) + 'px')
+        root.setProperty('--dg-radius-lg', (r > 0 ? Math.min(12, r) : 0) + 'px')
+        root.setProperty('--dg-radius-sm', (r > 0 ? Math.min(6, r) : 0) + 'px')
         document.documentElement.style.colorScheme = t.dark ? 'dark' : 'light'
     }
 
