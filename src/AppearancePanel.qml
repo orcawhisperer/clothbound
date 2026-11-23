@@ -123,9 +123,31 @@ FocusScope {
         }
     }
 
+    // The title and close stay put while the rest scrolls.
+    RowLayout {
+        id: header
+        x: 24
+        y: 22
+        width: panel.width - 48
+        Label {
+            Layout.fillWidth: true
+            text: qsTr("Appearance")
+            color: panel.look.fg
+            font.pixelSize: 18
+            font.weight: Font.DemiBold
+        }
+        IconButton {
+            glyph: Icons.close
+            tone: panel.look.fg
+            tip: qsTr("Close (Esc)")
+            onClicked: panel.close()
+        }
+    }
+
     Flickable {
         anchors.fill: parent
-        contentHeight: content.implicitHeight + 48
+        anchors.topMargin: header.y + header.height + 6
+        contentHeight: content.implicitHeight + 30
         boundsBehavior: Flickable.StopAtBounds
         clip: true
         ScrollBar.vertical: ScrollBar {}
@@ -133,26 +155,10 @@ FocusScope {
         ColumnLayout {
             id: content
             x: 24
-            y: 22
+            y: 4
             width: panel.width - 48
             spacing: 8
 
-            RowLayout {
-                Layout.fillWidth: true
-                Label {
-                    Layout.fillWidth: true
-                    text: qsTr("Appearance")
-                    color: panel.look.fg
-                    font.pixelSize: 18
-                    font.weight: Font.DemiBold
-                }
-                IconButton {
-                    glyph: Icons.close
-                    tone: panel.look.fg
-                    tip: qsTr("Close (Esc)")
-                    onClicked: panel.close()
-                }
-            }
 
             Heading { text: qsTr("Theme") }
             RowLayout {

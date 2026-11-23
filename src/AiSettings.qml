@@ -71,15 +71,33 @@ FocusScope {
         id: card
         anchors.centerIn: parent
         width: Math.min(580, parent.width - 48)
-        height: Math.min(parent.height - 48, content.implicitHeight + 56)
+        height: Math.min(parent.height - 48, content.implicitHeight + header.height + 90)
         radius: Math.min(12, theme.radius)
         color: theme.background
         border.color: Ui.tint(theme.text, 0.12)
         TapHandler {}
 
+        // The title and close stay put while the rest scrolls.
+        RowLayout {
+            id: header
+            x: 28
+            y: 24
+            width: parent.width - 56
+            Glyph { Layout.preferredWidth: 22; Layout.preferredHeight: 22; path: Icons.sparkle; color: theme.accent }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Intelligence")
+                color: theme.text
+                font.pixelSize: 20
+                font.weight: Font.DemiBold
+            }
+            IconButton { glyph: Icons.close; tip: qsTr("Close (Esc)"); onClicked: sheet.close() }
+        }
+
         Flickable {
             anchors.fill: parent
             anchors.margins: 28
+            anchors.topMargin: header.y + header.height + 10
             contentHeight: content.implicitHeight
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -89,18 +107,6 @@ FocusScope {
                 width: parent.width
                 spacing: 10
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    Glyph { Layout.preferredWidth: 22; Layout.preferredHeight: 22; path: Icons.sparkle; color: theme.accent }
-                    Label {
-                        Layout.fillWidth: true
-                        text: qsTr("Intelligence")
-                        color: theme.text
-                        font.pixelSize: 20
-                        font.weight: Font.DemiBold
-                    }
-                    IconButton { glyph: Icons.close; tip: qsTr("Close (Esc)"); onClicked: sheet.close() }
-                }
                 Label {
                     Layout.fillWidth: true
                     text: qsTr("Listen to any book in an expressive voice, and ask about what you're reading. Dogear uses your own Gemini key, so you choose what it costs.")

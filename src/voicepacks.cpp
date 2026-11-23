@@ -239,7 +239,7 @@ QVariantMap VoicePacks::toMap(const Voice &voice) const {
             {"grade", voice.grade},
             {"quality", voice.quality},
             {"recommended", voice.recommended},
-            {"engine", kokoro ? QStringLiteral("Kokoro") : QStringLiteral("Piper")},
+            {"engine", !voice.reference.isEmpty() ? QStringLiteral("Pocket TTS") : kokoro ? QStringLiteral("Kokoro") : QStringLiteral("Piper")},
             {"pack", voice.pack},
             {"kind", QStringLiteral("builtin")},
             {"installed", bytes == 0},

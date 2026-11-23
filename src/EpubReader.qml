@@ -345,6 +345,26 @@ FocusScope {
         }
     }
 
+    // Back from another workspace or app: a fresh frame of the page, at once
+    // and again a moment later (as the compositor settles).
+    Connections {
+        target: win
+        function onActiveChanged() { if (win.active) view.refreshSoon() }
+        function onVisibilityChanged() { view.refreshSoon() }
+    }
+    Connections {
+        target: Qt.application
+        function onStateChanged() { if (Qt.application.state === Qt.ApplicationActive) view.refreshSoon() }
+    }
+    function refreshSoon() {
+        if (pdf || !surfaceReady || !reader.open)
+            return
+        refreshTimer.restart()
+        refreshLater.restart()
+    }
+    Timer { id: refreshTimer; interval: 16; onTriggered: view.js("dogear.refresh && dogear.refresh()") }
+    Timer { id: refreshLater; interval: 350; onTriggered: view.js("dogear.refresh && dogear.refresh()") }
+
     Connections {
         target: reader
         function onSurfaceReady() {

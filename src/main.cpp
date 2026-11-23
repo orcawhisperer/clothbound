@@ -293,12 +293,9 @@ int main(int argc, char *argv[]) {
                 notifier.notify(QObject::tr("Dogear can't open this book"), library.errorString());
         });
     }
-    // What the window has drawn is kept while it's away (on another
-    // workspace), so it comes back as it was instead of black for a moment.
-    if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
-        window->setPersistentGraphics(true);
-        window->setPersistentSceneGraph(true);
-    }
+    // (The window's graphics aren't kept while it's away: Chromium drops the
+    // page's frame when hidden, and a kept one showed black. The reader asks
+    // the page for a fresh frame as the window comes back instead.)
     // While debugging, a pointer that --run can move.
     if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
         window && qEnvironmentVariableIsSet("DOGEAR_DEBUG"))

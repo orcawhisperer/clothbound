@@ -1433,6 +1433,19 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
 
         placeAt(x, y) { return placeAt(x, y) },
 
+        // The window is back in view: paint a fresh frame now, rather than
+        // whenever something next changes (Chromium dropped its last one).
+        refresh() {
+            for (const doc of [document, frame() && frame().contentDocument]) {
+                if (!doc || !doc.documentElement)
+                    continue
+                const root = doc.documentElement
+                root.style.outline = '1px solid transparent'
+                requestAnimationFrame(() => requestAnimationFrame(() => { root.style.outline = '' }))
+            }
+            return true
+        },
+
         // The selected text, for copying from the window.
         selectedText() {
             const selection = state.index ? chapterDocument().getSelection() : null
