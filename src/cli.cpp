@@ -578,7 +578,7 @@ QString cliSummary() {
            "  info <book>                     Metadata and table of contents of an EPUB or PDF\n"
            "  notes <book>                    A book's highlights, notes and bookmarks, as Markdown\n"
            "  voices [list|install|bench]     Built-in voices, made on this computer, and their speed\n"
-           "  ai [status|key|forget]          Gemini for listening and the companion: key and costs\n"
+           "  ai [status|key|forget|local]    Intelligence: the Gemini key and costs, and models on this computer\n"
            "  skill [install]                 Print the skill for coding agents, or install it";
 }
 

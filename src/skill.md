@@ -17,6 +17,12 @@ is 1.
 - `dogear list [--json]`: the books in the library, with reading progress.
 - `dogear notes <book> [--json]`: the user's highlights, notes and bookmarks
   in a book (named by its file or a few words of its title), as Markdown.
-- `dogear open <book>`: open the book in the reader, where the user left off.
+- `dogear open <book>`: open the book in the reader, where the user left off
+  (or bring back the Dogear already running, with that book).
+- `dogear voices [list|install|remove|bench] [--json]`: the built-in voices
+  (free, offline), which are installed, and how fast this computer makes them.
+- `dogear ai [status|local] [--json]`: whether Gemini is set up, what it has
+  cost this month, where text work runs, and the model servers found on this
+  computer (Ollama, llama.cpp, LM Studio, MLX, vLLM).
 
 Dogear never changes book files.

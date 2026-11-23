@@ -3,7 +3,7 @@ QT += core gui gui-private qml quick quickcontrols2 dbus sql concurrent network 
 CONFIG += c++20 release
 TARGET = dogear
 TEMPLATE = app
-DEFINES += DOGEAR_VERSION=\\\"0.1.0\\\"
+DEFINES += DOGEAR_VERSION=\\\"0.3.0\\\"
 
 # EPUBs are ZIP archives; zlib inflates them (Qt itself links it). API keys
 # live in the desktop keyring through libsecret.
