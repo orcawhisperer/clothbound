@@ -4,6 +4,7 @@
 #include "localmodels.h"
 #include "localspeech.h"
 
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QProcess>
@@ -11,6 +12,7 @@
 #include <QStandardPaths>
 #include <QSysInfo>
 #include <QThread>
+#include <QThreadPool>
 
 namespace {
 
@@ -46,7 +48,40 @@ QString samplePassage() {
 }  // namespace
 
 SystemCheck::SystemCheck(AiServices *ai, LocalSpeech *speech, QObject *parent)
-    : QObject(parent), m_ai(ai), m_speech(speech), m_machine(inspect()) {}
+    : QObject(parent), m_ai(ai), m_speech(speech) {}
+
+SystemCheck::~SystemCheck() { cancel(); }
+
+void SystemCheck::refresh() {
+    if (m_inspected || m_inspecting)
+        return;
+    m_inspecting = true;
+    QPointer<SystemCheck> self(this);
+    QThreadPool::globalInstance()->start([self] {
+        const Machine found = inspect();
+        QMetaObject::invokeMethod(
+            qApp,
+            [self, found] {
+                if (!self)
+                    return;
+                self->m_machine = found;
+                self->m_inspected = true;
+                self->m_inspecting = false;
+                emit self->changed();
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void SystemCheck::cancel() {
+    ++m_generation;
+    if (m_reply)
+        m_reply->abort();
+    if (m_running) {
+        m_running = false;
+        emit changed();
+    }
+}
 
 SystemCheck::Machine SystemCheck::inspect(const QString &root) {
     Machine machine;
@@ -75,33 +110,78 @@ SystemCheck::Machine SystemCheck::inspect(const QString &root) {
             machine.features.append(QLatin1String(name));
 
     // Graphics: each DRM card's PCI vendor, or the Apple GPU's driver.
+    // Prefer discrete GPUs (NVIDIA, discrete AMD/Intel) over integrated GPUs
+    // regardless of DRM card numbering order on hybrid laptops.
+    int bestRank = 0;
+    bool hasNvidia = false;
     const QDir drm(base + QStringLiteral("/sys/class/drm"));
-    for (const QString &card : drm.entryList({QStringLiteral("card?")}, QDir::Dirs | QDir::System)) {
+    for (const QString &card : drm.entryList({QStringLiteral("card*")}, QDir::Dirs | QDir::System)) {
+        if (card.contains(QLatin1Char('-')))
+            continue;
         const QString device = drm.filePath(card) + QStringLiteral("/device");
-        const QString vendor = readFile(device + QStringLiteral("/vendor")).trimmed();
+        const QString vendor = readFile(device + QStringLiteral("/vendor")).trimmed().toLower();
         const QString driver = QFileInfo(device + QStringLiteral("/driver")).symLinkTarget().section(QLatin1Char('/'), -1);
-        const double vram = readFile(device + QStringLiteral("/mem_info_vram_total")).trimmed().toDouble() / 1024 / 1024 / 1024;
+        double vram = readFile(device + QStringLiteral("/mem_info_vram_total")).trimmed().toDouble() / 1024 / 1024 / 1024;
+        if (vram <= 0)
+            vram = readFile(device + QStringLiteral("/lmem_total")).trimmed().toDouble() / 1024 / 1024 / 1024;
+
+        QString name;
+        bool discrete = false;
+        double vramGb = 0;
+        int rank = 0;
         if (vendor == QLatin1String("0x10de")) {
-            machine.graphics = QStringLiteral("NVIDIA");
-            machine.discreteGraphics = true;
+            hasNvidia = true;
+            name = QStringLiteral("NVIDIA");
+            discrete = true;
+            rank = 4;
         } else if (vendor == QLatin1String("0x1002")) {
-            machine.graphics = QStringLiteral("AMD Radeon");
+            name = QStringLiteral("AMD Radeon");
             // An integrated Radeon reports a small carve-out as its VRAM.
-            machine.discreteGraphics = vram >= 4;
-            machine.graphicsMemoryGb = machine.discreteGraphics ? vram : 0;
-        } else if (vendor == QLatin1String("0x8086") && machine.graphics.isEmpty()) {
-            machine.graphics = QStringLiteral("Intel");
+            discrete = vram >= 4;
+            vramGb = discrete ? vram : 0;
+            rank = discrete ? 3 : 1;
+        } else if (vendor == QLatin1String("0x8086")) {
+            name = QStringLiteral("Intel");
+            discrete = vram >= 4;
+            vramGb = discrete ? vram : 0;
+            rank = discrete ? 3 : 1;
         } else if (driver == QLatin1String("asahi") || readFile(device + QStringLiteral("/uevent")).contains(QLatin1String("asahi"))) {
-            machine.graphics = QStringLiteral("Apple");
+            name = QStringLiteral("Apple");
+            rank = 2;
+        }
+        if (rank > bestRank || (rank == bestRank && vramGb > machine.graphicsMemoryGb)) {
+            bestRank = rank;
+            machine.graphics = name;
+            machine.discreteGraphics = discrete;
+            machine.graphicsMemoryGb = vramGb;
         }
     }
-    if (root == QLatin1String("/") && machine.graphics == QLatin1String("NVIDIA")) {
+    if (root == QLatin1String("/") && hasNvidia && !QStandardPaths::findExecutable(QStringLiteral("nvidia-smi")).isEmpty()) {
         QProcess smi;
         smi.start(QStringLiteral("nvidia-smi"), {QStringLiteral("--query-gpu=name,memory.total"), QStringLiteral("--format=csv,noheader,nounits")});
-        if (smi.waitForFinished(3000) && smi.exitCode() == 0) {
-            const QStringList parts = QString::fromUtf8(smi.readAllStandardOutput()).split(QLatin1Char('\n')).first().split(QLatin1Char(','));
-            machine.graphics = parts.value(0).trimmed();
-            machine.graphicsMemoryGb = parts.value(1).trimmed().toDouble() / 1024;
+        if (!smi.waitForFinished(3000)) {
+            smi.kill();
+            smi.waitForFinished(500);
+        } else if (smi.exitStatus() == QProcess::NormalExit && smi.exitCode() == 0) {
+            QString bestName;
+            double bestMem = -1;
+            const QStringList lines = QString::fromUtf8(smi.readAllStandardOutput()).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+            for (const QString &line : lines) {
+                const QStringList parts = line.split(QLatin1Char(','));
+                const QString gpuName = parts.value(0).trimmed();
+                bool ok = false;
+                const double memGb = parts.value(1).trimmed().toDouble(&ok) / 1024.0;
+                const double gb = ok ? memGb : 0.0;
+                if (!gpuName.isEmpty() && gb > bestMem) {
+                    bestName = gpuName;
+                    bestMem = gb;
+                }
+            }
+            if (!bestName.isEmpty()) {
+                machine.graphics = bestName;
+                machine.graphicsMemoryGb = qMax(0.0, bestMem);
+                machine.discreteGraphics = true;
+            }
         }
     }
     if (machine.graphics == QLatin1String("Apple") && machine.processor.isEmpty())
@@ -155,20 +235,50 @@ QVariantMap SystemCheck::machine() const {
 void SystemCheck::run() {
     if (m_running)
         return;
+    const int generation = ++m_generation;
     m_running = true;
-    m_machine = inspect();
     m_voiceSpeed = m_promptRate = m_answerRate = 0;
     emit changed();
-    // The built-in voice: what it measured while speaking, or a sentence now.
+    QPointer<SystemCheck> self(this);
+    QThreadPool::globalInstance()->start([self, generation] {
+        const Machine found = inspect();
+        QMetaObject::invokeMethod(
+            qApp,
+            [self, found, generation] {
+                if (!self || generation != self->m_generation)
+                    return;
+                self->m_machine = found;
+                self->m_inspected = true;
+                emit self->changed();
+                self->startBenchmark(generation);
+            },
+            Qt::QueuedConnection);
+    });
+}
+
+void SystemCheck::startBenchmark(int generation) {
+    if (generation != m_generation)
+        return;
+    // The built-in voice: reuse its measured inference speed if known (avoiding
+    // cold ONNX load latency), or speak one sample sentence now.
     if (m_speech) {
         Ai::Reply *voices = m_speech->listVoices(QString());
-        connect(voices, &Ai::Reply::finished, this, [this, voices] {
+        m_reply = voices;
+        connect(voices, &Ai::Reply::finished, this, [this, voices, generation] {
             voices->deleteLater();
+            if (generation != m_generation)
+                return;
             if (voices->voices().isEmpty()) {
-                measureModel();
+                measureModel(generation);
                 return;
             }
             const QString voice = voices->voices().first().id;
+            const double known = m_speech->speedOf(voice);
+            if (known > 0) {
+                m_voiceSpeed = known;
+                measureModel(generation);
+                return;
+            }
             Ai::SpeechRequest request;
             request.feature = QStringLiteral("check");
             request.voice = voice;
@@ -176,24 +286,34 @@ void SystemCheck::run() {
             request.sentences = {request.text};
             m_clock.start();
             Ai::Reply *spoken = m_speech->synthesize(request);
-            connect(spoken, &Ai::Reply::finished, this, [this, spoken] {
+            m_reply = spoken;
+            connect(spoken, &Ai::Reply::finished, this, [this, spoken, voice, generation] {
                 spoken->deleteLater();
-                const double seconds = m_clock.elapsed() / 1000.0;
-                const double audio = spoken->audio().size() / 2.0 / qMax(1, spoken->sampleRate());
-                if (!spoken->error() && seconds > 0)
-                    m_voiceSpeed = audio / seconds;
-                measureModel();
+                if (generation != m_generation)
+                    return;
+                const double measured = m_speech->speedOf(voice);
+                if (measured > 0) {
+                    m_voiceSpeed = measured;
+                } else {
+                    const double seconds = m_clock.elapsed() / 1000.0;
+                    const double audio = spoken->audio().size() / 2.0 / qMax(1, spoken->sampleRate());
+                    if (!spoken->error() && seconds > 0)
+                        m_voiceSpeed = audio / seconds;
+                }
+                measureModel(generation);
             });
         });
     } else {
-        measureModel();
+        measureModel(generation);
     }
 }
 
-void SystemCheck::measureModel() {
+void SystemCheck::measureModel(int generation) {
+    if (generation != m_generation)
+        return;
     Ai::TextModel *model = m_ai->hasLocal() ? m_ai->localModels()->text() : nullptr;
     if (!model) {
-        finish();
+        finish(generation);
         return;
     }
     // What a chapter's direction costs: a long prompt read, a short answer.
@@ -203,20 +323,27 @@ void SystemCheck::measureModel() {
     request.system = QStringLiteral("You summarize passages in one short sentence.");
     request.messages = {{true, samplePassage() + QStringLiteral("\nSummarize these paragraphs in one sentence.")}};
     m_clock.start();
-    m_reply = model->generate(request);
-    connect(m_reply, &Ai::Reply::finished, this, [this, reply = m_reply] {
+    Ai::Reply *reply = model->generate(request);
+    m_reply = reply;
+    connect(reply, &Ai::Reply::finished, this, [this, reply, generation] {
         reply->deleteLater();
+        if (generation != m_generation)
+            return;
         const double seconds = m_clock.elapsed() / 1000.0;
         const Ai::Usage usage = reply->usage();
         if (!reply->error() && seconds > 0) {
-            // Prompt reading is about ten times faster than writing on CPUs;
-            // without the server's split, the total time stands for both.
-            const double input = usage.inputTokens ? usage.inputTokens : 1700;
+            const double input = usage.inputTokens ? usage.inputTokens : 1200;
             const double output = usage.outputTokens ? usage.outputTokens : 40;
-            m_promptRate = input / qMax(0.05, seconds * 0.6);
-            m_answerRate = output / qMax(0.05, seconds * 0.4);
+            if (usage.promptEvalNs > 0 && usage.evalNs > 0) {
+                // Exact server timings (Ollama), excluding cold model-load time.
+                m_promptRate = input / qMax(0.01, usage.promptEvalNs / 1e9);
+                m_answerRate = output / qMax(0.01, usage.evalNs / 1e9);
+            } else {
+                m_promptRate = input / qMax(0.05, seconds * 0.6);
+                m_answerRate = output / qMax(0.05, seconds * 0.4);
+            }
         }
-        finish();
+        finish(generation);
     });
 }
 
@@ -284,7 +411,9 @@ QVariantList SystemCheck::judge(double voiceSpeed, double promptRate, double ans
     return out;
 }
 
-void SystemCheck::finish() {
+void SystemCheck::finish(int generation) {
+    if (generation != m_generation)
+        return;
     m_verdicts = judge(m_voiceSpeed, m_promptRate, m_answerRate);
     const QString tierName = tierFor(m_machine);
     if (m_ai->hasLocal() && m_ai->hasKey())

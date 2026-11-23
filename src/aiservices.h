@@ -3,7 +3,10 @@
 #include "ai.h"
 #include "aiusage.h"
 
+#include <QDate>
+#include <QHash>
 #include <QObject>
+#include <QPointer>
 #include <QVariantList>
 #include <memory>
 
@@ -31,10 +34,12 @@ class AiServices : public QObject {
     Q_PROPERTY(bool canDesignVoices READ canDesignVoices NOTIFY changed)
     Q_PROPERTY(double spentThisMonth READ spentThisMonth NOTIFY usageChanged)
     Q_PROPERTY(double budget READ budget WRITE setBudget NOTIFY usageChanged)
+    Q_PROPERTY(bool unlimitedBudget READ unlimitedBudget WRITE setUnlimitedBudget NOTIFY usageChanged)
     Q_PROPERTY(QVariantList usageThisMonth READ usageThisMonth NOTIFY usageChanged)
     // Where text work runs: "cloud", "hybrid" or "local".
     Q_PROPERTY(QString preset READ preset WRITE setPreset NOTIFY routingChanged)
     Q_PROPERTY(bool hasLocal READ hasLocal NOTIFY routingChanged)
+    Q_PROPERTY(bool localIsLoopback READ localIsLoopback NOTIFY routingChanged)
     Q_PROPERTY(QString localName READ localName NOTIFY routingChanged)
     Q_PROPERTY(QString localUrl READ localUrl NOTIFY routingChanged)
     Q_PROPERTY(QString localTextModel READ localTextModel NOTIFY routingChanged)
@@ -98,6 +103,7 @@ public:
     QString preset() const;
     void setPreset(const QString &preset);
     bool hasLocal() const;
+    bool localIsLoopback() const;
     QString localName() const;
     QString localUrl() const;
     QString localTextModel() const;
@@ -127,6 +133,8 @@ public:
     double spentThisMonth() const;
     double budget() const { return m_budget; }
     void setBudget(double budget);
+    bool unlimitedBudget() const { return m_unlimitedBudget; }
+    void setUnlimitedBudget(bool unlimited);
     QVariantList usageThisMonth() const;
 
     // Checks a key with the provider, and keeps it in the keyring if it works.
@@ -135,6 +143,7 @@ public:
     Q_INVOKABLE void check();
     // A sentence for the reader about what went wrong.
     Q_INVOKABLE QString describe(int errorKind, const QString &detail = {}) const;
+    QString describeFor(const Ai::Provider *provider, int errorKind, const QString &detail = {}) const;
     Q_INVOKABLE double listeningCost(double minutes, bool economy = false, bool flex = false) const;
     Q_INVOKABLE bool fitsBudget(double cost) const;
 
@@ -165,6 +174,13 @@ private:
     QString m_savedKey;
     // A key typed or forgotten here outranks a lookup still under way.
     bool m_keyChangedHere = false;
+    int m_keyGeneration = 0;
+    QPointer<Ai::Reply> m_keyCheckReply;
     QString m_status;
     double m_budget = 10;
+    bool m_unlimitedBudget = false;
+    mutable double m_spentCache = -1;
+    mutable QDate m_spentMonth;
+    QString m_preset;
+    QHash<QString, QString> m_overrides;
 };

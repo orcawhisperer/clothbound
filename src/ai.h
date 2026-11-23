@@ -22,6 +22,10 @@ struct Usage {
     qint64 cachedTokens = 0;
     qint64 thoughtTokens = 0;
     qint64 audioTokens = 0;
+    // Exact server-reported timings in nanoseconds (when available, e.g. Ollama),
+    // excluding cold model-load latency.
+    qint64 promptEvalNs = 0;
+    qint64 evalNs = 0;
 };
 
 struct Error {
@@ -114,6 +118,7 @@ public:
     QList<QList<float>> vectors() const { return m_vectors; }
     // An ImageGenerator's picture, as the file the provider made (PNG, JPEG).
     QByteArray image() const { return m_image; }
+    QString imageMimeType() const { return m_imageMimeType; }
 
     virtual void abort() = 0;
 
@@ -151,6 +156,7 @@ protected:
     QList<qint64> m_boundaries;
     QList<QList<float>> m_vectors;
     QByteArray m_image;
+    QString m_imageMimeType;
     bool m_finished = false;
 };
 

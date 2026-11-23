@@ -31,6 +31,7 @@ public:
     };
 
     PassageIndex(AiServices *ai, const QString &databaseConnection, QObject *parent = nullptr);
+    ~PassageIndex() override { cancel(); }
 
     // Paragraph-aligned passages of about `size` characters.
     static QList<Passage> split(int chapter, const QString &text, int size = 1100);
@@ -53,18 +54,20 @@ public:
 
 private:
     QString model() const;
-    QHash<QString, QList<float>> load(int bookId) const;
-    void store(int bookId, const Passage &passage, const QList<float> &vector);
+    QHash<QString, QList<float>> load(int bookId, const QString &modelName = {}) const;
+    bool store(int bookId, const QString &modelName, const Passage &passage, const QList<float> &vector);
     static QString keyOf(const Passage &passage);
     void embedNext(int bookId);
 
     AiServices *m_ai;
     QString m_connection;
     // The build under way.
+    QString m_buildModel;
     QList<Passage> m_todo;
     int m_total = 0;
     std::function<void(double)> m_progress;
     std::function<void(const QString &)> m_done;
     QPointer<Ai::Reply> m_reply;
+    QPointer<Ai::Reply> m_searchReply;
     int m_generation = 0;
 };

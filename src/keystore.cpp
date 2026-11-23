@@ -12,6 +12,13 @@
 #include <QtConcurrent>
 
 namespace {
+QThreadPool *keyringPool() {
+    // A pool of its own that quitting never waits for: a keyring that doesn't
+    // answer mustn't keep Dogear running after it's closed.
+    static QThreadPool *pool = new QThreadPool;
+    return pool;
+}
+
 const SecretSchema *schema() {
     static const SecretSchema dogear = {
         "org.omarchy.Dogear.ApiKey",
@@ -24,10 +31,7 @@ const SecretSchema *schema() {
 }
 
 QFuture<QString> SecretKeyStore::loadLater(const QString &provider) {
-    // A pool of its own that quitting never waits for: a keyring that doesn't
-    // answer mustn't keep Dogear running after it's closed.
-    static QThreadPool *pool = new QThreadPool;
-    return QtConcurrent::run(pool, &SecretKeyStore::lookup, provider);
+    return QtConcurrent::run(keyringPool(), &SecretKeyStore::lookup, provider);
 }
 
 QString SecretKeyStore::lookup(const QString &provider) {
@@ -42,26 +46,44 @@ QString SecretKeyStore::lookup(const QString &provider) {
     return key;
 }
 
-bool SecretKeyStore::save(const QString &provider, const QString &key, QString *message) {
+QPair<bool, QString> SecretKeyStore::store(const QString &provider, const QString &key, const QByteArray &label) {
     GError *error = nullptr;
-    const QByteArray label = QCoreApplication::translate("KeyStore", "Dogear: %1 API key").arg(provider).toUtf8();
     const gboolean ok = secret_password_store_sync(schema(), SECRET_COLLECTION_DEFAULT, label.constData(),
                                                    key.toUtf8().constData(), nullptr, &error, "provider",
                                                    provider.toUtf8().constData(), nullptr);
+    QString message;
     if (error) {
-        if (message)
-            *message = QString::fromUtf8(error->message);
+        message = QString::fromUtf8(error->message);
         g_error_free(error);
     }
-    return ok;
+    return {bool(ok), message};
 }
 
-bool SecretKeyStore::remove(const QString &provider) {
+bool SecretKeyStore::clear(const QString &provider) {
     GError *error = nullptr;
     const gboolean ok = secret_password_clear_sync(schema(), nullptr, &error, "provider", provider.toUtf8().constData(), nullptr);
     if (error)
         g_error_free(error);
+    return bool(ok);
+}
+
+bool SecretKeyStore::save(const QString &provider, const QString &key, QString *message) {
+    const QByteArray label = QCoreApplication::translate("KeyStore", "Dogear: %1 API key").arg(provider).toUtf8();
+    const auto [ok, err] = store(provider, key, label);
+    if (message && !err.isEmpty())
+        *message = err;
     return ok;
+}
+
+QFuture<QPair<bool, QString>> SecretKeyStore::saveLater(const QString &provider, const QString &key) {
+    const QByteArray label = QCoreApplication::translate("KeyStore", "Dogear: %1 API key").arg(provider).toUtf8();
+    return QtConcurrent::run(keyringPool(), &SecretKeyStore::store, provider, key, label);
+}
+
+bool SecretKeyStore::remove(const QString &provider) { return clear(provider); }
+
+QFuture<bool> SecretKeyStore::removeLater(const QString &provider) {
+    return QtConcurrent::run(keyringPool(), &SecretKeyStore::clear, provider);
 }
 
 QString SecretKeyStore::where() const { return QCoreApplication::translate("KeyStore", "your keyring"); }

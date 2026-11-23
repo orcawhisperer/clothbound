@@ -4,6 +4,7 @@
 #include "speech.h"
 #include "sseparser.h"
 
+#include <QHostAddress>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkReply>
@@ -15,6 +16,13 @@ namespace {
 
 QString role(const Ai::Message &message) { return message.fromUser ? QStringLiteral("user") : QStringLiteral("assistant"); }
 
+bool supportsOllamaThinking(const QString &model) {
+    const QString lower = model.toLower();
+    static const QRegularExpression thinking(
+        QStringLiteral("qwen3|deepseek-r1|qwq|gpt-oss|cogito|magistral|granite3\\.2"));
+    return thinking.match(lower).hasMatch();
+}
+
 Ai::Error errorFor(QNetworkReply *reply, const QByteArray &body) {
     Ai::Error error;
     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
@@ -24,6 +32,8 @@ Ai::Error errorFor(QNetworkReply *reply, const QByteArray &body) {
                           : json.value(QStringLiteral("error")).toString();
     if (message.isEmpty())
         message = QString::fromUtf8(body.left(300)).trimmed();
+    if (message.isEmpty() && reply->error() != QNetworkReply::NoError)
+        message = reply->errorString();
     if (reply->error() == QNetworkReply::OperationCanceledError) {
         error.kind = Ai::Error::Cancelled;
     } else if (status == 0) {
@@ -110,9 +120,12 @@ private:
             if (json.value(QStringLiteral("done")).toBool()) {
                 m_usage.inputTokens = json.value(QStringLiteral("prompt_eval_count")).toInteger();
                 m_usage.outputTokens = json.value(QStringLiteral("eval_count")).toInteger();
+                m_usage.promptEvalNs = json.value(QStringLiteral("prompt_eval_duration")).toInteger();
+                m_usage.evalNs = json.value(QStringLiteral("eval_duration")).toInteger();
             }
         } else {
-            const QJsonObject choice = json.value(QStringLiteral("choices")).toArray().first().toObject();
+            const QJsonArray choices = json.value(QStringLiteral("choices")).toArray();
+            const QJsonObject choice = choices.at(0).toObject();
             const QJsonObject part = choice.contains(QStringLiteral("delta")) ? choice.value(QStringLiteral("delta")).toObject()
                                                                                : choice.value(QStringLiteral("message")).toObject();
             delta = part.value(QStringLiteral("content")).toString();
@@ -125,15 +138,64 @@ private:
         if (delta.isEmpty())
             return;
         m_raw += delta;
-        // A reasoning model's thinking isn't part of the answer: what
-        // streams out begins after it.
-        const QString shown = LocalModels::cleanText(m_raw, false);
-        if (!m_raw.trimmed().startsWith(QLatin1String("<think>")) || m_raw.contains(QLatin1String("</think>"))) {
-            if (shown.size() > m_shown) {
-                const QString more = shown.mid(m_shown);
-                m_shown = shown.size();
-                addText(more);
+        emitFiltered(delta);
+    }
+
+    // Filters a leading <think>...</think> block incrementally in O(1) per chunk,
+    // even when the opening or closing tags are split across streamed tokens.
+    void emitFiltered(const QString &delta) {
+        static const QString openTag = QStringLiteral("<think>");
+        static const QString closeTag = QStringLiteral("</think>");
+        if (m_thinkState == ThinkDone) {
+            if (m_trimLeading) {
+                qsizetype i = 0;
+                while (i < delta.size() && delta[i].isSpace())
+                    ++i;
+                if (i < delta.size()) {
+                    m_trimLeading = false;
+                    addText(delta.mid(i));
+                }
+            } else {
+                addText(delta);
             }
+            return;
+        }
+        m_thinkBuf += delta;
+        if (m_thinkState == ThinkPending) {
+            qsizetype lead = 0;
+            while (lead < m_thinkBuf.size() && m_thinkBuf[lead].isSpace())
+                ++lead;
+            if (lead >= m_thinkBuf.size())
+                return;
+            const QStringView rest = QStringView(m_thinkBuf).mid(lead);
+            if (rest.startsWith(openTag)) {
+                m_thinkState = ThinkInside;
+                m_thinkBuf = m_thinkBuf.mid(lead + openTag.size());
+            } else if (QStringView(openTag).startsWith(rest)) {
+                return;  // could still be a chunk-split "<think>"
+            } else {
+                m_thinkState = ThinkDone;
+                const QString out = m_thinkBuf.mid(lead);
+                m_thinkBuf.clear();
+                if (!out.isEmpty())
+                    addText(out);
+                return;
+            }
+        }
+        if (m_thinkState == ThinkInside) {
+            const qsizetype end = m_thinkBuf.indexOf(closeTag);
+            if (end < 0) {
+                // Keep just enough tail to match a "</think>" split across chunks.
+                if (m_thinkBuf.size() > closeTag.size() - 1)
+                    m_thinkBuf = m_thinkBuf.right(closeTag.size() - 1);
+                return;
+            }
+            const QString after = m_thinkBuf.mid(end + closeTag.size());
+            m_thinkBuf.clear();
+            m_thinkState = ThinkDone;
+            m_trimLeading = true;
+            if (!after.isEmpty())
+                emitFiltered(after);
         }
     }
 
@@ -148,12 +210,22 @@ private:
         switch (m_mode) {
         case Chat: {
             if (!m_body.trimmed().isEmpty()) {
-                // Whatever didn't stream: a whole answer, or a last line.
-                for (const QByteArray &line : m_body.split('\n'))
-                    chatEvent(line.trimmed().startsWith("data:") ? line.trimmed().mid(5) : line);
+                // A single whole JSON response (including pretty-printed multi-line JSON),
+                // or line-delimited SSE/NDJSON tail lines.
+                if (QJsonDocument::fromJson(m_body).isObject()) {
+                    chatEvent(m_body);
+                } else {
+                    for (const QByteArray &line : m_body.split('\n'))
+                        chatEvent(line.trimmed().startsWith("data:") ? line.trimmed().mid(5) : line);
+                }
             }
             for (const SseParser::Event &event : m_sse.finish())
                 chatEvent(event.data);
+            if (m_thinkState == ThinkPending && !m_thinkBuf.trimmed().isEmpty()) {
+                m_thinkState = ThinkDone;
+                addText(m_thinkBuf.trimmed());
+                m_thinkBuf.clear();
+            }
             m_text = LocalModels::cleanText(m_raw, m_json);
             if (m_json) {
                 const QJsonDocument document = QJsonDocument::fromJson(m_text.toUtf8());
@@ -230,6 +302,7 @@ private:
         }
     }
 
+    enum ThinkState { ThinkPending, ThinkInside, ThinkDone };
     QPointer<QNetworkReply> m_reply;
     Mode m_mode;
     LocalModels::Kind m_kind;
@@ -237,7 +310,9 @@ private:
     QByteArray m_body;
     SseParser m_sse;
     QString m_raw;
-    qsizetype m_shown = 0;
+    QString m_thinkBuf;
+    ThinkState m_thinkState = ThinkPending;
+    bool m_trimLeading = false;
 };
 
 // A reply already decided, for what needs no request.
@@ -254,12 +329,36 @@ public:
 
 LocalModels::LocalModels(QObject *parent) : Ai::Provider(parent) {}
 
+bool LocalModels::isHttpUrl(const QUrl &url) {
+    if (!url.isValid() || url.isEmpty() || url.host().isEmpty())
+        return false;
+    const QString scheme = url.scheme().toLower();
+    return scheme == QLatin1String("http") || scheme == QLatin1String("https");
+}
+
+bool LocalModels::isLoopbackUrl(const QUrl &url) {
+    if (!isHttpUrl(url))
+        return false;
+    const QString host = url.host().toLower();
+    if (host == QLatin1String("localhost") || host == QLatin1String("localhost."))
+        return true;
+    const QHostAddress addr(host);
+    return !addr.isNull() && addr.isLoopback();
+}
+
 void LocalModels::configure(const Server &server, const QString &textModel, const QString &embeddingModel,
                             const QString &speechModel) {
+    if (!server.isValid()) {
+        m_server = {};
+        m_textModel.clear();
+        m_embeddingModel.clear();
+        m_speechModel.clear();
+        return;
+    }
     m_server = server;
-    m_textModel = server.isValid() ? textModel : QString();
-    m_embeddingModel = server.isValid() ? embeddingModel : QString();
-    m_speechModel = server.isValid() ? speechModel : QString();
+    m_textModel = textModel;
+    m_embeddingModel = embeddingModel;
+    m_speechModel = speechModel;
 }
 
 QString LocalModels::kindName(Kind kind) {
@@ -293,14 +392,22 @@ LocalModels::Kind LocalModels::kindFromId(const QString &id) {
 }
 
 QString LocalModels::privacyNote() const {
-    return tr("Made on this computer by %1: nothing leaves it.").arg(name());
+    if (isLocal())
+        return tr("Made on this computer by %1: nothing leaves it.").arg(name());
+    return tr("Sent to %1 at %2.").arg(name(), m_server.url.host());
 }
 
 QNetworkReply *LocalModels::send(const QByteArray &method, const QString &path, const QJsonObject &body) {
     QUrl url = m_server.url;
-    url.setPath(path);
+    QString base = url.path();
+    while (base.endsWith(QLatin1Char('/')))
+        base.chop(1);
+    if (base.endsWith(QLatin1String("/v1")) && path.startsWith(QLatin1String("/v1/")))
+        base.chop(3);
+    url.setPath(base + path);
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     if (!m_key.isEmpty())
         request.setRawHeader("Authorization", "Bearer " + m_key.toUtf8());
     // A model loading for the first time can take a while to answer.
@@ -331,7 +438,8 @@ QJsonObject LocalModels::chatBody(Kind kind, const Ai::TextRequest &request, con
     if (kind == Ollama) {
         // Ollama's own API: its OpenAI one can't set the context, which is
         // 4K by default, too short for a chapter.
-        body.insert(QStringLiteral("think"), false);
+        if (supportsOllamaThinking(model))
+            body.insert(QStringLiteral("think"), false);
         body.insert(QStringLiteral("keep_alive"), QStringLiteral("15m"));
         body.insert(QStringLiteral("options"), QJsonObject{{QStringLiteral("num_ctx"), request.fast ? 8192 : 32768}});
         if (schema)
@@ -358,8 +466,14 @@ QString LocalModels::cleanText(const QString &text, bool json) {
                                              QRegularExpression::DotMatchesEverythingOption);
     out.remove(thinking);
     out = out.trimmed();
-    if (json) {
-        // Some models fence their JSON, or say a word before it.
+    if (json && !QJsonDocument::fromJson(out.toUtf8()).isObject()) {
+        // Prefer an explicit fenced JSON block before scanning for outer braces.
+        static const QRegularExpression fence(QStringLiteral("```(?:json)?\\s*([\\s\\S]*?)\\s*```"),
+                                              QRegularExpression::CaseInsensitiveOption);
+        const auto match = fence.match(out);
+        if (match.hasMatch() && QJsonDocument::fromJson(match.captured(1).trimmed().toUtf8()).isObject())
+            return match.captured(1).trimmed();
+        // Fallback: some models say a word before or after the JSON object.
         const qsizetype open = out.indexOf(QLatin1Char('{'));
         const qsizetype close = out.lastIndexOf(QLatin1Char('}'));
         if (open >= 0 && close > open)
@@ -390,7 +504,9 @@ Ai::Reply *LocalModels::embed(const QStringList &texts, bool query) {
     for (const QString &text : texts)
         input.append(query ? queryText(m_embeddingModel, text) : text);
     const bool ollama = m_server.kind == Ollama;
-    const QJsonObject body{{QStringLiteral("model"), m_embeddingModel}, {QStringLiteral("input"), input}};
+    QJsonObject body{{QStringLiteral("model"), m_embeddingModel}, {QStringLiteral("input"), input}};
+    if (ollama)
+        body.insert(QStringLiteral("keep_alive"), QStringLiteral("2m"));
     return new ServerReply(send("POST", ollama ? QStringLiteral("/api/embed") : QStringLiteral("/v1/embeddings"), body),
                            ServerReply::Embed, m_server.kind, m_embeddingModel, QStringLiteral("embed"), false, this);
 }
@@ -441,38 +557,63 @@ void ServerFinder::sortModels(LocalModels::Server &server, const QStringList &mo
     }
 }
 
+void ServerFinder::cancel() {
+    ++m_generation;
+    for (const QPointer<QNetworkReply> &reply : std::as_const(m_replies))
+        if (reply && reply->isRunning())
+            reply->abort();
+    m_replies.clear();
+    m_pending = 0;
+}
+
 void ServerFinder::find(const QList<QUrl> &extra) {
+    cancel();
     m_found.clear();
     QList<QUrl> places = usualPlaces();
     for (const QUrl &url : extra) {
-        QUrl origin = url.adjusted(QUrl::RemovePath | QUrl::RemoveQuery | QUrl::StripTrailingSlash);
-        if (origin.isValid() && !places.contains(origin))
+        QUrl origin = url.adjusted(QUrl::RemoveQuery | QUrl::RemoveFragment | QUrl::StripTrailingSlash);
+        // Strip API endpoint suffixes (/v1) while preserving any reverse-proxy prefix.
+        if (origin.path() == QLatin1String("/v1") || origin.path().startsWith(QLatin1String("/v1/")))
+            origin.setPath(QString());
+        if (LocalModels::isHttpUrl(origin) && !places.contains(origin))
             places.append(origin);
     }
+    const int generation = m_generation;
     m_pending = int(places.size());
+    if (m_pending == 0) {
+        emit finished();
+        return;
+    }
     for (const QUrl &place : places)
-        probe(place);
+        probe(place, generation);
 }
 
-void ServerFinder::probe(const QUrl &origin) {
-    const auto get = [this, origin](const QString &path, std::function<void(int, const QJsonDocument &)> then) {
+void ServerFinder::probe(const QUrl &origin, int generation) {
+    const auto get = [this, origin, generation](const QString &path, std::function<void(int, const QJsonDocument &)> then) {
         QUrl url = origin;
-        url.setPath(path);
+        QString base = url.path();
+        while (base.endsWith(QLatin1Char('/')))
+            base.chop(1);
+        url.setPath(base + path);
         QNetworkRequest request(url);
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
         request.setTransferTimeout(1500);
         QNetworkReply *reply = m_network.get(request);
-        connect(reply, &QNetworkReply::finished, this, [reply, then] {
+        m_replies.append(reply);
+        connect(reply, &QNetworkReply::finished, this, [this, reply, then, generation] {
             reply->deleteLater();
+            if (generation != m_generation)
+                return;
             then(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), QJsonDocument::fromJson(reply->readAll()));
         });
     };
-    const auto found = [this, origin](LocalModels::Kind kind, const QStringList &models) {
+    const auto found = [this, origin, generation](LocalModels::Kind kind, const QStringList &models) {
         LocalModels::Server server;
         server.kind = kind;
         server.url = origin;
         sortModels(server, models);
         m_found.append(server);
-        done();
+        done(generation);
     };
     const auto ids = [](const QJsonDocument &json) {
         QStringList out;
@@ -491,7 +632,7 @@ void ServerFinder::probe(const QUrl &origin) {
             return;
         }
         if (status == 0) {  // nothing listens here
-            done();
+            done(generation);
             return;
         }
         get(QStringLiteral("/api/v0/models"), [=, this](int status, const QJsonDocument &lmstudio) {
@@ -509,7 +650,7 @@ void ServerFinder::probe(const QUrl &origin) {
                         server.textModels.append(id);
                 }
                 m_found.append(server);
-                done();
+                done(generation);
                 return;
             }
             get(QStringLiteral("/props"), [=, this](int status, const QJsonDocument &props) {
@@ -517,18 +658,24 @@ void ServerFinder::probe(const QUrl &origin) {
                                                      props.object().contains(QStringLiteral("model_path")));
                 get(QStringLiteral("/v1/models"), [=, this](int status, const QJsonDocument &models) {
                     if (status != 200 || !models.object().contains(QStringLiteral("data"))) {
-                        done();
+                        done(generation);
                         return;
                     }
-                    const QJsonObject first = models.object().value(QStringLiteral("data")).toArray().first().toObject();
+                    const QJsonArray data = models.object().value(QStringLiteral("data")).toArray();
+                    const QJsonObject first = data.at(0).toObject();
                     const QString owner = first.value(QStringLiteral("owned_by")).toString();
+                    const QString firstId = first.value(QStringLiteral("id")).toString();
                     LocalModels::Kind kind = LocalModels::Generic;
                     if (llama || owner == QLatin1String("llamacpp"))
                         kind = LocalModels::LlamaCpp;
                     else if (owner == QLatin1String("vllm"))
                         kind = LocalModels::Vllm;
+                    else if (firstId.contains(QLatin1String("mlx"), Qt::CaseInsensitive))
+                        kind = LocalModels::Mlx;
+#ifdef Q_OS_MACOS
                     else if (origin.port() == 8080 && owner.isEmpty())
                         kind = LocalModels::Mlx;
+#endif
                     found(kind, ids(models));
                 });
             });
@@ -536,8 +683,11 @@ void ServerFinder::probe(const QUrl &origin) {
     });
 }
 
-void ServerFinder::done() {
+void ServerFinder::done(int generation) {
+    if (generation != m_generation)
+        return;
     if (--m_pending == 0) {
+        m_replies.clear();
         // The usual order of preference: Ollama, then the others as found.
         std::stable_sort(m_found.begin(), m_found.end(), [](const LocalModels::Server &a, const LocalModels::Server &b) {
             return int(a.kind) < int(b.kind);

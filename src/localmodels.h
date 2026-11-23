@@ -3,6 +3,7 @@
 #include "ai.h"
 
 #include <QNetworkAccessManager>
+#include <QPointer>
 #include <QStringList>
 #include <QUrl>
 
@@ -26,10 +27,13 @@ public:
         QStringList textModels;
         QStringList embeddingModels;
         QStringList speechModels;
-        bool isValid() const { return url.isValid() && !url.isEmpty(); }
+        bool isValid() const { return LocalModels::isHttpUrl(url); }
     };
 
     explicit LocalModels(QObject *parent = nullptr);
+
+    static bool isHttpUrl(const QUrl &url);
+    static bool isLoopbackUrl(const QUrl &url);
 
     // Which server, and which of its models do what ("" for none).
     void configure(const Server &server, const QString &textModel, const QString &embeddingModel = {},
@@ -43,7 +47,7 @@ public:
     QString id() const override { return QStringLiteral("local"); }
     QString name() const override { return kindName(m_server.kind); }
     QString privacyNote() const override;
-    bool isLocal() const override { return true; }
+    bool isLocal() const override { return isConfigured() && isLoopbackUrl(m_server.url); }
     bool needsKey() const override { return false; }
     void setKey(const QString &key) override { m_key = key.trimmed(); }
     bool hasKey() const override { return isConfigured(); }
@@ -109,9 +113,11 @@ class ServerFinder : public QObject {
 
 public:
     explicit ServerFinder(QObject *parent = nullptr) : QObject(parent) {}
+    ~ServerFinder() override { cancel(); }
 
     // Looks at the usual ports, and `extra` (a URL the reader gave).
     void find(const QList<QUrl> &extra = {});
+    void cancel();
     QList<LocalModels::Server> servers() const { return m_found; }
 
     static QList<QUrl> usualPlaces();
@@ -122,10 +128,12 @@ signals:
     void finished();
 
 private:
-    void probe(const QUrl &origin);
-    void done();
+    void probe(const QUrl &origin, int generation);
+    void done(int generation);
 
     QNetworkAccessManager m_network;
     QList<LocalModels::Server> m_found;
+    QList<QPointer<QNetworkReply>> m_replies;
     int m_pending = 0;
+    int m_generation = 0;
 };

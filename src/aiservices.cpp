@@ -18,7 +18,17 @@ QSettings settings() {
 AiServices::AiServices(Ai::Provider *provider, KeyStore *keys, const QString &databaseConnection, QObject *parent)
     : QObject(parent), m_provider(provider), m_keys(keys), m_ledger(databaseConnection) {
     m_ledger.migrate();
-    m_budget = settings().value(QStringLiteral("ai/budget"), 10.0).toDouble();
+    QSettings s = settings();
+    m_budget = qMax(0.0, s.value(QStringLiteral("ai/budget"), 10.0).toDouble());
+    m_unlimitedBudget = s.value(QStringLiteral("ai/unlimitedBudget"), false).toBool();
+    m_preset = s.value(QStringLiteral("ai/preset")).toString();
+    s.beginGroup(QStringLiteral("ai/route"));
+    for (const QString &feature : s.childKeys()) {
+        const QString route = s.value(feature).toString();
+        if (!route.isEmpty())
+            m_overrides.insert(feature, route);
+    }
+    s.endGroup();
     // A key in the environment wins, so scripts and agents can bring their own.
     const QByteArray environment = qgetenv("GEMINI_API_KEY");
     if (provider->id() == QStringLiteral("gemini") && !environment.trimmed().isEmpty()) {
@@ -67,7 +77,12 @@ QString AiServices::speechModel() const {
 
 double AiServices::spentThisMonth() const {
     const QDate today = QDate::currentDate();
-    return m_ledger.spentSince(QDate(today.year(), today.month(), 1));
+    const QDate monthStart(today.year(), today.month(), 1);
+    if (m_spentCache < 0 || m_spentMonth != monthStart) {
+        m_spentMonth = monthStart;
+        m_spentCache = m_ledger.spentSince(monthStart);
+    }
+    return m_spentCache;
 }
 
 void AiServices::setBudget(double budget) {
@@ -79,9 +94,23 @@ void AiServices::setBudget(double budget) {
     emit usageChanged();
 }
 
+void AiServices::setUnlimitedBudget(bool unlimited) {
+    if (unlimited == m_unlimitedBudget)
+        return;
+    m_unlimitedBudget = unlimited;
+    settings().setValue(QStringLiteral("ai/unlimitedBudget"), unlimited);
+    emit usageChanged();
+}
+
 QVariantList AiServices::usageThisMonth() const { return m_ledger.monthByFeature(); }
 
-bool AiServices::fitsBudget(double cost) const { return m_budget <= 0 || spentThisMonth() + cost <= m_budget; }
+bool AiServices::fitsBudget(double cost) const {
+    if (m_unlimitedBudget)
+        return true;
+    if (m_budget <= 0)
+        return false;
+    return spentThisMonth() + cost <= m_budget;
+}
 
 double AiServices::listeningCost(double minutes, bool economy, bool flex) const {
     auto *model = m_provider->speech();
@@ -92,16 +121,22 @@ void AiServices::setKey(const QString &key) {
     const QString trimmed = key.trimmed();
     if (trimmed.isEmpty())
         return;
+    if (m_keyCheckReply)
+        m_keyCheckReply->abort();
+    const int generation = ++m_keyGeneration;
     m_provider->setKey(trimmed);
     m_keyChangedHere = true;
     m_checking = true;
     m_status = tr("Checking the key…");
     emit changed();
     Ai::Reply *reply = m_provider->check();
-    connect(reply, &Ai::Reply::finished, this, [this, reply, trimmed] {
+    m_keyCheckReply = reply;
+    connect(reply, &Ai::Reply::finished, this, [this, reply, trimmed, generation] {
         reply->deleteLater();
-        m_checking = false;
+        if (generation != m_keyGeneration)
+            return;
         if (reply->error()) {
+            m_checking = false;
             // A key that doesn't work isn't kept, and the one before stays.
             m_provider->setKey(m_fromEnvironment ? QString::fromUtf8(qgetenv("GEMINI_API_KEY")) : m_savedKey);
             m_connected = false;
@@ -110,21 +145,39 @@ void AiServices::setKey(const QString &key) {
             emit keyChecked(false, m_status);
             return;
         }
-        QString problem;
-        const bool saved = m_keys && m_keys->save(m_provider->id(), trimmed, &problem);
-        if (saved)
-            m_savedKey = trimmed;
-        m_fromEnvironment = false;
-        m_connected = true;
-        m_status = saved ? tr("Connected") : tr("Connected for now; the key couldn't be saved in your keyring (%1).").arg(problem);
-        emit changed();
-        emit keyChecked(true, m_status);
+        auto finish = [this, trimmed](bool saved, const QString &problem) {
+            m_checking = false;
+            if (saved)
+                m_savedKey = trimmed;
+            m_fromEnvironment = false;
+            m_connected = true;
+            m_status = saved ? tr("Connected") : tr("Connected for now; the key couldn't be saved in your keyring (%1).").arg(problem);
+            emit changed();
+            emit keyChecked(true, m_status);
+        };
+        if (!m_keys) {
+            finish(false, tr("no keyring"));
+            return;
+        }
+        auto *watcher = new QFutureWatcher<QPair<bool, QString>>(this);
+        connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, generation, finish] {
+            watcher->deleteLater();
+            if (generation != m_keyGeneration)
+                return;
+            const auto [saved, problem] = watcher->result();
+            finish(saved, problem);
+        });
+        watcher->setFuture(m_keys->saveLater(m_provider->id(), trimmed));
     });
 }
 
 void AiServices::forgetKey() {
+    ++m_keyGeneration;
+    if (m_keyCheckReply)
+        m_keyCheckReply->abort();
+    m_checking = false;
     if (m_keys)
-        m_keys->remove(m_provider->id());
+        (void)m_keys->removeLater(m_provider->id());
     m_savedKey.clear();
     m_keyChangedHere = true;
     m_provider->setKey({});
@@ -137,12 +190,16 @@ void AiServices::forgetKey() {
 void AiServices::check() {
     if (!hasKey() || m_checking)
         return;
+    const int generation = ++m_keyGeneration;
     m_checking = true;
     m_status = tr("Checking the key…");
     emit changed();
     Ai::Reply *reply = m_provider->check();
-    connect(reply, &Ai::Reply::finished, this, [this, reply] {
+    m_keyCheckReply = reply;
+    connect(reply, &Ai::Reply::finished, this, [this, reply, generation] {
         reply->deleteLater();
+        if (generation != m_keyGeneration)
+            return;
         m_checking = false;
         m_connected = !reply->error();
         m_status = reply->error() ? describe(reply->error().kind, reply->error().message) : tr("Connected");
@@ -158,9 +215,10 @@ void AiServices::track(Ai::Reply *reply, bool flex) {
         const Ai::Usage usage = reply->usage();
         if (usage.inputTokens || usage.outputTokens) {
             m_ledger.record(providerId, reply->model(), reply->feature(), usage, flex);
+            m_spentCache = -1;
             emit usageChanged();
         }
-        if (reply->error().kind == Ai::Error::BadKey && m_connected) {
+        if (reply->error().kind == Ai::Error::BadKey && providerId == m_provider->id() && m_connected) {
             m_connected = false;
             m_status = describe(Ai::Error::BadKey);
             emit changed();
@@ -169,6 +227,37 @@ void AiServices::track(Ai::Reply *reply, bool flex) {
 }
 
 QString AiServices::describe(int errorKind, const QString &detail) const {
+    return describeFor(m_provider, errorKind, detail);
+}
+
+QString AiServices::describeFor(const Ai::Provider *provider, int errorKind, const QString &detail) const {
+    if (provider && provider->id() == QLatin1String("local")) {
+        const QString who = provider->name();
+        switch (Ai::Error::Kind(errorKind)) {
+        case Ai::Error::None:
+            return {};
+        case Ai::Error::Offline:
+            return tr("Can't reach %1. Make sure the model server is running.").arg(who);
+        case Ai::Error::NotFound:
+            return detail.isEmpty() ? tr("%1 doesn't have that model.").arg(who)
+                                    : tr("%1 doesn't have that model: %2").arg(who, detail);
+        case Ai::Error::BadKey:
+        case Ai::Error::Refused:
+            return tr("%1 rejected the request.").arg(who);
+        case Ai::Error::Server:
+            return detail.isEmpty() ? tr("%1 had a problem. Try again in a moment.").arg(who)
+                                    : tr("%1 had a problem: %2").arg(who, detail);
+        case Ai::Error::Unsupported:
+            return tr("%1 can't do this.").arg(who);
+        case Ai::Error::Cancelled:
+            return tr("Cancelled.");
+        case Ai::Error::Invalid:
+            return detail.isEmpty() ? tr("%1 couldn't handle this request.").arg(who)
+                                    : tr("%1 couldn't handle this request: %2").arg(who, detail);
+        default:
+            return detail.isEmpty() ? tr("%1 couldn't finish this request.").arg(who) : detail;
+        }
+    }
     switch (Ai::Error::Kind(errorKind)) {
     case Ai::Error::None:
         return {};
@@ -179,7 +268,7 @@ QString AiServices::describe(int errorKind, const QString &detail) const {
     case Ai::Error::Limited:
         return tr("Your key has reached Gemini's limit for now. It resets later; a key with billing has higher limits.");
     case Ai::Error::Budget:
-        return tr("This would go past your monthly budget. You can raise it in Gemini settings.");
+        return tr("This would go past your monthly budget. You can raise it in Intelligence settings.");
     case Ai::Error::Offline:
         return tr("Can't reach Gemini. Check your connection.");
     case Ai::Error::Refused:
@@ -187,7 +276,7 @@ QString AiServices::describe(int errorKind, const QString &detail) const {
     case Ai::Error::Server:
         return tr("Gemini had a problem. Try again in a moment.");
     case Ai::Error::Unsupported:
-        return tr("%1 can't do this.").arg(providerName());
+        return tr("%1 can't do this.").arg(provider ? provider->name() : providerName());
     case Ai::Error::Cancelled:
         return tr("Cancelled.");
     case Ai::Error::NotFound:
@@ -207,10 +296,11 @@ void AiServices::setLocalModels(LocalModels *local) {
         return;
     QSettings s = settings();
     const QString url = s.value(QStringLiteral("local/url")).toString();
-    if (!url.isEmpty()) {
+    const QUrl parsed(url);
+    if (LocalModels::isHttpUrl(parsed)) {
         LocalModels::Server server;
         server.kind = LocalModels::kindFromId(s.value(QStringLiteral("local/kind")).toString());
-        server.url = QUrl(url);
+        server.url = parsed;
         local->configure(server, s.value(QStringLiteral("local/text")).toString(),
                          s.value(QStringLiteral("local/embedding")).toString(), s.value(QStringLiteral("local/speech")).toString());
         local->setSpeechVoices({}, LocalModels::takesInstructions(local->speechModelName(false)));
@@ -223,36 +313,44 @@ bool AiServices::isCareful(const QString &feature) {
 }
 
 QString AiServices::preset() const {
-    const QString chosen = settings().value(QStringLiteral("ai/preset")).toString();
-    if (!chosen.isEmpty())
-        return chosen;
+    if (!m_preset.isEmpty())
+        return m_preset;
     // Until chosen: hybrid once a local model is set up, the cloud before.
     return hasLocal() ? QStringLiteral("hybrid") : QStringLiteral("cloud");
 }
 
 void AiServices::setPreset(const QString &preset) {
-    if (preset == this->preset())
+    if (preset == this->preset() && !m_preset.isEmpty())
         return;
-    settings().setValue(QStringLiteral("ai/preset"), preset);
+    m_preset = preset;
+    QSettings s = settings();
+    if (preset.isEmpty())
+        s.remove(QStringLiteral("ai/preset"));
+    else
+        s.setValue(QStringLiteral("ai/preset"), preset);
     emit routingChanged();
     emit changed();
 }
 
 QString AiServices::overrideFor(const QString &feature) const {
-    return settings().value(QStringLiteral("ai/route/") + feature).toString();
+    return m_overrides.value(feature);
 }
 
 void AiServices::setOverride(const QString &feature, const QString &route) {
     QSettings s = settings();
-    if (route.isEmpty())
+    if (route.isEmpty()) {
+        m_overrides.remove(feature);
         s.remove(QStringLiteral("ai/route/") + feature);
-    else
+    } else {
+        m_overrides.insert(feature, route);
         s.setValue(QStringLiteral("ai/route/") + feature, route);
+    }
     emit routingChanged();
     emit changed();
 }
 
 bool AiServices::hasLocal() const { return m_localModels && m_localModels->text(); }
+bool AiServices::localIsLoopback() const { return m_localModels && m_localModels->isLocal(); }
 QString AiServices::localName() const { return m_localModels && m_localModels->isConfigured() ? m_localModels->name() : QString(); }
 QString AiServices::localUrl() const {
     return m_localModels && m_localModels->isConfigured() ? m_localModels->server().url.toString() : QString();
@@ -264,9 +362,10 @@ QString AiServices::localSpeechModel() const { return m_localModels ? m_localMod
 QString AiServices::routeFor(const QString &feature) const {
     const bool cloud = m_provider->hasKey() && m_provider->text();
     const bool local = hasLocal();
-    QString wanted = overrideFor(feature);
+    const QString overrideRoute = overrideFor(feature);
+    const QString mode = preset();
+    QString wanted = overrideRoute;
     if (wanted.isEmpty()) {
-        const QString mode = preset();
         if (mode == QLatin1String("local"))
             wanted = QStringLiteral("local");
         else if (mode == QLatin1String("hybrid"))
@@ -274,8 +373,8 @@ QString AiServices::routeFor(const QString &feature) const {
         else
             wanted = QStringLiteral("cloud");
     }
-    // "Local" means nothing leaves the computer: no falling back to the cloud.
-    if (wanted == QLatin1String("local") && preset() == QLatin1String("local") && overrideFor(feature).isEmpty())
+    // An explicit "local" choice (preset or per-feature override) never falls back to the cloud.
+    if (wanted == QLatin1String("local") && (overrideRoute == QLatin1String("local") || mode == QLatin1String("local")))
         return local ? wanted : QString();
     if (wanted == QLatin1String("local"))
         return local ? wanted : (cloud ? QStringLiteral("cloud") : QString());
@@ -297,12 +396,16 @@ Ai::TextModel *AiServices::textFor(const QString &feature) const {
 Ai::Provider *AiServices::embedderProvider() const {
     const bool local = m_localModels && m_localModels->embedder();
     const bool cloud = m_provider->hasKey() && m_provider->embedder();
-    const QString route = routeFor(QStringLiteral("search"));
-    if (local && (route == QLatin1String("local") || !cloud))
+    const QString overrideRoute = overrideFor(QStringLiteral("search"));
+    const QString mode = preset();
+    // Explicit "local" (preset or override) never sends book text to the cloud.
+    if (overrideRoute == QLatin1String("local") || (mode == QLatin1String("local") && overrideRoute.isEmpty()))
+        return local ? m_localModels : nullptr;
+    if (overrideRoute == QLatin1String("cloud"))
+        return cloud ? m_provider : (local ? m_localModels : nullptr);
+    if (local && (mode == QLatin1String("hybrid") || !cloud))
         return m_localModels;
-    if (preset() == QLatin1String("local") && overrideFor(QStringLiteral("search")).isEmpty())
-        return nullptr;
-    return cloud ? m_provider : nullptr;
+    return cloud ? m_provider : (local ? m_localModels : nullptr);
 }
 
 Ai::Embedder *AiServices::embedder() const {
@@ -316,6 +419,8 @@ QString AiServices::whereFor(const QString &feature) const {
         return tr("Not available: add a Gemini key or a local model.");
     if (provider->isLocal())
         return tr("On this computer, with %1").arg(provider->name());
+    if (provider == m_localModels)
+        return tr("Sent to %1 (%2)").arg(provider->name(), m_localModels->server().url.host());
     return tr("Sent to %1").arg(provider->name());
 }
 
@@ -338,10 +443,16 @@ void AiServices::findLocal(const QString &url) {
     m_findingLocal = true;
     emit localServersChanged();
     QList<QUrl> extra;
-    if (!url.trimmed().isEmpty())
-        extra.append(QUrl::fromUserInput(url.trimmed()));
-    if (!localUrl().isEmpty())
-        extra.append(QUrl(localUrl()));
+    if (!url.trimmed().isEmpty()) {
+        const QUrl candidate = QUrl::fromUserInput(url.trimmed());
+        if (LocalModels::isHttpUrl(candidate))
+            extra.append(candidate);
+    }
+    if (!localUrl().isEmpty()) {
+        const QUrl current(localUrl());
+        if (LocalModels::isHttpUrl(current))
+            extra.append(current);
+    }
     m_finder->find(extra);
 }
 
@@ -349,15 +460,18 @@ void AiServices::useLocal(const QString &kind, const QString &url, const QString
                           const QString &embeddingModel, const QString &speechModel) {
     if (!m_localModels)
         return;
+    const QUrl parsed(url.trimmed());
+    if (!LocalModels::isHttpUrl(parsed))
+        return;
     QSettings s = settings();
     s.setValue(QStringLiteral("local/kind"), kind);
-    s.setValue(QStringLiteral("local/url"), url);
+    s.setValue(QStringLiteral("local/url"), parsed.toString());
     s.setValue(QStringLiteral("local/text"), textModel);
     s.setValue(QStringLiteral("local/embedding"), embeddingModel);
     s.setValue(QStringLiteral("local/speech"), speechModel);
     LocalModels::Server server;
     server.kind = LocalModels::kindFromId(kind);
-    server.url = QUrl(url);
+    server.url = parsed;
     m_localModels->configure(server, textModel, embeddingModel, speechModel);
     m_localModels->setSpeechVoices({}, LocalModels::takesInstructions(speechModel));
     emit routingChanged();
