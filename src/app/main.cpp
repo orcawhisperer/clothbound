@@ -35,6 +35,7 @@
 #include "app/surfacewatcher.h"
 #include "app/theme.h"
 #include "app/translator.h"
+#include "mcp/mcpserver.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -154,6 +155,8 @@ int main(int argc, char *argv[]) {
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
 
     const bool command = argc > 1 && isCliCommand(QString::fromLocal8Bit(argv[1]));
+    if (argc > 1 && QString::fromLocal8Bit(argv[1]) == QLatin1String("mcp"))
+        McpServer::installStderrMessageHandler();
     bool infoFlag = false;
     bool scriptedFlag = false;
     QStringList rawArgs;
@@ -181,6 +184,7 @@ int main(int argc, char *argv[]) {
         core.setApplicationVersion(CLOTHBOUND_VERSION);
         if (command) {
             Migration::runIfNeeded();
+            registerMcpRunner(&McpServer::runStdio);
             return runCli(core.arguments());
         }
 
@@ -430,6 +434,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty(
         "settingsUrl", QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
                                            QStringLiteral("/settings.ini")));
+    engine.rootContext()->setContextProperty("executablePath", QCoreApplication::applicationFilePath());
     engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
     engine.load(QUrl("qrc:/ui/Main.qml"));
     if (engine.rootObjects().isEmpty())

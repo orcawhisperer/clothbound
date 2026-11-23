@@ -29,6 +29,7 @@ function reading() {
         { keys: "B", action: qsTr("Bookmark this page") },
         { keys: "M", action: qsTr("Highlights, notes, and bookmarks") },
         { keys: "C", action: qsTr("Companion: ask, previously, who's who") },
+        { keys: "X", action: qsTr("Snip equation, chart, or table (PDFs)") },
         { keys: "A", action: qsTr("Typography and theme") },
         { keys: "+  −  0", action: qsTr("Larger, smaller, default text or zoom") },
         { keys: "D", action: qsTr("Next reading theme") },

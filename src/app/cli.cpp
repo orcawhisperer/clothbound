@@ -8,6 +8,7 @@
 #include "ai/gemini.h"
 #include "ai/keystore.h"
 #include "library/library.h"
+#include "library/libraryindex.h"
 #include "ai/localmodels.h"
 #include "audio/localspeech.h"
 #include "library/marks.h"
@@ -21,17 +22,25 @@
 #include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPair>
 #include <QSaveFile>
 #include <QSettings>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QStandardPaths>
 #include <QTextStream>
 #include <QUrl>
+#include <QUuid>
+#include <algorithm>
 #include <cstdio>
 
 namespace {
+McpRunner g_mcpRunner = nullptr;
+
 void print(FILE *stream, const QString &text) { fprintf(stream, "%s\n", qPrintable(text)); }
 void print(const QJsonValue &value) {
     const QJsonDocument document = value.isArray() ? QJsonDocument(value.toArray()) : QJsonDocument(value.toObject());
@@ -685,6 +694,352 @@ int skill(const QStringList &arguments) {
     return 0;
 }
 
+void ensureIndexedForCliSearch(const Library &library, const QString &indexPath, int bookId) {
+    QHash<int, QPair<qint64, QString>> indexed;
+    const QString connName = QStringLiteral("cli-idx-check-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
+        db.setDatabaseName(indexPath);
+        if (db.open()) {
+            QSqlQuery q(db);
+            if (q.exec(QStringLiteral("SELECT book, mtime, path FROM indexed"))) {
+                while (q.next())
+                    indexed.insert(q.value(0).toInt(), {q.value(1).toLongLong(), q.value(2).toString()});
+            }
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connName);
+
+    auto needsIndex = [&indexed](const BookRecord &r) {
+        if (!r.visible() || r.path.isEmpty() || !QFileInfo::exists(r.path))
+            return false;
+        const auto it = indexed.constFind(r.id);
+        return it == indexed.cend() || it->first != r.mtime || it->second != r.path;
+    };
+
+    if (bookId > 0) {
+        const BookRecord rec = library.record(bookId);
+        if (needsIndex(rec))
+            LibraryIndex::indexBook(indexPath, {rec.id, rec.path, rec.format, rec.mtime});
+        return;
+    }
+
+    QElapsedTimer budget;
+    budget.start();
+    int done = 0;
+    for (const BookRecord &rec : library.visibleRecords()) {
+        if (!needsIndex(rec))
+            continue;
+        LibraryIndex::indexBook(indexPath, {rec.id, rec.path, rec.format, rec.mtime});
+        ++done;
+        if (done >= 25 || budget.elapsed() >= 3000)
+            break;
+    }
+}
+
+int search(const QStringList &arguments) {
+    Command command("search", "Search across all books (or one book) using the local full-text index.", "<query>");
+    command.parser.addOption({"book", "Scope search to a single book id", "id"});
+    command.parser.addOption({"limit", "Maximum number of matches (default 15, max 100)", "n", "15"});
+    command.json();
+    command.parser.process(arguments);
+
+    const QString query = command.parser.positionalArguments().mid(1).join(QLatin1Char(' ')).trimmed();
+    if (query.isEmpty())
+        return fail("Give a search query: clothbound search <query> [--book <id>] [--limit <n>] [--json]");
+
+    int bookId = 0;
+    if (command.parser.isSet("book")) {
+        bool ok = false;
+        bookId = command.parser.value("book").toInt(&ok);
+        if (!ok || bookId <= 0)
+            return fail("Invalid --book id: expected a positive integer.");
+    }
+
+    bool okLimit = false;
+    int limit = command.parser.value("limit").toInt(&okLimit);
+    if (!okLimit || limit <= 0)
+        return fail("Invalid --limit value: expected a positive integer.");
+    limit = qBound(1, limit, 100);
+
+    Library library;
+    if (!openLibrary(library))
+        return 1;
+    if (bookId > 0 && !library.record(bookId).visible())
+        return fail(QStringLiteral("Book %1 not found in the library.").arg(bookId));
+
+    const QString indexPath =
+        QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/index.sqlite");
+    LibraryIndex index(indexPath);
+    if (!index.available())
+        return fail("Full-text search index (SQLite FTS5) is not available.");
+    ensureIndexedForCliSearch(library, indexPath, bookId);
+
+    const QVariantList hits = index.search(query, limit, bookId);
+    QJsonArray results;
+    for (const QVariant &v : hits) {
+        const QVariantMap hit = v.toMap();
+        const int hitBookId = hit.value(QStringLiteral("bookId")).toInt();
+        const BookRecord rec = library.record(hitBookId);
+        if (!rec.visible())
+            continue;
+        const int chapter = hit.value(QStringLiteral("chapter")).toInt();
+        const bool isPdf = rec.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0;
+        QString snippet = hit.value(QStringLiteral("snippet")).toString();
+        snippet.remove(QChar(0x2039));
+        snippet.remove(QChar(0x203A));
+        snippet = snippet.simplified();
+
+        QJsonObject item{
+            {QStringLiteral("book_id"), rec.id},
+            {QStringLiteral("title"), rec.title},
+            {QStringLiteral("author"), rec.author},
+            {QStringLiteral("format"), rec.format},
+            {QStringLiteral("chapter"), chapter},
+            {QStringLiteral("offset"), hit.value(QStringLiteral("offset")).toDouble()},
+            {QStringLiteral("snippet"), snippet},
+        };
+        if (isPdf)
+            item.insert(QStringLiteral("page"), chapter + 1);
+        results.append(item);
+    }
+
+    if (command.asJson()) {
+        print(QJsonObject{{QStringLiteral("query"), query},
+                          {QStringLiteral("count"), int(results.size())},
+                          {QStringLiteral("results"), results}});
+        return 0;
+    }
+
+    if (results.isEmpty()) {
+        print(stderr, QStringLiteral("No matches for “%1”.").arg(query));
+        return 0;
+    }
+    for (const QJsonValue &val : std::as_const(results)) {
+        const QJsonObject item = val.toObject();
+        const QString where = item.contains(QStringLiteral("page"))
+                                  ? QStringLiteral("p. %1").arg(item.value(QStringLiteral("page")).toInt())
+                                  : QStringLiteral("chapter %1").arg(item.value(QStringLiteral("chapter")).toInt());
+        const QString author = item.value(QStringLiteral("author")).toString();
+        print(stdout, QStringLiteral("[#%1] %2%3 (%4)")
+                          .arg(item.value(QStringLiteral("book_id")).toInt())
+                          .arg(item.value(QStringLiteral("title")).toString(),
+                               author.isEmpty() ? QString() : QStringLiteral(" — ") + author, where));
+        print(stdout, QStringLiteral("  ") + item.value(QStringLiteral("snippet")).toString());
+    }
+    return 0;
+}
+
+int passage(const QStringList &arguments) {
+    Command command("passage", "Read verbatim text from a book chapter or page with a citation header.", "<book_id>");
+    command.parser.addOption({"chapter", "0-based chapter index (EPUB spine index or 0-based PDF page)", "n"});
+    command.parser.addOption({"page", "1-based page number (PDF page, or EPUB print page / 1-based chapter)", "n"});
+    command.parser.addOption({"page-end", "Optional inclusive 1-based end page (PDFs)", "n"});
+    command.parser.addOption({"max-chars", "Maximum characters to return (default 8000, max 24000)", "n", "8000"});
+    command.json();
+    command.parser.process(arguments);
+
+    const QString idArg = command.argument(1);
+    bool okId = false;
+    const int bookId = idArg.toInt(&okId);
+    if (idArg.isEmpty() || !okId || bookId <= 0)
+        return fail("Give a numeric book id (see: clothbound list --json).");
+
+    const bool hasChapter = command.parser.isSet("chapter");
+    const bool hasPage = command.parser.isSet("page");
+    const bool hasPageEnd = command.parser.isSet("page-end");
+    if (hasChapter && hasPage)
+        return fail("Pass either --chapter or --page, not both.");
+
+    int chapterArg = 0;
+    if (hasChapter) {
+        bool ok = false;
+        chapterArg = command.parser.value("chapter").toInt(&ok);
+        if (!ok || chapterArg < 0)
+            return fail("Invalid --chapter: expected a non-negative integer.");
+    }
+    int pageArg = 0;
+    if (hasPage) {
+        bool ok = false;
+        pageArg = command.parser.value("page").toInt(&ok);
+        if (!ok || pageArg < 1)
+            return fail("Invalid --page: expected a positive 1-based page number.");
+    }
+    int pageEndArg = 0;
+    if (hasPageEnd) {
+        bool ok = false;
+        pageEndArg = command.parser.value("page-end").toInt(&ok);
+        if (!ok || pageEndArg < 1)
+            return fail("Invalid --page-end: expected a positive 1-based page number.");
+    }
+
+    bool okMax = false;
+    int maxChars = command.parser.value("max-chars").toInt(&okMax);
+    if (!okMax || maxChars <= 0)
+        return fail("Invalid --max-chars: expected a positive integer.");
+    maxChars = qBound(100, maxChars, 24000);
+
+    Library library;
+    if (!openLibrary(library))
+        return 1;
+    const BookRecord rec = library.record(bookId);
+    if (!rec.visible())
+        return fail(QStringLiteral("Book %1 not found in the library.").arg(bookId));
+    if (!QFileInfo::exists(rec.path))
+        return fail(QStringLiteral("Book file is missing on disk: %1").arg(rec.path));
+
+    const bool isPdf = rec.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0;
+    QString rawText;
+    QString citationLocation;
+    QString sectionTitle;
+    int resolvedChapter = 0;
+    int resolvedPage = 0;
+    int resolvedPageEnd = 0;
+
+    if (isPdf) {
+        PdfBook pdf(rec.path);
+        if (!pdf.open())
+            return fail(pdf.errorString());
+        const int totalPages = pdf.pageCount();
+        if (totalPages <= 0)
+            return fail("This PDF has no pages.");
+        const int startPage = hasPage ? pageArg : (hasChapter ? chapterArg + 1 : 1);
+        if (startPage < 1 || startPage > totalPages)
+            return fail(QStringLiteral("Page %1 is out of range (valid pages: 1–%2).").arg(startPage).arg(totalPages));
+        int endPage = hasPageEnd ? pageEndArg : startPage;
+        if (endPage < startPage)
+            return fail(QStringLiteral("--page-end (%1) must be >= starting page (%2).").arg(endPage).arg(startPage));
+        endPage = qMin(endPage, qMin(totalPages, startPage + 49));
+
+        resolvedChapter = startPage - 1;
+        resolvedPage = startPage;
+        resolvedPageEnd = endPage;
+        for (const PdfOutlineEntry &entry : pdf.outline()) {
+            if (entry.page <= startPage - 1 && !entry.title.isEmpty())
+                sectionTitle = entry.title;
+            else if (entry.page > startPage - 1)
+                break;
+        }
+        QStringList pieces;
+        qsizetype accumulated = 0;
+        for (int p = startPage; p <= endPage; ++p) {
+            const QString pageText = pdf.pageText(p - 1);
+            if (endPage > startPage) {
+                pieces.append(QStringLiteral("--- Page %1 ---\n").arg(p) + pageText);
+                accumulated += pageText.size() + 20;
+            } else {
+                pieces.append(pageText);
+                accumulated += pageText.size();
+            }
+            if (accumulated >= maxChars + 256) {
+                resolvedPageEnd = p;
+                break;
+            }
+        }
+        rawText = pieces.join(QStringLiteral("\n\n"));
+        citationLocation = resolvedPageEnd > startPage
+                               ? QStringLiteral("pages %1–%2 of %3").arg(startPage).arg(resolvedPageEnd).arg(totalPages)
+                               : QStringLiteral("page %1 of %2").arg(startPage).arg(totalPages);
+        if (!sectionTitle.isEmpty())
+            citationLocation += QStringLiteral(" · ") + sectionTitle;
+    } else {
+        EpubBook epub(rec.path);
+        if (!epub.open())
+            return fail(epub.errorString());
+        if (epub.isDrmProtected())
+            return fail("This book is protected by DRM.");
+        const int spineCount = int(epub.spine().size());
+        if (spineCount <= 0)
+            return fail("This EPUB has no readable chapters.");
+
+        int spineIdx = 0;
+        if (hasChapter) {
+            spineIdx = chapterArg;
+        } else if (hasPage) {
+            int matchedSpine = -1;
+            const QString targetLabel = QString::number(pageArg);
+            for (const EpubPageTarget &pt : epub.pageList()) {
+                if (pt.label.trimmed() == targetLabel && pt.spine >= 0) {
+                    matchedSpine = pt.spine;
+                    break;
+                }
+            }
+            if (matchedSpine >= 0) {
+                spineIdx = matchedSpine;
+                resolvedPage = pageArg;
+            } else if (pageArg >= 1 && pageArg <= spineCount) {
+                spineIdx = pageArg - 1;
+            } else {
+                return fail(QStringLiteral("Page %1 could not be mapped in this EPUB (chapters: 0–%2).")
+                                .arg(pageArg)
+                                .arg(spineCount - 1));
+            }
+        }
+        if (spineIdx < 0 || spineIdx >= spineCount)
+            return fail(QStringLiteral("Chapter %1 is out of range (valid chapters: 0–%2).")
+                            .arg(spineIdx)
+                            .arg(spineCount - 1));
+        resolvedChapter = spineIdx;
+        for (const EpubTocEntry &entry : epub.toc()) {
+            if (entry.spine == spineIdx && !entry.title.isEmpty()) {
+                sectionTitle = entry.title;
+                break;
+            }
+            if (entry.spine >= 0 && entry.spine < spineIdx && !entry.title.isEmpty())
+                sectionTitle = entry.title;
+        }
+        rawText = epub.chapterText(spineIdx);
+        citationLocation = QStringLiteral("chapter %1/%2").arg(spineIdx).arg(spineCount - 1);
+        if (resolvedPage > 0)
+            citationLocation += QStringLiteral(" (print p. %1)").arg(resolvedPage);
+        if (!sectionTitle.isEmpty())
+            citationLocation += QStringLiteral(" · ") + sectionTitle;
+    }
+
+    const qsizetype totalChars = rawText.size();
+    const QString slice = rawText.left(maxChars);
+    const bool truncated = slice.size() < totalChars;
+    const QString authorPart = rec.author.isEmpty() ? QString() : QStringLiteral(" — ") + rec.author;
+    const QString citation = QStringLiteral("[Citation: %1%2 | book_id=%3 | %4]")
+                                 .arg(rec.title, authorPart)
+                                 .arg(rec.id)
+                                 .arg(citationLocation);
+
+    if (command.asJson()) {
+        print(QJsonObject{
+            {QStringLiteral("book_id"), rec.id},
+            {QStringLiteral("title"), rec.title},
+            {QStringLiteral("author"), rec.author},
+            {QStringLiteral("format"), rec.format},
+            {QStringLiteral("chapter"), resolvedChapter},
+            {QStringLiteral("chapter_title"), sectionTitle},
+            {QStringLiteral("page"), resolvedPage > 0 ? QJsonValue(resolvedPage) : QJsonValue(QJsonValue::Null)},
+            {QStringLiteral("page_end"), resolvedPageEnd > 0 ? QJsonValue(resolvedPageEnd) : QJsonValue(QJsonValue::Null)},
+            {QStringLiteral("total_chars"), double(totalChars)},
+            {QStringLiteral("truncated"), truncated},
+            {QStringLiteral("citation"), citation},
+            {QStringLiteral("text"), slice},
+        });
+        return 0;
+    }
+
+    print(stdout, citation);
+    print(stdout, QString());
+    print(stdout, slice);
+    if (truncated)
+        print(stderr, QStringLiteral("[Truncated at %1 of %2 characters.]").arg(slice.size()).arg(totalChars));
+    return 0;
+}
+
+int mcp(const QStringList &arguments) {
+    Command command("mcp", "Run the local stdio Model Context Protocol (MCP) server for coding and research agents.");
+    command.parser.process(arguments);
+    if (!g_mcpRunner)
+        return fail("MCP server is not available in this build.");
+    return g_mcpRunner(arguments);
+}
+
 int help(const QStringList &arguments) {
     const QString topic = arguments.value(2);
     if (topic == "open") {
@@ -698,6 +1053,8 @@ int help(const QStringList &arguments) {
 }
 }  // namespace
 
+void registerMcpRunner(McpRunner runner) { g_mcpRunner = runner; }
+
 QString cliSummary() {
     return "Reader:\n"
            "  open [book...]                         Open the library, or books where you left off\n\n"
@@ -705,24 +1062,31 @@ QString cliSummary() {
            "  add <folder-or-book>...                Add books to the library; files are never changed\n"
            "  list                                   The books in the library, with reading progress\n"
            "  info <book>                            Metadata and table of contents of an EPUB or PDF\n"
+           "  search <query>                         Full-text search across the library (or one book)\n"
+           "  passage <book_id>                      Read verbatim text from a chapter or page with citation\n"
            "  notes <book>                           A book's highlights, notes and bookmarks, as Markdown\n"
+           "  mcp                                    Local stdio MCP server for coding & research agents\n"
            "  voices [list|install|remove|bench]     Built-in voices, made on this computer, and their speed\n"
            "  ai [status|key|forget|local]           Intelligence: the Gemini key and costs, and models on this computer\n"
            "  skill [install]                        Print the skill for coding agents, or install it";
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"add", "list", "info", "notes", "voices", "ai", "skill", "help"}.contains(word);
+    return QStringList{"add", "list", "info", "search", "passage", "notes", "mcp", "voices", "ai", "skill", "help"}
+        .contains(word);
 }
 
 int runCli(const QStringList &arguments) {
     const QString command = arguments.value(1);
-    return command == "add"     ? add(arguments)
-           : command == "list"  ? list(arguments)
-           : command == "info"  ? info(arguments)
-           : command == "notes" ? notes(arguments)
-           : command == "voices" ? voices(arguments)
-           : command == "ai"    ? ai(arguments)
-           : command == "skill" ? skill(arguments)
-                                : help(arguments);
+    return command == "add"       ? add(arguments)
+           : command == "list"    ? list(arguments)
+           : command == "info"    ? info(arguments)
+           : command == "search"  ? search(arguments)
+           : command == "passage" ? passage(arguments)
+           : command == "notes"   ? notes(arguments)
+           : command == "mcp"     ? mcp(arguments)
+           : command == "voices"  ? voices(arguments)
+           : command == "ai"      ? ai(arguments)
+           : command == "skill"   ? skill(arguments)
+                                  : help(arguments);
 }

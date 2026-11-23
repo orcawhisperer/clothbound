@@ -1,3 +1,4 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
@@ -15,6 +16,13 @@ ColumnLayout {
 
     spacing: 20
 
+    Settings {
+        id: mcpSettings
+        location: settingsUrl
+        category: "ai"
+        property bool mcpEnabled: true
+    }
+
     property bool replacing: false
     property bool showKeyText: false
     property bool confirmingRemoveKey: false
@@ -23,6 +31,18 @@ ColumnLayout {
     readonly property bool askingForKey: !ai.hasKey || replacing
     readonly property bool twoColumns: width >= 760
     readonly property bool budgetOpen: budgetSheet.open
+    readonly property string mcpCommandPath: (typeof executablePath !== "undefined" && String(executablePath || "") !== "")
+                                             ? String(executablePath) : "clothbound"
+    function mcpConfigJson() {
+        return JSON.stringify({
+            mcpServers: {
+                clothbound: {
+                    command: mcpCommandPath,
+                    args: ["mcp"]
+                }
+            }
+        }, null, 2)
+    }
 
     Timer {
         running: page.confirmingRemoveKey
@@ -852,6 +872,124 @@ ColumnLayout {
         font.pixelSize: 12
         wrapMode: Text.Wrap
         lineHeight: 1.35
+    }
+
+    // --- Local agents (MCP) ------------------------------------------------
+    Rectangle {
+        id: mcpCard
+        Layout.fillWidth: true
+        implicitHeight: mcpCol.implicitHeight + 32
+        radius: Ui.radius(10, theme.radius)
+        color: Ui.tint(theme.ink1, 0.03)
+        border.width: 1
+        border.color: Ui.tint(theme.ink1, 0.07)
+
+        ColumnLayout {
+            id: mcpCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 16
+            spacing: 12
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Glyph {
+                    Layout.preferredWidth: 15
+                    Layout.preferredHeight: 15
+                    path: Icons.computer
+                    color: mcpSettings.mcpEnabled ? theme.accentInk : theme.ink4
+                }
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Local agents (MCP)")
+                    color: theme.ink1
+                    font.pixelSize: 13
+                    font.weight: Font.DemiBold
+                    elide: Text.ElideRight
+                }
+                Row {
+                    spacing: 6
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 7
+                        height: 7
+                        radius: 3.5
+                        color: mcpSettings.mcpEnabled ? theme.positive : theme.ink4
+                    }
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: mcpSettings.mcpEnabled ? qsTr("Ready") : qsTr("Off")
+                        color: theme.ink3
+                        font.pixelSize: 12
+                    }
+                }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Let Antigravity, Claude Code, Cursor, or Codex search your private library and cite exact pages locally over stdio — nothing leaves your computer.")
+                color: theme.ink3
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                lineHeight: 1.4
+            }
+
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Ui.tint(theme.ink1, 0.06)
+            }
+
+            SettingsRow {
+                title: qsTr("Enable local MCP server")
+                description: qsTr("Allow local MCP clients to query your books, outlines, passages, and marks (read-only).")
+                Switch {
+                    Accessible.name: qsTr("Enable local MCP server")
+                    checked: mcpSettings.mcpEnabled
+                    onToggled: mcpSettings.mcpEnabled = checked
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                opacity: mcpSettings.mcpEnabled ? 1.0 : 0.55
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: 30
+                    radius: Ui.radius(7, theme.radius)
+                    color: Ui.tint(theme.ink1, 0.04)
+                    border.width: 1
+                    border.color: Ui.tint(theme.ink1, 0.06)
+
+                    Label {
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 10
+                        text: "clothbound mcp"
+                        color: theme.ink2
+                        font.family: "monospace"
+                        font.pixelSize: 12
+                        elide: Text.ElideMiddle
+                    }
+                }
+
+                TextButton {
+                    size: "compact"
+                    glyph: Icons.copy
+                    text: qsTr("Copy MCP config")
+                    onClicked: {
+                        reader.copyText(page.mcpConfigJson())
+                        toast.show(qsTr("Copied MCP config"))
+                    }
+                }
+            }
+        }
     }
 
     // --- Budget & Usage Sheet (preserves $0 strict budget, No limit & ledger) ---
