@@ -111,6 +111,8 @@ public:
     QString localTextModel() const;
     QString localEmbeddingModel() const;
     QString localSpeechModel() const;
+    Q_INVOKABLE QString localModelsSummary() const;
+    static QString friendlyModelTitle(const QString &model);
     int localContextWindow() const;
     int overrideCount() const { return int(m_overrides.size()); }
     Q_INVOKABLE void clearOverrides();

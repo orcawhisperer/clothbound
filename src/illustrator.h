@@ -24,6 +24,8 @@ class Illustrator : public QObject {
     Q_PROPERTY(bool available READ available NOTIFY changed)
     // About what a picture costs, in US dollars.
     Q_PROPERTY(double cost READ cost NOTIFY changed)
+    // Provenance line for pictures.
+    Q_PROPERTY(QString where READ where CONSTANT)
     // Preferred art style ("auto", "engraving", "watercolor", "ink", "editorial"), persisted.
     Q_PROPERTY(QString style READ style WRITE setStyle NOTIFY styleChanged)
     Q_PROPERTY(QVariantList styles READ styles CONSTANT)
@@ -39,6 +41,7 @@ public:
     QVariantList pictures() const;
     bool available() const;
     double cost() const;
+    QString where() const;
     QString style() const { return m_style; }
     void setStyle(const QString &style);
     QVariantList styles() const;

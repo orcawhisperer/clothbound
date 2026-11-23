@@ -364,6 +364,36 @@ QString AiServices::localEmbeddingModel() const { return m_localModels ? m_local
 QString AiServices::localSpeechModel() const { return m_localModels ? m_localModels->speechModelName(false) : QString(); }
 int AiServices::localContextWindow() const { return m_localModels ? m_localModels->reportedContextWindow() : 0; }
 
+QString AiServices::friendlyModelTitle(const QString &model) {
+    const QString trimmed = model.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    static const QHash<QString, QString> known{
+        {QStringLiteral("qwen3.5:2b"), QStringLiteral("Qwen3.5 2B")},
+        {QStringLiteral("qwen3.5:4b"), QStringLiteral("Qwen3.5 4B")},
+        {QStringLiteral("qwen3.5:9b"), QStringLiteral("Qwen3.5 9B")},
+        {QStringLiteral("qwen3-embedding:0.6b"), QStringLiteral("Qwen3-Embedding 0.6B")},
+        {QStringLiteral("embeddinggemma"), QStringLiteral("EmbeddingGemma")},
+        {QStringLiteral("embeddinggemma:latest"), QStringLiteral("EmbeddingGemma")},
+    };
+    const QString lower = trimmed.toLower();
+    if (known.contains(lower))
+        return known.value(lower);
+    if (lower.endsWith(QLatin1String(":latest")))
+        return trimmed.left(trimmed.size() - 7);
+    return trimmed;
+}
+
+QString AiServices::localModelsSummary() const {
+    QStringList parts;
+    for (const QString &raw : {localTextModel(), localEmbeddingModel(), localSpeechModel()}) {
+        const QString title = friendlyModelTitle(raw);
+        if (!title.isEmpty() && !parts.contains(title))
+            parts.append(title);
+    }
+    return parts.join(QStringLiteral(" · "));
+}
+
 void AiServices::clearOverrides() {
     if (m_overrides.isEmpty())
         return;
@@ -375,10 +405,22 @@ void AiServices::clearOverrides() {
 }
 
 QString AiServices::routeFor(const QString &feature) const {
-    const bool cloud = m_provider->hasKey() && m_provider->text();
-    const bool local = hasLocal();
     const QString overrideRoute = overrideFor(feature);
     const QString mode = preset();
+    if (feature == QLatin1String("illustrate")) {
+        // Pictures are Gemini-only: never route to cloud in strict local mode or local override.
+        if (overrideRoute == QLatin1String("local") || (mode == QLatin1String("local") && overrideRoute.isEmpty()))
+            return {};
+        return (m_provider->hasKey() && m_provider->images()) ? QStringLiteral("cloud") : QString();
+    }
+    if (feature == QLatin1String("search")) {
+        Ai::Provider *provider = embedderProvider();
+        if (!provider)
+            return {};
+        return provider == m_localModels ? QStringLiteral("local") : QStringLiteral("cloud");
+    }
+    const bool cloud = m_provider->hasKey() && m_provider->text();
+    const bool local = hasLocal();
     QString wanted = overrideRoute;
     if (wanted.isEmpty()) {
         if (mode == QLatin1String("local"))
@@ -429,6 +471,12 @@ Ai::Embedder *AiServices::embedder() const {
 }
 
 QString AiServices::whereFor(const QString &feature) const {
+    if (feature == QLatin1String("illustrate")) {
+        if (routeFor(feature).isEmpty())
+            return m_provider->hasKey() ? tr("Unavailable in This computer mode (pictures need Gemini).")
+                                        : tr("Not available: add a Gemini key.");
+        return tr("Sent to %1").arg(m_provider->name());
+    }
     Ai::Provider *provider = feature == QLatin1String("search") ? embedderProvider() : textProviderFor(feature);
     if (!provider)
         return tr("Not available: add a Gemini key or a local model.");

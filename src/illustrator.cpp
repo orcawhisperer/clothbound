@@ -99,11 +99,14 @@ Illustrator::Illustrator(AiServices *ai, Reader *reader, const QString &database
         emit picturesChanged();
     });
     connect(ai, &AiServices::changed, this, &Illustrator::changed);
+    connect(ai, &AiServices::routingChanged, this, &Illustrator::changed);
 }
 
 bool Illustrator::available() const { return m_ai->images() && m_ai->textFor(QStringLiteral("illustrate")); }
 
 double Illustrator::cost() const { return m_ai->images() ? m_ai->images()->imageCost() + 0.002 : 0; }
+
+QString Illustrator::where() const { return tr("Gemini · sent to Google"); }
 
 void Illustrator::setStyle(const QString &style) {
     const QString normalized = normalizeStyle(style);
@@ -140,6 +143,7 @@ QVariantList Illustrator::pictures() const {
                                {"offset", query.value(4)},
                                {"style", styleId},
                                {"styleLabel", labelForStyle(styleId)},
+                               {"where", where()},
                                {"exists", !file.isEmpty() && QFileInfo::exists(file)}});
     }
     return out;
@@ -221,7 +225,8 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
     stop();
     m_problem.clear();
     if (!m_ai->images() || !m_ai->textFor(QStringLiteral("illustrate"))) {
-        fail(tr("Pictures are made with Gemini: add your key in Intelligence (✦)."));
+        fail(m_ai->hasKey() ? tr("Pictures need Gemini: switch to Hybrid or Cloud in Intelligence settings.")
+                            : tr("Pictures are made with Gemini: add your key in Intelligence settings."));
         return;
     }
     if (!m_ai->fitsBudget(cost())) {
@@ -254,7 +259,9 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
                 Ai::Provider *writerProvider = self->m_ai->textProviderFor(QStringLiteral("illustrate"));
                 Ai::TextModel *writer = writerProvider ? writerProvider->text() : nullptr;
                 if (!self->m_ai->images() || !writer) {
-                    self->fail(tr("Pictures are made with Gemini: add your key in Intelligence (✦)."));
+                    self->fail(self->m_ai->hasKey()
+                                   ? tr("Pictures need Gemini: switch to Hybrid or Cloud in Intelligence settings.")
+                                   : tr("Pictures are made with Gemini: add your key in Intelligence settings."));
                     return;
                 }
                 Ai::TextRequest request;
@@ -311,7 +318,7 @@ void Illustrator::draw(const QString &prompt, const QString &caption, int chapte
                        const QString &styleId, const QString &passage) {
     Ai::ImageGenerator *images = m_ai->images();
     if (!images) {
-        fail(tr("Pictures are made with Gemini: add your key in Intelligence (✦)."));
+        fail(tr("Pictures are made with Gemini: add your key in Intelligence settings."));
         return;
     }
     m_status = tr("Drawing…");
