@@ -22,8 +22,9 @@ class GeminiReply : public Ai::Reply {
 public:
     enum Kind { Interaction, Voices, VoiceDesign, Forget, Models, Embed, Image };
 
-    GeminiReply(QNetworkReply *reply, Kind kind, const QString &model, const QString &feature, QObject *parent)
-        : Ai::Reply(parent), m_reply(reply), m_kind(kind) {
+    GeminiReply(QNetworkReply *reply, Kind kind, const QString &model, const QString &feature, QObject *parent,
+                qint64 estimatedInputTokens = 0)
+        : Ai::Reply(parent), m_reply(reply), m_kind(kind), m_estimatedInputTokens(estimatedInputTokens) {
         m_model = model;
         m_feature = feature;
         reply->setParent(this);
@@ -55,8 +56,10 @@ private:
     }
 
     void handle(const SseParser::Event &event) {
-        if (event.data == "[DONE]")
+        if (event.data == "[DONE]") {
+            m_streamDone = true;
             return;
+        }
         const QJsonObject data = QJsonDocument::fromJson(event.data).object();
         if (event.name == "step.delta") {
             const QJsonObject delta = data.value("delta").toObject();
@@ -72,6 +75,7 @@ private:
                 addAudio(bytes);
             }
         } else if (event.name == "interaction.completed") {
+            m_streamDone = true;
             m_usage = GeminiProvider::parseUsage(data.value("interaction").toObject().value("usage").toObject());
         } else if (event.name == "error") {
             m_streamError.kind = Ai::Error::Server;
@@ -108,8 +112,8 @@ private:
         }
         const int code = status();
         const QByteArray body = streaming() && code < 400 ? QByteArray() : m_reply->readAll();
-        if (code >= 400 || (code == 0 && m_reply->error() != QNetworkReply::NoError)) {
-            finish(GeminiProvider::parseError(code, body, int(m_reply->error())));
+        if (code >= 400 || m_reply->error() != QNetworkReply::NoError) {
+            finish(GeminiProvider::parseError(code >= 400 ? code : 0, body, int(m_reply->error())));
             return;
         }
         if (streaming()) {
@@ -117,10 +121,18 @@ private:
                 handle(event);
             for (const auto &event : m_sse.finish())
                 handle(event);
+            if (!m_streamError && !m_streamDone)
+                m_streamError = {Ai::Error::Offline, QStringLiteral("The connection ended before the answer finished."), 0};
             finish(m_streamError);
             return;
         }
-        const QJsonObject json = QJsonDocument::fromJson(body).object();
+        QJsonParseError parseError;
+        const QJsonDocument doc = QJsonDocument::fromJson(body, &parseError);
+        if (m_kind != Forget && (parseError.error != QJsonParseError::NoError || !doc.isObject())) {
+            finish({Ai::Error::Server, QStringLiteral("Gemini returned an incomplete response."), 0});
+            return;
+        }
+        const QJsonObject json = doc.object();
         switch (m_kind) {
         case Interaction:
             readInteraction(json);
@@ -158,21 +170,25 @@ private:
                     vector.append(float(value.toDouble()));
                 m_vectors.append(vector);
             }
-            m_usage.inputTokens = json.value("usageMetadata").toObject().value("promptTokenCount").toInteger();
+            const qint64 reported = json.value("usageMetadata").toObject().value("promptTokenCount").toInteger();
+            m_usage.inputTokens = reported > 0 ? reported : m_estimatedInputTokens;
             break;
         }
         case Image: {
             for (const auto &candidate : json.value("candidates").toArray())
                 for (const auto &part : candidate.toObject().value("content").toObject().value("parts").toArray()) {
                     const QJsonObject inlineData = part.toObject().value("inlineData").toObject();
-                    if (!inlineData.isEmpty() && m_image.isEmpty())
+                    if (!inlineData.isEmpty() && m_image.isEmpty()) {
                         m_image = QByteArray::fromBase64(inlineData.value("data").toString().toLatin1());
+                        m_imageMimeType = inlineData.value("mimeType").toString();
+                    }
                     if (part.toObject().contains("text"))
                         m_text += part.toObject().value("text").toString();
                 }
             const QJsonObject usage = json.value("usageMetadata").toObject();
             m_usage.inputTokens = usage.value("promptTokenCount").toInteger();
             m_usage.outputTokens = usage.value("candidatesTokenCount").toInteger();
+            m_usage.thoughtTokens = usage.value("thoughtsTokenCount").toInteger();
             if (m_image.isEmpty()) {
                 finish({Ai::Error::Refused, m_text.isEmpty() ? QStringLiteral("No picture came back.") : m_text});
                 return;
@@ -201,6 +217,8 @@ private:
     SseParser m_sse;
     Ai::Error m_streamError;
     bool m_aborted = false;
+    bool m_streamDone = false;
+    qint64 m_estimatedInputTokens = 0;
     int m_pages = 0;
 };
 }
@@ -217,6 +235,7 @@ QNetworkReply *GeminiProvider::send(const QByteArray &method, const QString &pat
     request.setRawHeader("x-goog-api-key", m_key.toUtf8());
     request.setRawHeader("Api-Revision", "2026-05-20");
     request.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     // Long enough for a designed voice (about 25 s) or a long clip; the
     // timer restarts with every byte, so streams never time out mid-way.
     request.setTransferTimeout(90000);
@@ -262,6 +281,10 @@ void GeminiProvider::chooseModels(const QStringList &available) {
     m_fastModel = pick(m_fastModel, [&](const QString &n) { return plain(n) && n.contains("flash-lite"); });
     m_speechModel = pick(m_speechModel, [](const QString &n) { return n.contains("tts") && !n.contains("lite") && !n.contains("preview"); });
     m_economySpeechModel = pick(m_economySpeechModel, [](const QString &n) { return n.contains("lite-tts"); });
+    m_embeddingModel = pick(m_embeddingModel, [](const QString &n) { return n.contains("embedding") && !n.contains("preview"); });
+    m_imageModel = pick(m_imageModel, [](const QString &n) {
+        return n.startsWith("gemini") && n.contains("image") && !n.contains("preview");
+    });
 }
 
 QJsonObject GeminiProvider::textBody(const Ai::TextRequest &request, const QString &model) {
@@ -422,15 +445,23 @@ QList<Ai::Voice> GeminiProvider::parseVoices(const QJsonArray &voices) {
 QByteArray GeminiProvider::pcmFromWav(const QByteArray &wav, int *sampleRate) {
     if (wav.size() < 12 || !wav.startsWith("RIFF") || wav.mid(8, 4) != "WAVE")
         return wav;
-    qsizetype at = 12;
-    while (at + 8 <= wav.size()) {
-        const QByteArray id = wav.mid(at, 4);
-        const quint32 size = le32(wav.constData() + at + 4);
-        if (id == "fmt " && sampleRate && at + 16 <= wav.size())
-            *sampleRate = int(le32(wav.constData() + at + 12));
+    qint64 at = 12;
+    const qint64 total = wav.size();
+    while (at + 8 <= total) {
+        const QByteArray id = wav.mid(qsizetype(at), 4);
+        const qint64 size = qint64(le32(wav.constData() + at + 4));
+        const qint64 available = total - (at + 8);
+        if (id == "fmt " && sampleRate && at + 16 <= total) {
+            const int rate = int(le32(wav.constData() + at + 12));
+            if (rate > 0)
+                *sampleRate = rate;
+        }
         if (id == "data")
-            return wav.mid(at + 8, qMin<qsizetype>(size, wav.size() - at - 8));
-        at += 8 + size + (size & 1);
+            return wav.mid(qsizetype(at + 8), qsizetype(qMin(size, available)));
+        const qint64 step = 8 + size + (size & 1);
+        if (step <= 0 || at > total - step)
+            break;
+        at += step;
     }
     return {};
 }
@@ -446,9 +477,13 @@ QJsonObject GeminiProvider::embedBody(const QStringList &texts, bool query, cons
 }
 
 Ai::Reply *GeminiProvider::embed(const QStringList &texts, bool query) {
+    qint64 chars = 0;
+    for (const QString &text : texts)
+        chars += text.size();
+    const qint64 estimatedTokens = texts.isEmpty() ? 0 : qMax<qint64>(1, chars / 4);
     return new GeminiReply(send("POST", QStringLiteral("models/%1:batchEmbedContents").arg(m_embeddingModel),
                                 embedBody(texts, query, m_embeddingModel)),
-                           GeminiReply::Embed, m_embeddingModel, QStringLiteral("embed"), this);
+                           GeminiReply::Embed, m_embeddingModel, QStringLiteral("embed"), this, estimatedTokens);
 }
 
 QJsonObject GeminiProvider::imageBody(const Ai::ImageRequest &request) {

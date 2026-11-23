@@ -25,6 +25,7 @@ class SystemCheck : public QObject {
 
 public:
     SystemCheck(AiServices *ai, LocalSpeech *speech, QObject *parent = nullptr);
+    ~SystemCheck() override;
 
     struct Machine {
         double memoryGb = 0;      // installed
@@ -56,7 +57,9 @@ public:
     QString tier() const { return tierFor(m_machine); }
     QString recommendation() const { return m_recommendation; }
 
+    Q_INVOKABLE void refresh();
     Q_INVOKABLE void run();
+    Q_INVOKABLE void cancel();
 
     // The verdicts, from what was found and measured (public for tests):
     // voiceSpeed is seconds of speech per second (0: none installed),
@@ -68,13 +71,17 @@ signals:
     void changed();
 
 private:
-    void measureModel();
-    void finish();
+    void startBenchmark(int generation);
+    void measureModel(int generation);
+    void finish(int generation);
 
     AiServices *m_ai;
     LocalSpeech *m_speech;
     Machine m_machine;
+    bool m_inspected = false;
+    bool m_inspecting = false;
     bool m_running = false;
+    int m_generation = 0;
     double m_voiceSpeed = 0;
     double m_promptRate = 0;
     double m_answerRate = 0;

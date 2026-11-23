@@ -24,6 +24,7 @@ FocusScope {
         if (!ai.localServers.length && !ai.findingLocal)
             ai.findLocal()
         localSetup.refresh()
+        systemCheck.refresh()
         forceActiveFocus()
         if (!ai.hasKey)
             keyInput.forceActiveFocus()
@@ -101,6 +102,7 @@ FocusScope {
             contentHeight: content.implicitHeight
             clip: true
             boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
 
             ColumnLayout {
                 id: content
@@ -109,7 +111,7 @@ FocusScope {
 
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("Listen to any book in an expressive voice, and ask about what you're reading. Dogear uses your own Gemini key, so you choose what it costs.")
+                    text: qsTr("Listen to any book in an expressive voice, and ask about what you're reading. Run models privately on this computer, or use your own Gemini key with your own budget.")
                     color: theme.textSecondary
                     font.pixelSize: 14
                     wrapMode: Text.Wrap
@@ -241,7 +243,10 @@ FocusScope {
                 Heading { text: qsTr("Privacy") }
                 Label {
                     Layout.fillWidth: true
-                    text: ai.privacyNote + " " + qsTr("Dogear sends only what a feature needs, and never text past where you're reading.")
+                    text: (ai.preset === "local" && ai.hasLocal && ai.localIsLoopback
+                           ? qsTr("Running on this computer with %1: nothing is sent anywhere.").arg(ai.localName)
+                           : ai.privacyNote)
+                          + " " + qsTr("Dogear sends only what a feature needs, and never text past where you're reading.")
                     color: theme.textSecondary
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
@@ -253,34 +258,49 @@ FocusScope {
                     Layout.fillWidth: true
                     Label {
                         Layout.fillWidth: true
-                        text: qsTr("About %1 of your %2 budget")
-                              .arg(Number(ai.spentThisMonth).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
-                              .arg(Number(ai.budget).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
+                        text: ai.unlimitedBudget
+                              ? qsTr("About %1 this month · no limit").arg(Number(ai.spentThisMonth).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
+                              : ai.budget <= 0
+                              ? qsTr("About %1 this month · cloud spending paused ($0 budget)").arg(Number(ai.spentThisMonth).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
+                              : qsTr("About %1 of your %2 budget")
+                                    .arg(Number(ai.spentThisMonth).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
+                                    .arg(Number(ai.budget).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
                         color: theme.text
                         font.pixelSize: 14
                         wrapMode: Text.Wrap
                     }
                     IconButton {
                         tip: qsTr("Lower the budget")
+                        enabled: !ai.unlimitedBudget && ai.budget > 0
                         contentItem: Label { text: "−"; color: theme.text; font.pixelSize: 18; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                         onClicked: ai.budget = Math.max(0, ai.budget - (ai.budget > 20 ? 10 : 5))
                     }
                     IconButton {
                         tip: qsTr("Raise the budget")
                         contentItem: Label { text: "+"; color: theme.text; font.pixelSize: 18; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        onClicked: ai.budget = ai.budget + (ai.budget >= 20 ? 10 : 5)
+                        onClicked: {
+                            if (ai.unlimitedBudget)
+                                ai.unlimitedBudget = false
+                            ai.budget = ai.budget + (ai.budget >= 20 ? 10 : 5)
+                        }
+                    }
+                    TextButton {
+                        primary: ai.unlimitedBudget
+                        text: qsTr("No limit")
+                        onClicked: ai.unlimitedBudget = !ai.unlimitedBudget
                     }
                 }
                 Rectangle {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 6
                     radius: 3
+                    visible: !ai.unlimitedBudget
                     color: Ui.tint(theme.text, 0.1)
                     Rectangle {
-                        width: parent.width * Math.min(1, ai.budget > 0 ? ai.spentThisMonth / ai.budget : 0)
+                        width: parent.width * Math.min(1, ai.budget > 0 ? ai.spentThisMonth / ai.budget : (ai.spentThisMonth > 0 ? 1 : 0))
                         height: parent.height
                         radius: 3
-                        color: ai.spentThisMonth > ai.budget * 0.8 ? theme.colors.orange : theme.accent
+                        color: ai.budget <= 0 || ai.spentThisMonth > ai.budget * 0.8 ? theme.colors.orange : theme.accent
                     }
                 }
                 Repeater {
@@ -292,7 +312,9 @@ FocusScope {
                             Layout.fillWidth: true
                             text: {
                                 const names = { listen: qsTr("Listening"), ask: qsTr("Asking"), explain: qsTr("Explaining"),
-                                                director: qsTr("Narration notes"), recap: qsTr("Recaps"), "voice design": qsTr("Designing voices"),
+                                                define: qsTr("Defining"), translate: qsTr("Translating"), whoswho: qsTr("Who's who"),
+                                                director: qsTr("Narration notes"), cast: qsTr("Full cast"), embed: qsTr("Search by meaning"),
+                                                recap: qsTr("Recaps"), "voice design": qsTr("Designing voices"),
                                                 voices: qsTr("Voice lists"), illustrate: qsTr("Illustrations") }
                                 return names[modelData.feature] || modelData.feature
                             }

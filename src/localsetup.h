@@ -1,5 +1,8 @@
 #pragma once
 
+#include "systemcheck.h"
+
+#include <QHash>
 #include <QNetworkAccessManager>
 #include <QObject>
 #include <QPointer>
@@ -31,6 +34,7 @@ class LocalSetup : public QObject {
 
 public:
     LocalSetup(AiServices *ai, QObject *parent = nullptr);
+    ~LocalSetup() override { cancel(); }
 
     bool installed() const { return m_installed; }
     bool running() const { return m_running; }
@@ -48,6 +52,8 @@ public:
     Q_INVOKABLE void install();
     // Downloads the recommended models, then uses them.
     Q_INVOKABLE void download();
+    // Uses recommended models already installed in Ollama (works offline).
+    Q_INVOKABLE void useExisting();
     Q_INVOKABLE void cancel();
 
     // Ollama's tags for a computer with this much memory (GB) and graphics
@@ -58,12 +64,17 @@ signals:
     void changed();
 
 private:
+    void applyMachine(const SystemCheck::Machine &machine);
     void probe();
     void size(const QString &model, bool text);
     void pull(const QStringList &models);
+    QString ollamaPackage() const;
 
     AiServices *m_ai;
     QNetworkAccessManager m_network;
+    SystemCheck::Machine m_machine;
+    bool m_inspected = false;
+    bool m_inspecting = false;
     bool m_installed = false;
     bool m_running = false;
     bool m_waiting = false;
@@ -73,6 +84,7 @@ private:
     QString m_problem;
     QVariantMap m_text;
     QVariantMap m_search;
+    QHash<QString, qint64> m_sizes;
     QTimer m_poll;
     int m_polls = 0;
     QPointer<QNetworkReply> m_reply;

@@ -6,8 +6,11 @@
 #include <QObject>
 #include <QPointer>
 #include <QVariantList>
+#include <atomic>
+#include <memory>
 
 class AiServices;
+class QProcess;
 class Reader;
 
 // The reading companion: a word defined, a passage explained or translated,
@@ -25,8 +28,9 @@ class Companion : public QObject {
     Q_PROPERTY(QString answer READ answer NOTIFY answerChanged)
     // Who's who: {name, also, who, chapter}.
     Q_PROPERTY(QVariantList people READ people NOTIFY changed)
-    // Ask's conversation so far: {fromUser, text}.
-    Q_PROPERTY(QVariantList conversation READ conversation NOTIFY answerChanged)
+    // Ask's completed conversation turns: {fromUser, text}. Live streaming text
+    // arrives via `answer` so existing message delegates aren't torn down per token.
+    Q_PROPERTY(QVariantList conversation READ conversation NOTIFY conversationChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY changed)
     // What's happening ("Reading the book so far…"), while busy.
     Q_PROPERTY(QString status READ status NOTIFY changed)
@@ -42,6 +46,7 @@ public:
     };
 
     Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent = nullptr);
+    ~Companion() override;
 
     QString feature() const { return m_feature; }
     QString subject() const { return m_subject; }
@@ -63,14 +68,20 @@ public:
     Q_INVOKABLE void newConversation();
     Q_INVOKABLE void recap();
     Q_INVOKABLE void whosWho();
+    Q_INVOKABLE void refreshWhosWho();
     Q_INVOKABLE void stop();
     // What asking would send and cost: {where, words, cost, local}.
     Q_INVOKABLE QVariantMap askEstimate() const;
+    // Strips Markdown image embeds and raw <img> tags before rendering LLM prose.
+    Q_INVOKABLE QString sanitizeMarkdown(const QString &text) const { return cleanMarkdown(text); }
 
     // The book's text up to (chapter, offset), from its file (any thread).
-    static QList<Chapter> textUpTo(const QString &path, const QString &format, int chapter, qint64 offset);
+    // When `limit > 0`, reads backward from `chapter` and stops once enough text is gathered.
+    static QList<Chapter> textUpTo(const QString &path, const QString &format, int chapter, qint64 offset,
+                                   qint64 limit = -1, std::shared_ptr<std::atomic_bool> cancel = {});
     // At most `limit` characters, the latest kept, with chapter headings.
     static QString joined(const QList<Chapter> &chapters, qint64 limit);
+    static QString cleanMarkdown(const QString &text);
     // The language answers are written in: the reader's own.
     static QString readerLanguage();
     // A dictionary on this computer (sdcv), if any: its definitions.
@@ -79,14 +90,17 @@ public:
 signals:
     void changed();
     void answerChanged();
+    void conversationChanged();
 
 private:
     void begin(const QString &feature, const QString &subject);
     void setStatus(const QString &status);
     void fail(const QString &problem);
+    void rollbackPendingTurn();
     // Reads the book up to the reader's place on a worker thread, then `then`.
-    void readSoFar(int chapter, qint64 offset, std::function<void(const QList<Chapter> &)> then);
-    void run(Ai::TextModel *model, const Ai::TextRequest &request, std::function<void(Ai::Reply *)> done = nullptr);
+    void readSoFar(int chapter, qint64 offset, qint64 limit, std::function<void(const QList<Chapter> &)> then);
+    void run(const QString &feature, const Ai::TextRequest &request, std::function<void(Ai::Reply *)> done = nullptr);
+    bool checkBudget(const QString &feature, qint64 charsEstimate, bool fast, qint64 outputTokens = 400);
     Ai::TextModel *modelFor(const QString &feature);
     QString bookLine() const;
     bool cloudFor(const QString &feature) const;
@@ -99,12 +113,16 @@ private:
     QString m_answer;
     QVariantList m_people;
     QList<Ai::Message> m_conversation;
+    bool m_pendingUserTurn = false;
     bool m_busy = false;
     QString m_status;
     QString m_problem;
     QString m_where;
     QPointer<Ai::Reply> m_reply;
+    QPointer<QProcess> m_dictProcess;
+    std::shared_ptr<std::atomic_bool> m_readCancel;
     int m_generation = 0;
-    // Who's who, kept for a book and place so it isn't asked again.
+    // Who's who, kept for a book, place and provider so it isn't asked again.
     QString m_peopleKey;
+    QString m_peopleWhere;
 };

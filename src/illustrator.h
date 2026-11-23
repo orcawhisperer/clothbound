@@ -3,6 +3,8 @@
 #include <QObject>
 #include <QPointer>
 #include <QVariantList>
+#include <atomic>
+#include <memory>
 
 class AiServices;
 class Reader;
@@ -26,6 +28,7 @@ class Illustrator : public QObject {
 public:
     Illustrator(AiServices *ai, Reader *reader, const QString &databaseConnection, const QString &folder,
                 QObject *parent = nullptr);
+    ~Illustrator() override { stop(); }
 
     bool busy() const { return m_busy; }
     QString status() const { return m_status; }
@@ -61,5 +64,6 @@ private:
     QString m_status;
     QString m_problem;
     QPointer<Ai::Reply> m_reply;
+    std::shared_ptr<std::atomic_bool> m_readCancel;
     int m_generation = 0;
 };

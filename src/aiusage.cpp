@@ -52,11 +52,13 @@ double AiUsageLedger::listeningCost(const QString &model, double minutes, const 
 
 bool AiUsageLedger::migrate() {
     QSqlQuery query(database());
-    return query.exec(QStringLiteral(
-        "CREATE TABLE IF NOT EXISTS ai_usage (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, provider TEXT NOT NULL,"
-        " model TEXT NOT NULL, feature TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL,"
-        " cached INTEGER NOT NULL, thought INTEGER NOT NULL, audio INTEGER NOT NULL, flex INTEGER NOT NULL,"
-        " cost REAL NOT NULL)"));
+    if (!query.exec(QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS ai_usage (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, provider TEXT NOT NULL,"
+            " model TEXT NOT NULL, feature TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL,"
+            " cached INTEGER NOT NULL, thought INTEGER NOT NULL, audio INTEGER NOT NULL, flex INTEGER NOT NULL,"
+            " cost REAL NOT NULL)")))
+        return false;
+    return query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS ai_usage_at ON ai_usage (at)"));
 }
 
 void AiUsageLedger::record(const QString &provider, const QString &model, const QString &feature,

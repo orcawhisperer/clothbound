@@ -45,16 +45,18 @@ FocusScope {
     function send() {
         if (question.text.trim() === "" || companion.busy)
             return
+        talk.stickToBottom = true
         companion.ask(question.text)
         question.text = ""
     }
 
     readonly property bool selectionFeature: ["define", "explain", "translate"].indexOf(companion.feature) >= 0
     readonly property string featureName: ({ define: qsTr("Define"), explain: qsTr("Explain"), translate: qsTr("Translate") })[companion.feature] || ""
+    readonly property color errorColor: panel.look.dark ? (theme.colors.red || "#ff6b6b") : "#b42318"
 
     Keys.onEscapePressed: close()
 
-    width: 440
+    width: Math.min(440, parent.width - 16)
     x: open ? parent.width - width : parent.width + 24
     Behavior on x { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
     visible: x < parent.width + 20
@@ -125,18 +127,20 @@ FocusScope {
         wrapMode: Text.Wrap
     }
     component Working: RowLayout {
-        visible: companion.busy
+        property bool active: true
+        visible: active && companion.busy
         spacing: 8
         BusyIndicator { running: parent.visible; implicitWidth: 20; implicitHeight: 20 }
         Label { text: companion.status; color: panel.look.muted; font.pixelSize: 13 }
         Item { Layout.fillWidth: true }
-        TextButton { text: qsTr("Stop"); onClicked: companion.stop() }
+        TextButton { look: panel.look; text: qsTr("Stop"); onClicked: companion.stop() }
     }
     component Problem: Label {
+        property bool active: true
         Layout.fillWidth: true
-        visible: companion.problem !== ""
+        visible: active && companion.problem !== ""
         text: companion.problem
-        color: theme.colors.red || panel.look.fg
+        color: panel.errorColor
         font.pixelSize: 13
         wrapMode: Text.Wrap
     }
@@ -184,13 +188,15 @@ FocusScope {
 
             Flickable {
                 id: talk
+                property bool stickToBottom: true
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
                 contentHeight: talkColumn.implicitHeight
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
-                onContentHeightChanged: if (companion.busy) contentY = Math.max(0, contentHeight - height)
+                onMovementEnded: stickToBottom = (contentY + height >= contentHeight - 24)
+                onContentHeightChanged: if (companion.feature === "ask" && companion.busy && stickToBottom) contentY = Math.max(0, contentHeight - height)
 
                 ColumnLayout {
                     id: talkColumn
@@ -198,7 +204,7 @@ FocusScope {
                     spacing: 12
                     Label {
                         Layout.fillWidth: true
-                        visible: companion.conversation.length === 0
+                        visible: companion.conversation.length === 0 && !(companion.feature === "ask" && companion.busy)
                         text: qsTr("Ask anything about the book so far: who someone is, why something happened, what a word meant then. Nothing past your page is read, so nothing is spoiled.")
                         color: panel.look.muted
                         font.pixelSize: 14
@@ -206,7 +212,7 @@ FocusScope {
                         lineHeight: 1.3
                     }
                     Repeater {
-                        model: companion.feature === "ask" ? companion.conversation : []
+                        model: companion.conversation
                         delegate: Rectangle {
                             required property var modelData
                             Layout.fillWidth: !modelData.fromUser
@@ -221,7 +227,7 @@ FocusScope {
                                 x: modelData.fromUser ? 12 : 0
                                 y: modelData.fromUser ? 8 : 0
                                 width: parent.width - (modelData.fromUser ? 24 : 0)
-                                text: modelData.text
+                                text: modelData.fromUser ? modelData.text : companion.sanitizeMarkdown(modelData.text)
                                 readOnly: true
                                 selectByMouse: true
                                 wrapMode: Text.Wrap
@@ -233,13 +239,21 @@ FocusScope {
                             }
                         }
                     }
-                    Working {}
-                    Problem {}
+                    Prose {
+                        visible: companion.feature === "ask" && companion.busy && companion.answer !== ""
+                        text: companion.sanitizeMarkdown(companion.answer)
+                    }
+                    Working { active: companion.feature === "ask" }
+                    Problem { active: companion.feature === "ask" }
                 }
             }
             // What asking sends, and where.
             Where {
-                readonly property var estimate: panel.open && panel.tab === "ask" ? companion.askEstimate() : ({})
+                readonly property var estimate: {
+                    void(reader.chapter); void(reader.pageEnd); void(reader.progress)
+                    void(ai.preset); void(ai.localUrl); void(ai.localTextModel); void(ai.hasKey)
+                    return panel.open && panel.tab === "ask" ? companion.askEstimate() : ({})
+                }
                 text: !estimate.where ? ""
                     : estimate.local ? qsTr("%1 · the passages that matter, found in the book so far").arg(estimate.where)
                     : qsTr("%1 · the book so far, about %Ln words · about %2 a question", "", estimate.words)
@@ -250,33 +264,55 @@ FocusScope {
                 spacing: 8
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Math.max(40, question.implicitHeight + 18)
+                    Layout.preferredHeight: Math.min(160, Math.max(40, question.implicitHeight + 18))
                     radius: Math.min(10, theme.radius + 2)
                     color: Ui.tint(panel.look.fg, 0.06)
                     border.width: question.activeFocus ? 1.5 : 0
                     border.color: panel.look.link
-                    TextEdit {
-                        id: question
-                        x: 12
-                        width: parent.width - 24
-                        anchors.verticalCenter: parent.verticalCenter
-                        wrapMode: Text.Wrap
-                        color: panel.look.fg
-                        font.pixelSize: 14
-                        selectByMouse: true
-                        Keys.onReturnPressed: (event) => {
-                            if (event.modifiers & Qt.ShiftModifier)
-                                event.accepted = false
-                            else
-                                panel.send()
-                        }
-                        Keys.onEscapePressed: panel.close()
-                        Text {
-                            anchors.fill: parent
-                            visible: question.text === ""
-                            text: qsTr("Ask about the book…")
-                            color: panel.look.muted
-                            font: question.font
+                    clip: true
+                    Flickable {
+                        id: questionScroll
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        anchors.topMargin: 9
+                        anchors.bottomMargin: 9
+                        contentWidth: width
+                        contentHeight: question.implicitHeight
+                        boundsBehavior: Flickable.StopAtBounds
+                        TextEdit {
+                            id: question
+                            width: parent.width
+                            wrapMode: Text.Wrap
+                            color: panel.look.fg
+                            font.pixelSize: 14
+                            selectByMouse: true
+                            onCursorRectangleChanged: {
+                                if (cursorRectangle.y < questionScroll.contentY)
+                                    questionScroll.contentY = cursorRectangle.y
+                                else if (cursorRectangle.y + cursorRectangle.height > questionScroll.contentY + questionScroll.height)
+                                    questionScroll.contentY = cursorRectangle.y + cursorRectangle.height - questionScroll.height
+                            }
+                            Keys.onReturnPressed: (event) => {
+                                if (event.modifiers & Qt.ShiftModifier)
+                                    event.accepted = false
+                                else
+                                    panel.send()
+                            }
+                            Keys.onEnterPressed: (event) => {
+                                if (event.modifiers & Qt.ShiftModifier)
+                                    event.accepted = false
+                                else
+                                    panel.send()
+                            }
+                            Keys.onEscapePressed: panel.close()
+                            Text {
+                                anchors.fill: parent
+                                visible: question.text === ""
+                                text: qsTr("Ask about the book…")
+                                color: panel.look.muted
+                                font: question.font
+                            }
                         }
                     }
                 }
@@ -289,6 +325,7 @@ FocusScope {
                 }
             }
             TextButton {
+                look: panel.look
                 visible: companion.conversation.length > 0 && !companion.busy
                 text: qsTr("New conversation")
                 onClicked: companion.newConversation()
@@ -311,6 +348,7 @@ FocusScope {
                 id: proseColumn
                 width: parent.width
                 spacing: 12
+                readonly property bool matchesTab: panel.tab === "recap" ? companion.feature === "recap" : panel.selectionFeature
                 Label {
                     Layout.fillWidth: true
                     visible: panel.tab === "selection" && companion.subject !== ""
@@ -324,20 +362,21 @@ FocusScope {
                     elide: Text.ElideRight
                 }
                 Prose {
-                    visible: panel.tab === "recap" ? companion.feature === "recap" : panel.selectionFeature
-                    text: companion.answer
+                    visible: proseColumn.matchesTab
+                    text: companion.sanitizeMarkdown(companion.answer)
                 }
-                Working {}
-                Problem {}
+                Working { active: proseColumn.matchesTab }
+                Problem { active: proseColumn.matchesTab }
                 Where {
-                    visible: !companion.busy && companion.answer !== ""
+                    visible: proseColumn.matchesTab && !companion.busy && companion.answer !== ""
                     text: companion.where
                 }
                 RowLayout {
-                    visible: !companion.busy && companion.answer !== ""
+                    visible: proseColumn.matchesTab && !companion.busy && companion.answer !== ""
                     spacing: 8
-                    TextButton { text: qsTr("Copy"); onClicked: reader.copyText(companion.answer) }
+                    TextButton { look: panel.look; text: qsTr("Copy"); onClicked: reader.copyText(companion.answer) }
                     TextButton {
+                        look: panel.look
                         visible: panel.tab === "recap"
                         text: qsTr("Again")
                         onClicked: companion.recap()
@@ -372,6 +411,7 @@ FocusScope {
                 RowLayout {
                     spacing: 10
                     TextButton {
+                        look: panel.look
                         primary: true
                         enabled: illustrator.available && !illustrator.busy
                         text: qsTr("Illustrate this page")
@@ -390,14 +430,14 @@ FocusScope {
                     BusyIndicator { running: parent.visible; implicitWidth: 20; implicitHeight: 20 }
                     Label { text: illustrator.status; color: panel.look.muted; font.pixelSize: 13 }
                     Item { Layout.fillWidth: true }
-                    TextButton { text: qsTr("Stop"); onClicked: illustrator.stop() }
+                    TextButton { look: panel.look; text: qsTr("Stop"); onClicked: illustrator.stop() }
                 }
                 Label {
                     Layout.fillWidth: true
                     visible: illustrator.problem !== "" || !illustrator.available
                     text: illustrator.problem !== "" ? illustrator.problem
                         : qsTr("Pictures are made with Gemini: add your key in Intelligence (✦).")
-                    color: illustrator.problem !== "" ? (theme.colors.red || panel.look.fg) : panel.look.muted
+                    color: illustrator.problem !== "" ? panel.errorColor : panel.look.muted
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
                 }
@@ -408,6 +448,8 @@ FocusScope {
                 width: ListView.view.width
                 spacing: 6
                 Image {
+                    id: pictureImage
+                    visible: status !== Image.Error
                     Layout.preferredWidth: parent.width
                     Layout.maximumWidth: parent.width
                     Layout.preferredHeight: parent.width * (implicitHeight > 0 ? implicitHeight / Math.max(1, implicitWidth) : 4 / 3)
@@ -416,6 +458,20 @@ FocusScope {
                     asynchronous: true
                     sourceSize.width: 880
                     mipmap: true
+                }
+                Rectangle {
+                    visible: pictureImage.status === Image.Error
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 96
+                    radius: Math.min(8, theme.radius)
+                    color: Ui.tint(panel.look.fg, 0.05)
+                    border.color: panel.look.border
+                    Label {
+                        anchors.centerIn: parent
+                        text: qsTr("Picture file is missing")
+                        color: panel.look.muted
+                        font.pixelSize: 13
+                    }
                 }
                 Label {
                     Layout.fillWidth: true
@@ -430,18 +486,22 @@ FocusScope {
                     Layout.fillWidth: true
                     spacing: 6
                     TextButton {
+                        look: panel.look
                         text: reader.titleOfChapter(modelData.chapter) ? qsTr("Go to “%1”").arg(reader.titleOfChapter(modelData.chapter)) : qsTr("Go to its page")
                         onClicked: view.goTo({ chapter: modelData.chapter, offset: modelData.offset, instant: true })
                     }
                     TextButton {
+                        look: panel.look
                         text: qsTr("Save a copy")
                         onClicked: {
                             const path = illustrator.saveCopy(modelData.id)
                             if (path)
                                 toast.show(qsTr("Saved in %1").arg(path.replace(/^.*\/(Pictures\/)/, "$1")))
+                            else
+                                toast.show(qsTr("Couldn't save a copy of this picture"))
                         }
                     }
-                    TextButton { text: qsTr("Remove"); onClicked: illustrator.remove(modelData.id) }
+                    TextButton { look: panel.look; text: qsTr("Remove"); onClicked: illustrator.remove(modelData.id) }
                 }
             }
         }
@@ -461,12 +521,30 @@ FocusScope {
             header: ColumnLayout {
                 width: ListView.view.width
                 spacing: 8
-                Working {}
-                Problem {}
-                Where {
+                Working { active: companion.feature === "whoswho" }
+                Problem { active: companion.feature === "whoswho" }
+                Label {
+                    Layout.fillWidth: true
+                    visible: companion.feature === "whoswho" && !companion.busy && companion.problem === "" && companion.people.length === 0
+                    text: qsTr("No characters mentioned so far.")
+                    color: panel.look.muted
+                    font.pixelSize: 14
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
                     visible: companion.people.length > 0 && !companion.busy
-                    text: qsTr("Up to “%1” · %2").arg(reader.chapterTitle).arg(companion.where)
-                    bottomPadding: 6
+                    spacing: 8
+                    Where {
+                        text: reader.chapterTitle ? qsTr("Up to “%1” · %2").arg(reader.chapterTitle).arg(companion.where)
+                                                  : companion.where
+                        bottomPadding: 6
+                    }
+                    TextButton {
+                        look: panel.look
+                        text: qsTr("Again")
+                        onClicked: companion.refreshWhosWho()
+                    }
                 }
             }
             delegate: ColumnLayout {

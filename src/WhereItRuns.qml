@@ -89,15 +89,21 @@ ColumnLayout {
 
             RowLayout {
                 Layout.fillWidth: true
+                readonly property bool reachable: ai.localUrl !== "" && ai.localServers.some(s => s.url === ai.localUrl)
                 Rectangle {
                     width: 10; height: 10; radius: 5
-                    color: (ai.localUrl !== "") ? theme.colors.green : theme.textTertiary
+                    color: ai.localUrl === "" ? theme.textTertiary
+                         : parent.reachable ? theme.colors.green
+                         : ai.findingLocal ? theme.colors.yellow : theme.colors.orange
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: (ai.localUrl !== "") ? qsTr("%1 at %2").arg(ai.localName).arg(ai.localUrl.replace("http://", ""))
-                                      : ai.findingLocal ? qsTr("Looking for model servers on this computer…")
-                                      : qsTr("No model on this computer yet")
+                    text: (ai.localUrl !== "")
+                          ? (parent.reachable || ai.findingLocal
+                             ? qsTr("%1 at %2").arg(ai.localName).arg(ai.localUrl.replace(/^https?:\/\//, ""))
+                             : qsTr("%1 at %2 (not running)").arg(ai.localName).arg(ai.localUrl.replace(/^https?:\/\//, "")))
+                          : ai.findingLocal ? qsTr("Looking for model servers on this computer…")
+                          : qsTr("No model on this computer yet")
                     color: theme.text
                     font.pixelSize: 14
                     elide: Text.ElideRight
@@ -138,8 +144,15 @@ ColumnLayout {
                     onActivated: (index) => ai.useLocal(parent.server.kind, ai.localUrl, model[index], ai.localEmbeddingModel, ai.localSpeechModel)
                 }
                 Label {
-                    visible: !!parent.server && parent.server.speechModels.length > 0
+                    visible: (!!parent.server && parent.server.speechModels.length > 0) || ai.localSpeechModel !== ""
                     text: qsTr("Voices"); color: theme.textSecondary; font.pixelSize: 13
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: !(parent.server && parent.server.speechModels.length > 0) && ai.localSpeechModel !== ""
+                    text: ai.localSpeechModel
+                    color: theme.text
+                    font.pixelSize: 13
                 }
                 ComboBox {
                     Layout.fillWidth: true
@@ -183,7 +196,7 @@ ColumnLayout {
                     }
                     TextButton {
                         text: qsTr("Use")
-                        enabled: modelData.textModels.length > 0 || modelData.speechModels.length > 0
+                        enabled: modelData.textModels.length > 0 || modelData.embeddingModels.length > 0 || modelData.speechModels.length > 0
                         onClicked: ai.useLocal(modelData.kind, modelData.url, modelData.textModels[0] || "",
                                                modelData.embeddingModels[0] || "", modelData.speechModels[0] || "")
                     }
@@ -196,11 +209,15 @@ ColumnLayout {
                 visible: ai.localUrl === "" && !ai.findingLocal
                 spacing: 8
                 Note {
-                    text: localSetup.textModel.model === undefined
-                        ? qsTr("This computer has too little memory for a model worth having. Gemini does this work instead.")
-                        : qsTr("A model on this computer works offline, for free, and keeps your reading private. For this computer: %1 (%2), and %3 (%4) for search by meaning.")
-                            .arg(localSetup.textModel.title).arg(Format.size(localSetup.textModel.bytes, Qt.locale()))
-                            .arg(localSetup.searchModel.title).arg(Format.size(localSetup.searchModel.bytes, Qt.locale()))
+                    text: {
+                        if (localSetup.textModel.model === undefined)
+                            return qsTr("This computer has too little memory for a model worth having. Gemini does this work instead.")
+                        const textSize = localSetup.textModel.bytes > 0 ? " (" + Format.size(localSetup.textModel.bytes, Qt.locale()) + ")" : ""
+                        const searchSize = localSetup.searchModel.bytes > 0 ? " (" + Format.size(localSetup.searchModel.bytes, Qt.locale()) + ")" : ""
+                        return qsTr("A model on this computer works offline, for free, and keeps your reading private. For this computer: %1%2, and %3%4 for search by meaning.")
+                            .arg(localSetup.textModel.title).arg(textSize)
+                            .arg(localSetup.searchModel.title).arg(searchSize)
+                    }
                 }
                 RowLayout {
                     visible: localSetup.textModel.model !== undefined
@@ -216,14 +233,14 @@ ColumnLayout {
                         visible: localSetup.running
                         primary: true
                         enabled: !localSetup.pulling
-                        // Already there (pulled before): a moment's check, then used.
+                        // Already there (pulled before): use it directly without hitting the network.
                         readonly property bool have: ai.localServers.some(server => server.textModels.indexOf(localSetup.textModel.model) >= 0)
                         text: have ? qsTr("Use %1").arg(localSetup.textModel.title) : qsTr("Download %1").arg(localSetup.textModel.title)
-                        onClicked: localSetup.download()
+                        onClicked: have ? localSetup.useExisting() : localSetup.download()
                     }
                     TextButton {
-                        visible: localSetup.pulling
-                        text: qsTr("Stop")
+                        visible: localSetup.pulling || localSetup.waiting
+                        text: localSetup.pulling ? qsTr("Stop") : qsTr("Cancel")
                         onClicked: localSetup.cancel()
                     }
                     BusyIndicator { visible: localSetup.waiting; running: visible; implicitWidth: 22; implicitHeight: 22 }
@@ -269,7 +286,8 @@ ColumnLayout {
                         font.pixelSize: 13
                         selectByMouse: true
                         onTextChanged: section.address = text
-                        Keys.onReturnPressed: ai.findLocal(text)
+                        Keys.onReturnPressed: if (!ai.findingLocal) ai.findLocal(text)
+                        Keys.onEnterPressed: if (!ai.findingLocal) ai.findLocal(text)
                         Text {
                             anchors.fill: parent
                             verticalAlignment: Text.AlignVCenter
@@ -303,6 +321,8 @@ ColumnLayout {
             Layout.fillWidth: true
             text: {
                 const m = systemCheck.machine
+                if (!m.memoryGb)
+                    return ""
                 const parts = [qsTr("%1 GB memory").arg(Math.round(m.memoryGb)), qsTr("%n cores", "", m.cores)]
                 if (m.graphics)
                     parts.push(m.graphicsMemoryGb > 0 ? qsTr("%1 (%2 GB)").arg(m.graphics).arg(Math.round(m.graphicsMemoryGb)) : m.graphics)
