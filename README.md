@@ -10,14 +10,21 @@ files.
 
 ## What it does
 
-- **A library** of your EPUB and PDF books, found in the folders you add,
-  with covers, editions grouped together, and reading progress.
+- **A library** of your EPUB and PDF books, found in the watched folders you
+  manage, with covers, editions grouped together, custom **collections/shelves**,
+  status & format filter chips (Reading, Unread, Finished, EPUB, PDF, Series),
+  series ordering, a compact **list view** alongside the cover grid, and
+  **reading stats** (total time, daily streak, 14-day activity, and pace).
+- **Command Palette (`Ctrl+K`)**: instant fuzzy search across every book in
+  your library, the current book's chapters, cross-book highlights & notes,
+  page/percentage jumps, and every app or reader action.
 - **A page to read on**: EPUB in columns or scrolling, with your typeface,
   size, spacing and theme; PDF pages recolored to the reading theme with
   their blank margins cut, one at a time, two side by side, or scrolling.
-- **Highlights, notes and bookmarks**, with undo, and `dogear notes` to take
-  them elsewhere as Markdown. **Search** by words, or **by meaning** ("the
-  scene where they first meet").
+- **Highlights, notes and bookmarks**, with W3C text-quote anchoring, undo,
+  cross-book search, Obsidian/Readwise Markdown file export, and `dogear notes`
+  to take them elsewhere. **Search** by words, or **by meaning** ("the scene
+  where they first meet").
 - **Listening**: the book read aloud with the sentence shown as it's read,
   from any paragraph, at any speed, with a sleep timer and the media keys.
   - *Gemini voices*: the most natural, with styles (plain, natural,
@@ -30,10 +37,10 @@ files.
   - Download a book's narration to listen offline, and save it as an **M4B
     audiobook** with chapters. Close the window and it keeps reading; open
     Dogear again to come back.
-- **The companion** (C): *Define*, *Explain* or *Translate* words you select,
-  *Ask* about the book, read *Previously…* when you come back to it, see
-  *Who's who*, and *Illustrate* a moment in the manner of the book's own time.
-  It only ever sees the book up to your page, so it can't spoil anything.
+- **The X-Ray companion** (C): *Define*, *Explain* or *Translate* words you
+  select, *Ask* about the book, read *Previously…* when you come back to it,
+  browse *Who's who*, and *Illustrate* a moment in the manner of the book's own
+  time. It only ever sees the book up to your page, so it can't spoil anything.
 
 ## Intelligence: where it runs
 
@@ -74,17 +81,19 @@ what will work well here, what will be slow, and what needs Gemini.
 | ← → ↑ ↓ / h j k l | Move between books |
 | ↵ | Open the book, or choose an edition |
 | Space | Continue the book you were reading |
-| / | Search the library |
-| I · S · G · A | Details · order · group editions · add a folder |
+| / or Ctrl F | Search the library |
+| Ctrl K | Command palette: jump to any book, note, or action |
+| I · S · G · V · A | Details · order (incl. series) · group editions · grid/list view · add a folder |
 
 | Reading | |
 |---|---|
 | Space → l j / ⇧Space ← h k | Next / previous page |
 | [ ] | Previous / next chapter |
+| Ctrl K | Command palette: chapters, notes, books, and reader actions |
 | T · G | Contents · go to a page or percentage |
 | / or Ctrl F, then n N | Search in the book, next / previous result |
 | B · M | Bookmark this page · highlights, notes and bookmarks |
-| C | The companion: ask, previously, who's who, pictures |
+| C | The X-Ray companion: ask, previously, who's who, pictures |
 | A · D · + − 0 | Typography and theme · next theme · text size (zoom, for PDFs) |
 | Ctrl Z · Ctrl ⇧ Z | Undo · redo |
 | Esc | Close a panel, or back to the library |
@@ -94,9 +103,9 @@ what will work well here, what will be slow, and what needs Gemini.
 | P · ⇧P | Listen from this page, pause, go on · stop |
 | , . | Previous / next paragraph |
 | < > | Slower / faster |
-| V | Narrator, style, and full cast |
+| V | Narrator, style, full cast, and M4B audiobook export |
 
-`?` shows every key in the app, `F` or `F11` is full screen, and `Q` quits.
+`Ctrl+K` opens the command palette anywhere, `Ctrl+,` opens Intelligence settings, `?` shows every key in the app, `F` or `F11` is full screen, and `Q` quits.
 
 ## Commands
 

@@ -123,7 +123,9 @@ def catalog(code):
 
 def save(code, entries):
     I18N.mkdir(exist_ok=True)
-    (I18N / f"{code}.json").write_text(json.dumps(dict(sorted(entries.items())), ensure_ascii=False, indent=1) + "\n")
+    (I18N / f"{code}.json").write_text(
+        json.dumps(dict(sorted(entries.items())), ensure_ascii=False, separators=(",", ":")) + "\n"
+    )
 
 
 SCHEMA = {

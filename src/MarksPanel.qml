@@ -28,13 +28,29 @@ FocusScope {
 
     function show() {
         open = true
-        forceActiveFocus()
+        list.currentIndex = panel.filteredMarks.length > 0 ? 0 : -1
+        list.forceActiveFocus()
     }
     function close() {
         if (!open)
             return
         open = false
         closed()
+    }
+    function activate(idx) {
+        if (idx < 0 || idx >= panel.filteredMarks.length)
+            return
+        const item = panel.filteredMarks[idx]
+        panel.chosen(item.chapter, item.start)
+        panel.close()
+    }
+    function removeMark(item) {
+        if (!item)
+            return
+        const isBookmark = item.kind === "bookmark"
+        marks.remove(item.markId)
+        toast.show(isBookmark ? qsTr("Bookmark removed") : qsTr("Highlight removed"),
+                   qsTr("Undo"), () => marks.undo())
     }
 
     readonly property var swatches: ({ yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" })
@@ -154,15 +170,41 @@ FocusScope {
             Layout.fillHeight: true
             visible: panel.filteredMarks.length > 0
             clip: true
+            focus: true
+            keyNavigationEnabled: true
+            keyNavigationWraps: false
+            currentIndex: count > 0 ? 0 : -1
             model: panel.filteredMarks
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
+
+            onCountChanged: {
+                if (count === 0)
+                    currentIndex = -1
+                else if (currentIndex < 0 || currentIndex >= count)
+                    currentIndex = Math.min(Math.max(0, currentIndex), count - 1)
+            }
+
+            Keys.onReturnPressed: panel.activate(currentIndex)
+            Keys.onEnterPressed: panel.activate(currentIndex)
+            Keys.onDeletePressed: {
+                if (currentIndex >= 0 && currentIndex < panel.filteredMarks.length)
+                    panel.removeMark(panel.filteredMarks[currentIndex])
+            }
+            Keys.onPressed: (event) => {
+                if (event.key === Qt.Key_Backspace && currentIndex >= 0 && currentIndex < panel.filteredMarks.length) {
+                    panel.removeMark(panel.filteredMarks[currentIndex])
+                    event.accepted = true
+                }
+            }
+            Keys.onEscapePressed: panel.close()
 
             delegate: Column {
                 id: row
                 required property var modelData
                 required property int index
                 readonly property bool firstInSection: modelData.label !== "" && (index === 0 || panel.filteredMarks[index - 1].label !== modelData.label)
+                readonly property bool selected: list.currentIndex === index && list.activeFocus
                 width: ListView.view.width
 
                 Label {
@@ -189,11 +231,12 @@ FocusScope {
                     hoverEnabled: true
                     focusPolicy: Qt.NoFocus
                     onClicked: {
-                        panel.chosen(row.modelData.chapter, row.modelData.start)
-                        panel.close()
+                        list.currentIndex = row.index
+                        panel.activate(row.index)
                     }
                     background: Rectangle {
-                        color: entry.hovered ? Ui.tint(panel.look.fg, 0.05) : "transparent"
+                        color: row.selected ? Ui.tint(panel.look.link, 0.16)
+                             : entry.hovered ? Ui.tint(panel.look.fg, 0.05) : "transparent"
                     }
                     contentItem: Item {
                         RowLayout {
@@ -212,8 +255,8 @@ FocusScope {
                             Glyph {
                                 Layout.alignment: Qt.AlignTop
                                 visible: row.modelData.kind === "bookmark"
-                                width: 16
-                                height: 16
+                                Layout.preferredWidth: 16
+                                Layout.preferredHeight: 16
                                 path: Icons.bookmark
                                 color: panel.look.link
                             }
@@ -245,11 +288,11 @@ FocusScope {
                             }
                             IconButton {
                                 Layout.alignment: Qt.AlignTop
-                                opacity: entry.hovered ? 1 : 0
+                                opacity: entry.hovered || row.selected ? 1 : 0
                                 glyph: Icons.trash
                                 tone: panel.look.muted
                                 tip: qsTr("Remove")
-                                onClicked: marks.remove(row.modelData.markId)
+                                onClicked: panel.removeMark(row.modelData)
                             }
                         }
                     }
@@ -262,11 +305,23 @@ FocusScope {
             Layout.leftMargin: 22
             Layout.rightMargin: 22
             visible: marks.count > 0
+            spacing: 4
             Label {
                 Layout.fillWidth: true
                 text: qsTr("%Ln marks", "", marks.count)
                 color: panel.look.muted
                 font.pixelSize: 12
+            }
+            Button {
+                flat: true
+                text: qsTr("Export .md")
+                onClicked: {
+                    const saved = marks.exportMarkdownToFile("", reader.title, reader.author, "obsidian")
+                    if (saved !== "")
+                        toast.show(qsTr("Saved notes to %1").arg(saved))
+                    else
+                        toast.show(qsTr("Could not save notes"))
+                }
             }
             Button {
                 flat: true

@@ -33,6 +33,7 @@
 #include "translator.h"
 
 #include <QCommandLineParser>
+#include <QCoreApplication>
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
@@ -121,25 +122,110 @@ static void registerBookScheme() {
     QWebEngineUrlScheme::registerScheme(scheme);
 }
 
+static void configureParser(QCommandLineParser &args, QCommandLineOption &runOption, QCommandLineOption &delayOption,
+                            QCommandLineOption &stepOption) {
+    args.setApplicationDescription(QStringLiteral("An ebook reader for Omarchy.\n\n") + cliSummary());
+    args.addHelpOption();
+    args.addVersionOption();
+    args.addPositionalArgument(QStringLiteral("book"), QStringLiteral("One or more EPUB or PDF books to open"),
+                               QStringLiteral("[book...]"));
+    args.addOption({QStringLiteral("screenshot"), QStringLiteral("Save a screenshot of the window and exit"),
+                    QStringLiteral("file")});
+    // For tests and the README: QML run in the window, step by step, before
+    // the screenshot is taken.
+    for (auto *option : {&runOption, &delayOption, &stepOption}) {
+        option->setFlags(QCommandLineOption::HiddenFromHelp);
+        args.addOption(*option);
+    }
+}
+
 int main(int argc, char *argv[]) {
     // Dogear themes itself; Qt's gtk3 platform theme only adds a GTK
     // use-after-free when the desktop theme changes under a running app.
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
 
-    // Commands and help draw no window, so they must not need a display.
     const bool command = argc > 1 && isCliCommand(QString::fromLocal8Bit(argv[1]));
-    bool windowless = command;
-    for (int i = 1; i < argc; ++i) {
+    bool infoFlag = false;
+    bool scriptedFlag = false;
+    QStringList rawArgs;
+    rawArgs.reserve(argc);
+    for (int i = 0; i < argc; ++i) {
         const QByteArray argument(argv[i]);
-        windowless = windowless || argument == "--help" || argument == "-h" || argument == "--version" ||
-                     argument == "-v" || argument == "--help-all";
+        rawArgs.append(QString::fromLocal8Bit(argument));
+        if (i == 0)
+            continue;
+        if (argument == "--help" || argument == "-h" || argument == "--version" || argument == "-v" ||
+            argument == "--help-all") {
+            infoFlag = true;
+        } else if (argument == "--screenshot" || argument.startsWith("--screenshot=") || argument == "--run" ||
+                   argument.startsWith("--run=")) {
+            scriptedFlag = true;
+        }
     }
-    if (windowless) {
-        qputenv("QT_QPA_PLATFORM", "offscreen");
-    } else {
-        registerBookScheme();
-        QtWebEngineQuick::initialize();
+
+    // Fast path 1: pure non-GUI CLI subcommands and --help/--version run on a
+    // lightweight QCoreApplication and exit without touching QPA or Chromium.
+    if (command || infoFlag) {
+        QCoreApplication core(argc, argv);
+        core.setApplicationName(QStringLiteral("dogear"));
+        core.setApplicationVersion(DOGEAR_VERSION);
+        if (command)
+            return runCli(core.arguments());
+
+        QCommandLineParser infoArgs;
+        QCommandLineOption infoRun(QStringLiteral("run"), QStringLiteral("Evaluate a QML expression in the window (repeatable)"),
+                                   QStringLiteral("expression"));
+        QCommandLineOption infoDelay(QStringLiteral("delay"), QStringLiteral("Milliseconds before the first --run step"),
+                                     QStringLiteral("ms"), QStringLiteral("1500"));
+        QCommandLineOption infoStep(QStringLiteral("step"), QStringLiteral("Milliseconds between --run steps"),
+                                    QStringLiteral("ms"), QStringLiteral("700"));
+        configureParser(infoArgs, infoRun, infoDelay, infoStep);
+        QStringList argsList = core.arguments();
+        if (argsList.value(1) == QLatin1String("open"))
+            argsList.removeAt(1);
+        infoArgs.process(argsList);
+        return 0;
     }
+
+    // Fast path 2: warm single-instance D-Bus handoff BEFORE initializing
+    // QtWebEngineQuick or QGuiApplication. Note: we intentionally do NOT create
+    // and destroy a temporary QCoreApplication here, because ~QCoreApplication
+    // shuts down Qt's QDBusConnectionManager post-routine and would stop a
+    // subsequent QGuiApplication from receiving D-Bus calls.
+    if (!scriptedFlag) {
+        QCoreApplication::setApplicationName(QStringLiteral("dogear"));
+        QCoreApplication::setApplicationVersion(DOGEAR_VERSION);
+        QCommandLineParser preArgs;
+        QCommandLineOption preRun(QStringLiteral("run"), QStringLiteral("Evaluate a QML expression in the window (repeatable)"),
+                                  QStringLiteral("expression"));
+        QCommandLineOption preDelay(QStringLiteral("delay"), QStringLiteral("Milliseconds before the first --run step"),
+                                    QStringLiteral("ms"), QStringLiteral("1500"));
+        QCommandLineOption preStep(QStringLiteral("step"), QStringLiteral("Milliseconds between --run steps"),
+                                   QStringLiteral("ms"), QStringLiteral("700"));
+        configureParser(preArgs, preRun, preDelay, preStep);
+
+        QStringList preArguments = rawArgs;
+        if (preArguments.value(1) == QLatin1String("open"))
+            preArguments.removeAt(1);
+        if (preArgs.parse(preArguments) && !preArgs.isSet(preRun) && !preArgs.isSet(QStringLiteral("screenshot"))) {
+            QStringList handoffBooks;
+            for (const QString &arg : preArgs.positionalArguments())
+                handoffBooks.append(normalizeBookArg(arg));
+            if (passBooksToRunning(handoffBooks))
+                return 0;
+        } else if (!preArgs.errorText().isEmpty()) {
+            // Invalid CLI option: fail fast without launching QtWebEngine.
+            QCoreApplication core(argc, argv);
+            core.setApplicationName(QStringLiteral("dogear"));
+            core.setApplicationVersion(DOGEAR_VERSION);
+            preArgs.process(preArguments);
+        }
+    }
+
+    // GUI launch (or --screenshot / --run): Qt requires QtWebEngineQuick to be
+    // initialized before QGuiApplication is constructed.
+    registerBookScheme();
+    QtWebEngineQuick::initialize();
 
     QGuiApplication app(argc, argv);
     // The window can hide while a book is read aloud; Dogear quits itself
@@ -154,41 +240,24 @@ int main(int argc, char *argv[]) {
     app.setApplicationDisplayName("Dogear");
     app.setWindowIcon(QIcon::fromTheme("dogear"));
 
-    if (command)
-        return runCli(app.arguments());
-
     QCommandLineParser args;
-    args.setApplicationDescription("An ebook reader for Omarchy.\n\n" + cliSummary());
-    args.addHelpOption();
-    args.addVersionOption();
-    args.addPositionalArgument("book", "One or more EPUB or PDF books to open", "[book...]");
-    args.addOption({"screenshot", "Save a screenshot of the window and exit", "file"});
-    // For tests and the README: QML run in the window, step by step, before
-    // the screenshot is taken.
     QCommandLineOption runOption("run", "Evaluate a QML expression in the window (repeatable)", "expression");
     QCommandLineOption delayOption("delay", "Milliseconds before the first --run step", "ms", "1500");
     QCommandLineOption stepOption("step", "Milliseconds between --run steps", "ms", "700");
-    for (auto *option : {&runOption, &delayOption, &stepOption}) {
-        option->setFlags(QCommandLineOption::HiddenFromHelp);
-        args.addOption(*option);
-    }
+    configureParser(args, runOption, delayOption, stepOption);
     QStringList arguments = app.arguments();
     if (arguments.value(1) == "open")
         arguments.removeAt(1);
     args.process(arguments);
 
-    // One Dogear per library: opened again (the launcher, a terminal, a book
-    // file), it hands over to the one running, which comes back as it was,
-    // reading aloud or not, and opens the book if one was named. Scripted runs
-    // (--run, --screenshot) never claim the name or hand over.
+    // One Dogear per library: of two opened at once, the one that doesn't get
+    // the name hands over. Scripted runs (--run, --screenshot) never claim the
+    // name or hand over.
     const bool scripted = args.isSet(runOption) || args.isSet("screenshot");
     QStringList bookFiles;
     for (const QString &arg : args.positionalArguments())
         bookFiles.append(normalizeBookArg(arg));
     Instance instance;
-    if (!scripted && passBooksToRunning(bookFiles))
-        return 0;
-    // Of two opened at once, the one that doesn't get the name hands over.
     if (!scripted && !instance.claim() && passBooksToRunning(bookFiles))
         return 0;
 

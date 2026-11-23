@@ -2,20 +2,38 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import "Format.js" as Format
 import "Icons.js" as Icons
 import "Ui.js" as Ui
 
-// The library: books under way on top, then every work as a cover, found
-// by typing and ordered as asked. Keys move through the covers.
+// The library: books under way on top, filter chips & shelves, grid or compact
+// list view, watched-folder manager, and reading stats & insights.
 FocusScope {
     id: view
 
-    readonly property bool typing: search.activeFocus
+    property string viewMode: "grid"
+    property int statsRevision: 0
+
+    readonly property bool typing: search.activeFocus || collectionDialog.open || details.addingShelf
     readonly property bool detailsOpen: details.open
-    readonly property bool menuOpen: sortMenu.opened
-    readonly property alias currentRow: grid.currentIndex
+    readonly property bool foldersOpen: foldersSheet.open
+    readonly property bool statsOpen: statsSheet.open
+    readonly property bool collectionDialogOpen: collectionDialog.open
+    readonly property bool menuOpen: sortMenu.opened || seriesMenu.opened || colContextMenu.opened
+    readonly property int currentRow: viewMode === "list" ? listView.currentIndex : grid.currentIndex
+
+    readonly property string listIcon: "M8 6.5 H20 M8 12 H20 M8 17.5 H20 M4 6.5 H5 M4 12 H5 M4 17.5 H5"
+    readonly property string gridIcon: "M4.5 4.5 H10.5 V10.5 H4.5 Z M13.5 4.5 H19.5 V10.5 H13.5 Z M4.5 13.5 H10.5 V19.5 H4.5 Z M13.5 13.5 H19.5 V19.5 H13.5 Z"
+    readonly property string statsIcon: "M5 19.5 V13 M10 19.5 V8.5 M15 19.5 V11 M20 19.5 V5.5"
+    readonly property string refreshIcon: "M19 12 A7 7 0 1 1 16.95 7.05 M19 4.5 V8.5 H15"
 
     signal openBook(int bookId)
+
+    Connections {
+        target: library
+        function onBooksChanged() { view.statsRevision++ }
+        function onReadingStatsChanged() { view.statsRevision++ }
+    }
 
     // A work with several editions asks which one; a single one opens.
     function activate(row) {
@@ -35,9 +53,26 @@ FocusScope {
             details.show(work.bookId, work.key)
     }
     function focusSearch() { search.forceActiveFocus() }
-    function focusGrid() { grid.forceActiveFocus() }
+    function focusGrid() {
+        if (viewMode === "list")
+            listView.forceActiveFocus()
+        else
+            grid.forceActiveFocus()
+    }
+    function toggleViewMode() {
+        const prev = currentRow
+        viewMode = viewMode === "grid" ? "list" : "grid"
+        if (prev >= 0) {
+            if (viewMode === "list")
+                listView.currentIndex = prev
+            else
+                grid.currentIndex = prev
+        }
+        focusGrid()
+        toast.show(viewMode === "list" ? qsTr("List view") : qsTr("Cover grid"))
+    }
     function cycleSort() {
-        const orders = ["recent", "title", "author", "added", "progress"]
+        const orders = ["recent", "title", "author", "series", "added", "progress"]
         library.works.sortOrder = orders[(orders.indexOf(library.works.sortOrder) + 1) % orders.length]
         toast.show(qsTr("Sorted by %1").arg(sortLabel(library.works.sortOrder).toLowerCase()))
     }
@@ -49,49 +84,146 @@ FocusScope {
     function sortLabel(order) {
         return order === "title" ? qsTr("Title")
              : order === "author" ? qsTr("Author")
+             : order === "series" ? qsTr("Series")
              : order === "added" ? qsTr("Date added")
              : order === "progress" ? qsTr("Progress") : qsTr("Recent")
     }
     function moveSelection(key) {
-        if (grid.count === 0)
+        const activeView = viewMode === "list" ? listView : grid
+        if (activeView.count === 0)
             return
-        if (grid.currentIndex < 0)
-            grid.currentIndex = 0
-        else if (key === "left") grid.moveCurrentIndexLeft()
-        else if (key === "right") grid.moveCurrentIndexRight()
-        else if (key === "up") grid.moveCurrentIndexUp()
-        else if (key === "down") grid.moveCurrentIndexDown()
-        grid.forceActiveFocus()
+        if (activeView.currentIndex < 0) {
+            activeView.currentIndex = 0
+        } else if (viewMode === "list") {
+            if (key === "up" || key === "left")
+                listView.decrementCurrentIndex()
+            else if (key === "down" || key === "right")
+                listView.incrementCurrentIndex()
+        } else {
+            if (key === "left") grid.moveCurrentIndexLeft()
+            else if (key === "right") grid.moveCurrentIndexRight()
+            else if (key === "up") grid.moveCurrentIndexUp()
+            else if (key === "down") grid.moveCurrentIndexDown()
+        }
+        activeView.forceActiveFocus()
     }
     function closeDetails() { details.close() }
+    function openFolders() {
+        statsSheet.close()
+        foldersSheet.show()
+    }
+    function closeFolders() { foldersSheet.close() }
+    function openStats() {
+        foldersSheet.close()
+        statsRevision++
+        statsSheet.show()
+    }
+    function closeStats() { statsSheet.close() }
+    function closeCollectionDialog() { collectionDialog.close() }
+
     // After reading, the book just closed is the one selected.
     function select(bookId) {
         const row = library.works.rowOfBook(bookId)
         if (row >= 0) {
-            grid.currentIndex = row
-            // The first row keeps the continue-reading shelf above it in view.
-            if (row < grid.columns)
-                grid.positionViewAtBeginning()
-            else
-                grid.positionViewAtIndex(row, GridView.Contain)
+            if (viewMode === "list") {
+                listView.currentIndex = row
+                if (row === 0)
+                    listView.positionViewAtBeginning()
+                else
+                    listView.positionViewAtIndex(row, ListView.Contain)
+            } else {
+                grid.currentIndex = row
+                // The first row keeps the continue-reading shelf above it in view.
+                if (row < grid.columns)
+                    grid.positionViewAtBeginning()
+                else
+                    grid.positionViewAtIndex(row, GridView.Contain)
+            }
         }
-        grid.forceActiveFocus()
+        focusGrid()
     }
 
-    Component.onCompleted: grid.forceActiveFocus()
+    function formatDurationSeconds(seconds) {
+        if (!seconds || seconds <= 0)
+            return qsTr("0 min")
+        const mins = Math.round(seconds / 60)
+        if (mins < 1)
+            return qsTr("Under 1 min")
+        return Format.duration(mins)
+    }
+
+    function folderBasename(path) {
+        if (!path)
+            return ""
+        const trimmed = path.endsWith("/") && path.length > 1 ? path.slice(0, -1) : path
+        const idx = trimmed.lastIndexOf("/")
+        return idx >= 0 ? trimmed.slice(idx + 1) : trimmed
+    }
+
+    Component.onCompleted: focusGrid()
+
+    // Reusable filter pill chip.
+    component FilterChip: AbstractButton {
+        id: chip
+        property bool active: false
+        property string badge: ""
+        signal rightClicked()
+
+        implicitHeight: 30
+        implicitWidth: chipRow.implicitWidth + 22
+        hoverEnabled: true
+        focusPolicy: Qt.NoFocus
+
+        background: Rectangle {
+            radius: Math.min(15, theme.radius + 6)
+            color: chip.active ? Ui.tint(theme.accent, theme.light ? 0.16 : 0.24)
+                 : chip.hovered ? Ui.tint(theme.text, 0.08) : Ui.tint(theme.text, 0.04)
+            border.width: 1
+            border.color: chip.active ? theme.accent : Ui.tint(theme.text, 0.08)
+            Behavior on color { ColorAnimation { duration: 110 } }
+        }
+        contentItem: Item {
+            Row {
+                id: chipRow
+                anchors.centerIn: parent
+                spacing: 5
+                Label {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: chip.text
+                    textFormat: Text.PlainText
+                    color: chip.active ? theme.accent : theme.text
+                    font.pixelSize: 12
+                    font.weight: chip.active ? Font.DemiBold : Font.Normal
+                }
+                Label {
+                    visible: chip.badge !== ""
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: chip.badge
+                    textFormat: Text.PlainText
+                    color: chip.active ? theme.accent : theme.textTertiary
+                    font.pixelSize: 11
+                }
+            }
+        }
+        TapHandler {
+            acceptedButtons: Qt.RightButton
+            onTapped: chip.rightClicked()
+        }
+    }
 
     // --- Top bar ---------------------------------------------------------
     Item {
         id: bar
+        anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: 72
+        height: 68
 
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 32
             anchors.rightMargin: 24
-            spacing: 10
+            spacing: 8
 
             Label {
                 text: qsTr("Library")
@@ -112,16 +244,17 @@ FocusScope {
 
             SearchBox {
                 id: search
-                Layout.preferredWidth: Math.min(340, view.width * 0.32)
+                Layout.preferredWidth: Math.min(320, view.width * 0.28)
                 visible: library.bookCount > 0
-                placeholder: qsTr("Search title, author, editor…")
+                placeholder: qsTr("Search title, author, series…")
                 onTextChanged: library.works.searchText = text
                 onAccepted: {
-                    if (grid.count > 0)
-                        grid.currentIndex = 0
-                    grid.forceActiveFocus()
+                    const activeView = view.viewMode === "list" ? listView : grid
+                    if (activeView.count > 0)
+                        activeView.currentIndex = 0
+                    view.focusGrid()
                 }
-                onEscaped: grid.forceActiveFocus()
+                onEscaped: view.focusGrid()
             }
 
             AbstractButton {
@@ -162,7 +295,7 @@ FocusScope {
                     width: 230
                     padding: 6
                     focus: true
-                    onClosed: grid.forceActiveFocus()
+                    onClosed: view.focusGrid()
                     background: Rectangle {
                         radius: Math.min(10, theme.radius)
                         color: theme.surface
@@ -171,7 +304,7 @@ FocusScope {
                     contentItem: Column {
                         spacing: 2
                         Repeater {
-                            model: ["recent", "title", "author", "added", "progress"]
+                            model: ["recent", "title", "author", "series", "added", "progress"]
                             delegate: MenuRow {
                                 required property string modelData
                                 text: view.sortLabel(modelData)
@@ -191,6 +324,25 @@ FocusScope {
             }
 
             IconButton {
+                visible: library.bookCount > 0
+                glyph: view.viewMode === "grid" ? view.listIcon : view.gridIcon
+                tip: view.viewMode === "grid" ? qsTr("Switch to list view (V)") : qsTr("Switch to cover grid (V)")
+                onClicked: view.toggleViewMode()
+            }
+            IconButton {
+                visible: library.bookCount > 0
+                glyph: view.statsIcon
+                active: statsSheet.open
+                tip: qsTr("Reading stats & insights")
+                onClicked: statsSheet.open ? statsSheet.close() : view.openStats()
+            }
+            IconButton {
+                glyph: Icons.folder
+                active: foldersSheet.open
+                tip: qsTr("Watched folders & scanning")
+                onClicked: foldersSheet.open ? foldersSheet.close() : view.openFolders()
+            }
+            IconButton {
                 glyph: Icons.sparkle
                 tip: ai.hasKey ? qsTr("Gemini (Ctrl+,)") : qsTr("Listen and ask with Gemini (Ctrl+,)")
                 active: ai.connected
@@ -205,13 +357,6 @@ FocusScope {
 
         // Reading new books in: a thin line along the bar.
         Rectangle {
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 1
-            color: Ui.tint(theme.text, grid.contentY > grid.originY + 4 ? 0.08 : 0)
-        }
-        Rectangle {
             visible: library.scanning && library.scanTotal > 0
             anchors.bottom: parent.bottom
             height: 2
@@ -221,9 +366,253 @@ FocusScope {
         }
     }
 
+    // --- Filter chips & collections bar ----------------------------------
+    Item {
+        id: filterBar
+        anchors.top: bar.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        height: library.bookCount > 0 ? 44 : 0
+        visible: library.bookCount > 0
+        clip: true
+
+        Flickable {
+            id: chipScroll
+            anchors.fill: parent
+            anchors.leftMargin: 32
+            anchors.rightMargin: 24
+            contentWidth: chipRowLayout.implicitWidth
+            contentHeight: height
+            boundsBehavior: Flickable.StopAtBounds
+            flickableDirection: Flickable.HorizontalFlick
+            clip: true
+
+            WheelHandler {
+                acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+                onWheel: (event) => {
+                    const maxX = Math.max(0, chipScroll.contentWidth - chipScroll.width)
+                    if (maxX <= 0) {
+                        event.accepted = false
+                        return
+                    }
+                    const delta = event.angleDelta.x !== 0 ? event.angleDelta.x : event.angleDelta.y
+                    chipScroll.contentX = Math.max(0, Math.min(maxX, chipScroll.contentX - delta * 0.6))
+                    event.accepted = true
+                }
+            }
+
+            Row {
+                id: chipRowLayout
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: 6
+
+                FilterChip {
+                    text: qsTr("All")
+                    active: !library.works.hasActiveFilters
+                    onClicked: library.works.clearFilters()
+                }
+                FilterChip {
+                    text: qsTr("Reading")
+                    active: library.works.statusFilter === "reading"
+                    onClicked: library.works.statusFilter = active ? "" : "reading"
+                }
+                FilterChip {
+                    text: qsTr("Unread")
+                    active: library.works.statusFilter === "unread"
+                    onClicked: library.works.statusFilter = active ? "" : "unread"
+                }
+                FilterChip {
+                    text: qsTr("Finished")
+                    active: library.works.statusFilter === "finished"
+                    onClicked: library.works.statusFilter = active ? "" : "finished"
+                }
+
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 1
+                    height: 16
+                    color: Ui.tint(theme.text, 0.14)
+                }
+
+                FilterChip {
+                    text: "EPUB"
+                    active: library.works.formatFilter === "epub"
+                    onClicked: library.works.formatFilter = active ? "" : "epub"
+                }
+                FilterChip {
+                    text: "PDF"
+                    active: library.works.formatFilter === "pdf"
+                    onClicked: library.works.formatFilter = active ? "" : "pdf"
+                }
+
+                FilterChip {
+                    id: seriesChip
+                    text: library.works.seriesFilter === "" || library.works.seriesFilter === "*"
+                        ? qsTr("Series") : library.works.seriesFilter
+                    badge: library.works.seriesList.length > 0 && library.works.seriesFilter === ""
+                        ? String(library.works.seriesList.length) : ""
+                    active: library.works.seriesFilter !== ""
+                    onClicked: {
+                        if (library.works.seriesList.length > 0) {
+                            const pos = seriesChip.mapToItem(view, 0, seriesChip.height + 6)
+                            seriesMenu.x = Math.max(16, Math.min(view.width - seriesMenu.width - 16, pos.x))
+                            seriesMenu.y = pos.y
+                            seriesMenu.open()
+                        } else {
+                            library.works.seriesFilter = active ? "" : "*"
+                        }
+                    }
+                }
+
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 1
+                    height: 16
+                    color: Ui.tint(theme.text, 0.14)
+                }
+
+                Repeater {
+                    model: library.collections
+                    delegate: FilterChip {
+                        id: colChip
+                        required property var modelData
+                        text: modelData.name
+                        badge: modelData.count > 0 ? String(modelData.count) : ""
+                        active: library.works.collectionId === modelData.id
+                        onClicked: library.works.collectionId = active ? 0 : modelData.id
+                        onRightClicked: {
+                            colContextMenu.targetCol = modelData
+                            const pos = colChip.mapToItem(view, 0, colChip.height + 4)
+                            colContextMenu.x = Math.max(16, Math.min(view.width - colContextMenu.width - 16, pos.x))
+                            colContextMenu.y = pos.y
+                            colContextMenu.open()
+                        }
+                    }
+                }
+
+                FilterChip {
+                    text: qsTr("+ Shelf")
+                    active: false
+                    onClicked: collectionDialog.showCreate()
+                }
+
+                FilterChip {
+                    visible: library.works.hasActiveFilters
+                    text: qsTr("Clear")
+                    active: false
+                    onClicked: library.works.clearFilters()
+                }
+            }
+        }
+
+        Rectangle {
+            anchors.bottom: parent.bottom
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 1
+            readonly property real scrollY: view.viewMode === "list"
+                ? (listView.contentY - listView.originY) : (grid.contentY - grid.originY)
+            color: Ui.tint(theme.text, scrollY > 4 ? 0.08 : 0.04)
+        }
+    }
+
+    // Series picker popup
+    Popup {
+        id: seriesMenu
+        width: 240
+        padding: 6
+        focus: true
+        onClosed: view.focusGrid()
+        background: Rectangle {
+            radius: Math.min(10, theme.radius)
+            color: theme.surface
+            border.color: Ui.tint(theme.text, 0.1)
+        }
+        contentItem: Column {
+            spacing: 2
+            MenuRow {
+                text: qsTr("All books in a series")
+                checked: library.works.seriesFilter === "*"
+                onClicked: {
+                    library.works.seriesFilter = library.works.seriesFilter === "*" ? "" : "*"
+                    if (library.works.seriesFilter !== "")
+                        library.works.sortOrder = "series"
+                    seriesMenu.close()
+                }
+            }
+            Rectangle { width: parent.width; height: 1; color: Ui.tint(theme.text, 0.08) }
+            Repeater {
+                model: library.works.seriesList
+                delegate: MenuRow {
+                    required property string modelData
+                    text: modelData
+                    checked: library.works.seriesFilter === modelData
+                    onClicked: {
+                        library.works.seriesFilter = modelData
+                        library.works.sortOrder = "series"
+                        seriesMenu.close()
+                    }
+                }
+            }
+            Rectangle {
+                visible: library.works.seriesFilter !== ""
+                width: parent.width
+                height: 1
+                color: Ui.tint(theme.text, 0.08)
+            }
+            MenuRow {
+                visible: library.works.seriesFilter !== ""
+                text: qsTr("Show all books")
+                checked: false
+                onClicked: {
+                    library.works.seriesFilter = ""
+                    seriesMenu.close()
+                }
+            }
+        }
+    }
+
+    // Collection right-click context menu
+    Popup {
+        id: colContextMenu
+        property var targetCol: null
+        width: 190
+        padding: 6
+        focus: true
+        onClosed: view.focusGrid()
+        background: Rectangle {
+            radius: Math.min(10, theme.radius)
+            color: theme.surface
+            border.color: Ui.tint(theme.text, 0.1)
+        }
+        contentItem: Column {
+            spacing: 2
+            MenuRow {
+                text: qsTr("Rename shelf…")
+                onClicked: {
+                    const col = colContextMenu.targetCol
+                    colContextMenu.close()
+                    if (col)
+                        collectionDialog.showRename(col.id, col.name)
+                }
+            }
+            MenuRow {
+                text: qsTr("Delete shelf")
+                onClicked: {
+                    const col = colContextMenu.targetCol
+                    colContextMenu.close()
+                    if (col) {
+                        library.deleteCollection(col.id)
+                        toast.show(qsTr("Deleted shelf “%1”").arg(col.name))
+                    }
+                }
+            }
+        }
+    }
+
     Label {
         visible: library.scanning
-        anchors.top: bar.bottom
+        anchors.top: filterBar.bottom
         anchors.topMargin: 6
         anchors.right: parent.right
         anchors.rightMargin: 32
@@ -234,18 +623,18 @@ FocusScope {
         font.pixelSize: 12
     }
 
-    // --- The books -------------------------------------------------------
+    // --- Cover grid view -------------------------------------------------
     GridView {
         id: grid
-        anchors.top: bar.bottom
+        anchors.top: filterBar.bottom
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
         anchors.leftMargin: 18
         anchors.rightMargin: 18
-        visible: library.bookCount > 0
+        visible: library.bookCount > 0 && view.viewMode === "grid"
         clip: true
-        focus: true
+        focus: view.viewMode === "grid"
         keyNavigationEnabled: true
         keyNavigationWraps: false
         boundsBehavior: Flickable.StopAtBounds
@@ -264,19 +653,21 @@ FocusScope {
             width: grid.width
             topPadding: 12
             spacing: 0
+            readonly property bool showShelf: library.continueReading.length > 0 && library.works.searchText === "" && !library.works.hasActiveFilters
 
             ContinueShelf {
                 x: 14
                 width: grid.width - 28
-                visible: library.continueReading.length > 0 && library.works.searchText === ""
+                visible: parent.showShelf
                 height: visible ? implicitHeight : 0
                 books: library.continueReading
                 onOpen: (bookId) => view.openBook(bookId)
+                onLeaveDown: view.focusGrid()
             }
-            Item { width: 1; height: library.continueReading.length > 0 && library.works.searchText === "" ? 26 : 0 }
+            Item { width: 1; height: parent.showShelf ? 26 : 0 }
             Label {
                 x: 14
-                text: library.works.searchText !== ""
+                text: (library.works.searchText !== "" || library.works.hasActiveFilters)
                       ? qsTr("%n matches", "", library.works.count)
                       : library.works.grouped ? qsTr("All books · %n works", "", library.works.count) : qsTr("All books")
                 color: theme.text
@@ -294,13 +685,275 @@ FocusScope {
         Keys.onReturnPressed: view.activate(currentIndex)
         Keys.onEnterPressed: view.activate(currentIndex)
         onActiveFocusChanged: if (activeFocus && currentIndex < 0 && count > 0) currentIndex = 0
+    }
+
+    // --- Compact list view -----------------------------------------------
+    ListView {
+        id: listView
+        anchors.top: filterBar.bottom
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.leftMargin: 24
+        anchors.rightMargin: 24
+        visible: library.bookCount > 0 && view.viewMode === "list"
+        clip: true
+        focus: view.viewMode === "list"
+        keyNavigationEnabled: true
+        keyNavigationWraps: false
+        boundsBehavior: Flickable.StopAtBounds
+        spacing: 2
+        currentIndex: -1
+        model: library.works
+
+        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+        header: Column {
+            width: listView.width
+            topPadding: 12
+            bottomPadding: 8
+            spacing: 0
+            readonly property bool showShelf: library.continueReading.length > 0 && library.works.searchText === "" && !library.works.hasActiveFilters
+
+            ContinueShelf {
+                x: 8
+                width: listView.width - 16
+                visible: parent.showShelf
+                height: visible ? implicitHeight : 0
+                books: library.continueReading
+                onOpen: (bookId) => view.openBook(bookId)
+                onLeaveDown: view.focusGrid()
+            }
+            Item { width: 1; height: parent.showShelf ? 24 : 0 }
+            Label {
+                x: 8
+                text: (library.works.searchText !== "" || library.works.hasActiveFilters)
+                      ? qsTr("%n matches", "", library.works.count)
+                      : library.works.grouped ? qsTr("All books · %n works", "", library.works.count) : qsTr("All books")
+                color: theme.text
+                font.pixelSize: 15
+                font.weight: Font.DemiBold
+                bottomPadding: 4
+            }
+        }
+
+        delegate: Item {
+            id: listRow
+            required property int index
+            required property string key
+            required property int bookId
+            required property string title
+            required property string author
+            required property string editionLine
+            required property int editions
+            required property string cover
+            required property real progress
+            required property bool finished
+            required property string format
+            required property string problem
+            required property string series
+            required property real seriesIndex
+            required property int minutesLeft
+
+            readonly property bool selected: ListView.isCurrentItem && listView.activeFocus
+
+            width: listView.width
+            height: 68
+
+            Rectangle {
+                anchors.fill: parent
+                radius: Math.min(8, theme.radius)
+                color: listRow.selected ? Ui.tint(theme.accent, theme.light ? 0.14 : 0.2)
+                     : rowHover.hovered ? Ui.tint(theme.text, 0.05) : "transparent"
+                border.width: listRow.selected ? 1 : 0
+                border.color: theme.accent
+            }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 10
+                anchors.rightMargin: 14
+                spacing: 14
+
+                CoverImage {
+                    Layout.preferredWidth: 36
+                    Layout.preferredHeight: 52
+                    source: listRow.cover
+                    title: listRow.title
+                    author: listRow.author
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+                        Label {
+                            Layout.fillWidth: true
+                            text: listRow.title
+                            textFormat: Text.PlainText
+                            color: listRow.problem !== "" ? theme.textTertiary : theme.text
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            visible: listRow.series !== ""
+                            text: listRow.seriesIndex > 0
+                                ? (listRow.series + " #" + (Math.floor(listRow.seriesIndex) === listRow.seriesIndex ? Math.floor(listRow.seriesIndex) : listRow.seriesIndex))
+                                : listRow.series
+                            textFormat: Text.PlainText
+                            color: theme.accent
+                            font.pixelSize: 11
+                            leftPadding: 7
+                            rightPadding: 7
+                            topPadding: 2
+                            bottomPadding: 2
+                            background: Rectangle {
+                                radius: 10
+                                color: Ui.tint(theme.accent, 0.14)
+                            }
+                        }
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        text: {
+                            if (listRow.problem !== "")
+                                return listRow.problem
+                            const parts = []
+                            if (listRow.author !== "")
+                                parts.push(listRow.author)
+                            if (listRow.editions > 1)
+                                parts.push(qsTr("%n editions", "", listRow.editions))
+                            else if (listRow.editionLine !== "")
+                                parts.push(listRow.editionLine)
+                            return parts.join(" · ")
+                        }
+                        textFormat: Text.PlainText
+                        color: listRow.problem !== "" ? (theme.colors.red || "#e06c75") : theme.textSecondary
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                }
+
+                // Format badge
+                Label {
+                    text: listRow.format.toUpperCase()
+                    color: theme.textTertiary
+                    font.pixelSize: 10
+                    font.weight: Font.Bold
+                    font.letterSpacing: 0.5
+                    leftPadding: 6
+                    rightPadding: 6
+                    topPadding: 3
+                    bottomPadding: 3
+                    background: Rectangle {
+                        radius: 4
+                        color: Ui.tint(theme.text, 0.06)
+                    }
+                }
+
+                // Progress / status column
+                ColumnLayout {
+                    Layout.preferredWidth: 112
+                    spacing: 4
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Item { Layout.fillWidth: true }
+                        Glyph {
+                            visible: listRow.finished
+                            Layout.preferredWidth: 14
+                            Layout.preferredHeight: 14
+                            stroke: 2.3
+                            path: Icons.check
+                            color: theme.accent
+                        }
+                        Label {
+                            text: {
+                                const _lang = translator.language
+                                if (listRow.finished)
+                                    return qsTr("Finished")
+                                if (listRow.progress > 0.005)
+                                    return qsTr("%1%").arg(Math.round(listRow.progress * 100).toLocaleString(Qt.locale(), "f", 0))
+                                return qsTr("Unread")
+                            }
+                            color: listRow.finished ? theme.accent : theme.textSecondary
+                            font.pixelSize: 12
+                            font.weight: listRow.finished ? Font.DemiBold : Font.Normal
+                        }
+                    }
+
+                    Rectangle {
+                        visible: listRow.progress > 0.005 && !listRow.finished
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 4
+                        radius: 2
+                        color: Ui.tint(theme.text, 0.12)
+                        Rectangle {
+                            width: parent.width * listRow.progress
+                            height: parent.height
+                            radius: 2
+                            color: theme.accent
+                        }
+                    }
+
+                    Label {
+                        visible: listRow.progress > 0.005 && !listRow.finished && listRow.minutesLeft > 0
+                        Layout.alignment: Qt.AlignRight
+                        text: Format.duration(listRow.minutesLeft)
+                        color: theme.textTertiary
+                        font.pixelSize: 11
+                    }
+                }
+            }
+
+            HoverHandler {
+                id: rowHover
+                cursorShape: Qt.PointingHandCursor
+            }
+            TapHandler {
+                onTapped: {
+                    listView.currentIndex = listRow.index
+                    view.activate(listRow.index)
+                }
+            }
+            TapHandler {
+                acceptedButtons: Qt.RightButton
+                onTapped: {
+                    listView.currentIndex = listRow.index
+                    view.showDetails(listRow.index)
+                }
+            }
+        }
+
+        Keys.onReturnPressed: view.activate(currentIndex)
+        Keys.onEnterPressed: view.activate(currentIndex)
+        onActiveFocusChanged: if (activeFocus && currentIndex < 0 && count > 0) currentIndex = 0
+    }
+
+    // Empty filter / search state
+    Column {
+        anchors.centerIn: parent
+        visible: library.bookCount > 0 && library.works.count === 0
+        spacing: 12
 
         Label {
-            anchors.centerIn: parent
-            visible: grid.count === 0 && library.works.searchText !== ""
-            text: qsTr("No books match “%1”").arg(library.works.searchText)
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: library.works.searchText !== ""
+                ? qsTr("No books match “%1”").arg(library.works.searchText)
+                : qsTr("No books match these filters")
             color: theme.textSecondary
             font.pixelSize: 15
+        }
+        TextButton {
+            anchors.horizontalCenter: parent.horizontalCenter
+            visible: library.works.hasActiveFilters
+            text: qsTr("Clear filters")
+            onClicked: library.works.clearFilters()
         }
     }
 
@@ -322,6 +975,544 @@ FocusScope {
         anchors.fill: parent
         z: 10
         onRead: (bookId) => { details.close(); view.openBook(bookId) }
-        onClosed: grid.forceActiveFocus()
+        onClosed: view.focusGrid()
+    }
+
+    // --- Watched-Folder Manager Sheet ------------------------------------
+    FocusScope {
+        id: foldersSheet
+        property bool open: false
+        anchors.fill: parent
+        z: 15
+        visible: open
+
+        function show() {
+            open = true
+            forceActiveFocus()
+        }
+        function close() {
+            if (!open)
+                return
+            open = false
+            view.focusGrid()
+        }
+
+        Keys.onEscapePressed: close()
+
+        Rectangle {
+            anchors.fill: parent
+            color: Ui.tint("black", theme.light ? 0.22 : 0.5)
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onPressed: foldersSheet.close()
+                onWheel: (wheel) => wheel.accepted = true
+            }
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 540)
+            height: Math.min(parent.height - 64, foldersCol.implicitHeight + 48)
+            radius: Math.min(12, theme.radius)
+            color: theme.background
+            border.color: Ui.tint(theme.text, 0.12)
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onWheel: (wheel) => wheel.accepted = true
+            }
+
+            ColumnLayout {
+                id: foldersCol
+                anchors.fill: parent
+                anchors.margins: 24
+                spacing: 14
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: Icons.folder; color: theme.accent }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Watched folders")
+                        color: theme.text
+                        font.family: "Literata"
+                        font.pixelSize: 20
+                        font.weight: Font.DemiBold
+                    }
+                    IconButton {
+                        glyph: Icons.close
+                        tip: qsTr("Close (Esc)")
+                        onClicked: foldersSheet.close()
+                    }
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("Dogear scans these folders for EPUB and PDF books automatically. Book files are never modified.")
+                    color: theme.textSecondary
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    Layout.bottomMargin: 8
+                    visible: library.folders.length === 0
+                    text: qsTr("No watched folders yet. Add a folder to keep your library in sync automatically.")
+                    color: theme.textTertiary
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                }
+
+                ListView {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.min(260, contentHeight)
+                    visible: library.folders.length > 0
+                    clip: true
+                    spacing: 6
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: library.folders
+                    ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                    delegate: Rectangle {
+                        id: folderRow
+                        required property string modelData
+                        width: ListView.view.width
+                        height: 54
+                        radius: Math.min(8, theme.radius)
+                        color: Ui.tint(theme.text, 0.04)
+                        border.color: Ui.tint(theme.text, 0.08)
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 8
+                            spacing: 10
+
+                            Glyph { Layout.preferredWidth: 18; Layout.preferredHeight: 18; path: Icons.folder; color: theme.textSecondary }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 1
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: view.folderBasename(folderRow.modelData)
+                                    textFormat: Text.PlainText
+                                    color: theme.text
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: folderRow.modelData
+                                    textFormat: Text.PlainText
+                                    color: theme.textTertiary
+                                    font.pixelSize: 11
+                                    elide: Text.ElideMiddle
+                                }
+                            }
+
+                            IconButton {
+                                glyph: Icons.trash
+                                tone: theme.textSecondary
+                                tip: qsTr("Stop watching folder (files stay on disk)")
+                                onClicked: {
+                                    const p = folderRow.modelData
+                                    library.removeFolder(p)
+                                    toast.show(qsTr("Stopped watching “%1”").arg(view.folderBasename(p)))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 6
+                    spacing: 8
+
+                    TextButton {
+                        primary: true
+                        glyph: Icons.plus
+                        text: qsTr("Add folder…")
+                        onClicked: picker.chooseFolders()
+                    }
+                    TextButton {
+                        glyph: Icons.book
+                        text: qsTr("Add books…")
+                        onClicked: picker.chooseBooks()
+                    }
+                    Item { Layout.fillWidth: true }
+                    TextButton {
+                        glyph: view.refreshIcon
+                        enabled: !library.scanning
+                        text: library.scanning ? qsTr("Scanning…") : qsTr("Rescan")
+                        onClicked: library.rescan()
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Reading Stats & Insights Sheet ----------------------------------
+    FocusScope {
+        id: statsSheet
+        property bool open: false
+        readonly property var stats: view.statsRevision >= 0 ? library.readingStats : ({})
+        readonly property real maxDaySeconds: {
+            const days = stats.recentDays || []
+            let m = 60
+            for (let i = 0; i < days.length; ++i)
+                if ((days[i].seconds || 0) > m)
+                    m = days[i].seconds
+            return m
+        }
+
+        anchors.fill: parent
+        z: 16
+        visible: open
+
+        function show() {
+            open = true
+            forceActiveFocus()
+        }
+        function close() {
+            if (!open)
+                return
+            open = false
+            view.focusGrid()
+        }
+
+        Keys.onEscapePressed: close()
+
+        Rectangle {
+            anchors.fill: parent
+            color: Ui.tint("black", theme.light ? 0.22 : 0.5)
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onPressed: statsSheet.close()
+                onWheel: (wheel) => wheel.accepted = true
+            }
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 580)
+            height: Math.min(parent.height - 64, statsCol.implicitHeight + 48)
+            radius: Math.min(12, theme.radius)
+            color: theme.background
+            border.color: Ui.tint(theme.text, 0.12)
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onWheel: (wheel) => wheel.accepted = true
+            }
+
+            ColumnLayout {
+                id: statsCol
+                anchors.fill: parent
+                anchors.margins: 24
+                spacing: 16
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: view.statsIcon; color: theme.accent }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Reading stats")
+                        color: theme.text
+                        font.family: "Literata"
+                        font.pixelSize: 20
+                        font.weight: Font.DemiBold
+                    }
+                    IconButton {
+                        glyph: Icons.close
+                        tip: qsTr("Close (Esc)")
+                        onClicked: statsSheet.close()
+                    }
+                }
+
+                // 4 KPI Cards
+                GridLayout {
+                    Layout.fillWidth: true
+                    columns: 2
+                    columnSpacing: 10
+                    rowSpacing: 10
+
+                    component StatTile: Rectangle {
+                        id: tile
+                        property string label
+                        property string value
+                        property string detail
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 82
+                        radius: Math.min(10, theme.radius)
+                        color: Ui.tint(theme.text, 0.04)
+                        border.color: Ui.tint(theme.text, 0.07)
+
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: 14
+                            spacing: 2
+                            Label {
+                                text: tile.label
+                                color: theme.textTertiary
+                                font.pixelSize: 12
+                            }
+                            Label {
+                                text: tile.value
+                                color: theme.text
+                                font.family: "Literata"
+                                font.pixelSize: 21
+                                font.weight: Font.DemiBold
+                            }
+                            Label {
+                                visible: text !== ""
+                                text: tile.detail
+                                color: theme.textSecondary
+                                font.pixelSize: 11
+                            }
+                        }
+                    }
+
+                    StatTile {
+                        label: qsTr("Total time read")
+                        value: view.formatDurationSeconds(statsSheet.stats.totalSeconds || 0)
+                        detail: qsTr("Today: %1 · Week: %2")
+                            .arg(view.formatDurationSeconds(statsSheet.stats.todaySeconds || 0))
+                            .arg(view.formatDurationSeconds(statsSheet.stats.weekSeconds || 0))
+                    }
+                    StatTile {
+                        label: qsTr("Reading streak")
+                        value: qsTr("%n days", "", statsSheet.stats.streakDays || 0)
+                        detail: (statsSheet.stats.longestStreak || 0) > 0
+                            ? qsTr("Longest: %1 · Active: %2")
+                                .arg(qsTr("%n days", "", statsSheet.stats.longestStreak || 0))
+                                .arg(qsTr("%n days", "", statsSheet.stats.activeDays || 0))
+                            : qsTr("Start reading today")
+                    }
+                    StatTile {
+                        label: qsTr("Books finished")
+                        value: {
+                            const _lang = translator.language
+                            return (statsSheet.stats.finishedBooks || 0).toLocaleString(Qt.locale(), "f", 0)
+                        }
+                        detail: qsTr("%1 reading · %2 unread")
+                            .arg(statsSheet.stats.readingBooks || 0)
+                            .arg(statsSheet.stats.unreadBooks || 0)
+                    }
+                    StatTile {
+                        label: qsTr("Reading pace")
+                        value: {
+                            const _lang = translator.language
+                            return qsTr("%1 wpm").arg((statsSheet.stats.wordsPerMinute || 260).toLocaleString(Qt.locale(), "f", 0))
+                        }
+                        detail: qsTr("Learned from your reading")
+                    }
+                }
+
+                // 14-day activity chart
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+
+                    Label {
+                        text: qsTr("Last 14 days")
+                        color: theme.textSecondary
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 116
+                        radius: Math.min(10, theme.radius)
+                        color: Ui.tint(theme.text, 0.03)
+                        border.color: Ui.tint(theme.text, 0.07)
+
+                        RowLayout {
+                            anchors.fill: parent
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
+                            anchors.topMargin: 14
+                            anchors.bottomMargin: 10
+                            spacing: 6
+
+                            Repeater {
+                                model: statsSheet.stats.recentDays || []
+                                delegate: Item {
+                                    id: dayBar
+                                    required property var modelData
+                                    required property int index
+                                    Layout.fillWidth: true
+                                    Layout.fillHeight: true
+
+                                    readonly property real secs: modelData.seconds || 0
+                                    readonly property real ratio: secs > 0 ? Math.max(0.08, secs / statsSheet.maxDaySeconds) : 0
+
+                                    Rectangle {
+                                        anchors.bottom: dayLbl.top
+                                        anchors.bottomMargin: 6
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        width: Math.min(20, parent.width - 2)
+                                        height: dayBar.secs > 0 ? Math.max(5, (parent.height - 24) * dayBar.ratio) : 3
+                                        radius: 3
+                                        color: dayBar.secs > 0 ? theme.accent : Ui.tint(theme.text, 0.12)
+                                        opacity: barHover.hovered ? 1.0 : (dayBar.secs > 0 ? 0.85 : 0.5)
+                                    }
+
+                                    Label {
+                                        id: dayLbl
+                                        anchors.bottom: parent.bottom
+                                        anchors.horizontalCenter: parent.horizontalCenter
+                                        text: (dayBar.modelData.shortLabel || "").slice(0, 2)
+                                        color: dayBar.index === 13 ? theme.text : theme.textTertiary
+                                        font.pixelSize: 10
+                                        font.weight: dayBar.index === 13 ? Font.DemiBold : Font.Normal
+                                    }
+
+                                    HoverHandler { id: barHover }
+                                    ToolTip.visible: barHover.hovered
+                                    ToolTip.text: dayBar.modelData.day + " · " + view.formatDurationSeconds(dayBar.secs)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Create / Rename Shelf Dialog ------------------------------------
+    FocusScope {
+        id: collectionDialog
+        property bool open: false
+        property int editingId: 0
+
+        anchors.fill: parent
+        z: 18
+        visible: open
+
+        function showCreate() {
+            editingId = 0
+            colNameInput.text = ""
+            open = true
+            colNameInput.forceActiveFocus()
+        }
+        function showRename(id, currentName) {
+            editingId = id
+            colNameInput.text = currentName
+            open = true
+            colNameInput.forceActiveFocus()
+            colNameInput.selectAll()
+        }
+        function close() {
+            if (!open)
+                return
+            open = false
+            view.focusGrid()
+        }
+        function submit() {
+            const name = colNameInput.text.trim()
+            if (name === "")
+                return
+            if (editingId > 0) {
+                if (library.renameCollection(editingId, name))
+                    toast.show(qsTr("Renamed shelf to “%1”").arg(name))
+            } else {
+                const id = library.createCollection(name)
+                if (id > 0) {
+                    library.works.collectionId = id
+                    toast.show(qsTr("Created shelf “%1”").arg(name))
+                }
+            }
+            close()
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            color: Ui.tint("black", theme.light ? 0.22 : 0.5)
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onPressed: collectionDialog.close()
+                onWheel: (wheel) => wheel.accepted = true
+            }
+        }
+
+        Rectangle {
+            anchors.centerIn: parent
+            width: Math.min(parent.width - 48, 380)
+            height: dialogCol.implicitHeight + 40
+            radius: Math.min(12, theme.radius)
+            color: theme.background
+            border.color: Ui.tint(theme.text, 0.12)
+
+            ColumnLayout {
+                id: dialogCol
+                anchors.fill: parent
+                anchors.margins: 20
+                spacing: 12
+
+                Label {
+                    text: collectionDialog.editingId > 0 ? qsTr("Rename shelf") : qsTr("New shelf")
+                    color: theme.text
+                    font.pixelSize: 16
+                    font.weight: Font.DemiBold
+                }
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 38
+                    radius: Math.min(8, theme.radius)
+                    color: Ui.tint(theme.text, 0.06)
+                    border.width: 1.5
+                    border.color: theme.accent
+
+                    TextInput {
+                        id: colNameInput
+                        anchors.fill: parent
+                        anchors.leftMargin: 12
+                        anchors.rightMargin: 12
+                        verticalAlignment: TextInput.AlignVCenter
+                        color: theme.text
+                        font.pixelSize: 14
+                        selectByMouse: true
+                        Keys.onReturnPressed: collectionDialog.submit()
+                        Keys.onEnterPressed: collectionDialog.submit()
+                        Keys.onEscapePressed: collectionDialog.close()
+                        Text {
+                            anchors.fill: parent
+                            verticalAlignment: Text.AlignVCenter
+                            visible: colNameInput.text === ""
+                            text: qsTr("e.g. Favorites, Science Fiction…")
+                            color: theme.textTertiary
+                            font: colNameInput.font
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Item { Layout.fillWidth: true }
+                    TextButton {
+                        text: qsTr("Cancel")
+                        onClicked: collectionDialog.close()
+                    }
+                    TextButton {
+                        primary: true
+                        enabled: colNameInput.text.trim() !== ""
+                        text: collectionDialog.editingId > 0 ? qsTr("Save") : qsTr("Create")
+                        onClicked: collectionDialog.submit()
+                    }
+                }
+            }
+        }
     }
 }
