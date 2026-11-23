@@ -540,6 +540,13 @@ FocusScope {
             win.showAiSettings()
         }
         function onVoiceMissing() {
+            // No voice at all yet: offer the one for this book, right here.
+            const pack = voicePacks.supported && narration.hasPendingStart && !narration.voice.startsWith("builtin:")
+                         ? voicePacks.offer(reader.language) : ({})
+            if (pack.voice) {
+                listenOffer.show()
+                return
+            }
             toast.show(qsTr("That voice isn't downloaded yet. Choose or download one."))
             view.showVoices()
         }
@@ -1369,6 +1376,16 @@ FocusScope {
             look: view.look
             onGo: (target) => view.goTo(target)
         }
+    }
+
+    ListenOffer {
+        id: listenOffer
+        z: 7
+        look: view.look
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 40
+        onMoreVoices: view.showVoices()
     }
 
     ListenBar {

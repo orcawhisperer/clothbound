@@ -1,6 +1,7 @@
 <RCC>
     <qresource prefix="/">
         <file alias="Main.qml">Main.qml</file>
+        <file alias="ListenOffer.qml">ListenOffer.qml</file>
         <file alias="CompanionChooser.qml">CompanionChooser.qml</file>
         <file alias="SettingsView.qml">SettingsView.qml</file>
         <file alias="SettingsCard.qml">SettingsCard.qml</file>
