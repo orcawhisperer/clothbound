@@ -49,9 +49,11 @@ server on this computer, or both. Choose in Intelligence (✦ in the library):
 | Search by meaning | Gemini | This computer | This computer |
 | Illustrate | Gemini | Gemini | Not available |
 
-Dogear doesn't bundle a language model: it finds the one you run (Ollama,
-llama.cpp's `llama-server`, LM Studio, MLX or vLLM, or any OpenAI-compatible
-address). **Test this computer** in Intelligence says, feature by feature,
+Dogear doesn't bundle a language model. Intelligence sets one up for you: it
+installs Ollama in Omarchy's terminal (you type your password there), then
+downloads the model that suits your computer, showing its size first. Or it
+finds the one you already run (llama.cpp's `llama-server`, LM Studio, MLX,
+vLLM, or any OpenAI-compatible address). **Test this computer** in Intelligence says, feature by feature,
 what will work well here, what will be slow, and what needs Gemini.
 
 ## What it needs

@@ -23,6 +23,7 @@ FocusScope {
             ai.check()
         if (!ai.localServers.length && !ai.findingLocal)
             ai.findLocal()
+        localSetup.refresh()
         forceActiveFocus()
         if (!ai.hasKey)
             keyInput.forceActiveFocus()

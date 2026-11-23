@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 
+import "Format.js" as Format
 import "Ui.js" as Ui
 
 // Where Dogear's text work happens: Gemini, this computer (a model server
@@ -188,9 +189,64 @@ ColumnLayout {
                     }
                 }
             }
-            Note {
-                visible: !(ai.localUrl !== "") && !ai.findingLocal
-                text: qsTr("Dogear uses a model server you run yourself: Ollama, llama.cpp, LM Studio, MLX or vLLM. Start one with a model, then Find. Nothing is downloaded by Dogear.")
+            // Setting one up: Ollama installed, started, and a model that
+            // suits this computer downloaded, one step at a time.
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: ai.localUrl === "" && !ai.findingLocal
+                spacing: 8
+                Note {
+                    text: localSetup.textModel.model === undefined
+                        ? qsTr("This computer has too little memory for a model worth having. Gemini does this work instead.")
+                        : qsTr("A model on this computer works offline, for free, and keeps your reading private. For this computer: %1 (%2), and %3 (%4) for search by meaning.")
+                            .arg(localSetup.textModel.title).arg(Format.size(localSetup.textModel.bytes, Qt.locale()))
+                            .arg(localSetup.searchModel.title).arg(Format.size(localSetup.searchModel.bytes, Qt.locale()))
+                }
+                RowLayout {
+                    visible: localSetup.textModel.model !== undefined
+                    spacing: 8
+                    TextButton {
+                        visible: !localSetup.running
+                        primary: true
+                        enabled: !localSetup.waiting
+                        text: localSetup.installed ? qsTr("Start Ollama") : qsTr("Install Ollama")
+                        onClicked: localSetup.install()
+                    }
+                    TextButton {
+                        visible: localSetup.running
+                        primary: true
+                        enabled: !localSetup.pulling
+                        // Already there (pulled before): a moment's check, then used.
+                        readonly property bool have: ai.localServers.some(server => server.textModels.indexOf(localSetup.textModel.model) >= 0)
+                        text: have ? qsTr("Use %1").arg(localSetup.textModel.title) : qsTr("Download %1").arg(localSetup.textModel.title)
+                        onClicked: localSetup.download()
+                    }
+                    TextButton {
+                        visible: localSetup.pulling
+                        text: qsTr("Stop")
+                        onClicked: localSetup.cancel()
+                    }
+                    BusyIndicator { visible: localSetup.waiting; running: visible; implicitWidth: 22; implicitHeight: 22 }
+                }
+                Note {
+                    visible: localSetup.waiting
+                    text: qsTr("Finish in the terminal (it asks for your password), and Dogear carries on by itself.")
+                }
+                ProgressBar {
+                    Layout.fillWidth: true
+                    visible: localSetup.pulling
+                    value: localSetup.progress
+                }
+                Note {
+                    visible: localSetup.status !== "" || localSetup.problem !== ""
+                    text: localSetup.problem !== "" ? localSetup.problem : localSetup.status
+                }
+                Note {
+                    visible: !localSetup.running && !localSetup.waiting
+                    color: theme.textTertiary
+                    font.pixelSize: 12
+                    text: qsTr("Already run llama.cpp, LM Studio, MLX or vLLM? Start it, then Find, or give its address below.")
+                }
             }
             RowLayout {
                 Layout.fillWidth: true

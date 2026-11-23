@@ -215,6 +215,8 @@ FocusScope {
         }
         function onSelected(selection) {
             view.selection = selection && selection.text ? selection : ({})
+            if (selection && selection.text)
+                win.tip("select", qsTr("Right-click words for Define, Explain, Translate, or a picture of the moment."))
             if (selection && selection.text) {
                 selectionBar.forMark = false
                 selectionBar.target = selection
@@ -328,6 +330,8 @@ FocusScope {
                         + ".then(() => dogear.speak(" + start + "," + end + ",true))")
         }
         function onStateChanged() {
+            if (narration.active)
+                win.tip("listen", qsTr(", and . skip a paragraph, < and > change the speed. Close the window and the reading goes on."))
             if (narration.active !== view.listening) {
                 view.listening = narration.active
                 styleTimer.restart()
@@ -348,6 +352,8 @@ FocusScope {
             view.openBook()
         }
         function onBookChanged() {
+            if (reader.open && reader.format === "pdf")
+                win.tip("pdf", qsTr("PDF pages follow your reading theme. + and − zoom, and the layout (A) shows one page, two, or scrolling."))
             if (reader.open) {
                 view.closePanels()
                 view.chromeShown = false

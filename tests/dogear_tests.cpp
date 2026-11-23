@@ -30,6 +30,7 @@
 #include <QPdfWriter>
 #include <QPainter>
 #include "systemcheck.h"
+#include "localsetup.h"
 #include "instance.h"
 #include "keystore.h"
 #include "localspeech.h"
@@ -1331,7 +1332,11 @@ private slots:
         QCOMPARE(machine.graphics, QString("AMD Radeon"));
         QVERIFY(!machine.discreteGraphics);  // a 780M's carve-out isn't VRAM
         QCOMPARE(SystemCheck::tierFor(machine), QString("Local Standard"));
-        QCOMPARE(SystemCheck::suggestedModel(machine), QString("Gemma 4 26B-A4B"));
+        QCOMPARE(SystemCheck::suggestedModel(machine), QString("Qwen3.5 9B"));
+        QCOMPARE(LocalSetup::modelsFor(31, 0).first, QString("qwen3.5:9b"));
+        QCOMPARE(LocalSetup::modelsFor(15.5, 0).first, QString("qwen3.5:4b"));
+        QCOMPARE(LocalSetup::modelsFor(8, 0).first, QString("qwen3.5:2b"));
+        QVERIFY(LocalSetup::modelsFor(4, 0).first.isEmpty());
         QCOMPARE(SystemCheck::billionsIn("qwen3.5:4b"), 4.0);
         QCOMPARE(SystemCheck::billionsIn("Qwen3.5-9B-Instruct-Q4_K_M"), 9.0);
         QCOMPARE(SystemCheck::billionsIn("gemma4:e4b"), 4.0);

@@ -91,7 +91,7 @@ ApplicationWindow {
     readonly property bool readerOpen: reader.open
     // Letters are text while a field has the keys, not shortcuts.
     readonly property bool typing: libraryView.typing
-    readonly property bool overlayOpen: helpVisible || libraryView.menuOpen || aiSettings.open
+    readonly property bool overlayOpen: helpVisible || libraryView.menuOpen || aiSettings.open || welcome.open
     readonly property bool libraryKeys: !readerOpen && !typing && !overlayOpen && !libraryView.detailsOpen
 
     function openBook(bookId) {
@@ -244,6 +244,15 @@ ApplicationWindow {
             onClosed: if (!win.readerOpen) libraryView.focusGrid()
         }
 
+        Welcome {
+            id: welcome
+            anchors.fill: parent
+            z: 58
+            onAddBooks: picker.chooseFolders()
+            onShowIntelligence: win.showAiSettings()
+            onClosed: if (!win.readerOpen) libraryView.focusGrid()
+        }
+
         HelpOverlay {
             anchors.fill: parent
             visible: win.helpVisible
@@ -251,6 +260,40 @@ ApplicationWindow {
             z: 60
             onDismissed: win.helpVisible = false
         }
+    }
+
+    // What the reader has been shown: the welcome, the version they last
+    // saw (for What's new), and the tips already given, once each.
+    Settings {
+        id: onboarding
+        location: settingsUrl
+        category: "onboarding"
+        property bool welcomed: false
+        property string version: ""
+        property var tips: []
+    }
+    // A tip, the first time something happens, and never again.
+    function tip(id, text) {
+        if (onboarding.tips.indexOf(id) >= 0 || welcome.open)
+            return
+        onboarding.tips = onboarding.tips.concat([id])
+        toast.show(text, qsTr("Got it"), () => {})
+    }
+    // A first launch is welcomed; a new version (for someone who has read
+    // with Dogear before) gets What's new.
+    function greet() {
+        const version = Qt.application.version
+        if (!onboarding.welcomed && library.bookCount === 0)
+            welcome.show("welcome")
+        else if (onboarding.version !== version)
+            welcome.show("whatsnew")
+        onboarding.welcomed = true
+        onboarding.version = version
+    }
+    Timer {
+        running: !debugMode || Qt.application.arguments.indexOf("--greet") >= 0
+        interval: 700
+        onTriggered: win.greet()
     }
 
     // How pages look, kept between sessions in ~/.config/dogear/settings.ini.

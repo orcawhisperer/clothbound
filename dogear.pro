@@ -25,6 +25,7 @@ HEADERS += \
     src/epubbook.h \
     src/filepicker.h \
     src/gemini.h \
+    src/localsetup.h \
     src/audiobook.h \
     src/cast.h \
     src/illustrator.h \
@@ -71,6 +72,7 @@ SOURCES += \
     src/cli.cpp \
     src/epubbook.cpp \
     src/gemini.cpp \
+    src/localsetup.cpp \
     src/audiobook.cpp \
     src/cast.cpp \
     src/illustrator.cpp \

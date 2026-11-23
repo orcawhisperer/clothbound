@@ -1,0 +1,79 @@
+#pragma once
+
+#include <QNetworkAccessManager>
+#include <QObject>
+#include <QPointer>
+#include <QTimer>
+#include <QVariantMap>
+
+class AiServices;
+class QNetworkReply;
+
+// Setting up a model on this computer, for someone who has never heard of
+// Ollama: whether it's installed and running, the model that suits this
+// computer (with its download size, asked of Ollama's registry), installing
+// Ollama in Omarchy's terminal (where the reader types their password, never
+// Dogear), and downloading the model through Ollama's own API, with
+// progress, then using it.
+class LocalSetup : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(bool installed READ installed NOTIFY changed)
+    Q_PROPERTY(bool running READ running NOTIFY changed)
+    // {model, title, bytes} for text, and for search by meaning; {} when this
+    // computer is too small for a model worth having.
+    Q_PROPERTY(QVariantMap textModel READ textModel NOTIFY changed)
+    Q_PROPERTY(QVariantMap searchModel READ searchModel NOTIFY changed)
+    Q_PROPERTY(bool waiting READ waiting NOTIFY changed)   // for the terminal to finish
+    Q_PROPERTY(bool pulling READ pulling NOTIFY changed)
+    Q_PROPERTY(double progress READ progress NOTIFY changed)
+    Q_PROPERTY(QString status READ status NOTIFY changed)
+    Q_PROPERTY(QString problem READ problem NOTIFY changed)
+
+public:
+    LocalSetup(AiServices *ai, QObject *parent = nullptr);
+
+    bool installed() const { return m_installed; }
+    bool running() const { return m_running; }
+    QVariantMap textModel() const { return m_text; }
+    QVariantMap searchModel() const { return m_search; }
+    bool waiting() const { return m_waiting; }
+    bool pulling() const { return m_pulling; }
+    double progress() const { return m_progress; }
+    QString status() const { return m_status; }
+    QString problem() const { return m_problem; }
+
+    // Looks again: installed, running, and what to recommend.
+    Q_INVOKABLE void refresh();
+    // Opens Omarchy's terminal to install (or just start) Ollama.
+    Q_INVOKABLE void install();
+    // Downloads the recommended models, then uses them.
+    Q_INVOKABLE void download();
+    Q_INVOKABLE void cancel();
+
+    // Ollama's tags for a computer with this much memory (GB) and graphics
+    // memory: {text, search}; empty text when it's too small.
+    static QPair<QString, QString> modelsFor(double memoryGb, double graphicsGb);
+
+signals:
+    void changed();
+
+private:
+    void probe();
+    void size(const QString &model, bool text);
+    void pull(const QStringList &models);
+
+    AiServices *m_ai;
+    QNetworkAccessManager m_network;
+    bool m_installed = false;
+    bool m_running = false;
+    bool m_waiting = false;
+    bool m_pulling = false;
+    double m_progress = 0;
+    QString m_status;
+    QString m_problem;
+    QVariantMap m_text;
+    QVariantMap m_search;
+    QTimer m_poll;
+    int m_polls = 0;
+    QPointer<QNetworkReply> m_reply;
+};

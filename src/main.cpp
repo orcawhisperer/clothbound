@@ -12,6 +12,7 @@
 #include "illustrator.h"
 #include "pdfpages.h"
 #include "systemcheck.h"
+#include "localsetup.h"
 #include "keystore.h"
 #include "cli.h"
 #include "library.h"
@@ -212,6 +213,7 @@ int main(int argc, char *argv[]) {
     AudioCache audioCache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/audio"),
                           library.database().connectionName());
     SystemCheck systemCheck(&ai, &localSpeech);
+    LocalSetup localSetup(&ai);
     Narration narration(&ai, &audioCache, &reader, &library);
     Mpris mpris(&narration, &reader, &library);
     Download download(&ai, &audioCache, &reader, &narration);
@@ -264,6 +266,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("desktop", &notifier);
     engine.rootContext()->setContextProperty("instance", &instance);
     engine.rootContext()->setContextProperty("systemCheck", &systemCheck);
+    engine.rootContext()->setContextProperty("localSetup", &localSetup);
     engine.rootContext()->setContextProperty("localSpeech", &localSpeech);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);

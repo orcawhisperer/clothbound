@@ -19,5 +19,7 @@ function duration(minutes) {
 function size(bytes, locale) {
     if (bytes < 1024 * 1024)
         return qsTr("%1 KB").arg(Math.max(1, Math.round(bytes / 1024)).toLocaleString(locale, "f", 0))
+    if (bytes >= 1000 * 1024 * 1024)
+        return qsTr("%1 GB").arg((bytes / (1024 * 1024 * 1024)).toLocaleString(locale, "f", 1))
     return qsTr("%1 MB").arg((bytes / (1024 * 1024)).toLocaleString(locale, "f", 1))
 }

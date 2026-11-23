@@ -132,12 +132,10 @@ QString SystemCheck::tierFor(const Machine &machine) {
 }
 
 QString SystemCheck::suggestedModel(const Machine &machine) {
-    const double room = qMax(machine.memoryGb - 6, machine.graphicsMemoryGb);
-    if (room >= 24)
-        return QStringLiteral("Gemma 4 26B-A4B");
-    if (room >= 10)
+    // As Intelligence offers to download (LocalSetup::modelsFor).
+    if (machine.memoryGb >= 30 || machine.graphicsMemoryGb >= 10)
         return QStringLiteral("Qwen3.5 9B");
-    if (room >= 5)
+    if (machine.memoryGb >= 15 || machine.graphicsMemoryGb >= 6)
         return QStringLiteral("Qwen3.5 4B");
     return QStringLiteral("Qwen3.5 2B");
 }

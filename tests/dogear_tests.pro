@@ -19,6 +19,7 @@ HEADERS += \
     ../src/localspeech.h \
     ../src/voicepacks.h \
     ../src/gemini.h \
+    ../src/localsetup.h \
     ../src/audiobook.h \
     ../src/cast.h \
     ../src/illustrator.h \
@@ -60,6 +61,7 @@ SOURCES += \
     ../src/localspeech.cpp \
     ../src/voicepacks.cpp \
     ../src/gemini.cpp \
+    ../src/localsetup.cpp \
     ../src/audiobook.cpp \
     ../src/cast.cpp \
     ../src/illustrator.cpp \
