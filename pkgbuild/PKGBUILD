@@ -1,12 +1,13 @@
 pkgname=dogear
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc='An ebook reader for Omarchy: your EPUBs and PDFs in one library, and a calm page to read them on'
+pkgdesc='An ebook reader for Omarchy: your EPUBs and PDFs in one library, a calm page to read them on, and voices to read them aloud'
 arch=('x86_64' 'aarch64')
 license=('MIT' 'OFL-1.1')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-webengine' 'qt6-webchannel' 'qt6-svg'
-         'xdg-desktop-portal' 'zlib')
-optdepends=('sdcv: look words up in your own StarDict dictionaries, offline')
+         'qt6-multimedia' 'libsecret' 'xdg-desktop-portal' 'zlib' 'tar' 'bzip2')
+optdepends=('ffmpeg: keep listened narration small (Opus) in the audio cache'
+            'sdcv: look words up in your own StarDict dictionaries, offline')
 makedepends=('gcc' 'make')
 source=()
 sha256sums=()
