@@ -586,6 +586,7 @@ FocusScope {
         }
         if (ctrl && !alt && !meta) {
             if (key === "f" || key === "F") searchBar.show()
+            else if ((key === "k" || key === "K") && typeof commandPalette !== "undefined") commandPalette.open ? commandPalette.close() : commandPalette.show()
             else if (key === "+" || key === "=") resize(0.05)
             else if (key === "-") resize(-0.05)
             else if (key === "0") resize(0)
@@ -1694,7 +1695,7 @@ FocusScope {
     }
 
     // --- Keys ----------------------------------------------------------------
-    readonly property bool modalOpen: win.helpVisible || aiSettings.open || welcome.open
+    readonly property bool modalOpen: win.helpVisible || aiSettings.open || welcome.open || (typeof commandPalette !== "undefined" && commandPalette.open)
     readonly property bool keys: visible && !panelOpen && !modalOpen && !win.typing && !lightbox.open
     // Listening keys work with a panel open too, unless a field is taking typing.
     readonly property bool typing: win.typing
