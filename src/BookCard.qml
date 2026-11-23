@@ -144,6 +144,7 @@ Item {
         Label {
             width: parent.width
             text: card.title
+            textFormat: Text.PlainText
             color: card.problem !== "" ? theme.textTertiary : theme.text
             font.pixelSize: 13
             font.weight: Font.DemiBold
@@ -156,6 +157,7 @@ Item {
             width: parent.width
             text: card.problem !== "" ? card.problem
                 : card.editions > 1 ? qsTr("%n editions", "", card.editions) : card.author
+            textFormat: Text.PlainText
             color: card.editions > 1 && card.problem === "" ? theme.accent : theme.textSecondary
             font.pixelSize: 12
             elide: Text.ElideRight

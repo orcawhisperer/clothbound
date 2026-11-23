@@ -1,9 +1,9 @@
 #include "bookname.h"
 
-#include "htmltokenizer.h"
-
 #include <QFileInfo>
+#include <QHash>
 #include <QRegularExpression>
+#include <QSet>
 
 namespace {
 constexpr auto ci = QRegularExpression::CaseInsensitiveOption;
@@ -102,10 +102,13 @@ QString displayAuthor(const QString &raw) {
         name.chop(1);
 
     // "Wells, H. G." reads "H. G. Wells"; a name with several commas is a
-    // list, and is left alone.
+    // list, and suffixes like "King, Jr." or "Media, Inc." stay in place.
     if (name.count(',') == 1) {
         const QString last = name.section(',', 0, 0).trimmed(), first = name.section(',', 1).trimmed();
-        if (!first.isEmpty() && !last.isEmpty() && !first.contains(QStringLiteral(" and ")))
+        static const QRegularExpression suffixAfterComma(
+            R"(^(?:jr|sr|ii|iii|iv|v|phd|ph\.d|md|m\.d|dds|esq|inc|ltd|llc|corp|co)\.?$)", ci);
+        if (!first.isEmpty() && !last.isEmpty() && !first.contains(QStringLiteral(" and ")) &&
+            !suffixAfterComma.match(first).hasMatch())
             name = first + ' ' + last;
     }
     static const QRegularExpression packedInitial(R"(\b([A-Z])\.(?=\S))");
@@ -113,8 +116,19 @@ QString displayAuthor(const QString &raw) {
 
     QStringList words = name.split(' ', Qt::SkipEmptyParts);
     static const QRegularExpression initials(R"(^[A-Z]{2,3}$)");
+    static const QSet<QString> acronyms{
+        "AI", "ML", "DR", "MR", "MS", "MRS", "ST", "DE", "LA", "LE", "EL", "II", "III", "IV", "VI", "VII", "IX",
+        "XI", "XII", "MIT", "BBC", "GNU", "IBM", "USA", "CIA", "FBI", "ACM", "WHO", "UN", "EU", "UK", "US", "NYT",
+        "NPR", "CNN", "ABC", "CBS", "NBC", "PBS", "NHK", "OUP", "CUP", "PHP", "SQL", "CSS", "XML", "API", "AWS",
+    };
+    static const QSet<QString> orgWords{
+        "press", "books", "publishing", "publications", "media", "news", "group", "project", "foundation",
+        "institute", "university", "lab", "labs", "research", "team", "society", "association", "committee",
+        "staff", "editors", "editorial", "magazine", "review", "journal", "library", "museum", "studio",
+    };
     for (qsizetype i = 0; i + 1 < words.size(); ++i)
-        if (initials.match(words[i]).hasMatch()) {
+        if (initials.match(words[i]).hasMatch() && !acronyms.contains(words[i]) &&
+            !orgWords.contains(words[i + 1].toLower())) {
             QStringList letters;
             for (const QChar c : std::as_const(words[i]))
                 letters.append(QString(c) + '.');
@@ -164,7 +178,9 @@ QString displayTitle(const QString &title) {
 }
 
 QString cleanTitle(const QString &title) {
-    QString t = HtmlTokenizer::decodeEntities(title).simplified();
+    // Metadata text has already been decoded by HtmlTokenizer; do not decode
+    // entities a second time (which corrupts literal entities and creates tags).
+    QString t = title.simplified();
     static const QRegularExpression byline(R"(\s+--\s+.*$)");
     t.remove(byline);
     static const QRegularExpression trailing(R"(\s*\(([^()]*)\)\s*$)");
@@ -200,23 +216,49 @@ QString comparable(const QString &text) {
 }
 
 int volumeNumber(const QString &title) {
-    static const QRegularExpression volume(R"(\b(?:vol(?:ume)?|book|part)\.?\s*(\d+|[IVXLC]+)\b)", ci);
-    const auto match = volume.match(title);
-    if (!match.hasMatch())
-        return 0;
-    bool ok = false;
-    const int number = match.captured(1).toInt(&ok);
-    return ok ? number : romanValue(match.captured(1));
+    static const QRegularExpression volume(
+        R"(\b(vol(?:ume)?|book|part)\.?\s*(\d+|(?:X{1,3}(?:IX|IV|V?I{0,3})|IX|IV|VI{0,3}|I{1,3}|L|C))(?=$|[\s,:;\-)\]]))",
+        ci);
+    auto it = volume.globalMatch(title);
+    while (it.hasNext()) {
+        const auto match = it.next();
+        const QString num = match.captured(2);
+        if (num.isEmpty())
+            continue;
+        bool ok = false;
+        const int number = num.toInt(&ok);
+        if (ok)
+            return number;
+        // Avoid matching the English pronoun "I" in phrases like "A Book I Read".
+        if (num == QLatin1String("I") && match.captured(1).compare(QLatin1String("book"), Qt::CaseInsensitive) == 0) {
+            const QString after = title.mid(match.capturedEnd()).trimmed();
+            if (!after.isEmpty() && after.front().isLetter())
+                continue;
+        }
+        return romanValue(num);
+    }
+    return 0;
 }
 
 QString workKey(const QString &author, const QString &title, int volume) {
-    const QStringList names = displayAuthor(author).split(' ', Qt::SkipEmptyParts);
+    QStringList names = displayAuthor(author).split(' ', Qt::SkipEmptyParts);
+    static const QStringList suffixes{"Jr.", "Jr", "Sr.", "Sr", "II", "III", "IV"};
+    while (names.size() > 1 && suffixes.contains(names.last()))
+        names.removeLast();
     const QString surname = names.isEmpty() ? QString() : comparable(names.last());
 
     QString t = cleanTitle(title).toLower();
     const qsizetype colon = t.indexOf(':');
-    if (colon > 3)
-        t.truncate(colon);
+    if (colon > 3) {
+        // Strip descriptive/edition subtitles ("A Romance", "Or, ...",
+        // "Illustrated Edition"), but preserve series-prefixed book titles
+        // ("Harry Potter: The Chamber of Secrets", "Star Wars: Heir...").
+        const QString subtitle = t.mid(colon + 1).trimmed();
+        static const QRegularExpression descriptiveSubtitle(
+            R"(^(?:a|an|or|being|annotated|illustrated|revised|expanded|complete|unabridged|abridged|critical|definitive|centenary|anniversary|selected|collected|with|translated|edited|and\s+other|vol(?:ume)?|book|part)\b)");
+        if (descriptiveSubtitle.match(subtitle).hasMatch())
+            t.truncate(colon);
+    }
     static const QRegularExpression asides(R"(\([^)]*\)|\[[^\]]*\])");
     t.remove(asides);
     static const QRegularExpression volumeWords(R"(\b(?:vol(?:ume)?|book|part)\.?\s*(\d+|[ivxlc]+)\b)");
@@ -229,7 +271,10 @@ QString workKey(const QString &author, const QString &title, int volume) {
         word = spelledOut.value(word, word);
     if (!words.isEmpty() && (words.first() == "the" || words.first() == "a" || words.first() == "an"))
         words.removeFirst();
-    QString key = surname + '|' + comparable(words.join(QString()));
+    const QString titleKey = comparable(words.join(QString()));
+    if (surname.isEmpty() && titleKey.isEmpty())
+        return {};
+    QString key = surname + '|' + titleKey;
     if (volume > 0)
         key += QStringLiteral("|v") + QString::number(volume);
     return key;
@@ -252,7 +297,13 @@ BookIdentity identify(const QString &filePath, const QString &metadataTitle, con
     const QString fileAuthor = file.matched ? file.author : QString();
 
     QString title = cleanTitle(metadataTitle);
-    QString author = metadataAuthors.isEmpty() ? QString() : displayAuthor(metadataAuthors.first());
+    QStringList displayAuthors;
+    for (const QString &rawAuthor : metadataAuthors) {
+        const QString formatted = displayAuthor(rawAuthor);
+        if (!formatted.isEmpty() && !displayAuthors.contains(formatted))
+            displayAuthors.append(formatted);
+    }
+    QString author = displayAuthors.join(QStringLiteral(" & "));
 
     // A title that is just the author's name is either a swap (the author
     // field then holds the real title) or no title at all.
@@ -261,7 +312,7 @@ BookIdentity identify(const QString &filePath, const QString &metadataTitle, con
         const bool titleIsAuthor = (!fileAuthor.isEmpty() && t == comparable(fileAuthor)) ||
                                    (!author.isEmpty() && t == comparable(author));
         if (titleIsAuthor) {
-            if (!author.isEmpty() && comparable(author) != t) {
+            if (metadataAuthors.size() == 1 && !author.isEmpty() && comparable(author) != t) {
                 const QString swappedTitle = cleanTitle(metadataAuthors.first());
                 author = fileAuthor.isEmpty() ? displayAuthor(title) : fileAuthor;
                 title = swappedTitle;

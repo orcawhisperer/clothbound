@@ -13,6 +13,7 @@
 struct ScannedBook {
     BookInfo info;
     QString coverFile;  // in the cover cache, or empty
+    QString fingerprint;  // content hash for relinking moved/renamed files
     QList<int> chapterLengths;
     qint64 length = 0;
 };
@@ -38,6 +39,7 @@ public:
     // Reads one book file: metadata, a cached cover, chapter lengths.
     static ScannedBook read(const QString &path, const QString &coverDirectory);
     static QString coverFileFor(const QString &bookPath);
+    static QString fingerprintFor(const QString &bookPath);
     static constexpr int coverHeight = 900;
 
 signals:

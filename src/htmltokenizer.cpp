@@ -164,10 +164,16 @@ QString HtmlTokenizer::decodeDocument(const QByteArray &bytes) {
         return normalize(utf16(bytes.mid(2)));
     }
 
-    static const QRegularExpression declared(
-        R"re((?:encoding|charset)\s*=\s*["']?\s*([A-Za-z0-9_.:\-]+))re");
-    const QString head = QString::fromLatin1(bytes.left(1024));
-    const auto match = declared.match(head);
+    static const QRegularExpression xmlDeclared(
+        R"re(<\?xml\b[^>]*\bencoding\s*=\s*["']\s*([A-Za-z0-9_.:\-]+)\s*["'])re",
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression metaDeclared(
+        R"re(<meta\b[^>]*\bcharset\s*=\s*["']?\s*([A-Za-z0-9_.:\-]+))re",
+        QRegularExpression::CaseInsensitiveOption);
+    const QString head = QString::fromLatin1(bytes.left(2048));
+    QRegularExpressionMatch match = xmlDeclared.match(head);
+    if (!match.hasMatch())
+        match = metaDeclared.match(head);
     if (match.hasMatch()) {
         const QString name = match.captured(1).toLower();
         if (name != "utf-8" && name != "utf8") {
@@ -194,7 +200,19 @@ HtmlToken HtmlTokenizer::next() {
     if (!m_rawTextEnd.isEmpty()) {
         HtmlToken token;
         token.type = HtmlToken::Text;
-        const qsizetype end = m_source.indexOf(QStringLiteral("</") + m_rawTextEnd, m_pos, Qt::CaseInsensitive);
+        const QString closing = QStringLiteral("</") + m_rawTextEnd;
+        qsizetype end = -1;
+        for (qsizetype from = m_pos; from < length;) {
+            const qsizetype hit = m_source.indexOf(closing, from, Qt::CaseInsensitive);
+            if (hit < 0)
+                break;
+            const qsizetype after = hit + closing.size();
+            if (after >= length || isSpace(m_source[after]) || m_source[after] == '>' || m_source[after] == '/') {
+                end = hit;
+                break;
+            }
+            from = after;
+        }
         const qsizetype stop = end < 0 ? length : end;
         token.text = m_source.mid(m_pos, stop - m_pos);
         m_pos = stop;
@@ -217,9 +235,37 @@ HtmlToken HtmlTokenizer::next() {
             m_pos = end < 0 ? length : end + 3;
             return token;
         }
-        if (rest.startsWith(QStringLiteral("<!")) || rest.startsWith(QStringLiteral("<?"))) {
-            const qsizetype end = m_source.indexOf('>', m_pos + 2);
-            m_pos = end < 0 ? length : end + 1;
+        if (rest.startsWith(QStringLiteral("<?"))) {
+            const qsizetype piEnd = m_source.indexOf(QStringLiteral("?>"), m_pos + 2);
+            if (piEnd >= 0) {
+                m_pos = piEnd + 2;
+            } else {
+                const qsizetype end = m_source.indexOf('>', m_pos + 2);
+                m_pos = end < 0 ? length : end + 1;
+            }
+            continue;
+        }
+        if (rest.startsWith(QStringLiteral("<!"))) {
+            // Skip declarations including DOCTYPE internal DTD subsets ([...]).
+            qsizetype p = m_pos + 2;
+            int brackets = 0;
+            QChar quote;
+            while (p < length) {
+                const QChar ch = m_source[p++];
+                if (!quote.isNull()) {
+                    if (ch == quote)
+                        quote = QChar();
+                } else if (ch == '"' || ch == '\'') {
+                    quote = ch;
+                } else if (ch == '[') {
+                    ++brackets;
+                } else if (ch == ']' && brackets > 0) {
+                    --brackets;
+                } else if (ch == '>' && brackets == 0) {
+                    break;
+                }
+            }
+            m_pos = p;
             continue;
         }
         if (rest.size() > 1 && (rest[1] == '/' || isNameStart(rest[1])))
@@ -304,7 +350,8 @@ HtmlToken HtmlTokenizer::readTag() {
                 i = stop + 1;
             } else {
                 const qsizetype valueStart = i;
-                while (i < length && !isSpace(m_source[i]) && m_source[i] != '>')
+                while (i < length && !isSpace(m_source[i]) && m_source[i] != '>' &&
+                       !(m_source[i] == '/' && i + 1 < length && m_source[i + 1] == '>'))
                     ++i;
                 value = decodeEntities(QStringView(m_source).mid(valueStart, i - valueStart));
             }
@@ -382,12 +429,40 @@ QList<const HtmlNode *> HtmlNode::childElements(const QString &local) const {
     return found;
 }
 
+HtmlNode::~HtmlNode() {
+    std::vector<std::unique_ptr<HtmlNode>> pending;
+    pending.reserve(children.size());
+    for (auto &child : children)
+        pending.push_back(std::move(child));
+    children.clear();
+    while (!pending.empty()) {
+        std::unique_ptr<HtmlNode> node = std::move(pending.back());
+        pending.pop_back();
+        if (!node)
+            continue;
+        for (auto &child : node->children)
+            pending.push_back(std::move(child));
+        node->children.clear();
+    }
+}
+
 QString HtmlNode::textContent() const {
     if (isText())
         return text;
     QString out;
-    for (const auto &child : children)
-        out += child->textContent();
+    std::vector<const HtmlNode *> stack;
+    for (auto it = children.rbegin(); it != children.rend(); ++it)
+        stack.push_back(it->get());
+    while (!stack.empty()) {
+        const HtmlNode *node = stack.back();
+        stack.pop_back();
+        if (node->isText()) {
+            out += node->text;
+            continue;
+        }
+        for (auto it = node->children.rbegin(); it != node->children.rend(); ++it)
+            stack.push_back(it->get());
+    }
     return out;
 }
 
@@ -399,6 +474,7 @@ bool isVoidElement(const QString &local) {
 }
 
 std::unique_ptr<HtmlNode> parse(const QString &source, bool html) {
+    constexpr std::size_t maxNestingDepth = 512;
     auto root = std::make_unique<HtmlNode>();
     root->name = "#document";
     std::vector<HtmlNode *> stack{root.get()};
@@ -421,7 +497,7 @@ std::unique_ptr<HtmlNode> parse(const QString &source, bool html) {
             node->parent = top;
             HtmlNode *raw = node.get();
             top->children.push_back(std::move(node));
-            if (!token.selfClosing && !(html && isVoidElement(token.localName())))
+            if (!token.selfClosing && !(html && isVoidElement(token.localName())) && stack.size() < maxNestingDepth)
                 stack.push_back(raw);
         } else if (token.type == HtmlToken::EndTag) {
             // Close the nearest open element of that name; an end tag with no

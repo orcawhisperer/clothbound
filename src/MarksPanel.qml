@@ -15,9 +15,16 @@ FocusScope {
     property bool open: false
     property var look
     property string filter: "all"
+    property int revision: 0
+    readonly property var filteredMarks: revision >= 0 ? marks.filtered(filter) : []
 
     signal chosen(int chapter, var offset)
     signal closed()
+
+    Connections {
+        target: marks
+        function onChanged() { panel.revision++ }
+    }
 
     function show() {
         open = true
@@ -28,10 +35,6 @@ FocusScope {
             return
         open = false
         closed()
-    }
-    function shown(kind, note) {
-        return filter === "all" || (filter === "highlights" && kind === "highlight")
-            || (filter === "notes" && note !== "") || (filter === "bookmarks" && kind === "bookmark")
     }
 
     readonly property var swatches: ({ yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" })
@@ -133,8 +136,13 @@ FocusScope {
             Layout.leftMargin: 22
             Layout.rightMargin: 22
             Layout.topMargin: 20
-            visible: marks.count === 0
-            text: qsTr("Select words on the page to highlight them or add a note. B bookmarks the page.")
+            visible: marks.count === 0 || panel.filteredMarks.length === 0
+            text: marks.count === 0
+                ? qsTr("Select words on the page to highlight them or add a note. B bookmarks the page.")
+                : panel.filter === "highlights" ? qsTr("No highlights yet.")
+                : panel.filter === "notes" ? qsTr("No notes yet.")
+                : panel.filter === "bookmarks" ? qsTr("No bookmarks yet.")
+                : qsTr("No marks yet.")
             color: panel.look.muted
             font.pixelSize: 13
             wrapMode: Text.Wrap
@@ -144,102 +152,105 @@ FocusScope {
             id: list
             Layout.fillWidth: true
             Layout.fillHeight: true
+            visible: panel.filteredMarks.length > 0
             clip: true
-            model: marks
+            model: panel.filteredMarks
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar {}
-            section.property: "label"
-            section.delegate: Label {
-                required property string section
-                width: ListView.view.width
-                leftPadding: 22
-                rightPadding: 22
-                topPadding: 14
-                bottomPadding: 6
-                text: section
-                color: panel.look.muted
-                font.pixelSize: 11
-                font.weight: Font.DemiBold
-                font.capitalization: Font.AllUppercase
-                font.letterSpacing: 0.6
-                elide: Text.ElideRight
-            }
 
-            delegate: AbstractButton {
-                id: entry
-                required property int markId
-                required property string kind
-                required property int chapter
-                required property var start
-                required property string quote
-                required property string note
-                required property string color
-                readonly property bool included: panel.shown(kind, note)
+            delegate: Column {
+                id: row
+                required property var modelData
+                required property int index
+                readonly property bool firstInSection: modelData.label !== "" && (index === 0 || panel.filteredMarks[index - 1].label !== modelData.label)
                 width: ListView.view.width
-                height: included ? content.implicitHeight + 16 : 0
-                visible: included
-                hoverEnabled: true
-                focusPolicy: Qt.NoFocus
-                onClicked: {
-                    panel.chosen(chapter, start)
-                    panel.close()
+
+                Label {
+                    visible: row.firstInSection
+                    width: parent.width
+                    leftPadding: 22
+                    rightPadding: 22
+                    topPadding: row.index === 0 ? 4 : 14
+                    bottomPadding: 6
+                    text: row.modelData.label
+                    textFormat: Text.PlainText
+                    color: panel.look.muted
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                    font.capitalization: Font.AllUppercase
+                    font.letterSpacing: 0.6
+                    elide: Text.ElideRight
                 }
-                background: Rectangle {
-                    color: entry.hovered ? Ui.tint(panel.look.fg, 0.05) : "transparent"
-                }
-                contentItem: Item {
-                    RowLayout {
-                        id: content
-                        x: 22
-                        y: 8
-                        width: parent.width - 22 - 12
-                        spacing: 12
-                        Rectangle {
-                            Layout.fillHeight: true
-                            Layout.preferredWidth: 3
-                            visible: entry.kind === "highlight"
-                            radius: 1.5
-                            color: panel.swatches[entry.color] || panel.swatches.yellow
-                        }
-                        Glyph {
-                            Layout.alignment: Qt.AlignTop
-                            visible: entry.kind === "bookmark"
-                            width: 16
-                            height: 16
-                            path: Icons.bookmark
-                            color: panel.look.link
-                        }
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 4
-                            Label {
-                                Layout.fillWidth: true
-                                text: entry.kind === "bookmark" ? entry.quote + "…" : "“" + entry.quote + "”"
-                                color: panel.look.fg
-                                font.family: "Literata"
-                                font.pixelSize: 14
-                                wrapMode: Text.Wrap
-                                maximumLineCount: 4
-                                elide: Text.ElideRight
+
+                AbstractButton {
+                    id: entry
+                    width: parent.width
+                    height: content.implicitHeight + 16
+                    hoverEnabled: true
+                    focusPolicy: Qt.NoFocus
+                    onClicked: {
+                        panel.chosen(row.modelData.chapter, row.modelData.start)
+                        panel.close()
+                    }
+                    background: Rectangle {
+                        color: entry.hovered ? Ui.tint(panel.look.fg, 0.05) : "transparent"
+                    }
+                    contentItem: Item {
+                        RowLayout {
+                            id: content
+                            x: 22
+                            y: 8
+                            width: parent.width - 22 - 12
+                            spacing: 12
+                            Rectangle {
+                                Layout.fillHeight: true
+                                Layout.preferredWidth: 3
+                                visible: row.modelData.kind === "highlight"
+                                radius: 1.5
+                                color: panel.swatches[row.modelData.color] || panel.swatches.yellow
                             }
-                            Label {
-                                Layout.fillWidth: true
-                                visible: entry.note !== ""
-                                text: entry.note
-                                color: panel.look.muted
-                                font.pixelSize: 13
-                                wrapMode: Text.Wrap
-                                maximumLineCount: 6
-                                elide: Text.ElideRight
+                            Glyph {
+                                Layout.alignment: Qt.AlignTop
+                                visible: row.modelData.kind === "bookmark"
+                                width: 16
+                                height: 16
+                                path: Icons.bookmark
+                                color: panel.look.link
                             }
-                        }
-                        IconButton {
-                            Layout.alignment: Qt.AlignTop
-                            opacity: entry.hovered ? 1 : 0
-                            glyph: Icons.trash
-                            tone: panel.look.muted
-                            tip: qsTr("Remove")
-                            onClicked: marks.remove(entry.markId)
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 4
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: row.modelData.kind === "bookmark" ? row.modelData.quote + "…" : "“" + row.modelData.quote + "”"
+                                    textFormat: Text.PlainText
+                                    color: panel.look.fg
+                                    font.family: "Literata"
+                                    font.pixelSize: 14
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 4
+                                    elide: Text.ElideRight
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: row.modelData.note !== ""
+                                    text: row.modelData.note
+                                    textFormat: Text.PlainText
+                                    color: panel.look.muted
+                                    font.pixelSize: 13
+                                    wrapMode: Text.Wrap
+                                    maximumLineCount: 6
+                                    elide: Text.ElideRight
+                                }
+                            }
+                            IconButton {
+                                Layout.alignment: Qt.AlignTop
+                                opacity: entry.hovered ? 1 : 0
+                                glyph: Icons.trash
+                                tone: panel.look.muted
+                                tip: qsTr("Remove")
+                                onClicked: marks.remove(row.modelData.markId)
+                            }
                         }
                     }
                 }

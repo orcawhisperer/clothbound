@@ -92,10 +92,19 @@ signals:
     void problem(const QString &message);
 
 private:
+    struct StagedBook {
+        BookRecord record;
+        QString oldPath;
+        QString fingerprint;
+        bool updated = false;
+    };
+
     bool migrate();
     void loadBooks();
     void loadFolders();
-    void store(const ScannedBook &book);
+    bool storeInDb(const ScannedBook &book, QList<StagedBook> &staged);
+    void applyStaged(const QList<StagedBook> &staged);
+    bool writeChapterLengths(QSqlDatabase &db, int id, const QList<int> &lengths, qint64 *totalOut = nullptr);
     void flushPending();
     void markListed(const QStringList &paths, const QStringList &folders);
     void changed();
@@ -107,12 +116,16 @@ private:
     QString m_connection;
     QString m_error;
     QHash<int, BookRecord> m_books;
+    QHash<QString, int> m_pathToId;
+    QHash<int, QString> m_fingerprints;
     QStringList m_folders;
+    QStringList m_queuedFiles;
     Scanner *m_scanner = nullptr;
     WorksModel *m_works = nullptr;
     QList<ScannedBook> m_pending;
     QTimer m_flush;
     QTimer m_notify;
+    bool m_worksDirty = false;
     bool m_scanning = false;
     int m_scanDone = 0;
     int m_scanTotal = 0;

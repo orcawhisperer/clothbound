@@ -70,6 +70,8 @@ public:
     Q_INVOKABLE int highlightAt(int chapter, qint64 offset) const;
     // A chapter's highlights for the page: {id, start, end, color, noted}.
     Q_INVOKABLE QVariantList highlightsIn(int chapter) const;
+    // Marks matching a panel filter ("all", "highlights", "notes", "bookmarks").
+    Q_INVOKABLE QVariantList filtered(const QString &filter) const;
     // Everything marked, as Markdown, for keeping elsewhere.
     Q_INVOKABLE QString markdown(const QString &title, const QString &author) const;
 

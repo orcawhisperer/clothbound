@@ -131,6 +131,7 @@ FocusScope {
                 Label {
                     Layout.fillWidth: true
                     text: details.book.title || ""
+                    textFormat: Text.PlainText
                     color: theme.text
                     font.family: "Literata"
                     font.pixelSize: 24
@@ -142,6 +143,7 @@ FocusScope {
                     Layout.fillWidth: true
                     visible: text !== ""
                     text: details.book.author || ""
+                    textFormat: Text.PlainText
                     color: theme.textSecondary
                     font.pixelSize: 16
                     wrapMode: Text.Wrap
@@ -150,6 +152,7 @@ FocusScope {
                     Layout.fillWidth: true
                     visible: text !== ""
                     text: details.book.editionLine || ""
+                    textFormat: Text.PlainText
                     color: theme.textTertiary
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
@@ -160,6 +163,7 @@ FocusScope {
                     Layout.topMargin: 8
                     visible: (details.book.problem || "") !== ""
                     text: details.book.problem || ""
+                    textFormat: Text.PlainText
                     color: theme.colors.red || "#ff6b6b"
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
@@ -193,6 +197,7 @@ FocusScope {
                     }
                     component Value: Label {
                         Layout.fillWidth: true
+                        textFormat: Text.PlainText
                         color: theme.text
                         font.pixelSize: 13
                         wrapMode: Text.Wrap
@@ -288,6 +293,7 @@ FocusScope {
                             Label {
                                 width: parent.width
                                 text: edition.modelData.editionLine || edition.modelData.title
+                                textFormat: Text.PlainText
                                 color: theme.text
                                 font.pixelSize: 13
                                 font.weight: Font.DemiBold
@@ -305,6 +311,7 @@ FocusScope {
                                         parts.push(edition.modelData.title)
                                     return parts.join(" · ")
                                 }
+                                textFormat: Text.PlainText
                                 color: theme.textSecondary
                                 font.pixelSize: 12
                                 elide: Text.ElideRight
@@ -369,6 +376,7 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.topMargin: 10
                     text: details.book.path || ""
+                    textFormat: Text.PlainText
                     color: theme.textTertiary
                     font.pixelSize: 11
                     wrapMode: Text.WrapAnywhere

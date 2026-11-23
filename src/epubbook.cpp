@@ -66,7 +66,8 @@ bool EpubBook::open() {
         for (const HtmlNode *rootfile : doc->elements("rootfile")) {
             const QString type = rootfile->attribute("media-type");
             if (type.isEmpty() || type == "application/oebps-package+xml") {
-                opfPath = m_zip.resolve(rootfile->attribute("full-path"));
+                const QString normalized = resolve(QString(), rootfile->attribute("full-path"));
+                opfPath = m_zip.resolve(normalized.isEmpty() ? rootfile->attribute("full-path") : normalized);
                 if (!opfPath.isEmpty())
                     break;
             }
@@ -142,11 +143,11 @@ bool EpubBook::readPackage(const QString &opfPath) {
             const QString text = meta->simplifiedText();
             if (!target.isEmpty() && !property.isEmpty())
                 refines[target.startsWith('#') ? target.mid(1) : target].append({property, text});
-            if (name == "cover")
+            if (name.compare(QLatin1String("cover"), Qt::CaseInsensitive) == 0)
                 coverId = content;
-            else if (name == "calibre:series")
+            else if (name.compare(QLatin1String("calibre:series"), Qt::CaseInsensitive) == 0)
                 m_metadata.series = content.simplified();
-            else if (name == "calibre:series_index")
+            else if (name.compare(QLatin1String("calibre:series_index"), Qt::CaseInsensitive) == 0)
                 m_metadata.seriesIndex = content.toDouble();
             if (property == "rendition:layout" && text == "pre-paginated")
                 m_fixedLayout = true;
@@ -223,7 +224,8 @@ bool EpubBook::readPackage(const QString &opfPath) {
             if (text.isEmpty())
                 continue;
             m_identifiers.append(text);
-            if (identifier->attribute("id") == m_uniqueIdentifier || m_metadata.identifier.isEmpty())
+            if ((!m_uniqueIdentifier.isEmpty() && identifier->attribute("id") == m_uniqueIdentifier) ||
+                m_metadata.identifier.isEmpty())
                 m_metadata.identifier = text;
             const auto isbn = isbnPattern.match(QString(text).remove('-').remove(' '));
             if (m_metadata.isbn.isEmpty() && isbn.hasMatch())
@@ -236,7 +238,10 @@ bool EpubBook::readPackage(const QString &opfPath) {
         for (const HtmlNode *node : manifest->childElements("item")) {
             EpubItem item;
             item.id = node->attribute("id");
-            const QString path = resolve(opfPath, node->attribute("href"));
+            const QString rawHref = node->attribute("href").trimmed();
+            if (rawHref.isEmpty())
+                continue;
+            const QString path = resolve(opfPath, rawHref);
             if (path.isEmpty())
                 continue;
             const QString stored = m_zip.resolve(path);
@@ -251,7 +256,7 @@ bool EpubBook::readPackage(const QString &opfPath) {
     QString ncxPath;
     if (const HtmlNode *spine = package->first("spine")) {
         ncxPath = m_idToPath.value(spine->attribute("toc"));
-        m_rightToLeft = spine->attribute("page-progression-direction") == "rtl";
+        m_rightToLeft = spine->attribute("page-progression-direction").trimmed().compare(QLatin1String("rtl"), Qt::CaseInsensitive) == 0;
         for (const HtmlNode *ref : spine->childElements("itemref")) {
             const QString path = m_idToPath.value(ref->attribute("idref"));
             if (path.isEmpty() || !m_zip.contains(path))
@@ -260,7 +265,7 @@ bool EpubBook::readPackage(const QString &opfPath) {
             item.id = ref->attribute("idref");
             item.path = path;
             item.mediaType = m_manifest.value(path).mediaType;
-            item.linear = ref->attribute("linear") != "no";
+            item.linear = ref->attribute("linear").trimmed().compare(QLatin1String("no"), Qt::CaseInsensitive) != 0;
             if (!m_spineIndex.contains(path)) {
                 m_spineIndex.insert(path, int(m_spine.size()));
                 m_spine.append(item);
@@ -297,60 +302,93 @@ bool EpubBook::readPackage(const QString &opfPath) {
     for (auto &target : m_pageList)
         target.spine = spineIndex(target.path);
 
-    // Covers, in order of how deliberately the book marks them.
-    auto isImage = [](const EpubItem &item) { return item.mediaType.startsWith("image/"); };
+    // Covers, in order of how deliberately the book marks them. SVG cover
+    // wrappers often just embed a raster image via <image xlink:href=...>;
+    // unwrap them so cover decoders don't miss the nested image inside the ZIP.
+    auto isImage = [](const EpubItem &item) { return item.mediaType.startsWith(QLatin1String("image/")); };
+    auto isRasterImage = [](const QString &type) {
+        return type.startsWith(QLatin1String("image/")) && type != QLatin1String("image/svg+xml");
+    };
+    auto resolveCover = [&](const QString &path) -> QString {
+        if (path.isEmpty())
+            return {};
+        const QString type = mediaType(path);
+        if (isRasterImage(type))
+            return path;
+        const QString nested = firstImageIn(path);
+        if (!nested.isEmpty())
+            return nested;
+        return type == QLatin1String("image/svg+xml") ? path : QString();
+    };
     for (const auto &item : std::as_const(manifestOrder))
         if (tokens(item.properties).contains("cover-image") && isImage(item)) {
-            m_coverPath = item.path;
-            return true;
+            m_coverPath = resolveCover(item.path);
+            if (!m_coverPath.isEmpty())
+                return true;
         }
     if (!coverId.isEmpty()) {
         QString path = m_idToPath.value(coverId);
         if (path.isEmpty())  // Some tools write the file name instead of the id.
             for (const auto &item : std::as_const(manifestOrder))
-                if (item.path.endsWith(coverId)) {
+                if (item.path.compare(coverId, Qt::CaseInsensitive) == 0 ||
+                    item.path.endsWith(QLatin1Char('/') + coverId, Qt::CaseInsensitive)) {
                     path = item.path;
                     break;
                 }
         if (!path.isEmpty()) {
-            const EpubItem item = m_manifest.value(path);
-            m_coverPath = isImage(item) ? path : firstImageIn(path);
+            m_coverPath = resolveCover(path);
             if (!m_coverPath.isEmpty())
                 return true;
         }
     }
     if (!guideCover.isEmpty()) {
-        m_coverPath = firstImageIn(guideCover);
+        m_coverPath = resolveCover(guideCover);
         if (!m_coverPath.isEmpty())
             return true;
     }
     for (const auto &item : std::as_const(manifestOrder))
         if (isImage(item) && (item.id.contains("cover", Qt::CaseInsensitive) ||
                               QFileInfo(item.path).fileName().contains("cover", Qt::CaseInsensitive))) {
-            m_coverPath = item.path;
-            return true;
+            m_coverPath = resolveCover(item.path);
+            if (!m_coverPath.isEmpty())
+                return true;
         }
     if (!m_spine.isEmpty())
-        m_coverPath = firstImageIn(m_spine.first().path);
+        m_coverPath = resolveCover(m_spine.first().path);
     return true;
 }
 
 void EpubBook::readNavigation(const QString &navPath) {
-    const auto doc = Html::parse(m_zip.read(navPath));
+    // EPUB 3 navigation documents are HTML5; parse with HTML void elements so
+    // unclosed <br>, <img> or <hr> don't swallow following <li> entries.
+    const auto doc = Html::parse(m_zip.read(navPath), true);
     // A list item's label is its own link or span, never one of a nested list.
-    std::function<const HtmlNode *(const HtmlNode *)> label = [&](const HtmlNode *node) -> const HtmlNode * {
-        for (const HtmlNode *child : node->childElements()) {
+    auto label = [](const HtmlNode *root) -> const HtmlNode * {
+        std::vector<const HtmlNode *> stack;
+        const QList<const HtmlNode *> top = root->childElements();
+        for (qsizetype i = top.size() - 1; i >= 0; --i)
+            stack.push_back(top[i]);
+        while (!stack.empty()) {
+            const HtmlNode *child = stack.back();
+            stack.pop_back();
             if (child->is("ol") || child->is("ul"))
                 continue;
             if (child->is("a") || child->is("span"))
                 return child;
-            if (const HtmlNode *inner = label(child))
-                return inner;
+            const QList<const HtmlNode *> kids = child->childElements();
+            for (qsizetype i = kids.size() - 1; i >= 0; --i)
+                stack.push_back(kids[i]);
         }
         return nullptr;
     };
-    std::function<void(const HtmlNode *, int)> walk = [&](const HtmlNode *list, int depth) {
-        for (const HtmlNode *li : list->childElements("li")) {
+    auto walk = [&](const HtmlNode *rootList) {
+        std::vector<QPair<const HtmlNode *, int>> stack;
+        const QList<const HtmlNode *> items = rootList->childElements("li");
+        for (qsizetype i = items.size() - 1; i >= 0; --i)
+            stack.push_back({items[i], 0});
+        while (!stack.empty()) {
+            const auto [li, depth] = stack.back();
+            stack.pop_back();
             if (const HtmlNode *anchor = label(li)) {
                 EpubTocEntry entry;
                 entry.title = anchor->simplifiedText();
@@ -365,21 +403,30 @@ void EpubBook::readNavigation(const QString &navPath) {
                 if (!entry.title.isEmpty())
                     m_toc.append(entry);
             }
-            for (const HtmlNode *nested : li->childElements())
-                if (nested->is("ol") || nested->is("ul"))
-                    walk(nested, depth + 1);
+            const QList<const HtmlNode *> nestedLists = li->childElements();
+            for (qsizetype i = nestedLists.size() - 1; i >= 0; --i) {
+                const HtmlNode *nested = nestedLists[i];
+                if (!nested->is("ol") && !nested->is("ul"))
+                    continue;
+                const QList<const HtmlNode *> subItems = nested->childElements("li");
+                for (qsizetype j = subItems.size() - 1; j >= 0; --j)
+                    stack.push_back({subItems[j], depth + 1});
+            }
         }
     };
     for (const HtmlNode *nav : doc->elements("nav")) {
-        const QString type = nav->attribute("epub:type") + ' ' + nav->attribute("role");
+        const QStringList typeTokens =
+            tokens((nav->attribute("epub:type") + QLatin1Char(' ') + nav->attribute("type") + QLatin1Char(' ') +
+                    nav->attribute("role"))
+                       .toLower());
         const HtmlNode *list = nav->first("ol");
         if (!list)
             list = nav->first("ul");
         if (!list)
             continue;
-        if ((type.contains("toc") || type.contains("doc-toc")) && m_toc.isEmpty()) {
-            walk(list, 0);
-        } else if (type.contains("page-list") || type.contains("doc-pagelist")) {
+        if ((typeTokens.contains("toc") || typeTokens.contains("doc-toc")) && m_toc.isEmpty()) {
+            walk(list);
+        } else if (typeTokens.contains("page-list") || typeTokens.contains("doc-pagelist")) {
             for (const HtmlNode *a : list->elements("a")) {
                 EpubPageTarget target;
                 target.label = a->simplifiedText();
@@ -410,18 +457,23 @@ void EpubBook::readNcx(const QString &ncxPath) {
     };
     if (m_toc.isEmpty())
         if (const HtmlNode *map = doc->first("navmap")) {
-            std::function<void(const HtmlNode *, int)> walk = [&](const HtmlNode *parent, int depth) {
-                for (const HtmlNode *point : parent->childElements("navpoint")) {
-                    EpubTocEntry entry;
-                    entry.title = labelOf(point);
-                    entry.path = targetOf(point, &entry.fragment);
-                    entry.depth = depth;
-                    if (!entry.title.isEmpty())
-                        m_toc.append(entry);
-                    walk(point, depth + 1);
-                }
-            };
-            walk(map, 0);
+            std::vector<QPair<const HtmlNode *, int>> stack;
+            const QList<const HtmlNode *> top = map->childElements("navpoint");
+            for (qsizetype i = top.size() - 1; i >= 0; --i)
+                stack.push_back({top[i], 0});
+            while (!stack.empty()) {
+                const auto [point, depth] = stack.back();
+                stack.pop_back();
+                EpubTocEntry entry;
+                entry.title = labelOf(point);
+                entry.path = targetOf(point, &entry.fragment);
+                entry.depth = depth;
+                if (!entry.title.isEmpty())
+                    m_toc.append(entry);
+                const QList<const HtmlNode *> children = point->childElements("navpoint");
+                for (qsizetype i = children.size() - 1; i >= 0; --i)
+                    stack.push_back({children[i], depth + 1});
+            }
         }
     if (m_pageList.isEmpty())
         if (const HtmlNode *list = doc->first("pagelist"))
@@ -535,39 +587,57 @@ QByteArray EpubBook::coverImage(QString *type) const {
 QString EpubBook::chapterText(int index) const {
     if (index < 0 || index >= m_spine.size())
         return {};
+    const QString type = m_spine[index].mediaType.isEmpty() ? mediaType(m_spine[index].path) : m_spine[index].mediaType;
+    if ((type.startsWith(QLatin1String("image/")) && type != QLatin1String("image/svg+xml")) ||
+        type.startsWith(QLatin1String("audio/")) || type.startsWith(QLatin1String("video/")) ||
+        type == QLatin1String("application/octet-stream"))
+        return {};
     return extractText(m_zip.read(m_spine[index].path));
 }
 
 QString EpubBook::extractText(const QByteArray &document) {
     const QString source = HtmlTokenizer::decodeDocument(document);
-    auto collect = [&source](bool requireBody) {
-        QString out;
-        out.reserve(source.size() / 2);
-        HtmlTokenizer tokens(source);
-        bool body = !requireBody, head = false;
-        int skip = 0;
-        for (HtmlToken token = tokens.next(); token.type != HtmlToken::End; token = tokens.next()) {
-            if (token.type == HtmlToken::Text) {
-                if (body && !head && skip == 0)
-                    out += token.text;
-                continue;
+    // Single-pass extraction: track both text inside <body> and fallback text
+    // outside <head> (for documents with no real <body> element), avoiding
+    // false matches on "<body" inside comments or custom tags like <bodydata>.
+    QString insideBody, outsideHead;
+    insideBody.reserve(source.size() / 2);
+    HtmlTokenizer tokens(source);
+    bool sawBody = false, inBody = false, head = false;
+    int skip = 0;
+    for (HtmlToken token = tokens.next(); token.type != HtmlToken::End; token = tokens.next()) {
+        if (token.type == HtmlToken::Text) {
+            if (!head && skip == 0) {
+                if (sawBody) {
+                    if (inBody)
+                        insideBody += token.text;
+                } else {
+                    outsideHead += token.text;
+                }
             }
-            const QString local = token.localName();
-            const bool start = token.type == HtmlToken::StartTag;
-            if (local == "body" && requireBody)
-                body = start && !token.selfClosing;
-            else if (local == "head")
-                head = start && !token.selfClosing;
-            else if ((local == "script" || local == "style" || local == "template") && !token.selfClosing)
-                skip = qMax(0, skip + (start ? 1 : -1));
+            continue;
         }
-        out.remove(QChar(0x00AD));
-        return out;
-    };
-    // Browsers imply a body when a document has none, so count everything
-    // outside the head then.
-    const bool hasBody = source.contains(QStringLiteral("<body"), Qt::CaseInsensitive);
-    return collect(hasBody);
+        const QString local = token.localName();
+        const bool start = token.type == HtmlToken::StartTag;
+        if (local == "body") {
+            if (start) {
+                if (!sawBody) {
+                    sawBody = true;
+                    outsideHead.clear();
+                }
+                inBody = !token.selfClosing;
+            } else {
+                inBody = false;
+            }
+        } else if (local == "head") {
+            head = start && !token.selfClosing;
+        } else if ((local == "script" || local == "style" || local == "template") && !token.selfClosing) {
+            skip = qMax(0, skip + (start ? 1 : -1));
+        }
+    }
+    QString &out = sawBody ? insideBody : outsideHead;
+    out.remove(QChar(0x00AD));
+    return out;
 }
 
 QString EpubBook::resolve(const QString &base, const QString &href, QString *fragment) {
@@ -581,12 +651,13 @@ QString EpubBook::resolve(const QString &base, const QString &href, QString *fra
         target.truncate(hash);
     }
     static const QRegularExpression scheme(QStringLiteral("^[A-Za-z][A-Za-z0-9+.\\-]*:"));
-    if (scheme.match(target).hasMatch())
+    if (scheme.match(target).hasMatch() || target.startsWith(QLatin1String("//")))
         return {};
     const qsizetype query = target.indexOf('?');
     if (query >= 0)
         target.truncate(query);
     target = QUrl::fromPercentEncoding(target.toUtf8());
+    target.replace(QLatin1Char('\\'), QLatin1Char('/'));
     if (target.isEmpty())
         return base;
     QStringList parts;
