@@ -4,6 +4,8 @@
 #include <QPainter>
 #include <QPdfBookmarkModel>
 #include <QPdfDocument>
+#include <QPdfLink>
+#include <QPdfLinkModel>
 #include <QPdfSelection>
 #include <QRegularExpression>
 #include <algorithm>
@@ -173,6 +175,109 @@ PdfBook::Selection PdfBook::select(int page, const QPointF &from, const QPointF 
     out.end = selection.endIndex();
     out.text = selection.text();
     return out;
+}
+
+PdfBook::Selection PdfBook::selectWord(int page, const QPointF &at) const {
+    Selection out;
+    const QSizeF size = pageSize(page);
+    if (page < 0 || page >= pageCount() || size.isEmpty())
+        return out;
+    const QPointF pt(at.x() * size.width(), at.y() * size.height());
+    QPdfSelection probe = m_document->getSelection(page, pt - QPointF(2.0, 0.0), pt + QPointF(2.0, 0.0));
+    if (!probe.isValid() || probe.text().isEmpty())
+        probe = m_document->getSelection(page, pt - QPointF(4.0, 1.5), pt + QPointF(4.0, 1.5));
+    if (!probe.isValid() || probe.text().isEmpty())
+        return out;
+    const QString text = pageText(page);
+    if (text.isEmpty())
+        return out;
+    const qsizetype len = text.size();
+    const auto isWordChar = [](QChar ch) { return ch.isLetterOrNumber() || ch == QLatin1Char('_'); };
+    const auto isApostrophe = [](QChar ch) { return ch == QLatin1Char('\'') || ch == QChar(0x2019); };
+
+    qsizetype anchor = std::clamp<qsizetype>(qsizetype(probe.startIndex() + probe.endIndex()) / 2, 0, len - 1);
+    if (!isWordChar(text[anchor])) {
+        const qsizetype lo = std::clamp<qsizetype>(qsizetype(probe.startIndex()), 0, len - 1);
+        const qsizetype hi = std::clamp<qsizetype>(qsizetype(probe.endIndex()), 0, len);
+        bool found = false;
+        for (qsizetype i = lo; i < hi; ++i) {
+            if (isWordChar(text[i])) {
+                anchor = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+            return out;
+    }
+    qsizetype start = anchor;
+    while (start > 0) {
+        const QChar prev = text[start - 1];
+        if (isWordChar(prev))
+            --start;
+        else if (isApostrophe(prev) && start >= 2 && isWordChar(text[start - 2]))
+            --start;
+        else
+            break;
+    }
+    qsizetype end = anchor + 1;
+    while (end < len) {
+        const QChar next = text[end];
+        if (isWordChar(next))
+            ++end;
+        else if (isApostrophe(next) && end + 1 < len && isWordChar(text[end + 1]))
+            ++end;
+        else
+            break;
+    }
+    if (end <= start)
+        return out;
+    out.start = start;
+    out.end = end;
+    out.text = text.mid(start, end - start);
+    return out;
+}
+
+QList<PdfLinkEntry> PdfBook::pageLinks(int page) const {
+    QList<PdfLinkEntry> entries;
+    const int total = pageCount();
+    const QSizeF size = pageSize(page);
+    if (page < 0 || page >= total || size.isEmpty())
+        return entries;
+    QPdfLinkModel model;
+    model.setDocument(m_document.get());
+    model.setPage(page);
+    const int rows = model.rowCount(QModelIndex());
+    entries.reserve(rows);
+    for (int row = 0; row < rows; ++row) {
+        const QModelIndex idx = model.index(row, 0);
+        const QPdfLink link = model.data(idx, int(QPdfLinkModel::Role::Link)).value<QPdfLink>();
+        if (!link.isValid())
+            continue;
+        const int targetPage = link.page();
+        const QUrl url = link.url();
+        const bool internal = targetPage >= 0 && targetPage < total;
+        const bool external =
+            url.isValid() && (url.scheme() == QLatin1String("http") || url.scheme() == QLatin1String("https") ||
+                              url.scheme() == QLatin1String("mailto"));
+        if (!internal && !external)
+            continue;
+        PdfLinkEntry entry;
+        entry.page = internal ? targetPage : -1;
+        if (external)
+            entry.url = url;
+        for (const QRectF &box : link.rectangles()) {
+            const qreal x = qBound<qreal>(0.0, box.x() / size.width(), 1.0);
+            const qreal y = qBound<qreal>(0.0, box.y() / size.height(), 1.0);
+            const qreal r = qBound<qreal>(x, box.right() / size.width(), 1.0);
+            const qreal b = qBound<qreal>(y, box.bottom() / size.height(), 1.0);
+            if (r - x > 0.0005 && b - y > 0.0005)
+                entry.rects.append(QRectF(x, y, r - x, b - y));
+        }
+        if (!entry.rects.isEmpty())
+            entries.append(std::move(entry));
+    }
+    return entries;
 }
 
 QJsonArray PdfBook::speakable(const QString &pageText, const QString &bookTitle) {

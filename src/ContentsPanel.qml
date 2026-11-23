@@ -16,9 +16,13 @@ FocusScope {
 
     function show() {
         open = true
-        list.currentIndex = Math.max(0, reader.contentsIndex)
-        list.positionViewAtIndex(list.currentIndex, ListView.Center)
-        list.forceActiveFocus()
+        if (reader.contents.length > 0) {
+            list.currentIndex = Math.max(0, reader.contentsIndex)
+            list.positionViewAtIndex(list.currentIndex, ListView.Center)
+            list.forceActiveFocus()
+        } else {
+            forceActiveFocus()
+        }
     }
     function close() {
         if (!open)
@@ -26,6 +30,8 @@ FocusScope {
         open = false
         closed()
     }
+
+    Keys.onEscapePressed: close()
 
     width: 380
     x: open ? 0 : -width - 24
@@ -76,8 +82,23 @@ FocusScope {
         }
     }
 
+    Label {
+        anchors.top: heading.bottom
+        anchors.topMargin: 28
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.leftMargin: 24
+        anchors.rightMargin: 24
+        visible: reader.contents.length === 0
+        text: qsTr("This book has no table of contents.")
+        color: panel.look.muted
+        font.pixelSize: 13
+        wrapMode: Text.Wrap
+    }
+
     ListView {
         id: list
+        visible: reader.contents.length > 0
         anchors.top: heading.bottom
         anchors.topMargin: 16
         anchors.bottom: parent.bottom

@@ -1,3 +1,4 @@
+import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
@@ -16,13 +17,48 @@ FocusScope {
     id: view
 
     property var settings
-    readonly property var look: Themes.palette(settings.theme, theme)
-    // For driving the panel from outside (and from tests).
+    // Effective appearance: either this book's custom override (stored in
+    // book_settings) or the global reading defaults.
+    QtObject {
+        id: activeSettings
+        function pick(key, fallback) {
+            return reader.bookAppearanceOverride && reader.bookAppearance[key] !== undefined
+                ? reader.bookAppearance[key] : fallback
+        }
+        readonly property string theme: String(pick("theme", view.settings.theme))
+        readonly property string font: String(pick("font", view.settings.font))
+        readonly property real fontScale: Number(pick("fontScale", view.settings.fontScale))
+        readonly property int fontWeight: Math.round(Number(pick("fontWeight", reader.fontWeight)))
+        readonly property real lineHeight: Number(pick("lineHeight", view.settings.lineHeight))
+        readonly property real paragraphSpacing: Number(pick("paragraphSpacing", reader.paragraphSpacing))
+        readonly property string margins: String(pick("margins", view.settings.margins))
+        readonly property bool justify: !!pick("justify", view.settings.justify)
+        readonly property bool hyphenate: !!pick("hyphenate", view.settings.hyphenate)
+        readonly property string layout: String(pick("layout", view.settings.layout))
+        readonly property bool animate: !!pick("animate", view.settings.animate)
+        readonly property bool publisher: !!pick("publisher", view.settings.publisher)
+        readonly property bool pdfCrop: !!pick("pdfCrop", view.settings.pdfCrop)
+        readonly property bool pdfOriginalColors: !!pick("pdfOriginalColors", view.settings.pdfOriginalColors)
+    }
+    Settings {
+        id: folioSettings
+        location: settingsUrl
+        category: "typography"
+        // 0: pages in chapter, 1: time left in chapter, 2: time left in book, 3: %
+        property int folioMode: 0
+    }
+
+    readonly property var look: Themes.palette(activeSettings.theme, theme)
+    // For driving the panels from outside (CommandPalette and tests).
+    readonly property alias contentsPanel: contents
+    readonly property alias appearancePanel: appearance
+    readonly property alias goToBox: goTo
     readonly property alias voicePanel: voicePanel
     readonly property alias searchBar: searchBar
     readonly property alias pageMenu: pageMenu
     // The words selected on the page, as the page last said ({} for none).
     property var selection: ({})
+    property var lastCompanionTarget: null
     readonly property alias marksPanel: marksPanel
     readonly property alias companionPanel: companionPanel
     readonly property alias noteEditor: noteEditor
@@ -31,6 +67,8 @@ FocusScope {
     property bool chromeShown: false
     property bool surfaceReady: false
     property bool listening: false
+    property bool jumpPillVisible: false
+    property string jumpPillLabel: ""
 
     signal closeRequested()
 
@@ -38,10 +76,50 @@ FocusScope {
     Material.accent: look.link
 
     readonly property bool pdf: reader.format === "pdf"
+    readonly property bool epubLoading: !pdf && reader.open && (!surfaceReady || reader.relocationSeq === 0)
     // WebEngine is only instantiated once an EPUB is opened, so PDF-only
     // sessions don't pay Chromium's memory cost.
     property bool webNeeded: false
     readonly property var web: webLoader.item
+
+    function snapshotAppearance() {
+        return {
+            theme: activeSettings.theme,
+            font: activeSettings.font,
+            fontScale: activeSettings.fontScale,
+            fontWeight: activeSettings.fontWeight,
+            lineHeight: activeSettings.lineHeight,
+            paragraphSpacing: activeSettings.paragraphSpacing,
+            margins: activeSettings.margins,
+            justify: activeSettings.justify,
+            hyphenate: activeSettings.hyphenate,
+            layout: activeSettings.layout,
+            animate: activeSettings.animate,
+            publisher: activeSettings.publisher,
+            pdfCrop: activeSettings.pdfCrop,
+            pdfOriginalColors: activeSettings.pdfOriginalColors,
+        }
+    }
+    function setAppearance(key, value) {
+        if (reader.bookAppearanceOverride) {
+            const next = snapshotAppearance()
+            next[key] = value
+            reader.saveBookAppearance(next)
+            return
+        }
+        if (key === "fontWeight")
+            reader.fontWeight = value
+        else if (key === "paragraphSpacing")
+            reader.paragraphSpacing = value
+        else
+            view.settings[key] = value
+    }
+    function setBookOverride(enabled) {
+        if (enabled)
+            reader.saveBookAppearance(snapshotAppearance())
+        else
+            reader.clearBookAppearance()
+    }
 
     Component.onCompleted: {
         if (reader.open) {
@@ -72,21 +150,23 @@ FocusScope {
             web.runJavaScript(code)
     }
     function style() {
-        const margins = { narrow: [0.035, 40], normal: [0.06, 34], wide: [0.1, 30] }[settings.margins] || [0.06, 34]
+        const margins = { narrow: [0.035, 40], normal: [0.06, 34], wide: [0.1, 30] }[activeSettings.margins] || [0.06, 34]
         return {
             theme: look,
-            font: settings.font,
-            fontScale: settings.fontScale,
-            lineHeight: settings.lineHeight,
+            font: activeSettings.font,
+            fontScale: activeSettings.fontScale,
+            fontWeight: activeSettings.fontWeight,
+            lineHeight: activeSettings.lineHeight,
+            paragraphSpacing: activeSettings.paragraphSpacing,
             margin: margins[0],
             measure: margins[1],
-            justify: settings.justify,
-            hyphenate: settings.hyphenate,
-            layout: settings.layout,
-            animate: settings.animate,
-            publisher: settings.publisher,
-            pdfCrop: settings.pdfCrop,
-            pdfOriginalColors: settings.pdfOriginalColors,
+            justify: activeSettings.justify,
+            hyphenate: activeSettings.hyphenate,
+            layout: activeSettings.layout,
+            animate: activeSettings.animate,
+            publisher: activeSettings.publisher,
+            pdfCrop: activeSettings.pdfCrop,
+            pdfOriginalColors: activeSettings.pdfOriginalColors,
             marginTop: 54,
             // Room for the listen bar under the text while listening.
             marginBottom: narration.active ? 84 : 54,
@@ -103,13 +183,18 @@ FocusScope {
         if (!surfaceReady && !pdf)
             return
         decoratedChapter = -1
+        jumpPillVisible = false
+        lightbox.close()
         js("dogear.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
            + JSON.stringify(style()) + ")")
     }
     function closeBook() {
         closePanels()
+        lightbox.close()
+        jumpPillVisible = false
         selectionBar.visible = false
         view.selection = ({})
+        view.lastCompanionTarget = null
         decoratedChapter = -1
         if (pdf)
             pdfSurface.clearSelection()
@@ -126,7 +211,8 @@ FocusScope {
     function prev() { leaveVoice(); js("dogear.prev()") }
     function nextChapter() { leaveVoice(); js("dogear.nextChapter()") }
     function prevChapter() { leaveVoice(); js("dogear.prevChapter()") }
-    function back() { leaveVoice(); js("dogear.back()") }
+    function back() { leaveVoice(); jumpPillVisible = false; js("dogear.back()") }
+    function forward() { leaveVoice(); jumpPillVisible = false; js("dogear.forward()") }
     function goTo(target) { leaveVoice(); js("dogear.goTo(" + JSON.stringify(target) + ")") }
 
     // Listening starts from the top of the page in view.
@@ -166,6 +252,11 @@ FocusScope {
             web.forceActiveFocus()
     }
     function dismiss() {
+        if (lightbox.open) {
+            lightbox.close()
+            focusPage()
+            return
+        }
         if (panelOpen) {
             closePanels()
             return
@@ -186,16 +277,21 @@ FocusScope {
     }
     function cycleTheme() {
         const order = Themes.order
-        settings.theme = order[(order.indexOf(settings.theme) + 1) % order.length]
-        toast.show(qsTr("%1 theme").arg(Themes.name(settings.theme)))
+        const nextTheme = order[(order.indexOf(activeSettings.theme) + 1) % order.length]
+        setAppearance("theme", nextTheme)
+        toast.show(qsTr("%1 theme").arg(Themes.name(nextTheme)))
     }
     function resize(step) {
+        if (lightbox.open) {
+            lightbox.setZoom(step === 0 ? 1.0 : lightbox.zoom * (step > 0 ? 1.25 : 1 / 1.25))
+            return
+        }
         // A PDF's text is its pages: it zooms.
         if (pdf) {
             pdfSurface.zoom = step === 0 ? 1 : Math.max(1, Math.min(4, pdfSurface.zoom * (step > 0 ? 1.15 : 1 / 1.15)))
             return
         }
-        settings.fontScale = step === 0 ? 1.15 : Math.max(0.7, Math.min(2.0, Math.round((settings.fontScale + step) * 100) / 100))
+        setAppearance("fontScale", step === 0 ? 1.15 : Math.max(0.7, Math.min(2.0, Math.round((activeSettings.fontScale + step) * 100) / 100)))
     }
     function showContents() {
         appearance.close()
@@ -326,6 +422,7 @@ FocusScope {
     function askCompanion(feature, target) {
         if (!target || !target.text)
             return
+        lastCompanionTarget = { chapter: target.chapter, start: target.start, end: target.end, text: target.text }
         showCompanion("selection")
         if (feature === "define")
             companion.define(target.text, target.chapter, target.start)
@@ -354,10 +451,24 @@ FocusScope {
     }
     onLookChanged: styleTimer.restart()
     Connections {
-        target: view.settings
+        target: reader
+        function onAppearanceChanged() { styleTimer.restart() }
+        function onJumpRecorded(label) {
+            view.jumpPillLabel = label
+            view.jumpPillVisible = true
+            jumpPillTimer.restart()
+        }
+        function onImageChosen(source, caption) {
+            lightbox.openImage(source, caption)
+        }
+    }
+    Connections {
+        target: activeSettings
         function onFontChanged() { styleTimer.restart() }
         function onFontScaleChanged() { styleTimer.restart() }
+        function onFontWeightChanged() { styleTimer.restart() }
         function onLineHeightChanged() { styleTimer.restart() }
+        function onParagraphSpacingChanged() { styleTimer.restart() }
         function onMarginsChanged() { styleTimer.restart() }
         function onJustifyChanged() { styleTimer.restart() }
         function onHyphenateChanged() { styleTimer.restart() }
@@ -381,7 +492,7 @@ FocusScope {
             if (chapter === reader.chapter || view.pdf)
                 view.js("dogear.speak(" + start + "," + end + "," + narration.following + ")")
             else if (narration.following)
-                view.js("dogear.goTo({chapter:" + chapter + ",offset:" + start + ",instant:true,quiet:true})"
+                view.js("dogear.goTo({chapter:" + chapter + ",offset:" + start + ",instant:true,quiet:true,automated:true})"
                         + ".then(() => dogear.speak(" + start + "," + end + ",true))")
         }
         function onStateChanged() {
@@ -464,7 +575,15 @@ FocusScope {
             return
         const shift = (modifiers & 1) !== 0, ctrl = (modifiers & 2) !== 0, alt = (modifiers & 4) !== 0, meta = (modifiers & 8) !== 0
         const plain = !ctrl && !alt && !meta
-        if (alt && !ctrl && !meta && key === "ArrowLeft") { back(); return }
+        if (alt && !ctrl && !meta) {
+            if (key === "ArrowLeft") { back(); return }
+            if (key === "ArrowRight") { forward(); return }
+            return
+        }
+        if (shift && !ctrl && !alt && !meta && narration.active && typeof narration.skipSeconds === "function") {
+            if (key === "ArrowLeft") { narration.skipSeconds(-15); return }
+            if (key === "ArrowRight") { narration.skipSeconds(15); return }
+        }
         if (ctrl && !alt && !meta) {
             if (key === "f" || key === "F") searchBar.show()
             else if (key === "+" || key === "=") resize(0.05)
@@ -482,8 +601,10 @@ FocusScope {
         if (key === "Escape") { dismiss(); return }
         if (!plain)
             return
-        if (key === "ArrowRight" || key === "PageDown" || key === "l" || key === "j" || (key === " " && !shift)) next()
-        else if (key === "ArrowLeft" || key === "PageUp" || key === "h" || key === "k" || (key === " " && shift)) prev()
+        if (key === "ArrowRight") { reader.rtl ? prev() : next() }
+        else if (key === "ArrowLeft") { reader.rtl ? next() : prev() }
+        else if (key === "PageDown" || key === "l" || key === "j" || (key === " " && !shift)) next()
+        else if (key === "PageUp" || key === "h" || key === "k" || (key === " " && shift)) prev()
         else if (key === "]") nextChapter()
         else if (key === "[") prevChapter()
         else if (key === "t" || key === "T") showContents()
@@ -539,6 +660,37 @@ FocusScope {
         opacity: view.pdf ? 0 : 1
         enabled: !view.pdf
         sourceComponent: webComponent
+    }
+
+    // Subtle cold-start loading indicator while WebEngine boots and renders
+    // the opening EPUB chapter, delayed slightly so warm loads never flicker.
+    Item {
+        id: epubSpinner
+        anchors.centerIn: parent
+        width: 40
+        height: 40
+        property bool shown: false
+        visible: opacity > 0.01
+        opacity: shown && view.epubLoading ? 0.6 : 0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
+        Timer {
+            interval: 180
+            running: view.epubLoading
+            onTriggered: epubSpinner.shown = true
+        }
+        Connections {
+            target: view
+            function onEpubLoadingChanged() {
+                if (!view.epubLoading)
+                    epubSpinner.shown = false
+            }
+        }
+        BusyIndicator {
+            anchors.centerIn: parent
+            running: epubSpinner.visible
+            implicitWidth: 28
+            implicitHeight: 28
+        }
     }
 
     Component {
@@ -604,7 +756,7 @@ FocusScope {
     // In scroll mode the text passes under the running head and folio;
     // it fades into the page there rather than colliding with them.
     Rectangle {
-        visible: view.settings.layout === "scroll"
+        visible: activeSettings.layout === "scroll"
         anchors.top: parent.top
         width: parent.width
         height: 52
@@ -614,7 +766,7 @@ FocusScope {
         }
     }
     Rectangle {
-        visible: view.settings.layout === "scroll"
+        visible: activeSettings.layout === "scroll"
         anchors.bottom: parent.bottom
         width: parent.width
         height: 52
@@ -640,6 +792,39 @@ FocusScope {
         elide: Text.ElideRight
     }
 
+    function folioPrimaryText() {
+        const mode = ((folioSettings.folioMode % 4) + 4) % 4
+        const loc = Qt.locale()
+        const percent = qsTr("%1%").arg(Math.round(reader.progress * 100).toLocaleString(loc, 'f', 0))
+        if (mode === 0) {
+            if (view.pdf) {
+                const cur = (reader.chapter + 1).toLocaleString(loc, 'f', 0)
+                const tot = Math.max(1, reader.chapterCount).toLocaleString(loc, 'f', 0)
+                return qsTr("Page %1 of %2").arg(cur).arg(tot)
+            }
+            const p = (reader.page + 1).toLocaleString(loc, 'f', 0)
+            const ps = Math.max(1, reader.pages).toLocaleString(loc, 'f', 0)
+            return qsTr("Page %1 of %2").arg(p).arg(ps)
+        }
+        if (mode === 1) {
+            if (reader.atEnd)
+                return qsTr("Finished")
+            if (!view.pdf && reader.minutesLeftInChapter > 0)
+                return qsTr("%1 left in chapter").arg(Format.duration(reader.minutesLeftInChapter))
+            if (reader.minutesLeftInBook > 0)
+                return qsTr("%1 left in book").arg(Format.duration(reader.minutesLeftInBook))
+            return percent
+        }
+        if (mode === 2) {
+            if (reader.atEnd)
+                return qsTr("Finished")
+            if (reader.minutesLeftInBook > 0)
+                return qsTr("%1 left in book").arg(Format.duration(reader.minutesLeftInBook))
+            return percent
+        }
+        return percent
+    }
+
     Item {
         anchors.left: parent.left
         anchors.right: parent.right
@@ -653,20 +838,136 @@ FocusScope {
         Label {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: !view.pdf && reader.minutesLeftInChapter > 0 && translator.language !== ""
-                  ? qsTr("%1 left in chapter").arg(Format.duration(reader.minutesLeftInChapter)) : ""
+            text: reader.pageLabel !== "" ? qsTr("p. %1").arg(reader.pageLabel) : ""
             color: view.look.muted
             font.pixelSize: 12
+            font.features: ({ "tnum": 1 })
         }
-        Label {
+        AbstractButton {
+            id: folioButton
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            text: {
-                const percent = qsTr("%1%").arg(Math.round(reader.progress * 100).toLocaleString(Qt.locale(), 'f', 0))
-                return reader.pageLabel !== "" ? qsTr("p. %1").arg(reader.pageLabel) + "  ·  " + percent : percent
+            enabled: !view.chromeShown && !narration.active
+            hoverEnabled: true
+            focusPolicy: Qt.NoFocus
+            implicitWidth: folioLabel.implicitWidth + 16
+            implicitHeight: 28
+            onClicked: folioSettings.folioMode = (folioSettings.folioMode + 1) % 4
+            background: Rectangle {
+                radius: Math.min(6, theme.radius + 2)
+                color: folioButton.hovered ? Ui.tint(view.look.fg, 0.06) : "transparent"
             }
-            color: view.look.muted
-            font.pixelSize: 12
+            contentItem: Label {
+                id: folioLabel
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                text: {
+                    void(folioSettings.folioMode)
+                    void(reader.page); void(reader.pages); void(reader.chapter); void(reader.chapterCount)
+                    void(reader.progress); void(reader.minutesLeftInChapter); void(reader.minutesLeftInBook)
+                    void(reader.atEnd); void(translator.language)
+                    return view.folioPrimaryText()
+                }
+                color: view.look.muted
+                font.pixelSize: 12
+                font.features: ({ "tnum": 1 })
+            }
+            HoverHandler { cursorShape: Qt.PointingHandCursor }
+            ToolTip.visible: hovered
+            ToolTip.delay: 700
+            ToolTip.text: qsTr("Click to switch reading indicator")
+        }
+    }
+
+    // Dismissible jump-back pill shown after TOC, link, scrubber, search,
+    // or Companion jumps so returning where you came from is one click away.
+    Timer {
+        id: jumpPillTimer
+        interval: 12000
+        onTriggered: view.jumpPillVisible = false
+    }
+    Rectangle {
+        id: jumpPill
+        z: 4
+        anchors.left: parent.left
+        anchors.leftMargin: 24 + (contents.open ? contents.width : 0)
+        Behavior on anchors.leftMargin { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        readonly property bool shown: view.jumpPillVisible && reader.canGoBack && view.jumpPillLabel !== ""
+        y: shown ? parent.height - height - (view.chromeShown ? 84 : narration.active ? 76 : 48) : parent.height + 16
+        Behavior on y { NumberAnimation { duration: 180; easing.type: Easing.OutCubic } }
+        opacity: shown ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 150 } }
+        visible: opacity > 0.01
+        width: jumpPillRow.implicitWidth + 16
+        height: 36
+        radius: Math.min(18, Math.max(theme.radius + 4, 8))
+        color: view.look.popover
+        border.color: view.look.border
+
+        Rectangle {
+            z: -1
+            anchors.fill: parent
+            anchors.topMargin: 3
+            anchors.bottomMargin: -3
+            radius: parent.radius
+            color: "black"
+            opacity: view.look.dark ? 0.35 : 0.12
+        }
+
+        Row {
+            id: jumpPillRow
+            anchors.centerIn: parent
+            spacing: 4
+
+            AbstractButton {
+                id: jumpPillAction
+                anchors.verticalCenter: parent.verticalCenter
+                implicitHeight: 30
+                implicitWidth: jumpActionRow.implicitWidth + 12
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+                onClicked: view.back()
+                background: Rectangle {
+                    radius: Math.min(15, theme.radius + 4)
+                    color: jumpPillAction.hovered ? Ui.tint(view.look.link, 0.14) : "transparent"
+                }
+                contentItem: Row {
+                    id: jumpActionRow
+                    spacing: 6
+                    leftPadding: 6
+                    rightPadding: 6
+                    Glyph {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 14
+                        height: 14
+                        path: Icons.back
+                        color: view.look.link
+                    }
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Return to %1").arg(view.jumpPillLabel)
+                        color: view.look.fg
+                        font.pixelSize: 13
+                        elide: Text.ElideRight
+                        width: Math.min(implicitWidth, 240)
+                    }
+                }
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                ToolTip.visible: hovered
+                ToolTip.delay: 600
+                ToolTip.text: qsTr("Return (Alt+←)")
+            }
+
+            IconButton {
+                anchors.verticalCenter: parent.verticalCenter
+                implicitWidth: 26
+                implicitHeight: 26
+                glyph: Icons.close
+                look: view.look
+                tone: view.look.muted
+                tip: qsTr("Dismiss")
+                onClicked: view.jumpPillVisible = false
+            }
         }
     }
 
@@ -846,6 +1147,7 @@ FocusScope {
                   ? qsTr("%1 left in book").arg(Format.duration(reader.minutesLeftInBook)) : ""
             color: view.look.muted
             font.pixelSize: 12
+            font.features: ({ "tnum": 1 })
         }
         ProgressScrubber {
             id: progressScrubber
@@ -903,9 +1205,12 @@ FocusScope {
         onClosed: view.focusPage()
         height: parent.height
         look: view.look
-        settings: view.settings
+        settings: activeSettings
         pdf: view.pdf
         pdfSurface: pdfSurface
+        bookOverride: reader.bookAppearanceOverride
+        onSettingChanged: (key, value) => view.setAppearance(key, value)
+        onBookOverrideToggled: (enabled) => view.setBookOverride(enabled)
     }
 
     // The bookmark's ribbon, hanging from the top of a marked page.
@@ -1103,6 +1408,263 @@ FocusScope {
         height: parent.height
         look: view.look
     }
+    Connections {
+        target: companionPanel
+        ignoreUnknownSignals: true
+        function onJumpRequested(chapter, offset) {
+            view.goTo({ chapter: chapter, offset: offset, instant: true })
+        }
+        function onSaveAsNote(quote, note) {
+            if (!reader.open)
+                return
+            const trimmedQuote = (quote || "").trim()
+            const trimmedNote = (note || "").trim()
+            if (trimmedQuote === "" && trimmedNote === "")
+                return
+            const matchTarget = view.selection && view.selection.text && view.selection.text.trim() === trimmedQuote
+                ? view.selection
+                : (view.lastCompanionTarget && view.lastCompanionTarget.text && view.lastCompanionTarget.text.trim() === trimmedQuote
+                   ? view.lastCompanionTarget : null)
+            let id = 0
+            if (matchTarget && matchTarget.end > matchTarget.start) {
+                id = marks.addHighlight(matchTarget.chapter, matchTarget.start, matchTarget.end,
+                                        trimmedQuote, "blue", reader.titleOfChapter(matchTarget.chapter))
+            } else {
+                const label = reader.titleOfChapter(reader.chapter)
+                const excerpt = trimmedQuote !== "" ? trimmedQuote : (reader.snippet !== "" ? reader.snippet : label)
+                id = marks.addBookmark(reader.chapter, reader.pageStart, excerpt, label)
+            }
+            if (id > 0) {
+                if (trimmedNote !== "")
+                    marks.setNote(id, trimmedNote)
+                toast.show(qsTr("Saved as note"))
+            }
+        }
+    }
+
+    // Inline EPUB image/SVG lightbox with zoom, wheel zoom, drag-to-pan, and caption.
+    FocusScope {
+        id: lightbox
+        anchors.fill: parent
+        z: 50
+        property bool open: false
+        property string source: ""
+        property string caption: ""
+        property real zoom: 1.0
+        property real panX: 0
+        property real panY: 0
+        visible: opacity > 0.01
+        opacity: open ? 1 : 0
+        Behavior on opacity { NumberAnimation { duration: 160 } }
+
+        function openImage(src, cap) {
+            if (!src || src === "")
+                return
+            source = src
+            caption = cap || ""
+            zoom = 1.0
+            panX = 0
+            panY = 0
+            open = true
+            forceActiveFocus()
+        }
+        function close() {
+            if (!open)
+                return
+            open = false
+            zoom = 1.0
+            panX = 0
+            panY = 0
+        }
+        function setZoom(next) {
+            zoom = Math.max(1.0, Math.min(5.0, Math.round(next * 100) / 100))
+            if (zoom <= 1.01) {
+                panX = 0
+                panY = 0
+            } else {
+                clampPan()
+            }
+        }
+        function clampPan() {
+            const maxX = Math.max(0, (lightboxImage.paintedWidth * zoom - width + 96) / 2)
+            const maxY = Math.max(0, (lightboxImage.paintedHeight * zoom - height + 140) / 2)
+            panX = Math.max(-maxX, Math.min(maxX, panX))
+            panY = Math.max(-maxY, Math.min(maxY, panY))
+        }
+
+        Keys.onEscapePressed: { close(); view.focusPage() }
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) { setZoom(zoom * 1.25); event.accepted = true }
+            else if (event.key === Qt.Key_Minus) { setZoom(zoom / 1.25); event.accepted = true }
+            else if (event.key === Qt.Key_0) { setZoom(1.0); event.accepted = true }
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            color: Ui.tint("black", 0.86)
+        }
+
+        MouseArea {
+            id: lightboxPan
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            cursorShape: lightbox.zoom > 1.01 ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+            property bool dragged: false
+            property real startX: 0
+            property real startY: 0
+            property real startPanX: 0
+            property real startPanY: 0
+            onPressed: (event) => {
+                dragged = false
+                startX = event.x
+                startY = event.y
+                startPanX = lightbox.panX
+                startPanY = lightbox.panY
+            }
+            onPositionChanged: (event) => {
+                if (!pressed || lightbox.zoom <= 1.01)
+                    return
+                const dx = event.x - startX, dy = event.y - startY
+                if (!dragged && Math.abs(dx) + Math.abs(dy) < 4)
+                    return
+                dragged = true
+                lightbox.panX = startPanX + dx
+                lightbox.panY = startPanY + dy
+                lightbox.clampPan()
+            }
+            onDoubleClicked: lightbox.setZoom(lightbox.zoom > 1.2 ? 1.0 : 2.0)
+            onClicked: (event) => {
+                if (dragged)
+                    return
+                const hitW = lightboxImage.paintedWidth * lightbox.zoom
+                const hitH = lightboxImage.paintedHeight * lightbox.zoom
+                const cx = lightbox.width / 2 + lightbox.panX
+                const cy = lightbox.height / 2 + lightbox.panY
+                const onImage = event.x >= cx - hitW / 2 && event.x <= cx + hitW / 2
+                                && event.y >= cy - hitH / 2 && event.y <= cy + hitH / 2
+                if (!onImage) {
+                    lightbox.close()
+                    view.focusPage()
+                }
+            }
+            onWheel: (wheel) => {
+                wheel.accepted = true
+                const factor = wheel.angleDelta.y > 0 ? 1.15 : (1 / 1.15)
+                lightbox.setZoom(lightbox.zoom * factor)
+            }
+        }
+
+        Image {
+            id: lightboxImage
+            anchors.centerIn: parent
+            anchors.horizontalCenterOffset: lightbox.panX
+            anchors.verticalCenterOffset: lightbox.panY
+            width: Math.max(120, lightbox.width - 96)
+            height: Math.max(120, lightbox.height - (lightbox.caption !== "" ? 156 : 112))
+            source: lightbox.open ? lightbox.source : ""
+            fillMode: Image.PreserveAspectFit
+            asynchronous: true
+            smooth: true
+            mipmap: true
+            scale: lightbox.zoom
+        }
+
+        // Top-right floating zoom & close controls.
+        Rectangle {
+            anchors.top: parent.top
+            anchors.right: parent.right
+            anchors.topMargin: 20
+            anchors.rightMargin: 20
+            width: lightboxControls.implicitWidth + 14
+            height: 40
+            radius: 20
+            color: Ui.tint("#1c1c1e", 0.9)
+            border.color: Ui.tint("white", 0.16)
+
+            Row {
+                id: lightboxControls
+                anchors.centerIn: parent
+                spacing: 4
+                IconButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    glyph: Icons.zoomOut
+                    tone: "white"
+                    enabled: lightbox.zoom > 1.01
+                    tip: qsTr("Zoom out (−)")
+                    onClicked: lightbox.setZoom(lightbox.zoom / 1.25)
+                }
+                AbstractButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    implicitWidth: 48
+                    implicitHeight: 30
+                    hoverEnabled: true
+                    focusPolicy: Qt.NoFocus
+                    onClicked: lightbox.setZoom(1.0)
+                    background: Rectangle {
+                        radius: 6
+                        color: parent.hovered ? Ui.tint("white", 0.12) : "transparent"
+                    }
+                    contentItem: Label {
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        text: Math.round(lightbox.zoom * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
+                        color: "white"
+                        font.pixelSize: 12
+                        font.features: ({ "tnum": 1 })
+                    }
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 600
+                    ToolTip.text: qsTr("Reset zoom (0)")
+                }
+                IconButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    glyph: Icons.zoomIn
+                    tone: "white"
+                    enabled: lightbox.zoom < 4.99
+                    tip: qsTr("Zoom in (+)")
+                    onClicked: lightbox.setZoom(lightbox.zoom * 1.25)
+                }
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 1
+                    height: 18
+                    color: Ui.tint("white", 0.18)
+                }
+                IconButton {
+                    anchors.verticalCenter: parent.verticalCenter
+                    glyph: Icons.close
+                    tone: "white"
+                    tip: qsTr("Close (Esc)")
+                    onClicked: { lightbox.close(); view.focusPage() }
+                }
+            }
+        }
+
+        // Caption pill shown when the image has alt text or a figcaption.
+        Rectangle {
+            visible: lightbox.caption !== ""
+            anchors.bottom: parent.bottom
+            anchors.bottomMargin: 24
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: Math.min(parent.width - 64, captionText.implicitWidth + 32)
+            height: captionText.implicitHeight + 18
+            radius: 10
+            color: Ui.tint("#1c1c1e", 0.88)
+            border.color: Ui.tint("white", 0.14)
+            Label {
+                id: captionText
+                anchors.centerIn: parent
+                width: Math.min(implicitWidth, lightbox.width - 96)
+                text: lightbox.caption
+                color: "#f2f0eb"
+                font.pixelSize: 13
+                wrapMode: Text.Wrap
+                horizontalAlignment: Text.AlignHCenter
+                maximumLineCount: 4
+                elide: Text.ElideRight
+            }
+        }
+    }
 
     MarksPanel {
         id: marksPanel
@@ -1133,16 +1695,21 @@ FocusScope {
 
     // --- Keys ----------------------------------------------------------------
     readonly property bool modalOpen: win.helpVisible || aiSettings.open || welcome.open
-    readonly property bool keys: visible && !panelOpen && !modalOpen && !win.typing
+    readonly property bool keys: visible && !panelOpen && !modalOpen && !win.typing && !lightbox.open
     // Listening keys work with a panel open too, unless a field is taking typing.
     readonly property bool typing: win.typing
-    readonly property bool listenKeys: visible && !modalOpen && !win.typing
+    readonly property bool listenKeys: visible && !modalOpen && !win.typing && !lightbox.open
     Shortcut { sequence: "C"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showCompanion("ask") }
-    Shortcut { sequences: ["Right", "PgDown", "L", "J", "Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.next() }
-    Shortcut { sequences: ["Left", "PgUp", "H", "K", "Shift+Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prev() }
+    Shortcut { sequence: "Right"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.prev() : view.next() }
+    Shortcut { sequence: "Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.next() : view.prev() }
+    Shortcut { sequences: ["PgDown", "L", "J", "Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.next() }
+    Shortcut { sequences: ["PgUp", "H", "K", "Shift+Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prev() }
     Shortcut { sequence: "]"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.nextChapter() }
     Shortcut { sequence: "["; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prevChapter() }
     Shortcut { sequence: "Alt+Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.back() }
+    Shortcut { sequence: "Alt+Right"; context: Qt.ApplicationShortcut; enabled: view.keys && reader.canGoForward; onActivated: view.forward() }
+    Shortcut { sequence: "Shift+Left"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: if (typeof narration.skipSeconds === "function") narration.skipSeconds(-15) }
+    Shortcut { sequence: "Shift+Right"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: if (typeof narration.skipSeconds === "function") narration.skipSeconds(15) }
     Shortcut { sequence: "T"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showContents() }
     Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showAppearance() }
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: goTo.show() }

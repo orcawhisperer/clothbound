@@ -11,13 +11,27 @@
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSettings>
+#include <QStandardPaths>
 #include <QUrl>
 #include <QtConcurrentRun>
 #include <cmath>
 #include <cstdio>
 
+namespace {
+QString typographySettingsPath() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+}
+}
+
 Reader::Reader(Library *library, BookScheme *scheme, QObject *parent)
     : QObject(parent), m_library(library), m_scheme(scheme) {
+    QSettings settings(typographySettingsPath(), QSettings::IniFormat);
+    settings.beginGroup(QStringLiteral("typography"));
+    m_fontWeight = qBound(300, settings.value(QStringLiteral("fontWeight"), 400).toInt(), 700);
+    m_paragraphSpacing = qBound(0.0, settings.value(QStringLiteral("paragraphSpacing"), 0.4).toDouble(), 1.2);
+    settings.endGroup();
+
     // Positions are saved shortly after the reader settles on a page, so a
     // burst of page turns writes once.
     m_saveTimer.setSingleShot(true);
@@ -145,12 +159,18 @@ bool Reader::openBook(int bookId) {
     m_progress = record.progress;
     m_pageLabel.clear();
     m_atEnd = false;
+    m_rtl = book->isRightToLeft();
+    m_canGoBack = false;
+    m_canGoForward = false;
+    m_backLabel.clear();
+    loadBookAppearance(bookId);
 
     m_library->markOpened(bookId);
     m_lastGlobal = -1;
     m_sinceTurn.start();
     m_timeFlush.start();
     emit bookChanged();
+    emit appearanceChanged();
     emit locationChanged();
     return true;
 }
@@ -191,7 +211,14 @@ void Reader::close() {
     m_progress = 0;
     m_pageLabel.clear();
     m_atEnd = false;
+    m_rtl = false;
+    m_canGoBack = false;
+    m_canGoForward = false;
+    m_backLabel.clear();
+    m_bookAppearanceOverride = false;
+    m_bookAppearance.clear();
     emit bookChanged();
+    emit appearanceChanged();
 }
 
 void Reader::measureChapters() {
@@ -315,7 +342,10 @@ int Reader::minutesLeftInChapter() const {
     const qint64 length = m_lengths.value(m_chapter, 0);
     if (length <= 0 || pace <= 0)
         return 0;
-    return qMax(1, int(std::ceil((length - qMin(m_offset, length)) / pace)));
+    const qint64 remaining = length - qMin(m_offset, length);
+    if (remaining <= 0)
+        return 0;
+    return qMax(1, int(std::ceil(remaining / pace)));
 }
 
 int Reader::minutesLeftInBook() const {
@@ -327,7 +357,106 @@ int Reader::minutesLeftInBook() const {
         total += length;
     if (total <= 0 || pace <= 0)
         return 0;
-    return qMax(1, int(std::ceil((total - globalOffset(m_chapter, m_offset)) / pace)));
+    const qint64 remaining = total - globalOffset(m_chapter, m_offset);
+    if (remaining <= 0)
+        return 0;
+    return qMax(1, int(std::ceil(remaining / pace)));
+}
+
+void Reader::setFontWeight(int weight) {
+    weight = qBound(300, weight, 700);
+    if (weight == m_fontWeight)
+        return;
+    m_fontWeight = weight;
+    QSettings settings(typographySettingsPath(), QSettings::IniFormat);
+    settings.beginGroup(QStringLiteral("typography"));
+    settings.setValue(QStringLiteral("fontWeight"), m_fontWeight);
+    settings.endGroup();
+    emit appearanceChanged();
+}
+
+void Reader::setParagraphSpacing(double spacing) {
+    spacing = std::round(qBound(0.0, spacing, 1.2) * 100.0) / 100.0;
+    if (qFuzzyCompare(spacing + 1.0, m_paragraphSpacing + 1.0))
+        return;
+    m_paragraphSpacing = spacing;
+    QSettings settings(typographySettingsPath(), QSettings::IniFormat);
+    settings.beginGroup(QStringLiteral("typography"));
+    settings.setValue(QStringLiteral("paragraphSpacing"), m_paragraphSpacing);
+    settings.endGroup();
+    emit appearanceChanged();
+}
+
+void Reader::loadBookAppearance(int bookId) {
+    m_bookAppearance.clear();
+    m_bookAppearanceOverride = false;
+    if (!bookId || !m_library)
+        return;
+    const QString raw = m_library->bookSetting(bookId, QStringLiteral("appearance"));
+    if (raw.isEmpty())
+        return;
+    const QJsonDocument doc = QJsonDocument::fromJson(raw.toUtf8());
+    if (!doc.isObject())
+        return;
+    const QVariantMap map = doc.object().toVariantMap();
+    if (map.isEmpty())
+        return;
+    m_bookAppearance = map;
+    m_bookAppearanceOverride = true;
+}
+
+void Reader::setBookAppearanceOverride(bool enabled) {
+    if (!enabled) {
+        clearBookAppearance();
+        return;
+    }
+    if (!m_bookId || m_bookAppearanceOverride)
+        return;
+    if (m_bookAppearance.isEmpty()) {
+        m_bookAppearance = QVariantMap{
+            {QStringLiteral("fontWeight"), m_fontWeight},
+            {QStringLiteral("paragraphSpacing"), m_paragraphSpacing},
+        };
+    }
+    saveBookAppearance(m_bookAppearance);
+}
+
+void Reader::saveBookAppearance(const QVariantMap &appearance) {
+    if (!m_bookId || !m_library)
+        return;
+    QVariantMap cleaned = appearance;
+    if (cleaned.contains(QStringLiteral("fontWeight")))
+        cleaned[QStringLiteral("fontWeight")] = qBound(300, cleaned.value(QStringLiteral("fontWeight")).toInt(), 700);
+    if (cleaned.contains(QStringLiteral("paragraphSpacing")))
+        cleaned[QStringLiteral("paragraphSpacing")] =
+            std::round(qBound(0.0, cleaned.value(QStringLiteral("paragraphSpacing")).toDouble(), 1.2) * 100.0) / 100.0;
+    m_bookAppearance = cleaned;
+    m_bookAppearanceOverride = true;
+    const QString json = QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(cleaned)).toJson(QJsonDocument::Compact));
+    m_library->setBookSetting(m_bookId, QStringLiteral("appearance"), json);
+    emit appearanceChanged();
+}
+
+void Reader::clearBookAppearance() {
+    if (!m_bookId || !m_library)
+        return;
+    const bool had = m_bookAppearanceOverride || !m_bookAppearance.isEmpty();
+    m_bookAppearance.clear();
+    m_bookAppearanceOverride = false;
+    m_library->setBookSetting(m_bookId, QStringLiteral("appearance"), QString());
+    if (had)
+        emit appearanceChanged();
+}
+
+QString Reader::formatBackLabel(int chapter, const QString &pageLabel) const {
+    if (!pageLabel.trimmed().isEmpty())
+        return tr("p. %1").arg(pageLabel.trimmed());
+    const QString title = titleOfChapter(chapter).trimmed();
+    if (!title.isEmpty())
+        return title;
+    if (chapter >= 0)
+        return m_pdf ? tr("p. %1").arg(chapter + 1) : tr("Ch. %1").arg(chapter + 1);
+    return {};
 }
 
 void Reader::relocated(const QVariantMap &location) {
@@ -342,6 +471,19 @@ void Reader::relocated(const QVariantMap &location) {
     m_page = location.value("page").toInt();
     m_pages = qMax(1, location.value("pages").toInt());
     m_pageLabel = location.value("pageLabel").toString();
+    if (location.contains(QStringLiteral("rtl")))
+        m_rtl = location.value(QStringLiteral("rtl")).toBool();
+    if (location.contains(QStringLiteral("canGoBack")))
+        m_canGoBack = location.value(QStringLiteral("canGoBack")).toBool();
+    if (location.contains(QStringLiteral("canGoForward")))
+        m_canGoForward = location.value(QStringLiteral("canGoForward")).toBool();
+    if (m_canGoBack && location.contains(QStringLiteral("backChapter"))) {
+        m_backLabel = formatBackLabel(location.value(QStringLiteral("backChapter")).toInt(),
+                                      location.value(QStringLiteral("backPageLabel")).toString());
+    } else if (!m_canGoBack) {
+        m_backLabel.clear();
+    }
+    const bool jumped = location.value(QStringLiteral("jumped")).toBool();
     // Keep startPosition current so a WebEngine crash reload resumes here.
     m_startPosition = QVariantMap{{"chapter", m_chapter}, {"offset", double(m_offset)}, {"snippet", m_snippet}};
     const bool nearEnd = m_pdf ? (m_chapter >= qMax(0, chapterCount() - 2)) : (m_chapter >= m_lastLinear);
@@ -350,10 +492,12 @@ void Reader::relocated(const QVariantMap &location) {
     ++m_relocationSeq;
 
     // Reading pace comes from steady forward reading: the time spent on a
-    // page and how much text it held. Jumps and quick flips don't count.
+    // page and how much text it held. Jumps, quick flips, and automated
+    // narration turns don't count toward visual reading WPM.
     const qint64 global = globalOffset(m_chapter, m_offset);
     const qint64 seconds = m_sinceTurn.restart() / 1000;
-    if (m_lastGlobal >= 0 && seconds >= 2 && seconds <= 600) {
+    const bool automated = location.value(QStringLiteral("automated")).toBool();
+    if (!automated && m_lastGlobal >= 0 && seconds >= 2 && seconds <= 600) {
         const qint64 delta = global - m_lastGlobal;
         m_pendingSeconds += int(seconds);
         if (delta > 0 && delta < 20000)
@@ -362,6 +506,8 @@ void Reader::relocated(const QVariantMap &location) {
     m_lastGlobal = global;
     m_saveTimer.start();
     emit locationChanged();
+    if (jumped && m_canGoBack && !m_backLabel.isEmpty())
+        emit jumpRecorded(m_backLabel);
 }
 
 void Reader::savePosition() {
@@ -410,6 +556,54 @@ void Reader::markClicked(int id, const QVariantMap &rect) {
     if (rect.contains(QStringLiteral("session")) && rect.value(QStringLiteral("session")).toLongLong() != m_session)
         return;
     emit markChosen(id, rect);
+}
+
+void Reader::imageClicked(const QVariantMap &info) {
+    if (!m_bookId)
+        return;
+    if (info.contains(QStringLiteral("session")) && info.value(QStringLiteral("session")).toLongLong() != m_session)
+        return;
+    const QString caption = info.value(QStringLiteral("caption")).toString().trimmed();
+    const QString dataUrl = info.value(QStringLiteral("dataUrl")).toString();
+    constexpr qsizetype maxDataUrlChars = 28 * 1024 * 1024;
+    if (dataUrl.startsWith(QLatin1String("data:image/"), Qt::CaseInsensitive) && dataUrl.size() <= maxDataUrlChars) {
+        emit imageChosen(dataUrl, caption);
+        return;
+    }
+    const QString urlString = info.value(QStringLiteral("url")).toString();
+    if (urlString.startsWith(QLatin1String("data:image/"), Qt::CaseInsensitive) && urlString.size() <= maxDataUrlChars) {
+        emit imageChosen(urlString, caption);
+        return;
+    }
+    if (!m_book)
+        return;
+    const QUrl url(urlString);
+    if (url.scheme() != QLatin1String("dogear") || url.host() != QLatin1String("local"))
+        return;
+    const QString path = url.path(QUrl::FullyDecoded);
+    const QString prefix = QStringLiteral("/book/%1/").arg(m_token);
+    if (!path.startsWith(prefix))
+        return;
+    QString entry = path.mid(prefix.size());
+    QString mime, err;
+    QByteArray bytes = m_book->resource(entry, &mime, &err);
+    if (bytes.isEmpty() && !err.isEmpty()) {
+        const QString normalized = EpubBook::resolve(QString(), entry);
+        if (!normalized.isEmpty() && normalized != entry) {
+            err.clear();
+            bytes = m_book->resource(normalized, &mime, &err);
+            if (!bytes.isEmpty())
+                entry = normalized;
+        }
+    }
+    constexpr qsizetype maxImageBytes = 20 * 1024 * 1024;
+    if (bytes.isEmpty() || bytes.size() > maxImageBytes)
+        return;
+    if (mime.isEmpty())
+        mime = EpubBook::mediaTypeForPath(entry);
+    if (!mime.startsWith(QLatin1String("image/"), Qt::CaseInsensitive))
+        return;
+    emit imageChosen(QStringLiteral("data:%1;base64,%2").arg(mime, QString::fromLatin1(bytes.toBase64())), caption);
 }
 
 void Reader::listenFromSession(qint64 session, int chapter, qint64 offset) {
@@ -595,11 +789,17 @@ bool Reader::openPdf(int bookId) {
     m_progress = record.progress;
     m_pageLabel.clear();
     m_atEnd = false;
+    m_rtl = false;
+    m_canGoBack = false;
+    m_canGoForward = false;
+    m_backLabel.clear();
+    loadBookAppearance(bookId);
     m_library->markOpened(bookId);
     m_lastGlobal = -1;
     m_sinceTurn.start();
     m_timeFlush.start();
     emit bookChanged();
+    emit appearanceChanged();
     emit locationChanged();
     emit pdfCropChanged();
     return true;
@@ -621,6 +821,35 @@ QVariantMap Reader::pdfSelect(int page, qreal x1, qreal y1, qreal x2, qreal y2) 
     text.replace(QString(QChar(0xFFFE)) + QLatin1String("\r\n"), QString())
         .replace(QLatin1String("\r\n"), QLatin1String(" "));
     return {{"chapter", page}, {"start", selection.start}, {"end", selection.end}, {"text", text.simplified()}};
+}
+
+QVariantMap Reader::pdfSelectWord(int page, qreal x, qreal y) const {
+    if (!m_pdf)
+        return {};
+    const PdfBook::Selection selection = m_pdf->selectWord(page, QPointF(x, y));
+    if (selection.start < 0 || selection.text.isEmpty())
+        return {};
+    return {{"chapter", page}, {"start", selection.start}, {"end", selection.end}, {"text", selection.text.simplified()}};
+}
+
+QVariantList Reader::pdfLinks(int page) const {
+    QVariantList out;
+    if (!m_pdf)
+        return out;
+    for (const PdfLinkEntry &entry : m_pdf->pageLinks(page)) {
+        const QString url = entry.url.isValid() ? entry.url.toString() : QString();
+        for (const QRectF &rect : entry.rects) {
+            out.append(QVariantMap{
+                {QStringLiteral("x"), rect.x()},
+                {QStringLiteral("y"), rect.y()},
+                {QStringLiteral("width"), rect.width()},
+                {QStringLiteral("height"), rect.height()},
+                {QStringLiteral("page"), entry.page},
+                {QStringLiteral("url"), url},
+            });
+        }
+    }
+    return out;
 }
 
 QVariantList Reader::pdfRects(int page, qint64 start, qint64 end) const {

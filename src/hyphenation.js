@@ -7,6 +7,7 @@
 const Hyphenation = (() => {
     const SHY = '­'
     const leftMin = 2, rightMin = 3, shortest = 6
+    const MAX_CACHE = 20000
     let trie = null
     let loading = null
     const exceptions = new Map()
@@ -118,18 +119,22 @@ const Hyphenation = (() => {
     }
 
     function word(text) {
-        if (!trie || text.length < shortest)
+        if (!trie || text.length < shortest || /['\u2019]/.test(text))
             return text
         let hyphenated = cache.get(text)
         if (hyphenated === undefined) {
             hyphenated = pieces(text).join(SHY)
+            if (cache.size >= MAX_CACHE)
+                cache.delete(cache.keys().next().value)
             cache.set(text, hyphenated)
         }
         return hyphenated
     }
 
     // Soft hyphens into every long word of a text node, in place.
-    const words = /[A-Za-zÀ-ɏ]{6,}/g
+    // Match apostrophe-joined tokens whole so contractions like "couldn't"
+    // aren't split before the apostrophe.
+    const words = /[A-Za-zÀ-ɏ]+(?:['\u2019][A-Za-zÀ-ɏ]+)*/g
     function node(textNode) {
         const text = textNode.data
         if (text.length < shortest || text.includes(SHY))

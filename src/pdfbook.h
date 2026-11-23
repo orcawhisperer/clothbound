@@ -6,6 +6,7 @@
 #include <QRectF>
 #include <QString>
 #include <QStringList>
+#include <QUrl>
 #include <memory>
 
 class QPdfDocument;
@@ -14,6 +15,12 @@ struct PdfOutlineEntry {
     QString title;
     int page = 0;
     int depth = 0;
+};
+
+struct PdfLinkEntry {
+    QList<QRectF> rects;
+    int page = -1;
+    QUrl url;
 };
 
 // A PDF book through QtPdf (PDFium): what the library needs to know about
@@ -58,6 +65,9 @@ public:
         QString text;
     };
     Selection select(int page, const QPointF &from, const QPointF &to) const;
+    Selection selectWord(int page, const QPointF &at) const;
+    // Internal and external links on a page, with normalized 0..1 rectangles.
+    QList<PdfLinkEntry> pageLinks(int page) const;
     // A page's paragraphs to read aloud, as the reading surface gives them
     // ({start, end, text, kind}): lines joined, running heads and page
     // numbers left out, words broken across lines mended.

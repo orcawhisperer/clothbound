@@ -46,7 +46,7 @@ Rectangle {
         { keys: "+  −  0", action: qsTr("Larger, smaller, default text") },
         { keys: "D", action: qsTr("Next reading theme") },
         { keys: "G", action: qsTr("Go to a page or percentage") },
-        { keys: "Alt ←", action: qsTr("Back after following a link") },
+        { keys: "Alt ←  Alt →", action: qsTr("Back / forward in reading history") },
         { keys: "Ctrl Z  Ctrl ⇧ Z", action: qsTr("Undo / redo") },
         { keys: "Esc", action: qsTr("Close a panel, or back to the library") }
     ]
@@ -54,11 +54,13 @@ Rectangle {
         { keys: "P", action: qsTr("Listen from this page, pause, go on") },
         { keys: "⇧ P", action: qsTr("Stop listening") },
         { keys: ",  .", action: qsTr("Previous / next paragraph") },
+        { keys: "⇧ ←  ⇧ →", action: qsTr("Skip back / forward 15 seconds") },
         { keys: "<  >", action: qsTr("Slower / faster") },
         { keys: "V", action: qsTr("Narrator and style") },
         { keys: "Super W", action: qsTr("Close the window and keep listening; open Dogear again to return") }
     ]
     readonly property var everywhere: [
+        { keys: "Ctrl K", action: qsTr("Command palette") },
         { keys: "F  F11", action: qsTr("Full screen") },
         { keys: "?", action: qsTr("Show these shortcuts") },
         { keys: "Q", action: qsTr("Quit") }
