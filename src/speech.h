@@ -35,15 +35,29 @@ struct SpeechClip {
     QString text;
     QString style;
     int pauseMs = 0;
+    // Optional explicit voice override (e.g. from inline dialogue-span
+    // splitting); empty means fall back to the block's cast/narrator voice.
+    QString voice;
 
     qint64 start() const { return sentences.isEmpty() ? 0 : sentences.first().start; }
     qint64 end() const { return sentences.isEmpty() ? 0 : sentences.last().end; }
+};
+
+// A contiguous span inside a paragraph: either quoted speech (read by the
+// speaking character) or surrounding narration / attribution (read by the
+// narrator), with exact reader offsets.
+struct DialogueSpan {
+    bool dialogue = false;
+    QList<SpeechSentence> sentences;
 };
 
 namespace Speech {
 QList<SpeechBlock> parseBlocks(const QString &json);
 // A block's sentences, at model offsets, without the skipped spans.
 QList<SpeechSentence> sentences(const SpeechBlock &block);
+// Splits a paragraph that mixes quoted speech and narration tags into
+// alternating dialogue and narration spans with exact offsets.
+QList<DialogueSpan> splitDialogueSpans(const SpeechBlock &block);
 // A heading as it should be said: a chapter's Roman numeral as its number
 // ("CHAPTER V" says "Chapter 5"), capitals that would sound like shouting
 // in ordinary case, and a full stop so the title that follows gets a beat.
@@ -53,12 +67,16 @@ QString spokenHeading(const QString &text);
 // A chapter's number and title are read together; short paragraphs share a
 // clip; long ones are split between sentences. Blocks in `breaks` (where
 // the mood of the reading changes) always begin a clip, so each clip is
-// read in one mood.
+// read in one mood. When `blockVoices` is supplied (full cast), paragraphs
+// that mix quoted dialogue with narration tags are split into character and
+// narrator clips.
 QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, const QSet<int> &breaks = {},
-                        int longest = 1500, int merge = 600);
+                        int longest = 1500, int merge = 600,
+                        const QMap<int, QString> &blockVoices = {}, const QString &narratorVoice = {});
 // The clips to read from `from` on: the chapter's own clips, with the one
 // `from` falls in begun at its sentence.
-QList<SpeechClip> clipsFrom(int chapter, const QList<SpeechBlock> &blocks, qint64 from, const QSet<int> &breaks = {});
+QList<SpeechClip> clipsFrom(int chapter, const QList<SpeechBlock> &blocks, qint64 from, const QSet<int> &breaks = {},
+                            const QMap<int, QString> &blockVoices = {}, const QString &narratorVoice = {});
 // The moods a director can ask for, from a fixed list so the same scene is
 // always read the same way (and found again in the cache).
 QStringList moods();

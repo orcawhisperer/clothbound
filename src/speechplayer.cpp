@@ -2,8 +2,11 @@
 
 #include <QAudioFormat>
 #include <QAudioSink>
+#include <QMetaObject>
+#include <QMutexLocker>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 
 namespace {
@@ -95,23 +98,54 @@ bool Stretcher::process(const qint16 *source, qint64 available, bool complete, d
         const qint64 lo = std::max<qint64>(0, target - seek);
         const qint64 hi = std::min<qint64>(available - frame, target + seek);
         qint64 best = std::clamp(target, lo, hi);
-        if (m_previous >= 0) {
+        if (m_previous >= 0 && hi >= lo) {
             // The new frame should start where it best continues the last
-            // one: compare its first half with what naturally followed.
+            // one: compare its first half with what naturally followed, using
+            // an exact sliding-window squared-energy prefix sum (O(1) energy
+            // per candidate, zero floating-point drift) and coarse-to-fine search.
             const qint64 natural = m_previous + hop;
             if (natural + hop <= available) {
+                const qint64 spanLen = hi - lo + hop;
+                std::int64_t sqPrefix[2 * seek + hop + 2];
+                sqPrefix[0] = 0;
+                sqPrefix[1] = 0;
+                for (qint64 i = 0; i < spanLen; ++i) {
+                    const std::int64_t v = source[lo + i];
+                    sqPrefix[i + 2] = sqPrefix[i] + v * v;
+                }
+                float ref[hop / 2];
+                for (int k = 0; k < hop / 2; ++k)
+                    ref[k] = float(source[natural + 2 * k]);
+
+                auto scoreAt = [&](qint64 candidate) -> float {
+                    const qint64 c = candidate - lo;
+                    const std::int64_t energy = sqPrefix[c + hop] - sqPrefix[c];
+                    if (energy <= 0)
+                        return 0.f;
+                    float dot = 0.f;
+                    const qint16 *candPtr = source + candidate;
+                    for (int k = 0; k < hop / 2; ++k)
+                        dot += ref[k] * float(candPtr[2 * k]);
+                    return dot / std::sqrt(float(energy));
+                };
+
                 float bestScore = -1e30f;
-                for (qint64 candidate = lo; candidate <= hi; ++candidate) {
-                    float dot = 0.f, energy = 0.f;
-                    for (int n = 0; n < hop; n += 2) {
-                        const float a = float(source[natural + n]), b = float(source[candidate + n]);
-                        dot += a * b;
-                        energy += b * b;
-                    }
-                    const float score = energy > 0.f ? dot / std::sqrt(energy) : 0.f;
+                qint64 bestCoarse = best;
+                for (qint64 candidate = lo; candidate <= hi; candidate += 2) {
+                    const float score = scoreAt(candidate);
                     if (score > bestScore) {
                         bestScore = score;
-                        best = candidate;
+                        bestCoarse = candidate;
+                    }
+                }
+                best = bestCoarse;
+                for (qint64 candidate : {bestCoarse - 1, bestCoarse + 1}) {
+                    if (candidate >= lo && candidate <= hi) {
+                        const float score = scoreAt(candidate);
+                        if (score > bestScore) {
+                            bestScore = score;
+                            best = candidate;
+                        }
                     }
                 }
             }
@@ -137,7 +171,149 @@ SpeechPlayer::SpeechPlayer(int sampleRate, QObject *parent) : QObject(parent), m
     connect(&m_devices, &QMediaDevices::audioOutputsChanged, this, &SpeechPlayer::handleOutputsChanged);
 }
 
-SpeechPlayer::~SpeechPlayer() { releaseSink(); }
+SpeechPlayer::~SpeechPlayer() {
+    m_timer.stop();
+    stopWorker();
+    releaseSink();
+}
+
+void SpeechPlayer::startWorker() {
+    if (m_worker.joinable())
+        return;
+    m_stopWorker = false;
+    m_worker = std::thread(&SpeechPlayer::workerLoop, this);
+}
+
+void SpeechPlayer::stopWorker() {
+    {
+        QMutexLocker lock(&m_mutex);
+        m_stopWorker = true;
+        ++m_generation;
+        m_cond.wakeAll();
+    }
+    if (m_worker.joinable())
+        m_worker.join();
+}
+
+void SpeechPlayer::workerLoop() {
+    Stretcher stretcher;
+    quint64 localGen = 0;
+    bool stretcherInited = false;
+    const qint64 targetReadySamples = qMax<qint64>(Stretcher::frame * 4, m_sampleRate / 2);
+    const int chunkRoom = Stretcher::hop * 8;
+
+    for (;;) {
+        QByteArray pcmCopy;
+        qint64 available = 0;
+        bool complete = false;
+        double rate = 1.0;
+        int trackId = 0;
+        qint64 readPos = 0;
+        quint64 gen = 0;
+
+        {
+            QMutexLocker lock(&m_mutex);
+            for (;;) {
+                if (m_stopWorker)
+                    return;
+                if (localGen != m_generation) {
+                    localGen = m_generation;
+                    stretcherInited = false;
+                }
+                const bool canWork = m_playing && !m_headless && m_readySamples < targetReadySamples &&
+                                     m_workerIndex < m_tracks.size();
+                if (canWork) {
+                    const Track &t = m_tracks[m_workerIndex];
+                    const qint64 avail = t.pcm.size() / 2;
+                    const bool plain = qFuzzyCompare(m_rate, 1.0);
+                    if (!stretcherInited) {
+                        stretcher.reset(m_workerRead);
+                        stretcherInited = true;
+                    }
+                    bool hasData = false;
+                    if (plain) {
+                        hasData = (avail > m_workerRead) || t.complete;
+                    } else {
+                        const qint64 targetUpper = stretcher.position() + 1;
+                        hasData = t.complete || (targetUpper + Stretcher::seek + Stretcher::frame <= avail);
+                    }
+                    if (hasData) {
+                        pcmCopy = t.pcm;
+                        available = avail;
+                        complete = t.complete;
+                        rate = m_rate;
+                        trackId = t.id;
+                        readPos = m_workerRead;
+                        gen = m_generation;
+                        break;
+                    }
+                }
+                m_cond.wait(&m_mutex);
+            }
+        }
+
+        // Run WSOLA / pass-through completely off the GUI thread without holding m_mutex.
+        const auto *source = reinterpret_cast<const qint16 *>(pcmCopy.constData());
+        const bool plain = qFuzzyCompare(rate, 1.0);
+        QVector<qint16> out;
+        qint64 sourceStart = 0;
+        qint64 newReadPos = readPos;
+        bool more = true;
+
+        if (plain) {
+            sourceStart = readPos;
+            const qint64 n = std::min<qint64>(chunkRoom, qMax<qint64>(0, available - readPos));
+            if (n > 0) {
+                out.resize(n);
+                std::memcpy(out.data(), source + readPos, size_t(n) * sizeof(qint16));
+                newReadPos = readPos + n;
+            }
+            more = !(complete && newReadPos >= available);
+        } else {
+            sourceStart = stretcher.position();
+            more = stretcher.process(source, available, complete, rate, chunkRoom, out);
+            newReadPos = stretcher.position();
+        }
+
+        QByteArray bytes;
+        if (!out.isEmpty())
+            bytes = QByteArray(reinterpret_cast<const char *>(out.constData()), int(out.size() * 2));
+
+        bool shouldNotify = false;
+        {
+            QMutexLocker lock(&m_mutex);
+            if (m_stopWorker)
+                return;
+            if (gen != m_generation)
+                continue;
+            if (!bytes.isEmpty() || !more) {
+                m_ready.append({std::move(bytes), trackId, sourceStart, plain ? 1.0 : rate, !more});
+                m_readySamples += out.size();
+                shouldNotify = true;
+            }
+            if (!more) {
+                ++m_workerIndex;
+                m_workerRead = (m_workerIndex < m_tracks.size()) ? m_tracks[m_workerIndex].startSample : 0;
+                stretcherInited = false;
+                if (m_workerIndex >= m_tracks.size())
+                    m_workerFinishedAll = true;
+            } else {
+                m_workerRead = newReadPos;
+                if (out.isEmpty())
+                    m_cond.wait(&m_mutex, 15);
+            }
+        }
+
+        if (shouldNotify && !m_notifyPending.exchange(true))
+            QMetaObject::invokeMethod(this, &SpeechPlayer::onWorkerReady, Qt::QueuedConnection);
+    }
+}
+
+void SpeechPlayer::onWorkerReady() {
+    m_notifyPending.store(false);
+    if (isPlaying())
+        fill();
+}
 
 void SpeechPlayer::ensureSink() {
     if (m_sink)
@@ -159,7 +335,7 @@ void SpeechPlayer::ensureSink() {
         if (!m_sink)
             return;
         if (state == QAudio::StoppedState && m_sink->error() != QAudio::NoError) {
-            if (m_playing && !m_recovered) {
+            if (isPlaying() && !m_recovered) {
                 m_recovered = true;
                 releaseSink();
                 m_marks.clear();
@@ -177,7 +353,7 @@ void SpeechPlayer::ensureSink() {
         }
         if (state == QAudio::ActiveState)
             m_recovered = false;
-        if (state == QAudio::IdleState && m_playing) {
+        if (state == QAudio::IdleState && isPlaying()) {
             fill();
             report();
         }
@@ -202,7 +378,7 @@ void SpeechPlayer::handleOutputsChanged() {
     const QAudioDevice current = QMediaDevices::defaultAudioOutput();
     if (current == m_outputDevice && m_sink->error() == QAudio::NoError)
         return;
-    const bool wasPlaying = m_playing;
+    const bool wasPlaying = isPlaying();
     releaseSink();
     m_marks.clear();
     m_writtenBytes = 0;
@@ -213,65 +389,92 @@ void SpeechPlayer::handleOutputsChanged() {
     }
 }
 
-SpeechPlayer::Track *SpeechPlayer::track(int id) {
+SpeechPlayer::Track *SpeechPlayer::trackLocked(int id) {
     for (Track &t : m_tracks)
         if (t.id == id)
             return &t;
     return nullptr;
 }
 
-void SpeechPlayer::addTrack(int id) {
-    if (track(id))
+int SpeechPlayer::trackIndexLocked(int id) const {
+    for (int i = 0; i < m_tracks.size(); ++i)
+        if (m_tracks[i].id == id)
+            return i;
+    return -1;
+}
+
+void SpeechPlayer::addTrack(int id, qint64 startSample) {
+    QMutexLocker lock(&m_mutex);
+    if (trackLocked(id))
         return;
     Track t;
     t.id = id;
+    t.startSample = qMax<qint64>(0, startSample);
+    const bool nextForWorker = (m_workerIndex == m_tracks.size());
     m_tracks.append(t);
+    if (nextForWorker)
+        m_workerRead = t.startSample;
+    m_workerFinishedAll = false;
     m_drained = false;
+    m_cond.wakeOne();
 }
 
 void SpeechPlayer::appendAudio(int id, const QByteArray &pcm) {
-    if (Track *t = track(id))
+    QMutexLocker lock(&m_mutex);
+    if (Track *t = trackLocked(id)) {
         t->pcm += pcm;
+        m_cond.wakeOne();
+    }
 }
 
 void SpeechPlayer::finishTrack(int id) {
-    if (Track *t = track(id))
+    QMutexLocker lock(&m_mutex);
+    if (Track *t = trackLocked(id)) {
         t->complete = true;
+        m_cond.wakeOne();
+    }
 }
 
 bool SpeechPlayer::hasTrack(int id) const {
-    for (const Track &t : m_tracks)
-        if (t.id == id)
-            return true;
-    return false;
+    QMutexLocker lock(&m_mutex);
+    return trackIndexLocked(id) >= 0;
 }
 
 qint64 SpeechPlayer::trackSamples(int id) const {
-    for (const Track &t : m_tracks)
-        if (t.id == id)
-            return t.pcm.size() / 2;
-    return 0;
+    QMutexLocker lock(&m_mutex);
+    const int idx = trackIndexLocked(id);
+    return idx >= 0 ? m_tracks[idx].pcm.size() / 2 : 0;
 }
 
 bool SpeechPlayer::trackComplete(int id) const {
-    for (const Track &t : m_tracks)
-        if (t.id == id)
-            return t.complete;
-    return false;
+    QMutexLocker lock(&m_mutex);
+    const int idx = trackIndexLocked(id);
+    return idx >= 0 ? m_tracks[idx].complete : false;
 }
 
 void SpeechPlayer::clear() {
-    m_tracks.clear();
-    m_index = 0;
+    bool playingNow = false;
+    {
+        QMutexLocker lock(&m_mutex);
+        m_tracks.clear();
+        m_ready.clear();
+        m_readySamples = 0;
+        m_workerIndex = 0;
+        m_workerRead = 0;
+        m_workerFinishedAll = true;
+        ++m_generation;
+        playingNow = m_playing;
+        m_cond.wakeOne();
+    }
+    m_consumedIndex = 0;
     m_marks.clear();
     m_writtenBytes = 0;
     m_pendingOut.clear();
-    m_stretcher.reset();
     m_lastTrack = -1;
     m_lastSample = -1;
     m_drained = true;
     if (m_sink) {
-        if (!m_playing) {
+        if (!playingNow) {
             releaseSink();
         } else {
             m_sink->reset();
@@ -281,17 +484,36 @@ void SpeechPlayer::clear() {
     setStarved(false);
 }
 
+bool SpeechPlayer::isPlaying() const {
+    QMutexLocker lock(&m_mutex);
+    return m_playing;
+}
+
+void SpeechPlayer::setHeadless(bool headless) {
+    QMutexLocker lock(&m_mutex);
+    m_headless = headless;
+    m_cond.wakeOne();
+}
+
 void SpeechPlayer::play() {
-    if (m_headless) {
-        m_playing = true;
-        return;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (m_headless) {
+            m_playing = true;
+            return;
+        }
     }
     ensureSink();
     if (!m_sink || !m_out) {
         emit sinkError(tr("No audio output device is available."));
         return;
     }
-    m_playing = true;
+    {
+        QMutexLocker lock(&m_mutex);
+        m_playing = true;
+        startWorker();
+        m_cond.wakeOne();
+    }
     if (m_sink->state() == QAudio::SuspendedState)
         m_sink->resume();
     m_timer.start();
@@ -299,7 +521,11 @@ void SpeechPlayer::play() {
 }
 
 void SpeechPlayer::pause() {
-    m_playing = false;
+    {
+        QMutexLocker lock(&m_mutex);
+        m_playing = false;
+        m_cond.wakeOne();
+    }
     if (m_sink)
         m_sink->suspend();
     m_timer.stop();
@@ -324,16 +550,26 @@ void SpeechPlayer::setVolume(double volume) {
 
 void SpeechPlayer::setRate(double rate) {
     const double clamped = std::clamp(rate, 0.25, 4.0);
+    QMutexLocker lock(&m_mutex);
     if (qFuzzyCompare(clamped, m_rate))
         return;
-    // The source cursor carries over; the stretcher starts fresh there.
-    if (m_index < m_tracks.size()) {
-        Track &t = m_tracks[m_index];
-        if (!qFuzzyCompare(m_rate, 1.0))
-            t.read = m_stretcher.position();
-        m_stretcher.reset(t.read);
+    // Discard buffered output produced at the old rate and rewind the worker
+    // cursor to the exact first unplayed source sample so nothing is skipped.
+    if (!m_ready.isEmpty()) {
+        const ReadyChunk &first = m_ready.first();
+        const int idx = trackIndexLocked(first.trackId);
+        if (idx >= 0) {
+            m_workerIndex = idx;
+            m_workerRead = first.sourceStart;
+        }
+        m_ready.clear();
+        m_readySamples = 0;
     }
     m_rate = clamped;
+    ++m_generation;
+    if (m_workerIndex < m_tracks.size())
+        m_workerFinishedAll = false;
+    m_cond.wakeOne();
 }
 
 bool SpeechPlayer::flushPending() {
@@ -348,60 +584,55 @@ bool SpeechPlayer::flushPending() {
 }
 
 void SpeechPlayer::fill() {
-    if (!m_playing || !m_out || !m_sink)
+    if (!m_out || !m_sink)
         return;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (!m_playing || m_headless)
+            return;
+    }
     if (!flushPending())
         return;
     qint64 room = m_sink->bytesFree() / 2;
-    QVector<qint16> out;
-    while (room >= Stretcher::hop && m_index < m_tracks.size()) {
-        Track &t = m_tracks[m_index];
-        const auto *source = reinterpret_cast<const qint16 *>(t.pcm.constData());
-        const qint64 available = t.pcm.size() / 2;
-        out.clear();
-        qint64 sourceStart = 0;
-        bool more = true;
-        const bool plain = qFuzzyCompare(m_rate, 1.0);
-        if (plain) {
-            sourceStart = t.read;
-            const qint64 n = std::min<qint64>(room, available - t.read);
-            if (n > 0) {
-                out.resize(n);
-                std::memcpy(out.data(), source + t.read, size_t(n) * 2);
-                t.read += n;
-            }
-            more = !(t.complete && t.read >= available);
-        } else {
-            sourceStart = m_stretcher.position();
-            more = m_stretcher.process(source, available, t.complete, m_rate, int(room), out);
-            t.read = m_stretcher.position();
+    bool poppedAny = false;
+    for (;;) {
+        ReadyChunk chunk;
+        {
+            QMutexLocker lock(&m_mutex);
+            if (!m_playing || m_headless || m_ready.isEmpty())
+                break;
+            if (room <= 0 && !m_ready.first().bytes.isEmpty())
+                break;
+            chunk = m_ready.takeFirst();
+            m_readySamples = qMax<qint64>(0, m_readySamples - chunk.bytes.size() / 2);
         }
+        poppedAny = true;
         bool partialWrite = false;
-        if (!out.isEmpty()) {
-            m_marks.append({m_writtenBytes / 2, t.id, sourceStart, plain ? 1.0 : m_rate});
-            const char *data = reinterpret_cast<const char *>(out.constData());
-            const qint64 bytes = out.size() * 2;
-            const qint64 wrote = m_out->write(data, bytes);
+        if (!chunk.bytes.isEmpty()) {
+            m_marks.append({m_writtenBytes / 2, chunk.trackId, chunk.sourceStart, chunk.rate});
+            const qint64 bytes = chunk.bytes.size();
+            const qint64 wrote = m_out->write(chunk.bytes.constData(), bytes);
             if (wrote > 0)
                 m_writtenBytes += wrote;
             if (wrote < bytes) {
                 const qint64 offset = qMax<qint64>(0, wrote);
-                m_pendingOut.append(data + offset, bytes - offset);
+                m_pendingOut.append(chunk.bytes.constData() + offset, bytes - offset);
                 partialWrite = true;
             }
             room -= qMax<qint64>(0, wrote) / 2;
         }
-        if (!more) {
-            // The track is heard out; its audio can go.
-            t.pcm = QByteArray();
-            ++m_index;
-            m_stretcher.reset();
-            if (partialWrite)
-                break;
-            continue;
+        if (chunk.trackDone) {
+            QMutexLocker lock(&m_mutex);
+            if (Track *t = trackLocked(chunk.trackId))
+                t->pcm = QByteArray();
+            ++m_consumedIndex;
         }
-        if (partialWrite || out.isEmpty())
+        if (partialWrite)
             break;
+    }
+    if (poppedAny) {
+        QMutexLocker lock(&m_mutex);
+        m_cond.wakeOne();
     }
     // Marks already behind what's audible are kept only as far as needed.
     while (m_marks.size() > 64)
@@ -431,16 +662,23 @@ void SpeechPlayer::report() {
             }
             break;
         }
+    bool allConsumed = false;
+    bool playingNow = false;
+    {
+        QMutexLocker lock(&m_mutex);
+        allConsumed = m_ready.isEmpty() && m_workerFinishedAll && m_consumedIndex >= m_tracks.size();
+        playingNow = m_playing;
+    }
     // Nothing left to hear: either the queue is done, or the track being
     // played is still arriving.
     const bool empty = (buffered <= 0 || m_sink->state() == QAudio::IdleState) && m_pendingOut.isEmpty();
-    if (empty && m_index >= m_tracks.size()) {
+    if (empty && allConsumed) {
         setStarved(false);
         if (!m_drained) {
             m_drained = true;
             emit drained();
         }
     } else {
-        setStarved(m_playing && empty);
+        setStarved(playingNow && empty);
     }
 }

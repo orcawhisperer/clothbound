@@ -4,9 +4,13 @@
 #include <QByteArray>
 #include <QList>
 #include <QMediaDevices>
+#include <QMutex>
 #include <QObject>
 #include <QTimer>
 #include <QVector>
+#include <QWaitCondition>
+#include <atomic>
+#include <thread>
 
 class QAudioSink;
 class QIODevice;
@@ -50,7 +54,7 @@ public:
     explicit SpeechPlayer(int sampleRate = 24000, QObject *parent = nullptr);
     ~SpeechPlayer() override;
 
-    void addTrack(int id);
+    void addTrack(int id, qint64 startSample = 0);
     void appendAudio(int id, const QByteArray &pcm);
     void finishTrack(int id);
     bool hasTrack(int id) const;
@@ -60,10 +64,10 @@ public:
 
     void play();
     void pause();
-    bool isPlaying() const { return m_playing; }
+    bool isPlaying() const;
     void setRate(double rate);
     void setMuted(bool muted);
-    void setHeadless(bool headless) { m_headless = headless; }
+    void setHeadless(bool headless);
     double volume() const { return m_volume; }
     void setVolume(double volume);
     bool starved() const { return m_starved; }
@@ -85,7 +89,14 @@ private:
         int id = 0;
         QByteArray pcm;
         bool complete = false;
-        qint64 read = 0;  // for 1×: the next source sample
+        qint64 startSample = 0;
+    };
+    struct ReadyChunk {
+        QByteArray bytes;
+        int trackId = 0;
+        qint64 sourceStart = 0;
+        double rate = 1.0;
+        bool trackDone = false;
     };
     struct Mark {
         qint64 output;  // output sample where this piece starts
@@ -94,13 +105,18 @@ private:
         double rate;
     };
 
+    void startWorker();
+    void stopWorker();
+    void workerLoop();
+    void onWorkerReady();
     void ensureSink();
     void releaseSink();
     void handleOutputsChanged();
     bool flushPending();
     void fill();
     void report();
-    Track *track(int id);
+    Track *trackLocked(int id);
+    int trackIndexLocked(int id) const;
     void setStarved(bool starved);
 
     int m_sampleRate;
@@ -110,16 +126,30 @@ private:
     QIODevice *m_out = nullptr;
     QByteArray m_pendingOut;
     QTimer m_timer;
+
+    // Shared between the GUI thread and the off-thread WSOLA pump.
+    mutable QMutex m_mutex;
+    QWaitCondition m_cond;
+    std::thread m_worker;
     QList<Track> m_tracks;
-    int m_index = 0;
-    Stretcher m_stretcher;
+    QList<ReadyChunk> m_ready;
+    qint64 m_readySamples = 0;
+    int m_workerIndex = 0;
+    qint64 m_workerRead = 0;
+    bool m_workerFinishedAll = true;
+    quint64 m_generation = 0;
+    double m_rate = 1.0;
+    bool m_playing = false;
+    bool m_headless = false;
+    bool m_stopWorker = false;
+    std::atomic_bool m_notifyPending{false};
+
+    // GUI thread only.
+    int m_consumedIndex = 0;
     QList<Mark> m_marks;
     qint64 m_writtenBytes = 0;
-    double m_rate = 1.0;
     double m_volume = 1.0;
-    bool m_playing = false;
     bool m_muted = false;
-    bool m_headless = false;
     bool m_starved = false;
     bool m_recovered = false;
     int m_lastTrack = -1;

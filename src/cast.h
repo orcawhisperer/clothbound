@@ -57,11 +57,16 @@ public:
     static QMap<int, Line> parse(const QString &json, int blocks);
     // The paragraphs where the voice changes, for cutting clips.
     QSet<int> breaks(int chapter, const QList<SpeechBlock> &blocks) const;
+    // Character voice overrides per block (excluding narrator blocks), used for
+    // inline dialogue-span splitting when a paragraph mixes speech & narration.
+    QMap<int, QString> blockVoices(int chapter, const QList<SpeechBlock> &blocks) const;
     // The voice of a paragraph: its speaker's, or the narrator's.
     QString voiceAt(int chapter, int block) const;
 
     std::optional<QMap<int, Line>> kept(int chapter, const QList<SpeechBlock> &blocks) const;
+    std::optional<QHash<int, QMap<int, Line>>> keptPdfBatch(int page) const;
     void ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context, std::function<void(const QMap<int, Line> &)> done);
+    void askPdfBatch(int page, QObject *context, std::function<void(const QHash<int, QMap<int, Line>> &byPage)> done);
     // Aborts any in-flight casting requests.
     void cancel();
     // What's known of a chapter's speakers (asked, or kept).

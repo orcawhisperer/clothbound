@@ -129,9 +129,25 @@ public:
                     Qt::QueuedConnection);
             }
             samples = Speech::resample(samples, engineRate, outputRate);
-            // A beat after each sentence, and a longer one at the end, where
-            // a paragraph ends.
-            samples.resize(samples.size() + qsizetype((i + 1 < job.sentences.size() ? 0.14 : 0.32) * outputRate));
+            // A beat after each sentence, shorter at a mid-sentence dialogue
+            // split (trailing comma/semicolon/dash), and longer where a
+            // paragraph ends.
+            const QString trimmed = job.sentences[i].trimmed();
+            double pauseSec = 0.14;
+            if (i + 1 >= job.sentences.size()) {
+                QChar lastChar;
+                for (qsizetype k = trimmed.size() - 1; k >= 0; --k) {
+                    const QChar c = trimmed[k];
+                    if (QStringLiteral("\"'’”»)]」』").contains(c))
+                        continue;
+                    lastChar = c;
+                    break;
+                }
+                const bool midClause = lastChar == QLatin1Char(',') || lastChar == QLatin1Char(';') ||
+                                       lastChar == QChar(0x2014) || lastChar == QChar(0x2013);
+                pauseSec = midClause ? 0.10 : 0.32;
+            }
+            samples.resize(samples.size() + qsizetype(pauseSec * outputRate));
             total += samples.size();
             const QByteArray pcm = Speech::pcm16(samples);
             post(job, [pcm, total](LocalReply *reply) { reply->deliver(pcm, total); });
@@ -434,4 +450,22 @@ void LocalSpeech::noteSpeed(const QString &modelKey, double speed) {
     QSettings s = settings();
     s.setValue(QStringLiteral("builtinSpeed/") + QString(modelKey).replace(':', '|'), now);
     emit speedChanged();
+}
+
+QVariantMap LocalSpeech::bestInstalledVoice(const QString &language) const {
+    if (!m_packs || !m_packs->engineInstalled())
+        return {};
+    for (const QVariant &value : m_packs->voices(language)) {
+        const QVariantMap map = value.toMap();
+        if (map.value(QStringLiteral("installed")).toBool())
+            return map;
+    }
+    if (language.trimmed().isEmpty()) {
+        for (const QVariant &value : m_packs->voices({})) {
+            const QVariantMap map = value.toMap();
+            if (map.value(QStringLiteral("installed")).toBool())
+                return map;
+        }
+    }
+    return {};
 }

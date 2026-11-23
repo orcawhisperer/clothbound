@@ -160,9 +160,40 @@ void Download::addBlocks(int chapter, const QString &json) {
     if (!running() || !m_waiting.contains(chapter))
         return;
     const QList<SpeechBlock> blocks = Speech::parseBlocks(json);
+    const bool isPdf = m_reader && m_reader->format() == QLatin1String("pdf");
     // Who speaks what first (with a full cast), then the director's moods.
     if (m_cast && m_cast->enabled() && m_cast->available() && !m_cast->knows(chapter)) {
-        if (const auto lines = m_cast->kept(chapter, blocks)) {
+        if (isPdf) {
+            if (const auto byPage = m_cast->keptPdfBatch(chapter)) {
+                for (auto it = byPage->cbegin(); it != byPage->cend(); ++it)
+                    m_cast->learn(it.key(), it.value());
+            } else {
+                const auto [first, last] = Director::pdfBatchRange(m_reader, chapter);
+                const quint64 session = m_session;
+                const int bookId = m_bookId;
+                auto resume = [this, session, bookId, chapter, blocks] {
+                    if (!running() || session != m_session || m_reader->bookId() != bookId || !m_waiting.contains(chapter))
+                        return;
+                    direct(chapter, blocks);
+                };
+                const bool alreadyAsked = m_pendingCastBatches.contains(first);
+                m_pendingCastBatches[first].append(std::move(resume));
+                if (!alreadyAsked) {
+                    m_cast->askPdfBatch(chapter, this,
+                                        [this, session, bookId, first, last](const QHash<int, QMap<int, Cast::Line>> &byPage) {
+                                            const auto callbacks = m_pendingCastBatches.take(first);
+                                            if (!running() || session != m_session || m_reader->bookId() != bookId)
+                                                return;
+                                            if (m_cast)
+                                                for (int p = first; p <= last; ++p)
+                                                    m_cast->learn(p, byPage.value(p));
+                                            for (const auto &cb : callbacks)
+                                                cb();
+                                        });
+                }
+                return;
+            }
+        } else if (const auto lines = m_cast->kept(chapter, blocks)) {
             m_cast->learn(chapter, *lines);
         } else {
             const quint64 session = m_session;
@@ -184,6 +215,40 @@ void Download::direct(int chapter, const QList<SpeechBlock> &blocks) {
     const Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
     if (m_performance == QStringLiteral("plain") || !speaker || !speaker->supportsStyle() || !m_director->canDirect(blocks)) {
         plan(chapter, blocks, {});
+        return;
+    }
+    if (m_reader && m_reader->format() == QLatin1String("pdf")) {
+        if (m_pdfMoods.contains(chapter)) {
+            plan(chapter, blocks, m_pdfMoods.value(chapter));
+            return;
+        }
+        if (const auto byPage = m_director->keptPdfBatch(chapter, m_performance)) {
+            for (auto it = byPage->cbegin(); it != byPage->cend(); ++it)
+                m_pdfMoods.insert(it.key(), it.value());
+            plan(chapter, blocks, m_pdfMoods.value(chapter));
+            return;
+        }
+        const auto [first, last] = Director::pdfBatchRange(m_reader, chapter);
+        const quint64 session = m_session;
+        const int bookId = m_bookId;
+        auto resume = [this, session, bookId, chapter, blocks] {
+            if (running() && session == m_session && m_reader->bookId() == bookId && m_waiting.contains(chapter))
+                plan(chapter, blocks, m_pdfMoods.value(chapter));
+        };
+        const bool alreadyAsked = m_pendingDirectorBatches.contains(first);
+        m_pendingDirectorBatches[first].append(std::move(resume));
+        if (!alreadyAsked) {
+            m_director->askPdfBatch(chapter, m_performance, this,
+                                    [this, session, bookId, first, last](const QHash<int, QMap<int, QString>> &byPage) {
+                                        const auto callbacks = m_pendingDirectorBatches.take(first);
+                                        if (!running() || session != m_session || m_reader->bookId() != bookId)
+                                            return;
+                                        for (int p = first; p <= last; ++p)
+                                            m_pdfMoods.insert(p, byPage.value(p));
+                                        for (const auto &cb : callbacks)
+                                            cb();
+                                    });
+        }
         return;
     }
     if (const auto kept = m_director->kept(chapter, blocks, m_performance)) {
@@ -217,13 +282,18 @@ void Download::plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<in
     QSet<int> breaks = Director::breaks(moods);
     if (m_cast)
         breaks.unite(m_cast->breaks(chapter, blocks));
+    const QMap<int, QString> blockVoices = m_cast ? m_cast->blockVoices(chapter, blocks) : QMap<int, QString>{};
     m_plannedKeys[chapter].clear();
-    for (const SpeechClip &clip : Speech::clips(chapter, blocks, breaks)) {
+    for (const SpeechClip &clip : Speech::clips(chapter, blocks, breaks, 1500, 600, blockVoices, m_voice)) {
+        if (clip.pauseMs > 0) {
+            m_plannedKeys[chapter].append(QStringLiteral("pause:%1").arg(clip.pauseMs));
+            continue;
+        }
         if (clip.text.isEmpty())
             continue;
         Job job;
         job.text = clip.text;
-        job.voice = m_cast ? m_cast->voiceAt(chapter, clip.block) : m_voice;
+        job.voice = !clip.voice.isEmpty() ? clip.voice : (m_cast ? m_cast->voiceAt(chapter, clip.block) : m_voice);
         if (job.voice.isEmpty() || !m_ai->canSpeakWith(job.voice))
             job.voice = m_voice;
         job.style = styled ? Speech::styleFor(Speech::moodAt(moods, clip.block), dramatic) : QString();
@@ -378,6 +448,8 @@ void Download::pause() {
     m_director->cancel();
     if (m_cast)
         m_cast->cancel();
+    m_pendingCastBatches.clear();
+    m_pendingDirectorBatches.clear();
     // Chapters still waiting on blocks/direction are replanned cleanly on resume.
     for (int chapter : std::as_const(m_waiting))
         if (!m_replan.contains(chapter))
@@ -420,6 +492,9 @@ void Download::cancel() {
     m_waiting.clear();
     m_replan.clear();
     m_storing.clear();
+    m_pdfMoods.clear();
+    m_pendingCastBatches.clear();
+    m_pendingDirectorBatches.clear();
     m_chapters.clear();
     m_finished = false;
     if (was) {

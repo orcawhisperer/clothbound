@@ -55,6 +55,135 @@ QString spoken(const SpeechBlock &block, qint64 from, qint64 to) {
     }
     return text.simplified();
 }
+
+bool isStructuralHeadingWord(const QString &word) {
+    static const QSet<QString> structural{
+        // English structural chapter/section/division labels (excluding names/pronouns/appendix)
+        QStringLiteral("chapter"), QStringLiteral("ch"), QStringLiteral("chap"), QStringLiteral("part"),
+        QStringLiteral("book"), QStringLiteral("section"), QStringLiteral("sec"), QStringLiteral("act"),
+        QStringLiteral("scene"), QStringLiteral("volume"), QStringLiteral("vol"), QStringLiteral("canto"),
+        QStringLiteral("stave"), QStringLiteral("letter"), QStringLiteral("epistle"), QStringLiteral("tale"),
+        QStringLiteral("lesson"), QStringLiteral("unit"), QStringLiteral("module"), QStringLiteral("stage"),
+        QStringLiteral("phase"), QStringLiteral("division"), QStringLiteral("episode"), QStringLiteral("entry"),
+        QStringLiteral("day"), QStringLiteral("night"), QStringLiteral("number"), QStringLiteral("no"),
+        QStringLiteral("plate"), QStringLiteral("figure"), QStringLiteral("fig"), QStringLiteral("table"),
+        QStringLiteral("article"), QStringLiteral("psalm"), QStringLiteral("sonnet"), QStringLiteral("ode"),
+        QStringLiteral("fable"), QStringLiteral("sermon"), QStringLiteral("lecture"), QStringLiteral("essay"),
+        QStringLiteral("meditation"), QStringLiteral("proposition"), QStringLiteral("theorem"), QStringLiteral("question"),
+        QStringLiteral("interlude"), QStringLiteral("prologue"), QStringLiteral("epilogue"),
+        // Common multilingual chapter/part/book/act/scene labels
+        QStringLiteral("chapitre"), QStringLiteral("partie"), QStringLiteral("livre"), QStringLiteral("tome"),
+        QStringLiteral("acte"), QStringLiteral("scène"), QStringLiteral("chant"), QStringLiteral("lettre"),
+        QStringLiteral("kapitel"), QStringLiteral("teil"), QStringLiteral("buch"), QStringLiteral("band"),
+        QStringLiteral("abschnitt"), QStringLiteral("akt"), QStringLiteral("szene"), QStringLiteral("gesang"),
+        QStringLiteral("brief"), QStringLiteral("capítulo"), QStringLiteral("capitulo"), QStringLiteral("parte"),
+        QStringLiteral("libro"), QStringLiteral("tomo"), QStringLiteral("sección"), QStringLiteral("seccion"),
+        QStringLiteral("acto"), QStringLiteral("escena"), QStringLiteral("carta"), QStringLiteral("capitolo"),
+        QStringLiteral("sezione"), QStringLiteral("atto"), QStringLiteral("scena"), QStringLiteral("lettera"),
+        QStringLiteral("hoofdstuk"), QStringLiteral("deel"), QStringLiteral("boek"), QStringLiteral("rozdział"),
+        QStringLiteral("część"), QStringLiteral("księga"), QStringLiteral("kapittel"), QStringLiteral("del"),
+        QStringLiteral("bok"), QStringLiteral("luku"), QStringLiteral("osa"), QStringLiteral("kirja"),
+        QStringLiteral("глава"), QStringLiteral("часть"), QStringLiteral("книга"), QStringLiteral("том"),
+        QStringLiteral("действие"), QStringLiteral("сцена"), QStringLiteral("письмо"), QStringLiteral("розділ"),
+        QStringLiteral("частина"), QStringLiteral("fejezet"), QStringLiteral("rész"), QStringLiteral("könyv"),
+        QStringLiteral("kapitola"), QStringLiteral("část"), QStringLiteral("kniha"), QStringLiteral("bölüm"),
+        QStringLiteral("kısım"), QStringLiteral("kitap"),
+    };
+    return structural.contains(word.toLower());
+}
+
+bool hasLetterOrDigit(const QString &s) {
+    for (const QChar c : s)
+        if (c.isLetterOrNumber())
+            return true;
+    return false;
+}
+
+bool isQuoteCloseFor(QChar open, QChar c) {
+    if (open == QChar(0x201C))  // “
+        return c == QChar(0x201D);  // ”
+    if (open == QLatin1Char('"'))
+        return c == QLatin1Char('"');
+    if (open == QChar(0x00AB))  // «
+        return c == QChar(0x00BB);  // »
+    if (open == QChar(0x300C))  // 「
+        return c == QChar(0x300D);  // 」
+    if (open == QChar(0x300E))  // 『
+        return c == QChar(0x300F);  // 』
+    if (open == QChar(0x201E))  // „
+        return c == QChar(0x201C) || c == QChar(0x201D);  // “ or ”
+    if (open == QChar(0x2018))  // ‘
+        return c == QChar(0x2019);  // ’
+    return false;
+}
+
+bool isQuoteOpen(const QString &text, qsizetype i) {
+    const QChar c = text[i];
+    if (c == QChar(0x201C) || c == QChar(0x00AB) || c == QChar(0x300C) || c == QChar(0x300E) || c == QChar(0x201E))
+        return true;
+    if (c == QLatin1Char('"'))
+        return true;
+    // British single quote: only open when not immediately preceded by a letter/digit
+    // (avoids English contractions like don’t or possessives).
+    if (c == QChar(0x2018))
+        return i == 0 || !text[i - 1].isLetterOrNumber();
+    return false;
+}
+
+bool isValidClose(const QString &text, qsizetype i, QChar open) {
+    if (!isQuoteCloseFor(open, text[i]))
+        return false;
+    // For single quotes, don't close inside a contraction like "we’re" or "don’t".
+    if (open == QChar(0x2018) && i + 1 < text.size() && text[i + 1].isLetterOrNumber())
+        return false;
+    return true;
+}
+
+QList<SpeechSentence> splitOverlongSentence(const SpeechSentence &rawSentence, int longest) {
+    QList<SpeechSentence> pieces;
+    if (rawSentence.text.size() <= longest) {
+        pieces.append(rawSentence);
+        return pieces;
+    }
+    // Subdivide overlong sentences (e.g. unpunctuated text or run-on
+    // clauses) at clause punctuation or whitespace so TTS limits hold.
+    const QString &sText = rawSentence.text;
+    const qsizetype sLen = sText.size();
+    const qint64 span = rawSentence.end - rawSentence.start;
+    qsizetype pos = 0;
+    while (pos < sLen) {
+        qsizetype take = qMin<qsizetype>(longest, sLen - pos);
+        if (pos + take < sLen) {
+            qsizetype cut = -1;
+            for (qsizetype j = pos + take; j > pos + longest / 2; --j) {
+                const QChar ch = sText[j - 1];
+                if (ch == ';' || ch == ',' || ch == QChar(0x2014) || ch == QChar(0xFF0C) ||
+                    ch == QChar(0x3001) || ch == QChar(0x061B)) {
+                    cut = j;
+                    break;
+                }
+            }
+            if (cut < 0)
+                for (qsizetype j = pos + take; j > pos + longest / 2; --j)
+                    if (sText[j - 1].isSpace()) {
+                        cut = j;
+                        break;
+                    }
+            if (cut > pos)
+                take = cut - pos;
+        }
+        const QString chunk = sText.mid(pos, take).trimmed();
+        if (!chunk.isEmpty()) {
+            const qint64 pieceStart = rawSentence.start + (sLen > 0 ? span * pos / sLen : 0);
+            const qint64 pieceEnd = rawSentence.start + (sLen > 0 ? span * (pos + take) / sLen : span);
+            pieces.append({pieceStart, qMax(pieceStart, pieceEnd), chunk});
+        }
+        pos += take;
+        while (pos < sLen && sText[pos].isSpace())
+            ++pos;
+    }
+    return pieces;
+}
 }
 
 namespace Speech {
@@ -143,18 +272,129 @@ QList<SpeechSentence> sentences(const SpeechBlock &block) {
     return result;
 }
 
+QList<DialogueSpan> splitDialogueSpans(const SpeechBlock &block) {
+    struct RawSpan {
+        qsizetype start = 0;
+        qsizetype end = 0;
+        bool dialogue = false;
+    };
+    const QString &text = block.text;
+    const qsizetype len = text.size();
+    QList<RawSpan> raw;
+
+    // 1. Scan balanced quote spans (also supporting unclosed multi-paragraph speech).
+    qsizetype pos = 0;
+    while (pos < len) {
+        qsizetype qStart = -1;
+        for (qsizetype i = pos; i < len; ++i) {
+            if (isQuoteOpen(text, i)) {
+                qStart = i;
+                break;
+            }
+        }
+        if (qStart < 0) {
+            if (pos < len)
+                raw.append({pos, len, false});
+            break;
+        }
+        if (qStart > pos)
+            raw.append({pos, qStart, false});
+        const QChar open = text[qStart];
+        qsizetype qEnd = -1;
+        for (qsizetype i = qStart + 1; i < len; ++i) {
+            if (isValidClose(text, i, open)) {
+                qEnd = i + 1;
+                break;
+            }
+        }
+        if (qEnd < 0) {
+            // Unclosed opening quote (classic multi-paragraph speech): the rest
+            // of the paragraph is dialogue.
+            raw.append({qStart, len, true});
+            break;
+        }
+        raw.append({qStart, qEnd, true});
+        pos = qEnd;
+    }
+
+    // 2. If no quote pairs were found, check continental em-dash dialogue at
+    // paragraph start: "— Watch out! — Harry shouted."
+    bool foundQuote = false;
+    for (const RawSpan &s : raw)
+        if (s.dialogue) {
+            foundQuote = true;
+            break;
+        }
+    if (!foundQuote) {
+        qsizetype i = 0;
+        while (i < len && text[i].isSpace())
+            ++i;
+        if (i < len && (text[i] == QChar(0x2014) || text[i] == QChar(0x2013) || text[i] == QChar(0x2015))) {
+            raw.clear();
+            bool inDialogue = true;
+            qsizetype segStart = i;
+            for (qsizetype j = i + 1; j < len; ++j) {
+                const QChar ch = text[j];
+                if ((ch == QChar(0x2014) || ch == QChar(0x2013) || ch == QChar(0x2015)) && j > segStart + 1 &&
+                    (text[j - 1].isSpace() || (j + 1 < len && text[j + 1].isSpace()))) {
+                    raw.append({segStart, j, inDialogue});
+                    inDialogue = !inDialogue;
+                    segStart = j + 1;
+                }
+            }
+            if (segStart < len)
+                raw.append({segStart, len, inDialogue});
+        }
+    }
+
+    // 3. Merge adjacent spans of the same role, or dialogue spans separated
+    // only by whitespace/punctuation (no spoken words between them).
+    QList<RawSpan> merged;
+    for (const RawSpan &span : std::as_const(raw)) {
+        const QString slice = text.mid(span.start, span.end - span.start);
+        if (!hasLetterOrDigit(slice)) {
+            if (!merged.isEmpty())
+                merged.last().end = span.end;
+            continue;
+        }
+        if (!merged.isEmpty() && merged.last().dialogue == span.dialogue)
+            merged.last().end = span.end;
+        else
+            merged.append(span);
+    }
+
+    // 4. Turn each span into SpeechSentences with exact original offsets and skips.
+    QList<DialogueSpan> out;
+    for (const RawSpan &span : std::as_const(merged)) {
+        SpeechBlock sub;
+        sub.start = block.start + span.start;
+        sub.end = block.start + span.end;
+        sub.text = text.mid(span.start, span.end - span.start);
+        sub.skips = block.skips;
+        sub.kind = block.kind;
+        const QList<SpeechSentence> subSentences = sentences(sub);
+        if (!subSentences.isEmpty())
+            out.append({span.dialogue, subSentences});
+    }
+    return out;
+}
+
 QString spokenHeading(const QString &heading) {
     QString text = heading.simplified();
-    // A numeral on its own ("V"), after one word ("CHAPTER V", "Part iv"),
-    // or before the title ("IV. The Golden Age"). Single letters other than
-    // I, V and X, and numbers past 200, are more likely names than numbers.
+    // A numeral on its own ("V", "III"), after a structural heading word
+    // ("CHAPTER V", "Part iv", "Book II"), or before the title ("IV. The
+    // Golden Age"). Ordinary words and names ("When I", "Henry V", "Appendix C")
+    // are left untouched; numbers past 200 are more likely years/names.
     static const QRegularExpression numbered(
         QStringLiteral("^((?:\\p{L}+\\s+)?)([IVXLC]+|[ivxlc]+)(?=\\s*(?:$|[.:\\x{2013}\\x{2014}-]))"));
     static const QRegularExpression roman(QStringLiteral("^(C{0,2})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$"));
     const QRegularExpressionMatch match = numbered.match(text);
     if (match.hasMatch()) {
+        const QString prefix = match.captured(1).trimmed();
         const QString numeral = match.captured(2).toUpper();
-        if (roman.match(numeral).hasMatch() && (numeral.size() > 1 || QStringLiteral("IVX").contains(numeral))) {
+        const bool allowedPrefix = prefix.isEmpty() || isStructuralHeadingWord(prefix);
+        if (allowedPrefix && roman.match(numeral).hasMatch() &&
+            (numeral.size() > 1 || QStringLiteral("IVX").contains(numeral))) {
             static const QList<QPair<QString, int>> values{{"C", 100}, {"XC", 90}, {"L", 50}, {"XL", 40}, {"X", 10},
                                                          {"IX", 9},   {"V", 5},   {"IV", 4}, {"I", 1}};
             int value = 0;
@@ -223,7 +463,7 @@ QString moodAt(const QMap<int, QString> &changes, int block) {
 }
 
 QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, const QSet<int> &breaks, int longest,
-                        int merge) {
+                        int merge, const QMap<int, QString> &blockVoices, const QString &narratorVoice) {
     auto empty = [chapter](int block) {
         SpeechClip clip;
         clip.chapter = chapter;
@@ -246,6 +486,22 @@ QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, const QSe
         currentLength = 0;
         currentHeading = false;
     };
+    auto appendSentences = [&](int b, const QList<SpeechSentence> &list, const QString &voice) {
+        for (const auto &rawSentence : list) {
+            const QList<SpeechSentence> pieces = splitOverlongSentence(rawSentence, longest);
+            for (const auto &sentence : pieces) {
+                // (Sentences are joined with a space.)
+                if (!current.sentences.isEmpty() && currentLength + 1 + sentence.text.size() > longest)
+                    flush();
+                if (current.sentences.isEmpty()) {
+                    current.block = b;
+                    current.voice = voice;
+                }
+                currentLength += sentence.text.size() + (current.sentences.isEmpty() ? 0 : 1);
+                current.sentences.append(sentence);
+            }
+        }
+    };
     for (int b = 0; b < blocks.size(); ++b) {
         const SpeechBlock &block = blocks[b];
         if (block.kind == QStringLiteral("break")) {
@@ -255,19 +511,18 @@ QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, const QSe
             result.append(pause);
             continue;
         }
-        const QList<SpeechSentence> said = sentences(block);
-        qsizetype blockLength = 0;
-        for (const auto &sentence : said)
-            blockLength += sentence.text.size();
-        if (said.isEmpty())
-            continue;
         // Consecutive headings (a chapter's number, then its title) are one
         // clip of their own.
         if (block.kind == QStringLiteral("heading")) {
+            const QList<SpeechSentence> said = sentences(block);
+            if (said.isEmpty())
+                continue;
             if (!currentHeading)
                 flush();
-            if (current.sentences.isEmpty())
+            if (current.sentences.isEmpty()) {
                 current.block = b;
+                current.voice = narratorVoice;
+            }
             currentHeading = true;
             for (SpeechSentence sentence : std::as_const(said)) {
                 sentence.text = spokenHeading(sentence.text);
@@ -276,72 +531,54 @@ QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, const QSe
             }
             continue;
         }
+
+        // Inline dialogue-span splitting when full cast assigns a character
+        // voice to a paragraph that mixes quoted speech and narration tags.
+        const QString charVoice = blockVoices.value(b);
+        if (!charVoice.isEmpty() && charVoice != narratorVoice) {
+            const QList<DialogueSpan> spans = splitDialogueSpans(block);
+            bool hasDialogue = false, hasNarration = false;
+            for (const DialogueSpan &span : spans) {
+                hasDialogue = hasDialogue || span.dialogue;
+                hasNarration = hasNarration || !span.dialogue;
+            }
+            if (hasDialogue && hasNarration) {
+                flush();
+                for (const DialogueSpan &span : spans) {
+                    const QString spanVoice = span.dialogue ? charVoice : narratorVoice;
+                    if (!current.sentences.isEmpty() && current.voice != spanVoice)
+                        flush();
+                    appendSentences(b, span.sentences, spanVoice);
+                    flush();
+                }
+                continue;
+            }
+        }
+
+        const QList<SpeechSentence> said = sentences(block);
+        qsizetype blockLength = 0;
+        for (const auto &sentence : said)
+            blockLength += sentence.text.size();
+        if (said.isEmpty())
+            continue;
+        const QString blockVoice = !charVoice.isEmpty() ? charVoice : narratorVoice;
         // A short paragraph (a line of dialogue) shares the clip before it
-        // when both are short; any other paragraph starts a clip of its own.
-        const bool joins = !current.sentences.isEmpty() && !currentHeading && !breaks.contains(b) &&
+        // when both are short and share a voice; any other paragraph starts a
+        // clip of its own.
+        const bool sameVoice = current.voice == blockVoice;
+        const bool joins = !current.sentences.isEmpty() && !currentHeading && sameVoice && !breaks.contains(b) &&
                            currentLength + blockLength <= merge && blockLength < merge / 2;
         if (!joins)
             flush();
-        for (const auto &rawSentence : std::as_const(said)) {
-            QList<SpeechSentence> pieces;
-            if (rawSentence.text.size() <= longest) {
-                pieces.append(rawSentence);
-            } else {
-                // Subdivide overlong sentences (e.g. unpunctuated text or run-on
-                // clauses) at clause punctuation or whitespace so TTS limits hold.
-                const QString &sText = rawSentence.text;
-                const qsizetype sLen = sText.size();
-                const qint64 span = rawSentence.end - rawSentence.start;
-                qsizetype pos = 0;
-                while (pos < sLen) {
-                    qsizetype take = qMin<qsizetype>(longest, sLen - pos);
-                    if (pos + take < sLen) {
-                        qsizetype cut = -1;
-                        for (qsizetype j = pos + take; j > pos + longest / 2; --j) {
-                            const QChar ch = sText[j - 1];
-                            if (ch == ';' || ch == ',' || ch == QChar(0x2014) || ch == QChar(0xFF0C) ||
-                                ch == QChar(0x3001) || ch == QChar(0x061B)) {
-                                cut = j;
-                                break;
-                            }
-                        }
-                        if (cut < 0)
-                            for (qsizetype j = pos + take; j > pos + longest / 2; --j)
-                                if (sText[j - 1].isSpace()) {
-                                    cut = j;
-                                    break;
-                                }
-                        if (cut > pos)
-                            take = cut - pos;
-                    }
-                    const QString chunk = sText.mid(pos, take).trimmed();
-                    if (!chunk.isEmpty()) {
-                        const qint64 pieceStart = rawSentence.start + (sLen > 0 ? span * pos / sLen : 0);
-                        const qint64 pieceEnd = rawSentence.start + (sLen > 0 ? span * (pos + take) / sLen : span);
-                        pieces.append({pieceStart, qMax(pieceStart, pieceEnd), chunk});
-                    }
-                    pos += take;
-                    while (pos < sLen && sText[pos].isSpace())
-                        ++pos;
-                }
-            }
-            for (const auto &sentence : std::as_const(pieces)) {
-                // (Sentences are joined with a space.)
-                if (!current.sentences.isEmpty() && currentLength + 1 + sentence.text.size() > longest)
-                    flush();
-                if (current.sentences.isEmpty())
-                    current.block = b;
-                currentLength += sentence.text.size() + (current.sentences.isEmpty() ? 0 : 1);
-                current.sentences.append(sentence);
-            }
-        }
+        appendSentences(b, said, blockVoice);
     }
     flush();
     return result;
 }
 
-QList<SpeechClip> clipsFrom(int chapter, const QList<SpeechBlock> &blocks, qint64 from, const QSet<int> &breaks) {
-    const QList<SpeechClip> all = clips(chapter, blocks, breaks);
+QList<SpeechClip> clipsFrom(int chapter, const QList<SpeechBlock> &blocks, qint64 from, const QSet<int> &breaks,
+                            const QMap<int, QString> &blockVoices, const QString &narratorVoice) {
+    const QList<SpeechClip> all = clips(chapter, blocks, breaks, 1500, 600, blockVoices, narratorVoice);
     // Where a clip ends: its last sentence, or for a pause its break.
     auto ends = [&blocks](const SpeechClip &clip) {
         return clip.sentences.isEmpty() ? blocks.value(clip.block).end : clip.end();

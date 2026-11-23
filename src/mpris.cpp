@@ -18,11 +18,15 @@ const QString playerInterface = QStringLiteral("org.mpris.MediaPlayer2.Player");
 Mpris::Mpris(Narration *narration, Reader *reader, Library *library, QObject *parent)
     : QObject(parent), m_narration(narration), m_reader(reader), m_library(library) {
     new MprisRoot(this);
-    new MprisPlayer(this);
+    auto *player = new MprisPlayer(this);
     connect(narration, &Narration::stateChanged, this, &Mpris::update);
     connect(narration, &Narration::positionChanged, this, &Mpris::update);
     connect(narration, &Narration::rateChanged, this, &Mpris::update);
     connect(narration, &Narration::volumeChanged, this, &Mpris::update);
+    connect(narration, &Narration::seeked, this, [this, player](qint64 positionUs) {
+        if (m_registered)
+            emit player->Seeked(qlonglong(positionUs));
+    });
     connect(reader, &Reader::bookChanged, this, &Mpris::update);
 }
 
@@ -150,3 +154,10 @@ void MprisPlayer::Pause() { m_mpris->narration()->pause(); }
 void MprisPlayer::PlayPause() { m_mpris->narration()->toggle(); }
 void MprisPlayer::Stop() { m_mpris->narration()->stop(); }
 void MprisPlayer::Play() { m_mpris->narration()->resume(); }
+void MprisPlayer::Seek(qlonglong offsetUs) { m_mpris->narration()->seekByUs(qint64(offsetUs)); }
+void MprisPlayer::SetPosition(const QDBusObjectPath &trackId, qlonglong positionUs) {
+    const QDBusObjectPath current = m_mpris->metadata().value(QStringLiteral("mpris:trackid")).value<QDBusObjectPath>();
+    if (current.path().isEmpty() || trackId.path() != current.path())
+        return;
+    m_mpris->narration()->seekToUs(qint64(positionUs));
+}
