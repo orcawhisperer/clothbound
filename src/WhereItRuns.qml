@@ -89,12 +89,14 @@ ColumnLayout {
 
             RowLayout {
                 Layout.fillWidth: true
-                readonly property bool reachable: ai.localUrl !== "" && ai.localServers.some(s => s.url === ai.localUrl)
+                readonly property bool reachable: ai.localUrl !== "" && ai.localServers.some(
+                    s => s.url.replace(/\/+$/, "") === ai.localUrl.replace(/\/+$/, ""))
                 Rectangle {
                     width: 10; height: 10; radius: 5
                     color: ai.localUrl === "" ? theme.textTertiary
                          : parent.reachable ? theme.colors.green
-                         : ai.findingLocal ? theme.colors.yellow : theme.colors.orange
+                         : ai.findingLocal ? theme.colors.yellow
+                         : (theme.colors.red || theme.textTertiary)
                 }
                 Label {
                     Layout.fillWidth: true
@@ -123,8 +125,9 @@ ColumnLayout {
                 columnSpacing: 10
                 rowSpacing: 4
                 readonly property var server: {
+                    const current = ai.localUrl.replace(/\/+$/, "")
                     for (const s of ai.localServers)
-                        if (s.url === ai.localUrl)
+                        if (s.url.replace(/\/+$/, "") === current)
                             return s
                     return null
                 }
@@ -132,26 +135,27 @@ ColumnLayout {
                 Label {
                     Layout.fillWidth: true
                     visible: !parent.server
-                    text: ai.localTextModel
-                    color: theme.text
+                    text: ai.localTextModel || qsTr("None")
+                    color: ai.localTextModel ? theme.text : theme.textTertiary
                     font.pixelSize: 13
                 }
                 ComboBox {
                     Layout.fillWidth: true
                     visible: !!parent.server
-                    model: parent.server ? parent.server.textModels : []
-                    currentIndex: model.indexOf(ai.localTextModel)
-                    onActivated: (index) => ai.useLocal(parent.server.kind, ai.localUrl, model[index], ai.localEmbeddingModel, ai.localSpeechModel)
+                    model: parent.server ? [qsTr("None")].concat(parent.server.textModels) : []
+                    currentIndex: Math.max(0, model.indexOf(ai.localTextModel))
+                    onActivated: (index) => ai.useLocal(parent.server.kind, ai.localUrl,
+                                                         index === 0 ? "" : model[index], ai.localEmbeddingModel, ai.localSpeechModel)
                 }
                 Label {
-                    visible: (!!parent.server && parent.server.speechModels.length > 0) || ai.localSpeechModel !== ""
+                    visible: !parent.server || parent.server.speechModels.length > 0 || ai.localSpeechModel !== ""
                     text: qsTr("Voices"); color: theme.textSecondary; font.pixelSize: 13
                 }
                 Label {
                     Layout.fillWidth: true
-                    visible: !(parent.server && parent.server.speechModels.length > 0) && ai.localSpeechModel !== ""
-                    text: ai.localSpeechModel
-                    color: theme.text
+                    visible: !parent.server || (parent.server.speechModels.length === 0 && ai.localSpeechModel !== "")
+                    text: ai.localSpeechModel || qsTr("None")
+                    color: ai.localSpeechModel ? theme.text : theme.textTertiary
                     font.pixelSize: 13
                 }
                 ComboBox {
@@ -179,24 +183,32 @@ ColumnLayout {
                                                          index === 0 ? "" : model[index], ai.localSpeechModel)
                 }
             }
+            Label {
+                Layout.fillWidth: true
+                visible: ai.localUrl !== "" && ai.localContextWindow > 0
+                text: qsTr("Context window: %1 tokens").arg(ai.localContextWindow.toLocaleString(Qt.locale(), 'f', 0))
+                color: theme.textTertiary
+                font.pixelSize: 12
+            }
             // Servers found, not yet in use.
             Repeater {
-                model: ai.localServers.filter(s => s.url !== ai.localUrl)
+                model: ai.localServers.filter(s => s.url.replace(/\/+$/, "") !== ai.localUrl.replace(/\/+$/, ""))
                 delegate: RowLayout {
                     required property var modelData
+                    readonly property int totalModels: modelData.textModels.length + modelData.embeddingModels.length + modelData.speechModels.length
                     Layout.fillWidth: true
                     Label {
                         Layout.fillWidth: true
-                        text: modelData.textModels.length
-                              ? qsTr("%1 at %2 · %n models", "", modelData.textModels.length).arg(modelData.name).arg(modelData.url.replace("http://", ""))
-                              : qsTr("%1 at %2 · no models yet").arg(modelData.name).arg(modelData.url.replace("http://", ""))
+                        text: parent.totalModels > 0
+                              ? qsTr("%1 at %2 · %n models", "", parent.totalModels).arg(modelData.name).arg(modelData.url.replace(/^https?:\/\//, ""))
+                              : qsTr("%1 at %2 · no models yet").arg(modelData.name).arg(modelData.url.replace(/^https?:\/\//, ""))
                         color: theme.textSecondary
                         font.pixelSize: 13
                         elide: Text.ElideRight
                     }
                     TextButton {
                         text: qsTr("Use")
-                        enabled: modelData.textModels.length > 0 || modelData.embeddingModels.length > 0 || modelData.speechModels.length > 0
+                        enabled: parent.totalModels > 0
                         onClicked: ai.useLocal(modelData.kind, modelData.url, modelData.textModels[0] || "",
                                                modelData.embeddingModels[0] || "", modelData.speechModels[0] || "")
                     }
@@ -233,8 +245,9 @@ ColumnLayout {
                         visible: localSetup.running
                         primary: true
                         enabled: !localSetup.pulling
-                        // Already there (pulled before): use it directly without hitting the network.
-                        readonly property bool have: ai.localServers.some(server => server.textModels.indexOf(localSetup.textModel.model) >= 0)
+                        // Already installed in Ollama: switch directly via useLocal() instead of calling /api/pull.
+                        readonly property bool have: ai.localServers.some(
+                            server => server.kind === "ollama" && server.textModels.indexOf(localSetup.textModel.model) >= 0)
                         text: have ? qsTr("Use %1").arg(localSetup.textModel.title) : qsTr("Download %1").arg(localSetup.textModel.title)
                         onClicked: have ? localSetup.useExisting() : localSetup.download()
                     }
@@ -286,8 +299,8 @@ ColumnLayout {
                         font.pixelSize: 13
                         selectByMouse: true
                         onTextChanged: section.address = text
-                        Keys.onReturnPressed: if (!ai.findingLocal) ai.findLocal(text)
-                        Keys.onEnterPressed: if (!ai.findingLocal) ai.findLocal(text)
+                        Keys.onReturnPressed: if (text.trim() !== "" && !ai.findingLocal) ai.findLocal(text.trim())
+                        Keys.onEnterPressed: if (text.trim() !== "" && !ai.findingLocal) ai.findLocal(text.trim())
                         Text {
                             anchors.fill: parent
                             verticalAlignment: Text.AlignVCenter
@@ -297,6 +310,11 @@ ColumnLayout {
                             font: addressInput.font
                         }
                     }
+                }
+                TextButton {
+                    text: qsTr("Connect")
+                    enabled: addressInput.text.trim() !== "" && !ai.findingLocal
+                    onClicked: ai.findLocal(addressInput.text.trim())
                 }
             }
             TextButton {

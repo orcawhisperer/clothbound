@@ -23,10 +23,11 @@ public:
 
     struct Server {
         Kind kind = Generic;
-        QUrl url;  // the server's origin, as http://127.0.0.1:11434
+        QUrl url;  // the server's base URL, as http://127.0.0.1:11434 or https://host/ollama
         QStringList textModels;
         QStringList embeddingModels;
         QStringList speechModels;
+        int contextWindow = 0;
         bool isValid() const { return LocalModels::isHttpUrl(url); }
     };
 
@@ -34,10 +35,21 @@ public:
 
     static bool isHttpUrl(const QUrl &url);
     static bool isLoopbackUrl(const QUrl &url);
+    // Strips trailing API endpoint suffixes (/v1, /v1/models, /api/tags, ...)
+    // while preserving any reverse-proxy base path prefix.
+    static QUrl normalizeServerUrl(const QUrl &url);
+    // Extracts a model/server context window in tokens from Ollama /api/show
+    // or llama.cpp /props JSON, or 0 when absent.
+    static int parseContextWindow(Kind kind, const QJsonObject &json);
 
     // Which server, and which of its models do what ("" for none).
     void configure(const Server &server, const QString &textModel, const QString &embeddingModel = {},
                    const QString &speechModel = {});
+    // Asynchronously asks Ollama (/api/show) or llama.cpp (/props) for the
+    // active text model's context window so local context budgeting avoids truncation.
+    void queryContextWindow();
+    void setContextWindow(int tokens);
+    int reportedContextWindow() const { return m_contextWindow; }
     Server server() const { return m_server; }
     bool isConfigured() const { return m_server.isValid(); }
     static QString kindName(Kind kind);
@@ -61,6 +73,7 @@ public:
     QString textModelName(bool) const override { return m_textModel; }
     // MLX's server has no structured output: its JSON is checked instead.
     bool supportsSchema() const override { return m_server.kind != Mlx; }
+    int contextWindow(bool fast = false) const override;
 
     Ai::Reply *embed(const QStringList &texts, bool query) override;
     QString embeddingModelName() const override { return m_embeddingModel; }
@@ -77,7 +90,7 @@ public:
     }
 
     // The wire formats, public so tests can hold them to the servers' docs.
-    static QJsonObject chatBody(Kind kind, const Ai::TextRequest &request, const QString &model);
+    static QJsonObject chatBody(Kind kind, const Ai::TextRequest &request, const QString &model, int contextLimit = 0);
     // A reply's text, without a reasoning model's thinking or a fence
     // around its JSON.
     static QString cleanText(const QString &text, bool json);
@@ -92,6 +105,9 @@ public:
                name.contains(QLatin1String("instruct")) || name.contains(QLatin1String("gpt-4o"));
     }
 
+signals:
+    void contextWindowChanged();
+
 private:
     QNetworkReply *send(const QByteArray &method, const QString &path, const QJsonObject &body = {});
 
@@ -103,6 +119,9 @@ private:
     QString m_speechModel;
     QList<Ai::Voice> m_speechVoices;
     bool m_speechInstructions = false;
+    int m_contextWindow = 0;
+    int m_contextGeneration = 0;
+    QPointer<QNetworkReply> m_contextReply;
 };
 
 // Finds the model servers running on this computer, by asking each usual

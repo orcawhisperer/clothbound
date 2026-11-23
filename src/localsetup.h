@@ -59,6 +59,7 @@ public:
     // Ollama's tags for a computer with this much memory (GB) and graphics
     // memory: {text, search}; empty text when it's too small.
     static QPair<QString, QString> modelsFor(double memoryGb, double graphicsGb);
+    static QPair<QString, QString> modelsFor(const SystemCheck::Machine &machine);
 
 signals:
     void changed();

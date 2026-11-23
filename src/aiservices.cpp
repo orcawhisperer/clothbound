@@ -213,7 +213,7 @@ void AiServices::track(Ai::Reply *reply, bool flex) {
     const QString providerId = maker ? maker->id() : m_provider->id();
     connect(reply, &Ai::Reply::finished, this, [this, reply, flex, providerId] {
         const Ai::Usage usage = reply->usage();
-        if (usage.inputTokens || usage.outputTokens) {
+        if (usage.inputTokens || usage.outputTokens || usage.thoughtTokens) {
             m_ledger.record(providerId, reply->model(), reply->feature(), usage, flex);
             m_spentCache = -1;
             emit usageChanged();
@@ -291,12 +291,15 @@ QString AiServices::describeFor(const Ai::Provider *provider, int errorKind, con
 // --- Routing -----------------------------------------------------------------
 
 void AiServices::setLocalModels(LocalModels *local) {
+    if (m_localModels)
+        disconnect(m_localModels, &LocalModels::contextWindowChanged, this, &AiServices::routingChanged);
     m_localModels = local;
     if (!local)
         return;
+    connect(local, &LocalModels::contextWindowChanged, this, &AiServices::routingChanged);
     QSettings s = settings();
     const QString url = s.value(QStringLiteral("local/url")).toString();
-    const QUrl parsed(url);
+    const QUrl parsed = LocalModels::normalizeServerUrl(QUrl(url));
     if (LocalModels::isHttpUrl(parsed)) {
         LocalModels::Server server;
         server.kind = LocalModels::kindFromId(s.value(QStringLiteral("local/kind")).toString());
@@ -304,6 +307,7 @@ void AiServices::setLocalModels(LocalModels *local) {
         local->configure(server, s.value(QStringLiteral("local/text")).toString(),
                          s.value(QStringLiteral("local/embedding")).toString(), s.value(QStringLiteral("local/speech")).toString());
         local->setSpeechVoices({}, LocalModels::takesInstructions(local->speechModelName(false)));
+        local->queryContextWindow();
     }
     emit routingChanged();
 }
@@ -358,6 +362,17 @@ QString AiServices::localUrl() const {
 QString AiServices::localTextModel() const { return m_localModels ? m_localModels->textModelName(false) : QString(); }
 QString AiServices::localEmbeddingModel() const { return m_localModels ? m_localModels->embeddingModelName() : QString(); }
 QString AiServices::localSpeechModel() const { return m_localModels ? m_localModels->speechModelName(false) : QString(); }
+int AiServices::localContextWindow() const { return m_localModels ? m_localModels->reportedContextWindow() : 0; }
+
+void AiServices::clearOverrides() {
+    if (m_overrides.isEmpty())
+        return;
+    m_overrides.clear();
+    QSettings s = settings();
+    s.remove(QStringLiteral("ai/route"));
+    emit routingChanged();
+    emit changed();
+}
 
 QString AiServices::routeFor(const QString &feature) const {
     const bool cloud = m_provider->hasKey() && m_provider->text();
@@ -429,13 +444,22 @@ void AiServices::findLocal(const QString &url) {
         m_finder = new ServerFinder(this);
         connect(m_finder, &ServerFinder::finished, this, [this] {
             m_localServers.clear();
-            for (const LocalModels::Server &server : m_finder->servers())
+            for (const LocalModels::Server &server : m_finder->servers()) {
                 m_localServers.append(QVariantMap{{QStringLiteral("kind"), LocalModels::kindId(server.kind)},
                                                   {QStringLiteral("name"), LocalModels::kindName(server.kind)},
                                                   {QStringLiteral("url"), server.url.toString()},
                                                   {QStringLiteral("textModels"), server.textModels},
                                                   {QStringLiteral("embeddingModels"), server.embeddingModels},
-                                                  {QStringLiteral("speechModels"), server.speechModels}});
+                                                  {QStringLiteral("speechModels"), server.speechModels},
+                                                  {QStringLiteral("contextWindow"), server.contextWindow}});
+                if (m_localModels && m_localModels->isConfigured() &&
+                    server.url.toString() == m_localModels->server().url.toString()) {
+                    if (server.contextWindow > 0)
+                        m_localModels->setContextWindow(server.contextWindow);
+                    else if (!m_localModels->textModelName(false).isEmpty() && m_localModels->reportedContextWindow() <= 0)
+                        m_localModels->queryContextWindow();
+                }
+            }
             m_findingLocal = false;
             emit localServersChanged();
         });
@@ -460,7 +484,7 @@ void AiServices::useLocal(const QString &kind, const QString &url, const QString
                           const QString &embeddingModel, const QString &speechModel) {
     if (!m_localModels)
         return;
-    const QUrl parsed(url.trimmed());
+    const QUrl parsed = LocalModels::normalizeServerUrl(QUrl(url.trimmed()));
     if (!LocalModels::isHttpUrl(parsed))
         return;
     QSettings s = settings();
@@ -472,8 +496,17 @@ void AiServices::useLocal(const QString &kind, const QString &url, const QString
     LocalModels::Server server;
     server.kind = LocalModels::kindFromId(kind);
     server.url = parsed;
+    for (const QVariant &entry : std::as_const(m_localServers)) {
+        const QVariantMap map = entry.toMap();
+        if (map.value(QStringLiteral("url")).toString() == parsed.toString()) {
+            server.contextWindow = map.value(QStringLiteral("contextWindow")).toInt();
+            break;
+        }
+    }
     m_localModels->configure(server, textModel, embeddingModel, speechModel);
     m_localModels->setSpeechVoices({}, LocalModels::takesInstructions(speechModel));
+    if (server.contextWindow <= 0 && !textModel.isEmpty())
+        m_localModels->queryContextWindow();
     emit routingChanged();
     emit changed();
 }

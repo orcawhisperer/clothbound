@@ -40,7 +40,7 @@ LocalSetup::LocalSetup(AiServices *ai, QObject *parent) : QObject(parent), m_ai(
 
 QPair<QString, QString> LocalSetup::modelsFor(double memoryGb, double graphicsGb) {
     const QString search = QStringLiteral("qwen3-embedding:0.6b");
-    if (memoryGb >= 30 || graphicsGb >= 10)
+    if (memoryGb >= 30 || graphicsGb >= 10 || (memoryGb >= 15 && graphicsGb >= 8))
         return {QStringLiteral("qwen3.5:9b"), search};
     if (memoryGb >= 15 || graphicsGb >= 6)
         return {QStringLiteral("qwen3.5:4b"), search};
@@ -49,10 +49,16 @@ QPair<QString, QString> LocalSetup::modelsFor(double memoryGb, double graphicsGb
     return {};
 }
 
+QPair<QString, QString> LocalSetup::modelsFor(const SystemCheck::Machine &machine) {
+    if (machine.graphics == QLatin1String("Apple") && machine.memoryGb >= 23)
+        return {QStringLiteral("qwen3.5:9b"), QStringLiteral("qwen3-embedding:0.6b")};
+    return modelsFor(machine.memoryGb, machine.graphicsMemoryGb);
+}
+
 void LocalSetup::applyMachine(const SystemCheck::Machine &machine) {
     m_machine = machine;
     m_inspected = true;
-    const auto [text, search] = modelsFor(machine.memoryGb, machine.graphicsMemoryGb);
+    const auto [text, search] = modelsFor(machine);
     m_text = text.isEmpty() ? QVariantMap() : QVariantMap{{"model", text}, {"title", titleOf(text)}, {"bytes", m_sizes.value(text, 0)}};
     m_search = text.isEmpty() ? QVariantMap() : QVariantMap{{"model", search}, {"title", titleOf(search)}, {"bytes", m_sizes.value(search, 0)}};
     emit changed();
@@ -187,13 +193,25 @@ void LocalSetup::useExisting() {
         return;
     const QString textTag = m_text.value("model").toString();
     const QString searchTag = m_search.value("model").toString();
-    bool hasSearch = false;
+    QString targetUrl = ollama;
+    QString embedTag;
     for (const QVariant &entry : m_ai->localServers()) {
         const QVariantMap server = entry.toMap();
-        if (server.value("url").toString() == ollama && server.value("embeddingModels").toStringList().contains(searchTag))
-            hasSearch = true;
+        if (server.value("kind").toString() != QLatin1String("ollama"))
+            continue;
+        const QStringList texts = server.value("textModels").toStringList();
+        const QStringList embeds = server.value("embeddingModels").toStringList();
+        if (texts.contains(textTag) || server.value("url").toString() == ollama) {
+            targetUrl = server.value("url").toString();
+            if (embeds.contains(searchTag))
+                embedTag = searchTag;
+            else if (!embeds.isEmpty())
+                embedTag = embeds.first();
+            if (texts.contains(textTag))
+                break;
+        }
     }
-    m_ai->useLocal(QStringLiteral("ollama"), ollama, textTag, hasSearch ? searchTag : QString());
+    m_ai->useLocal(QStringLiteral("ollama"), targetUrl, textTag, embedTag);
     if (m_ai->preset() == QLatin1String("cloud"))
         m_ai->setPreset(m_ai->hasKey() ? QStringLiteral("hybrid") : QStringLiteral("local"));
     emit changed();
@@ -210,7 +228,10 @@ void LocalSetup::cancel() {
 }
 
 void LocalSetup::pull(const QStringList &models) {
-    if (models.isEmpty()) {
+    QStringList remaining = models;
+    while (!remaining.isEmpty() && remaining.first().trimmed().isEmpty())
+        remaining.removeFirst();
+    if (remaining.isEmpty()) {
         // Everything's here: use it, and let the work run here.
         m_pulling = false;
         m_status.clear();
@@ -221,7 +242,7 @@ void LocalSetup::pull(const QStringList &models) {
         emit changed();
         return;
     }
-    const QString model = models.first();
+    const QString model = remaining.first();
     m_pulling = true;
     m_progress = 0;
     m_problem.clear();
@@ -235,35 +256,62 @@ void LocalSetup::pull(const QStringList &models) {
     m_reply = reply;
     auto buffer = std::make_shared<QByteArray>();
     auto failed = std::make_shared<QString>();
-    const auto parseLines = [this, buffer, failed, model](bool flushAll) {
+    // Track per-digest layer bytes so progress advances cumulatively across layers
+    // instead of resetting to 0% on every small manifest/config layer.
+    auto layers = std::make_shared<QHash<QString, QPair<qint64, qint64>>>();
+    const qint64 manifestBytes = m_sizes.value(model, 0);
+    const auto handleLine = [this, failed, layers, manifestBytes, model](const QByteArray &raw) {
+        if (raw.isEmpty())
+            return;
+        const QJsonObject line = QJsonDocument::fromJson(raw).object();
+        if (line.isEmpty())
+            return;
+        if (line.contains(QStringLiteral("error"))) {
+            *failed = line.value(QStringLiteral("error")).toString();
+            return;
+        }
+        const qint64 total = line.value(QStringLiteral("total")).toInteger();
+        const qint64 done = line.value(QStringLiteral("completed")).toInteger();
+        if (total > 0) {
+            const QString digest = line.value(QStringLiteral("digest")).toString(QStringLiteral("_layer"));
+            auto &entry = (*layers)[digest];
+            entry.first = qMax(entry.first, done);
+            entry.second = qMax(entry.second, total);
+            qint64 sumDone = 0, sumTotal = 0;
+            for (auto it = layers->cbegin(); it != layers->cend(); ++it) {
+                sumDone += it->first;
+                sumTotal += it->second;
+            }
+            const qint64 denom = qMax(sumTotal, manifestBytes);
+            if (denom > 0) {
+                m_progress = qMax(m_progress, qBound(0.0, double(sumDone) / double(denom), 1.0));
+                m_status = tr("Downloading %1… %2%").arg(titleOf(model)).arg(qRound(m_progress * 100));
+                emit changed();
+            }
+        } else if (line.value(QStringLiteral("status")).toString() == QLatin1String("success")) {
+            m_progress = 1.0;
+            m_status = tr("Downloading %1… 100%").arg(titleOf(model));
+            emit changed();
+        }
+    };
+    const auto parseLines = [buffer, handleLine](bool flushAll) {
         qsizetype end;
         while ((end = buffer->indexOf('\n')) >= 0) {
             const QByteArray raw = buffer->left(end).trimmed();
             buffer->remove(0, end + 1);
-            if (raw.isEmpty())
-                continue;
-            const QJsonObject line = QJsonDocument::fromJson(raw).object();
-            if (line.contains("error"))
-                *failed = line.value("error").toString();
-            const double total = line.value("total").toDouble(), done = line.value("completed").toDouble();
-            if (total > 0) {
-                m_progress = qBound(0.0, done / total, 1.0);
-                m_status = tr("Downloading %1… %2%").arg(titleOf(model)).arg(qRound(m_progress * 100));
-                emit changed();
-            }
+            handleLine(raw);
         }
         if (flushAll && !buffer->trimmed().isEmpty()) {
-            const QJsonObject line = QJsonDocument::fromJson(buffer->trimmed()).object();
+            const QByteArray tail = buffer->trimmed();
             buffer->clear();
-            if (line.contains("error"))
-                *failed = line.value("error").toString();
+            handleLine(tail);
         }
     };
     connect(reply, &QNetworkReply::readyRead, this, [reply, buffer, parseLines] {
         *buffer += reply->readAll();
         parseLines(false);
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, buffer, failed, models, parseLines] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, buffer, failed, remaining, parseLines] {
         reply->deleteLater();
         *buffer += reply->readAll();
         parseLines(true);
@@ -276,6 +324,6 @@ void LocalSetup::pull(const QStringList &models) {
             emit changed();
             return;
         }
-        pull(models.mid(1));
+        pull(remaining.mid(1));
     });
 }

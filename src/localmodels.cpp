@@ -346,19 +346,151 @@ bool LocalModels::isLoopbackUrl(const QUrl &url) {
     return !addr.isNull() && addr.isLoopback();
 }
 
+QUrl LocalModels::normalizeServerUrl(const QUrl &url) {
+    QUrl out = url.adjusted(QUrl::RemoveQuery | QUrl::RemoveFragment | QUrl::StripTrailingSlash);
+    QString path = out.path();
+    while (path.endsWith(QLatin1Char('/')))
+        path.chop(1);
+    static const QStringList suffixes = {
+        QStringLiteral("/v1/chat/completions"),
+        QStringLiteral("/v1/completions"),
+        QStringLiteral("/v1/embeddings"),
+        QStringLiteral("/v1/audio/speech"),
+        QStringLiteral("/v1/audio/voices"),
+        QStringLiteral("/v1/models"),
+        QStringLiteral("/v1"),
+        QStringLiteral("/api/v0/models"),
+        QStringLiteral("/api/tags"),
+        QStringLiteral("/api/chat"),
+        QStringLiteral("/api/embed"),
+        QStringLiteral("/api/show"),
+        QStringLiteral("/props"),
+    };
+    for (const QString &suffix : suffixes) {
+        if (path.endsWith(suffix, Qt::CaseInsensitive)) {
+            path.chop(suffix.size());
+            break;
+        }
+    }
+    while (path.endsWith(QLatin1Char('/')))
+        path.chop(1);
+    out.setPath(path);
+    return out;
+}
+
+int LocalModels::parseContextWindow(Kind kind, const QJsonObject &json) {
+    if (json.isEmpty())
+        return 0;
+    if (kind == Ollama) {
+        int modelCtx = 0;
+        const QJsonObject info = json.value(QStringLiteral("model_info")).toObject();
+        for (auto it = info.constBegin(); it != info.constEnd(); ++it) {
+            if (it.key().endsWith(QLatin1String(".context_length")) || it.key() == QLatin1String("context_length")) {
+                const int v = it.value().toInt();
+                if (v > modelCtx)
+                    modelCtx = v;
+            }
+        }
+        int paramCtx = 0;
+        const QString params = json.value(QStringLiteral("parameters")).toString();
+        if (!params.isEmpty()) {
+            static const QRegularExpression numCtxRx(QStringLiteral("(?:^|\\s)num_ctx\\s+(\\d+)"));
+            const auto match = numCtxRx.match(params);
+            if (match.hasMatch())
+                paramCtx = match.captured(1).toInt();
+        }
+        if (modelCtx > 0)
+            return modelCtx;
+        if (paramCtx > 0)
+            return paramCtx;
+        return json.value(QStringLiteral("context_length")).toInt();
+    }
+    if (kind == LlamaCpp) {
+        const int genCtx = json.value(QStringLiteral("default_generation_settings"))
+                               .toObject()
+                               .value(QStringLiteral("n_ctx"))
+                               .toInt();
+        if (genCtx > 0)
+            return genCtx;
+        const int topCtx = json.value(QStringLiteral("n_ctx")).toInt();
+        if (topCtx > 0)
+            return topCtx;
+    }
+    return 0;
+}
+
 void LocalModels::configure(const Server &server, const QString &textModel, const QString &embeddingModel,
                             const QString &speechModel) {
+    ++m_contextGeneration;
+    if (m_contextReply) {
+        m_contextReply->abort();
+        m_contextReply.clear();
+    }
     if (!server.isValid()) {
         m_server = {};
         m_textModel.clear();
         m_embeddingModel.clear();
         m_speechModel.clear();
+        m_contextWindow = 0;
         return;
     }
     m_server = server;
+    m_server.url = normalizeServerUrl(server.url);
     m_textModel = textModel;
     m_embeddingModel = embeddingModel;
     m_speechModel = speechModel;
+    m_contextWindow = server.contextWindow > 0 ? server.contextWindow : 0;
+}
+
+void LocalModels::setContextWindow(int tokens) {
+    tokens = qMax(0, tokens);
+    if (tokens == m_contextWindow)
+        return;
+    m_contextWindow = tokens;
+    m_server.contextWindow = tokens;
+    emit contextWindowChanged();
+}
+
+void LocalModels::queryContextWindow() {
+    ++m_contextGeneration;
+    if (m_contextReply) {
+        m_contextReply->abort();
+        m_contextReply.clear();
+    }
+    if (!isConfigured() || m_textModel.isEmpty())
+        return;
+    QNetworkReply *reply = nullptr;
+    const Kind kind = m_server.kind;
+    if (kind == Ollama)
+        reply = send("POST", QStringLiteral("/api/show"), QJsonObject{{QStringLiteral("model"), m_textModel}});
+    else if (kind == LlamaCpp)
+        reply = send("GET", QStringLiteral("/props"));
+    else
+        return;
+    reply->setParent(this);
+    m_contextReply = reply;
+    const int generation = m_contextGeneration;
+    connect(reply, &QNetworkReply::finished, this, [this, reply, kind, generation] {
+        reply->deleteLater();
+        if (reply == m_contextReply)
+            m_contextReply.clear();
+        if (generation != m_contextGeneration)
+            return;
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || status < 200 || status >= 300)
+            return;
+        const int ctx = parseContextWindow(kind, QJsonDocument::fromJson(reply->readAll()).object());
+        if (ctx > 0)
+            setContextWindow(ctx);
+    });
+}
+
+int LocalModels::contextWindow(bool fast) const {
+    if (m_server.kind == Ollama) {
+        const int target = fast ? 8192 : 32768;
+        return m_contextWindow > 0 ? qMin(target, m_contextWindow) : target;
+    }
+    return m_contextWindow;
 }
 
 QString LocalModels::kindName(Kind kind) {
@@ -422,7 +554,7 @@ Ai::Reply *LocalModels::check() {
     return new ServerReply(send("GET", path), ServerReply::Models, m_server.kind, {}, QStringLiteral("check"), false, this);
 }
 
-QJsonObject LocalModels::chatBody(Kind kind, const Ai::TextRequest &request, const QString &model) {
+QJsonObject LocalModels::chatBody(Kind kind, const Ai::TextRequest &request, const QString &model, int contextLimit) {
     QJsonArray messages;
     QString system = request.system;
     const bool schema = !request.schema.isEmpty();
@@ -437,11 +569,15 @@ QJsonObject LocalModels::chatBody(Kind kind, const Ai::TextRequest &request, con
     QJsonObject body{{QStringLiteral("model"), model}, {QStringLiteral("messages"), messages}, {QStringLiteral("stream"), request.stream}};
     if (kind == Ollama) {
         // Ollama's own API: its OpenAI one can't set the context, which is
-        // 4K by default, too short for a chapter.
+        // 4K by default, too short for a chapter. Clamp to the model's reported
+        // context window when known so Ollama never silently truncates or OOMs.
         if (supportsOllamaThinking(model))
             body.insert(QStringLiteral("think"), false);
         body.insert(QStringLiteral("keep_alive"), QStringLiteral("15m"));
-        body.insert(QStringLiteral("options"), QJsonObject{{QStringLiteral("num_ctx"), request.fast ? 8192 : 32768}});
+        int numCtx = request.fast ? 8192 : 32768;
+        if (contextLimit > 0)
+            numCtx = qMin(numCtx, contextLimit);
+        body.insert(QStringLiteral("options"), QJsonObject{{QStringLiteral("num_ctx"), numCtx}});
         if (schema)
             body.insert(QStringLiteral("format"), request.schema);
         return body;
@@ -495,7 +631,7 @@ QString LocalModels::queryText(const QString &model, const QString &text) {
 
 Ai::Reply *LocalModels::generate(const Ai::TextRequest &request) {
     const QString path = m_server.kind == Ollama ? QStringLiteral("/api/chat") : QStringLiteral("/v1/chat/completions");
-    return new ServerReply(send("POST", path, chatBody(m_server.kind, request, m_textModel)), ServerReply::Chat,
+    return new ServerReply(send("POST", path, chatBody(m_server.kind, request, m_textModel, m_contextWindow)), ServerReply::Chat,
                            m_server.kind, m_textModel, request.feature, !request.schema.isEmpty(), this);
 }
 
@@ -571,10 +707,8 @@ void ServerFinder::find(const QList<QUrl> &extra) {
     m_found.clear();
     QList<QUrl> places = usualPlaces();
     for (const QUrl &url : extra) {
-        QUrl origin = url.adjusted(QUrl::RemoveQuery | QUrl::RemoveFragment | QUrl::StripTrailingSlash);
-        // Strip API endpoint suffixes (/v1) while preserving any reverse-proxy prefix.
-        if (origin.path() == QLatin1String("/v1") || origin.path().startsWith(QLatin1String("/v1/")))
-            origin.setPath(QString());
+        // Strip trailing API endpoint suffixes (/v1, /api/tags, ...) while preserving reverse-proxy base paths.
+        const QUrl origin = LocalModels::normalizeServerUrl(url);
         if (LocalModels::isHttpUrl(origin) && !places.contains(origin))
             places.append(origin);
     }
@@ -607,10 +741,11 @@ void ServerFinder::probe(const QUrl &origin, int generation) {
             then(reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(), QJsonDocument::fromJson(reply->readAll()));
         });
     };
-    const auto found = [this, origin, generation](LocalModels::Kind kind, const QStringList &models) {
+    const auto found = [this, origin, generation](LocalModels::Kind kind, const QStringList &models, int contextWindow = 0) {
         LocalModels::Server server;
         server.kind = kind;
         server.url = origin;
+        server.contextWindow = contextWindow;
         sortModels(server, models);
         m_found.append(server);
         done(generation);
@@ -656,6 +791,7 @@ void ServerFinder::probe(const QUrl &origin, int generation) {
             get(QStringLiteral("/props"), [=, this](int status, const QJsonDocument &props) {
                 const bool llama = status == 200 && (props.object().contains(QStringLiteral("default_generation_settings")) ||
                                                      props.object().contains(QStringLiteral("model_path")));
+                const int llamaCtx = llama ? LocalModels::parseContextWindow(LocalModels::LlamaCpp, props.object()) : 0;
                 get(QStringLiteral("/v1/models"), [=, this](int status, const QJsonDocument &models) {
                     if (status != 200 || !models.object().contains(QStringLiteral("data"))) {
                         done(generation);
@@ -670,13 +806,14 @@ void ServerFinder::probe(const QUrl &origin, int generation) {
                         kind = LocalModels::LlamaCpp;
                     else if (owner == QLatin1String("vllm"))
                         kind = LocalModels::Vllm;
-                    else if (firstId.contains(QLatin1String("mlx"), Qt::CaseInsensitive))
+                    else if (firstId.contains(QLatin1String("mlx"), Qt::CaseInsensitive) ||
+                             owner.contains(QLatin1String("mlx"), Qt::CaseInsensitive))
                         kind = LocalModels::Mlx;
 #ifdef Q_OS_MACOS
                     else if (origin.port() == 8080 && owner.isEmpty())
                         kind = LocalModels::Mlx;
 #endif
-                    found(kind, ids(models));
+                    found(kind, ids(models), llamaCtx);
                 });
             });
         });

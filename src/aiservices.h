@@ -45,7 +45,9 @@ class AiServices : public QObject {
     Q_PROPERTY(QString localTextModel READ localTextModel NOTIFY routingChanged)
     Q_PROPERTY(QString localEmbeddingModel READ localEmbeddingModel NOTIFY routingChanged)
     Q_PROPERTY(QString localSpeechModel READ localSpeechModel NOTIFY routingChanged)
-    // The servers found by findLocal(): {kind, name, url, textModels, embeddingModels, speechModels}.
+    Q_PROPERTY(int localContextWindow READ localContextWindow NOTIFY routingChanged)
+    Q_PROPERTY(int overrideCount READ overrideCount NOTIFY routingChanged)
+    // The servers found by findLocal(): {kind, name, url, textModels, embeddingModels, speechModels, contextWindow}.
     Q_PROPERTY(QVariantList localServers READ localServers NOTIFY localServersChanged)
     Q_PROPERTY(bool findingLocal READ findingLocal NOTIFY localServersChanged)
 
@@ -109,6 +111,9 @@ public:
     QString localTextModel() const;
     QString localEmbeddingModel() const;
     QString localSpeechModel() const;
+    int localContextWindow() const;
+    int overrideCount() const { return int(m_overrides.size()); }
+    Q_INVOKABLE void clearOverrides();
     QVariantList localServers() const { return m_localServers; }
     bool findingLocal() const { return m_findingLocal; }
     // Looks for model servers on this computer (and at `url`, if given).

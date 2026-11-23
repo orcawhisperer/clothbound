@@ -96,7 +96,7 @@ FocusScope {
     }
 
     visible: open
-    width: Math.min(parent.width - 48, 600)
+    width: Math.min(parent.width - 48, 680)
     height: card.height
 
     Timer {
@@ -161,7 +161,10 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width
                     visible: !parent.text
-                    text: bookSearch.byMeaning ? qsTr("Describe what you're looking for") : qsTr("Search in the book")
+                    text: bookSearch.byMeaning
+                          ? (bookSearch.spoilerFree ? qsTr("Describe what you're looking for (up to here)")
+                                                    : qsTr("Describe what you're looking for"))
+                          : qsTr("Search in the book")
                     color: bar.look.muted
                     font.pixelSize: 15
                     elide: Text.ElideRight
@@ -197,6 +200,38 @@ FocusScope {
                     id: meaningLabel
                     text: qsTr("By meaning")
                     color: bookSearch.byMeaning ? bar.look.fg : bar.look.muted
+                    font.pixelSize: 12
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+            // Optional spoiler shield for semantic search.
+            AbstractButton {
+                id: spoilerShield
+                visible: bookSearch.canSearchByMeaning && bookSearch.byMeaning
+                implicitHeight: 26
+                implicitWidth: shieldLabel.implicitWidth + 16
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+                onClicked: {
+                    bookSearch.spoilerFree = !bookSearch.spoilerFree
+                    input.forceActiveFocus()
+                }
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: bookSearch.spoilerFree
+                              ? qsTr("Spoiler shield on: searching only up to your current page.")
+                              : qsTr("Limit semantic search to chapters up to your current page so nothing ahead is spoiled.")
+                background: Rectangle {
+                    radius: 13
+                    color: bookSearch.spoilerFree ? Ui.tint(bar.look.link, 0.22) : spoilerShield.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
+                    border.width: 1
+                    border.color: bookSearch.spoilerFree ? bar.look.link : Ui.tint(bar.look.fg, 0.2)
+                }
+                contentItem: Label {
+                    id: shieldLabel
+                    text: qsTr("Up to here")
+                    color: bookSearch.spoilerFree ? bar.look.fg : bar.look.muted
                     font.pixelSize: 12
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
@@ -301,7 +336,7 @@ FocusScope {
                 AbstractButton {
                     id: hitButton
                     width: parent.width
-                    implicitHeight: snippet.implicitHeight + 14
+                    implicitHeight: hitContent.implicitHeight + 14
                     hoverEnabled: true
                     focusPolicy: Qt.NoFocus
                     onClicked: { bar.jump(row.index); bar.fold() }
@@ -310,19 +345,65 @@ FocusScope {
                         color: row.index === bookSearch.current || row.ListView.isCurrentItem && list.activeFocus
                                ? Ui.tint(bar.look.link, 0.16) : hitButton.hovered ? Ui.tint(bar.look.fg, 0.06) : "transparent"
                     }
-                    contentItem: Label {
-                        id: snippet
-                        leftPadding: 12
-                        rightPadding: 12
-                        textFormat: Text.StyledText
-                        text: bar.escaped(row.modelData.before) + "<b>" + bar.escaped(row.modelData.match) + "</b>"
-                              + bar.escaped(row.modelData.after)
-                        color: bar.look.fg
-                        font.pixelSize: 13
-                        font.family: "Literata"
-                        wrapMode: Text.Wrap
-                        maximumLineCount: 2
-                        elide: Text.ElideRight
+                    contentItem: RowLayout {
+                        id: hitContent
+                        spacing: 8
+                        Label {
+                            id: snippet
+                            Layout.fillWidth: true
+                            leftPadding: 12
+                            rightPadding: badgeRow.visible ? 0 : 12
+                            textFormat: Text.StyledText
+                            text: bar.escaped(row.modelData.before) + "<b>" + bar.escaped(row.modelData.match) + "</b>"
+                                  + bar.escaped(row.modelData.after)
+                            color: bar.look.fg
+                            font.pixelSize: 13
+                            font.family: "Literata"
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 2
+                            elide: Text.ElideRight
+                        }
+                        Row {
+                            id: badgeRow
+                            visible: bookSearch.byMeaning && !!row.modelData.matchKind
+                            Layout.alignment: Qt.AlignTop
+                            Layout.rightMargin: 10
+                            Layout.topMargin: 2
+                            spacing: 4
+                            Rectangle {
+                                visible: !!row.modelData.matchKind
+                                height: 18
+                                width: modeBadge.implicitWidth + 10
+                                radius: 9
+                                color: row.modelData.matchKind === "hybrid"
+                                       ? Ui.tint(bar.look.link, 0.18)
+                                       : Ui.tint(bar.look.fg, 0.07)
+                                Label {
+                                    id: modeBadge
+                                    anchors.centerIn: parent
+                                    text: row.modelData.matchKind === "hybrid" ? qsTr("Match")
+                                        : row.modelData.matchKind === "semantic" ? qsTr("Meaning")
+                                        : qsTr("Words")
+                                    color: row.modelData.matchKind === "hybrid" ? bar.look.link : bar.look.muted
+                                    font.pixelSize: 10
+                                    font.weight: Font.Medium
+                                }
+                            }
+                            Rectangle {
+                                visible: row.modelData.score > 0 && row.modelData.score <= 1.0
+                                height: 18
+                                width: scoreBadge.implicitWidth + 10
+                                radius: 9
+                                color: Ui.tint(bar.look.fg, 0.06)
+                                Label {
+                                    id: scoreBadge
+                                    anchors.centerIn: parent
+                                    text: qsTr("%1%").arg(Math.round((row.modelData.score || 0) * 100))
+                                    color: bar.look.muted
+                                    font.pixelSize: 10
+                                }
+                            }
+                        }
                     }
                 }
             }

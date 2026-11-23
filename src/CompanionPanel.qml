@@ -7,17 +7,19 @@ import "Icons.js" as Icons
 import "Ui.js" as Ui
 
 // The reading companion, beside the page: Ask about the book, Previously…,
-// Who's who, and what was asked of a selection (Define, Explain,
+// Who's who, Pictures, and what was asked of a selection (Define, Explain,
 // Translate). Nothing past the reader's place is ever seen.
 FocusScope {
     id: panel
 
     property bool open: false
     property var look
-    // "ask", "recap", "whoswho", or "selection" (define, explain, translate).
+    // "ask", "recap", "whoswho", "pictures", or "selection" (define, explain, translate).
     property string tab: "ask"
 
     signal closed()
+    signal jumpRequested(int chapter, int offset)
+    signal saveAsNote(string quote, string note)
 
     function show(which) {
         if (which)
@@ -30,6 +32,8 @@ FocusScope {
     function close() {
         if (!open)
             return
+        if (picturePreview.opened)
+            picturePreview.close()
         open = false
         closed()
     }
@@ -42,19 +46,36 @@ FocusScope {
         else if (which === "ask")
             question.forceActiveFocus()
     }
+    function placeLabel(chapter) {
+        const ch = chapter >= 0 ? chapter : reader.chapter
+        const title = reader.titleOfChapter(ch)
+        if (title && title !== "")
+            return qsTr("“%1”").arg(title)
+        if (reader.format === "pdf") {
+            const pageLbl = reader.pdfPageLabel(ch)
+            return qsTr("Page %1").arg(pageLbl && pageLbl !== "" ? pageLbl : (ch + 1))
+        }
+        return qsTr("Chapter %1").arg(ch + 1)
+    }
     function send() {
         if (question.text.trim() === "" || companion.busy)
             return
         talk.stickToBottom = true
         companion.ask(question.text)
         question.text = ""
+        talk.scrollToBottom()
     }
 
     readonly property bool selectionFeature: ["define", "explain", "translate"].indexOf(companion.feature) >= 0
     readonly property string featureName: ({ define: qsTr("Define"), explain: qsTr("Explain"), translate: qsTr("Translate") })[companion.feature] || ""
     readonly property color errorColor: panel.look.dark ? (theme.colors.red || "#ff6b6b") : "#b42318"
 
-    Keys.onEscapePressed: close()
+    Keys.onEscapePressed: {
+        if (picturePreview.opened)
+            picturePreview.close()
+        else
+            close()
+    }
 
     width: Math.min(440, parent.width - 16)
     x: open ? parent.width - width : parent.width + 24
@@ -108,6 +129,57 @@ FocusScope {
             verticalAlignment: Text.AlignVCenter
         }
     }
+    component JumpChip: AbstractButton {
+        id: jumpChip
+        property string tipText: ""
+        implicitHeight: 24
+        implicitWidth: Math.min(260, jumpLabel.implicitWidth + 18)
+        hoverEnabled: true
+        focusPolicy: Qt.NoFocus
+        ToolTip.visible: hovered && tipText !== ""
+        ToolTip.delay: 450
+        ToolTip.text: tipText
+        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        background: Rectangle {
+            radius: 12
+            color: jumpChip.hovered ? Ui.tint(panel.look.link, 0.22) : Ui.tint(panel.look.link, 0.11)
+            border.width: 1
+            border.color: Ui.tint(panel.look.link, jumpChip.hovered ? 0.55 : 0.28)
+        }
+        contentItem: Label {
+            id: jumpLabel
+            text: jumpChip.text
+            color: panel.look.link
+            font.pixelSize: 11
+            font.weight: Font.Medium
+            elide: Text.ElideRight
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: 8
+            rightPadding: 8
+        }
+    }
+    component SmallAction: AbstractButton {
+        id: smallAction
+        implicitHeight: 26
+        implicitWidth: smallActionLabel.implicitWidth + 16
+        hoverEnabled: true
+        focusPolicy: Qt.NoFocus
+        opacity: enabled ? 1 : 0.42
+        background: Rectangle {
+            radius: Math.min(6, theme.radius)
+            color: smallAction.pressed ? Ui.tint(panel.look.fg, 0.14)
+                 : smallAction.hovered ? Ui.tint(panel.look.fg, 0.08) : Ui.tint(panel.look.fg, 0.04)
+        }
+        contentItem: Label {
+            id: smallActionLabel
+            text: smallAction.text
+            color: panel.look.muted
+            font.pixelSize: 12
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
     // Words to read, selectable for copying.
     component Prose: TextEdit {
         Layout.fillWidth: true
@@ -128,11 +200,17 @@ FocusScope {
     }
     component Working: RowLayout {
         property bool active: true
+        Layout.fillWidth: true
         visible: active && companion.busy
         spacing: 8
         BusyIndicator { running: parent.visible; implicitWidth: 20; implicitHeight: 20 }
-        Label { text: companion.status; color: panel.look.muted; font.pixelSize: 13 }
-        Item { Layout.fillWidth: true }
+        Label {
+            Layout.fillWidth: true
+            text: companion.status
+            color: panel.look.muted
+            font.pixelSize: 13
+            elide: Text.ElideRight
+        }
         TextButton { look: panel.look; text: qsTr("Stop"); onClicked: companion.stop() }
     }
     component Problem: Label {
@@ -189,14 +267,27 @@ FocusScope {
             Flickable {
                 id: talk
                 property bool stickToBottom: true
+                property bool autoScrolling: false
+                function scrollToBottom() {
+                    autoScrolling = true
+                    contentY = Math.max(0, contentHeight - height)
+                    autoScrolling = false
+                }
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
                 contentHeight: talkColumn.implicitHeight
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar {}
-                onMovementEnded: stickToBottom = (contentY + height >= contentHeight - 24)
-                onContentHeightChanged: if (companion.feature === "ask" && companion.busy && stickToBottom) contentY = Math.max(0, contentHeight - height)
+                // Respect manual upward wheel, drag, or scrollbar scrolling during streaming.
+                onContentYChanged: {
+                    if (!autoScrolling)
+                        stickToBottom = (contentY + height >= contentHeight - 24)
+                }
+                onContentHeightChanged: {
+                    if (companion.feature === "ask" && companion.busy && stickToBottom)
+                        scrollToBottom()
+                }
 
                 ColumnLayout {
                     id: talkColumn
@@ -213,29 +304,67 @@ FocusScope {
                     }
                     Repeater {
                         model: companion.conversation
-                        delegate: Rectangle {
+                        delegate: ColumnLayout {
+                            id: turnBox
                             required property var modelData
-                            Layout.fillWidth: !modelData.fromUser
-                            Layout.maximumWidth: talk.width
-                            Layout.alignment: modelData.fromUser ? Qt.AlignRight : Qt.AlignLeft
-                            implicitWidth: modelData.fromUser ? Math.min(talk.width * 0.85, said.implicitWidth + 24) : talk.width
-                            implicitHeight: said.implicitHeight + (modelData.fromUser ? 16 : 0)
-                            radius: Math.min(12, theme.radius + 4)
-                            color: modelData.fromUser ? Ui.tint(panel.look.link, 0.16) : "transparent"
-                            TextEdit {
-                                id: said
-                                x: modelData.fromUser ? 12 : 0
-                                y: modelData.fromUser ? 8 : 0
-                                width: parent.width - (modelData.fromUser ? 24 : 0)
-                                text: modelData.fromUser ? modelData.text : companion.sanitizeMarkdown(modelData.text)
-                                readOnly: true
-                                selectByMouse: true
-                                wrapMode: Text.Wrap
-                                textFormat: modelData.fromUser ? TextEdit.PlainText : TextEdit.MarkdownText
-                                color: panel.look.fg
-                                selectionColor: Ui.tint(panel.look.link, 0.35)
-                                font.pixelSize: modelData.fromUser ? 14 : 15
-                                font.family: modelData.fromUser ? Qt.application.font.family : "Literata"
+                            required property int index
+                            Layout.fillWidth: true
+                            spacing: 6
+
+                            Rectangle {
+                                Layout.fillWidth: !turnBox.modelData.fromUser
+                                Layout.maximumWidth: talk.width
+                                Layout.alignment: turnBox.modelData.fromUser ? Qt.AlignRight : Qt.AlignLeft
+                                implicitWidth: turnBox.modelData.fromUser ? Math.min(talk.width * 0.85, said.implicitWidth + 24) : talk.width
+                                implicitHeight: said.implicitHeight + (turnBox.modelData.fromUser ? 16 : 0)
+                                radius: Math.min(12, theme.radius + 4)
+                                color: turnBox.modelData.fromUser ? Ui.tint(panel.look.link, 0.16) : "transparent"
+                                TextEdit {
+                                    id: said
+                                    x: turnBox.modelData.fromUser ? 12 : 0
+                                    y: turnBox.modelData.fromUser ? 8 : 0
+                                    width: parent.width - (turnBox.modelData.fromUser ? 24 : 0)
+                                    text: turnBox.modelData.fromUser ? turnBox.modelData.text : companion.sanitizeMarkdown(turnBox.modelData.text)
+                                    readOnly: true
+                                    selectByMouse: true
+                                    wrapMode: Text.Wrap
+                                    textFormat: turnBox.modelData.fromUser ? TextEdit.PlainText : TextEdit.MarkdownText
+                                    color: panel.look.fg
+                                    selectionColor: Ui.tint(panel.look.link, 0.35)
+                                    font.pixelSize: turnBox.modelData.fromUser ? 14 : 15
+                                    font.family: turnBox.modelData.fromUser ? Qt.application.font.family : "Literata"
+                                }
+                            }
+                            Flow {
+                                Layout.fillWidth: true
+                                visible: !turnBox.modelData.fromUser && !!turnBox.modelData.sources && turnBox.modelData.sources.length > 0
+                                spacing: 6
+                                Repeater {
+                                    model: (!turnBox.modelData.fromUser && turnBox.modelData.sources) ? turnBox.modelData.sources : []
+                                    delegate: JumpChip {
+                                        required property var modelData
+                                        text: modelData.label || panel.placeLabel(modelData.chapter)
+                                        tipText: modelData.excerpt || ""
+                                        onClicked: panel.jumpRequested(modelData.chapter, modelData.offset || 0)
+                                    }
+                                }
+                            }
+                            RowLayout {
+                                visible: !turnBox.modelData.fromUser && turnBox.modelData.text !== ""
+                                spacing: 6
+                                SmallAction {
+                                    text: qsTr("Copy")
+                                    onClicked: reader.copyText(turnBox.modelData.text)
+                                }
+                                SmallAction {
+                                    text: qsTr("Save as note")
+                                    onClicked: {
+                                        const turns = companion.conversation
+                                        const prev = turnBox.index > 0 ? turns[turnBox.index - 1] : null
+                                        const quote = prev && prev.fromUser ? prev.text : panel.placeLabel(reader.chapter)
+                                        panel.saveAsNote(quote, turnBox.modelData.text)
+                                    }
+                                }
                             }
                         }
                     }
@@ -243,8 +372,22 @@ FocusScope {
                         visible: companion.feature === "ask" && companion.busy && companion.answer !== ""
                         text: companion.sanitizeMarkdown(companion.answer)
                     }
-                    Working { active: companion.feature === "ask" }
-                    Problem { active: companion.feature === "ask" }
+                    Flow {
+                        Layout.fillWidth: true
+                        visible: companion.feature === "ask" && companion.busy && companion.currentSources.length > 0
+                        spacing: 6
+                        Repeater {
+                            model: companion.currentSources
+                            delegate: JumpChip {
+                                required property var modelData
+                                text: modelData.label || panel.placeLabel(modelData.chapter)
+                                tipText: modelData.excerpt || ""
+                                onClicked: panel.jumpRequested(modelData.chapter, modelData.offset || 0)
+                            }
+                        }
+                    }
+                    Working { active: panel.tab === "ask" && companion.feature === "ask" }
+                    Problem { active: panel.tab === "ask" && companion.feature === "ask" }
                 }
             }
             // What asking sends, and where.
@@ -349,6 +492,30 @@ FocusScope {
                 width: parent.width
                 spacing: 12
                 readonly property bool matchesTab: panel.tab === "recap" ? companion.feature === "recap" : panel.selectionFeature
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: panel.tab === "selection" && companion.feature === "translate"
+                    spacing: 8
+                    Label {
+                        text: qsTr("Translate into")
+                        color: panel.look.muted
+                        font.pixelSize: 13
+                    }
+                    ComboBox {
+                        id: languagePicker
+                        Layout.fillWidth: true
+                        model: companion.targetLanguages
+                        currentIndex: Math.max(0, model.indexOf(companion.targetLanguage))
+                        onActivated: (index) => {
+                            const chosen = model[index]
+                            if (chosen && chosen !== companion.targetLanguage) {
+                                companion.targetLanguage = chosen
+                                companion.retranslate()
+                            }
+                        }
+                    }
+                }
                 Label {
                     Layout.fillWidth: true
                     visible: panel.tab === "selection" && companion.subject !== ""
@@ -365,16 +532,27 @@ FocusScope {
                     visible: proseColumn.matchesTab
                     text: companion.sanitizeMarkdown(companion.answer)
                 }
-                Working { active: proseColumn.matchesTab }
-                Problem { active: proseColumn.matchesTab }
+                Working { active: proseColumn.matchesTab && (panel.tab === "recap" || panel.tab === "selection") }
+                Problem { active: proseColumn.matchesTab && (panel.tab === "recap" || panel.tab === "selection") }
                 Where {
                     visible: proseColumn.matchesTab && !companion.busy && companion.answer !== ""
                     text: companion.where
                 }
-                RowLayout {
+                Flow {
+                    Layout.fillWidth: true
                     visible: proseColumn.matchesTab && !companion.busy && companion.answer !== ""
                     spacing: 8
                     TextButton { look: panel.look; text: qsTr("Copy"); onClicked: reader.copyText(companion.answer) }
+                    TextButton {
+                        look: panel.look
+                        text: qsTr("Save as note")
+                        onClicked: {
+                            const quote = panel.tab === "recap"
+                                ? qsTr("Previously… (%1)").arg(panel.placeLabel(reader.chapter))
+                                : (companion.subject || panel.placeLabel(reader.chapter))
+                            panel.saveAsNote(quote, companion.answer)
+                        }
+                    }
                     TextButton {
                         look: panel.look
                         visible: panel.tab === "recap"
@@ -403,10 +581,42 @@ FocusScope {
                 spacing: 8
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("An illustration of the page in view (or of words you select and right-click), in the manner of the book's own time.")
+                    text: qsTr("An illustration of the page in view (or of words you select and right-click), in the style you choose.")
                     color: panel.look.muted
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
+                }
+                Flow {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Repeater {
+                        model: illustrator.styles
+                        delegate: AbstractButton {
+                            id: styleChip
+                            required property var modelData
+                            readonly property bool selected: illustrator.style === modelData.id
+                            implicitHeight: 26
+                            implicitWidth: styleChipLabel.implicitWidth + 18
+                            hoverEnabled: true
+                            focusPolicy: Qt.NoFocus
+                            onClicked: illustrator.style = modelData.id
+                            background: Rectangle {
+                                radius: 13
+                                color: styleChip.selected ? Ui.tint(panel.look.link, 0.2)
+                                     : styleChip.hovered ? Ui.tint(panel.look.fg, 0.08) : Ui.tint(panel.look.fg, 0.04)
+                                border.width: styleChip.selected ? 1 : 0
+                                border.color: panel.look.link
+                            }
+                            contentItem: Label {
+                                id: styleChipLabel
+                                text: styleChip.modelData.label
+                                color: styleChip.selected ? panel.look.fg : panel.look.muted
+                                font.pixelSize: 12
+                                horizontalAlignment: Text.AlignHCenter
+                                verticalAlignment: Text.AlignVCenter
+                            }
+                        }
+                    }
                 }
                 RowLayout {
                     spacing: 10
@@ -425,11 +635,17 @@ FocusScope {
                     }
                 }
                 RowLayout {
+                    Layout.fillWidth: true
                     visible: illustrator.busy
                     spacing: 8
                     BusyIndicator { running: parent.visible; implicitWidth: 20; implicitHeight: 20 }
-                    Label { text: illustrator.status; color: panel.look.muted; font.pixelSize: 13 }
-                    Item { Layout.fillWidth: true }
+                    Label {
+                        Layout.fillWidth: true
+                        text: illustrator.status
+                        color: panel.look.muted
+                        font.pixelSize: 13
+                        elide: Text.ElideRight
+                    }
                     TextButton { look: panel.look; text: qsTr("Stop"); onClicked: illustrator.stop() }
                 }
                 Label {
@@ -444,38 +660,63 @@ FocusScope {
                 Item { implicitHeight: 4 }
             }
             delegate: ColumnLayout {
+                id: picItem
                 required property var modelData
+                readonly property bool fileMissing: modelData.exists === false || pictureImage.status === Image.Error
                 width: ListView.view.width
                 spacing: 6
-                Image {
-                    id: pictureImage
-                    visible: status !== Image.Error
+                Item {
+                    visible: !picItem.fileMissing
                     Layout.preferredWidth: parent.width
                     Layout.maximumWidth: parent.width
-                    Layout.preferredHeight: parent.width * (implicitHeight > 0 ? implicitHeight / Math.max(1, implicitWidth) : 4 / 3)
-                    source: modelData.url
-                    fillMode: Image.PreserveAspectFit
-                    asynchronous: true
-                    sourceSize.width: 880
-                    mipmap: true
+                    Layout.preferredHeight: parent.width * (pictureImage.implicitHeight > 0 ? pictureImage.implicitHeight / Math.max(1, pictureImage.implicitWidth) : 4 / 3)
+                    Image {
+                        id: pictureImage
+                        anchors.fill: parent
+                        source: picItem.modelData.exists === false ? "" : picItem.modelData.url
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        sourceSize.width: 880
+                        mipmap: true
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: picturePreview.show(picItem.modelData)
+                        ToolTip.visible: containsMouse
+                        ToolTip.delay: 500
+                        ToolTip.text: qsTr("Click to view full size")
+                    }
                 }
                 Rectangle {
-                    visible: pictureImage.status === Image.Error
+                    visible: picItem.fileMissing
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 96
+                    Layout.preferredHeight: 108
                     radius: Math.min(8, theme.radius)
                     color: Ui.tint(panel.look.fg, 0.05)
                     border.color: panel.look.border
-                    Label {
+                    ColumnLayout {
                         anchors.centerIn: parent
-                        text: qsTr("Picture file is missing")
-                        color: panel.look.muted
-                        font.pixelSize: 13
+                        spacing: 4
+                        Label {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: qsTr("Picture file is missing")
+                            color: panel.look.muted
+                            font.pixelSize: 13
+                            font.weight: Font.Medium
+                        }
+                        Label {
+                            Layout.alignment: Qt.AlignHCenter
+                            text: qsTr("Use Regenerate to draw it again.")
+                            color: panel.look.muted
+                            font.pixelSize: 12
+                        }
                     }
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: modelData.caption
+                    text: picItem.modelData.caption
                     color: panel.look.fg
                     font.pixelSize: 14
                     font.italic: true
@@ -487,21 +728,28 @@ FocusScope {
                     spacing: 6
                     TextButton {
                         look: panel.look
-                        text: reader.titleOfChapter(modelData.chapter) ? qsTr("Go to “%1”").arg(reader.titleOfChapter(modelData.chapter)) : qsTr("Go to its page")
-                        onClicked: view.goTo({ chapter: modelData.chapter, offset: modelData.offset, instant: true })
+                        text: qsTr("Go to %1").arg(panel.placeLabel(picItem.modelData.chapter))
+                        onClicked: panel.jumpRequested(picItem.modelData.chapter, picItem.modelData.offset || 0)
                     }
                     TextButton {
                         look: panel.look
+                        enabled: illustrator.available && !illustrator.busy
+                        text: qsTr("Regenerate")
+                        onClicked: illustrator.regenerate(picItem.modelData.id)
+                    }
+                    TextButton {
+                        look: panel.look
+                        enabled: !picItem.fileMissing
                         text: qsTr("Save a copy")
                         onClicked: {
-                            const path = illustrator.saveCopy(modelData.id)
+                            const path = illustrator.saveCopy(picItem.modelData.id)
                             if (path)
                                 toast.show(qsTr("Saved in %1").arg(path.replace(/^.*\/(Pictures\/)/, "$1")))
                             else
                                 toast.show(qsTr("Couldn't save a copy of this picture"))
                         }
                     }
-                    TextButton { look: panel.look; text: qsTr("Remove"); onClicked: illustrator.remove(modelData.id) }
+                    TextButton { look: panel.look; text: qsTr("Remove"); onClicked: illustrator.remove(picItem.modelData.id) }
                 }
             }
         }
@@ -521,23 +769,34 @@ FocusScope {
             header: ColumnLayout {
                 width: ListView.view.width
                 spacing: 8
-                Working { active: companion.feature === "whoswho" }
-                Problem { active: companion.feature === "whoswho" }
-                Label {
+                Working { active: panel.tab === "whoswho" && companion.feature === "whoswho" }
+                Problem { active: panel.tab === "whoswho" && companion.feature === "whoswho" }
+                ColumnLayout {
                     Layout.fillWidth: true
-                    visible: companion.feature === "whoswho" && !companion.busy && companion.problem === "" && companion.people.length === 0
-                    text: qsTr("No characters mentioned so far.")
-                    color: panel.look.muted
-                    font.pixelSize: 14
-                    wrapMode: Text.Wrap
+                    visible: (companion.feature === "whoswho" || companion.peopleLoaded)
+                             && !companion.busy && companion.problem === "" && companion.people.length === 0
+                    spacing: 8
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("No named characters found up to %1.").arg(panel.placeLabel(reader.chapter))
+                        color: panel.look.muted
+                        font.pixelSize: 14
+                        wrapMode: Text.Wrap
+                    }
+                    TextButton {
+                        look: panel.look
+                        text: qsTr("Try again")
+                        onClicked: companion.refreshWhosWho()
+                    }
                 }
                 RowLayout {
                     Layout.fillWidth: true
                     visible: companion.people.length > 0 && !companion.busy
                     spacing: 8
                     Where {
-                        text: reader.chapterTitle ? qsTr("Up to “%1” · %2").arg(reader.chapterTitle).arg(companion.where)
-                                                  : companion.where
+                        readonly property string place: panel.placeLabel(companion.peopleChapter >= 0 ? companion.peopleChapter : reader.chapter)
+                        text: companion.where ? qsTr("Up to %1 · %2").arg(place).arg(companion.where)
+                                              : qsTr("Up to %1").arg(place)
                         bottomPadding: 6
                     }
                     TextButton {
@@ -548,12 +807,13 @@ FocusScope {
                 }
             }
             delegate: ColumnLayout {
+                id: personItem
                 required property var modelData
                 width: ListView.view.width
-                spacing: 2
+                spacing: 4
                 Label {
                     Layout.fillWidth: true
-                    text: modelData.name + (modelData.also ? "  ·  " + modelData.also : "")
+                    text: personItem.modelData.name + (personItem.modelData.also ? "  ·  " + personItem.modelData.also : "")
                     color: panel.look.fg
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
@@ -561,19 +821,157 @@ FocusScope {
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: modelData.who
+                    text: personItem.modelData.who
                     color: panel.look.fg
                     font.pixelSize: 14
                     font.family: "Literata"
                     wrapMode: Text.Wrap
                     lineHeight: 1.2
                 }
+                JumpChip {
+                    visible: personItem.modelData.chapterIndex !== undefined && personItem.modelData.chapterIndex >= 0
+                    text: qsTr("First seen: %1").arg(personItem.modelData.chapter || panel.placeLabel(personItem.modelData.chapterIndex))
+                    tipText: qsTr("Jump to first appearance")
+                    onClicked: panel.jumpRequested(personItem.modelData.chapterIndex, personItem.modelData.offset || 0)
+                }
                 Label {
                     Layout.fillWidth: true
-                    visible: !!modelData.chapter
-                    text: qsTr("First seen: %1").arg(modelData.chapter)
+                    visible: !(personItem.modelData.chapterIndex !== undefined && personItem.modelData.chapterIndex >= 0)
+                             && !!personItem.modelData.chapter
+                    text: qsTr("First seen: %1").arg(personItem.modelData.chapter || "")
                     color: panel.look.muted
                     font.pixelSize: 12
+                }
+            }
+        }
+    }
+
+    // Inline full-size picture preview modal (renders over the whole window).
+    Popup {
+        id: picturePreview
+        property var item: null
+        function show(modelData) {
+            item = modelData
+            open()
+        }
+        parent: Overlay.overlay
+        x: 0
+        y: 0
+        width: Overlay.overlay ? Overlay.overlay.width : 800
+        height: Overlay.overlay ? Overlay.overlay.height : 600
+        modal: true
+        focus: true
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        Connections {
+            target: illustrator
+            function onPicturesChanged() {
+                if (picturePreview.opened && picturePreview.item) {
+                    const id = picturePreview.item.id
+                    if (!illustrator.pictures.some(p => p.id === id))
+                        picturePreview.close()
+                }
+            }
+        }
+
+        background: Rectangle {
+            color: Ui.tint("black", 0.82)
+            TapHandler { onTapped: picturePreview.close() }
+        }
+
+        contentItem: Item {
+            anchors.fill: parent
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 32
+                spacing: 14
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: picturePreview.item && picturePreview.item.styleLabel
+                              ? qsTr("%1 · %2").arg(panel.placeLabel(picturePreview.item.chapter)).arg(picturePreview.item.styleLabel)
+                              : picturePreview.item ? panel.placeLabel(picturePreview.item.chapter) : ""
+                        color: "white"
+                        opacity: 0.8
+                        font.pixelSize: 13
+                    }
+                    IconButton {
+                        glyph: Icons.close
+                        tone: "white"
+                        tip: qsTr("Close (Esc)")
+                        onClicked: picturePreview.close()
+                    }
+                }
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Image {
+                        id: fullPreviewImage
+                        anchors.fill: parent
+                        source: picturePreview.item ? picturePreview.item.url : ""
+                        fillMode: Image.PreserveAspectFit
+                        asynchronous: true
+                        mipmap: true
+                        smooth: true
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: 720
+                    Layout.alignment: Qt.AlignHCenter
+                    visible: !!picturePreview.item && !!picturePreview.item.caption
+                    text: picturePreview.item ? picturePreview.item.caption : ""
+                    color: "white"
+                    font.pixelSize: 15
+                    font.italic: true
+                    font.family: "Literata"
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    Layout.alignment: Qt.AlignHCenter
+                    spacing: 10
+                    TextButton {
+                        look: panel.look
+                        text: picturePreview.item ? qsTr("Go to %1").arg(panel.placeLabel(picturePreview.item.chapter)) : ""
+                        visible: !!picturePreview.item
+                        onClicked: {
+                            const target = picturePreview.item
+                            picturePreview.close()
+                            if (target)
+                                panel.jumpRequested(target.chapter, target.offset || 0)
+                        }
+                    }
+                    TextButton {
+                        look: panel.look
+                        visible: !!picturePreview.item
+                        enabled: illustrator.available && !illustrator.busy
+                        text: qsTr("Regenerate")
+                        onClicked: {
+                            const target = picturePreview.item
+                            picturePreview.close()
+                            if (target)
+                                illustrator.regenerate(target.id)
+                        }
+                    }
+                    TextButton {
+                        look: panel.look
+                        visible: !!picturePreview.item
+                        enabled: fullPreviewImage.status !== Image.Error
+                        text: qsTr("Save a copy")
+                        onClicked: {
+                            if (!picturePreview.item)
+                                return
+                            const path = illustrator.saveCopy(picturePreview.item.id)
+                            if (path)
+                                toast.show(qsTr("Saved in %1").arg(path.replace(/^.*\/(Pictures\/)/, "$1")))
+                            else
+                                toast.show(qsTr("Couldn't save a copy of this picture"))
+                        }
+                    }
                 }
             }
         }

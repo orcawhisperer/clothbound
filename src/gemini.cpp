@@ -188,7 +188,8 @@ private:
             const QJsonObject usage = json.value("usageMetadata").toObject();
             m_usage.inputTokens = usage.value("promptTokenCount").toInteger();
             m_usage.outputTokens = usage.value("candidatesTokenCount").toInteger();
-            m_usage.thoughtTokens = usage.value("thoughtsTokenCount").toInteger();
+            m_usage.thoughtTokens =
+                usage.value("thoughtsTokenCount").toInteger(usage.value("thoughtTokenCount").toInteger());
             if (m_image.isEmpty()) {
                 finish({Ai::Error::Refused, m_text.isEmpty() ? QStringLiteral("No picture came back.") : m_text});
                 return;
@@ -262,29 +263,69 @@ Ai::Reply *GeminiProvider::check() {
 void GeminiProvider::chooseModels(const QStringList &available) {
     if (available.isEmpty())
         return;
-    // The preferred model when the key has it; otherwise the newest of its kind.
-    auto pick = [&available](const QString &preferred, auto accept) {
+    // Version-aware comparison so "gemini-10" sorts after "gemini-3.1".
+    auto versionLess = [](const QString &a, const QString &b) {
+        qsizetype ia = 0, ib = 0;
+        while (ia < a.size() && ib < b.size()) {
+            if (a[ia].isDigit() && b[ib].isDigit()) {
+                qsizetype ja = ia, jb = ib;
+                while (ja < a.size() && a[ja].isDigit())
+                    ++ja;
+                while (jb < b.size() && b[jb].isDigit())
+                    ++jb;
+                const qint64 va = QStringView(a).mid(ia, ja - ia).toLongLong();
+                const qint64 vb = QStringView(b).mid(ib, jb - ib).toLongLong();
+                if (va != vb)
+                    return va < vb;
+                ia = ja;
+                ib = jb;
+            } else {
+                if (a[ia] != b[ib])
+                    return a[ia] < b[ib];
+                ++ia;
+                ++ib;
+            }
+        }
+        return a.size() < b.size();
+    };
+    // The preferred model when the key has it; otherwise the newest of its kind
+    // (preferring stable releases before preview builds).
+    auto pick = [&available, &versionLess](const QString &preferred, auto accept, bool allowPreviewFallback = false) {
         if (available.contains(preferred))
             return preferred;
-        QStringList candidates;
-        for (const QString &name : available)
-            if (accept(name))
-                candidates.append(name);
-        std::sort(candidates.begin(), candidates.end());
-        return candidates.isEmpty() ? preferred : candidates.last();
+        QStringList stable, previews;
+        for (const QString &name : available) {
+            if (!accept(name))
+                continue;
+            if (name.contains(QLatin1String("preview")) || name.contains(QLatin1String("-exp")))
+                previews.append(name);
+            else
+                stable.append(name);
+        }
+        if (!stable.isEmpty()) {
+            std::sort(stable.begin(), stable.end(), versionLess);
+            return stable.last();
+        }
+        if (allowPreviewFallback && !previews.isEmpty()) {
+            std::sort(previews.begin(), previews.end(), versionLess);
+            return previews.last();
+        }
+        return preferred;
     };
     auto plain = [](const QString &name) {
-        return !name.contains("tts") && !name.contains("image") && !name.contains("embedding") &&
-               !name.contains("live") && !name.contains("preview") && name.startsWith("gemini");
+        return !name.contains("tts") && !name.contains("image") && !name.contains("nano-banana") &&
+               !name.contains("embedding") && !name.contains("live") && name.startsWith("gemini");
     };
     m_textModel = pick(m_textModel, [&](const QString &n) { return plain(n) && !n.contains("lite"); });
     m_fastModel = pick(m_fastModel, [&](const QString &n) { return plain(n) && n.contains("flash-lite"); });
-    m_speechModel = pick(m_speechModel, [](const QString &n) { return n.contains("tts") && !n.contains("lite") && !n.contains("preview"); });
+    m_speechModel = pick(m_speechModel, [](const QString &n) { return n.contains("tts") && !n.contains("lite"); });
     m_economySpeechModel = pick(m_economySpeechModel, [](const QString &n) { return n.contains("lite-tts"); });
-    m_embeddingModel = pick(m_embeddingModel, [](const QString &n) { return n.contains("embedding") && !n.contains("preview"); });
-    m_imageModel = pick(m_imageModel, [](const QString &n) {
-        return n.startsWith("gemini") && n.contains("image") && !n.contains("preview");
-    });
+    m_embeddingModel = pick(
+        m_embeddingModel, [](const QString &n) { return n.contains("embedding"); }, true);
+    m_imageModel = pick(
+        m_imageModel,
+        [](const QString &n) { return n.startsWith("gemini") && (n.contains("image") || n.contains("nano-banana")); },
+        true);
 }
 
 QJsonObject GeminiProvider::textBody(const Ai::TextRequest &request, const QString &model) {

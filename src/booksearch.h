@@ -29,6 +29,8 @@ class BookSearch : public QObject {
     // Searching by meaning: passages close to what's described, not words.
     Q_PROPERTY(bool byMeaning READ byMeaning WRITE setByMeaning NOTIFY changed)
     Q_PROPERTY(bool canSearchByMeaning READ canSearchByMeaning NOTIFY changed)
+    // Optional spoiler shield for semantic search: only search up to the reader's current place.
+    Q_PROPERTY(bool spoilerFree READ spoilerFree WRITE setSpoilerFree NOTIFY changed)
     // While a book is read for meaning the first time: "Reading the book… 40%".
     Q_PROPERTY(QString preparing READ preparing NOTIFY changed)
     Q_PROPERTY(QString where READ where NOTIFY changed)
@@ -56,6 +58,8 @@ public:
     bool byMeaning() const { return m_byMeaning; }
     void setByMeaning(bool byMeaning);
     bool canSearchByMeaning() const;
+    bool spoilerFree() const { return m_spoilerFree; }
+    void setSpoilerFree(bool spoilerFree);
     QString preparing() const { return m_preparing; }
     QString where() const;
 
@@ -66,6 +70,9 @@ public:
     static QList<QPair<qint64, qint64>> matches(const QString &text, const QString &query, int limit);
     // A hit with a little of the text either side, cut at words.
     static QVariantMap hit(const QString &text, int chapter, qint64 start, qint64 end);
+    // Sentence-aligned highlight span within [passageStart, passageEnd] best matching `query`.
+    static QPair<qint64, qint64> sentenceSpan(const QString &chapterText, qint64 passageStart, qint64 passageEnd,
+                                              const QString &query);
 
 signals:
     void changed();
@@ -80,6 +87,7 @@ private:
     AiServices *m_ai = nullptr;
     PassageIndex *m_index = nullptr;
     bool m_byMeaning = false;
+    bool m_spoilerFree = false;
     QString m_preparing;
     int m_meaningRun = 0;
     QString m_query;

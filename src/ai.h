@@ -166,6 +166,11 @@ public:
     virtual Reply *generate(const TextRequest &request) = 0;
     virtual QString textModelName(bool fast) const = 0;
     virtual bool supportsSchema() const { return true; }
+    // Effective context window in tokens for a request, or 0 when unknown.
+    virtual int contextWindow(bool fast = false) const {
+        Q_UNUSED(fast);
+        return 0;
+    }
 };
 
 class SpeechSynthesizer {
