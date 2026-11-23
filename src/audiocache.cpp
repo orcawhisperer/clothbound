@@ -221,3 +221,10 @@ void AudioCache::clear() {
     QSqlQuery(db).exec(QStringLiteral("DELETE FROM narration_directions"));
     emit changed();
 }
+
+double AudioCache::seconds(const QString &key) {
+    QSqlQuery query(QSqlDatabase::database(m_connection));
+    query.prepare(QStringLiteral("SELECT seconds FROM audio_clips WHERE key = ?"));
+    query.addBindValue(key);
+    return query.exec() && query.next() ? query.value(0).toDouble() : 0;
+}

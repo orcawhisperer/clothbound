@@ -955,9 +955,25 @@ FocusScope {
                             onClicked: download.running ? download.pause() : download.resume()
                         }
                         Action {
+                            visible: download.finished
+                            enabled: !audiobook.busy
+                            text: audiobook.busy ? qsTr("Saving… %1%").arg(Math.round(audiobook.progress * 100))
+                                                 : qsTr("Save as an audiobook")
+                            onClicked: audiobook.save()
+                        }
+                        Action {
                             text: download.finished ? qsTr("Done") : qsTr("Stop")
                             onClicked: download.cancel()
                         }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: audiobook.saved !== "" || audiobook.problem !== ""
+                        text: audiobook.problem !== "" ? audiobook.problem
+                            : qsTr("Saved as %1, with its chapters, for any audiobook player.").arg(audiobook.saved.replace(/^.*\/(Music\/)/, "$1"))
+                        color: audiobook.problem !== "" ? (theme.colors.orange || "#e5a050") : panel.look.muted
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
                     }
                 }
 

@@ -8,6 +8,7 @@
 #include "localmodels.h"
 #include "companion.h"
 #include "cast.h"
+#include "audiobook.h"
 #include "illustrator.h"
 #include "pdfpages.h"
 #include "systemcheck.h"
@@ -227,6 +228,7 @@ int main(int argc, char *argv[]) {
     Cast cast(&ai, &audioCache, &reader, &library, &voices, &voicePacks);
     narration.setCast(&cast);
     download.setCast(&cast);
+    Audiobook audiobook(&audioCache, &download, &reader, &library);
     // A book named on the command line joins the library (it may live
     // anywhere) and opens.
     int bookToOpen = 0;
@@ -255,6 +257,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("marks", &marks);
     engine.rootContext()->setContextProperty("companion", &companion);
     engine.rootContext()->setContextProperty("cast", &cast);
+    engine.rootContext()->setContextProperty("audiobook", &audiobook);
     engine.rootContext()->setContextProperty("illustrator", &illustrator);
     engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
     Notifier notifier;

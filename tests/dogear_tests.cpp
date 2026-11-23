@@ -26,6 +26,7 @@
 #include "pdfbook.h"
 #include "pdfpages.h"
 #include "cast.h"
+#include "audiobook.h"
 #include <QPdfWriter>
 #include <QPainter>
 #include "systemcheck.h"
@@ -1512,6 +1513,17 @@ private slots:
         QCOMPARE(lines[1].gender, QString("female"));
         QCOMPARE(lines[4].gender, QString());
         QVERIFY(Cast::prompt().contains("narrator"));
+    }
+
+    // An audiobook's chapters and tags, escaped as ffmpeg reads them.
+    void audiobookMetadata() {
+        const QString meta = Audiobook::metadata("Love; and Mr Lewisham", "H. G. Wells",
+                                                 {{"I. Introduces Mr Lewisham", 0, 61000}, {"A=B #2", 61000, 90500}});
+        QVERIFY(meta.startsWith(";FFMETADATA1\n"));
+        QVERIFY2(meta.contains("title=Love\\; and Mr Lewisham\n"), qPrintable(meta));
+        QVERIFY(meta.contains("artist=H. G. Wells\n"));
+        QVERIFY(meta.contains("[CHAPTER]\nTIMEBASE=1/1000\nSTART=61000\nEND=90500\ntitle=A\\=B \\#2\n"));
+        QCOMPARE(Audiobook::concatList({"/a/it's.opus"}), QString("ffconcat version 1.0\nfile '/a/it'\\''s.opus'\n"));
     }
 
     // The window doesn't wait for the keyring: the key arrives when it

@@ -82,6 +82,7 @@ void Download::setProblem(const QString &problem) {
 }
 
 void Download::start(int first, int last) {
+    m_plannedKeys.clear();
     cancel();
     if (!m_ai->canSpeakWith(m_narration->voice())) {
         setProblem(AiServices::isBuiltinVoice(m_narration->voice()) ? tr("This built-in voice isn't downloaded yet.")
@@ -190,6 +191,7 @@ void Download::plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<in
         job.key = AudioCache::keyFor(m_ai->providerFor(job.voice)->id(), reader ? reader->speechModelName(m_economy) : model,
                                      job.voice, job.style, job.text);
         job.minutes = job.text.size() / charsPerMinute;
+        m_plannedKeys[chapter].append(job.key);
         planned += job.minutes;
         if (!m_cache->lookup(job.key).isEmpty())
             m_minutesReady += job.minutes;  // heard or downloaded before

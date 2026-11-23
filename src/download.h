@@ -64,6 +64,9 @@ public:
 
     // A chapter's blocks, as the reading surface reports them.
     void addBlocks(int chapter, const QString &json);
+    // The clips planned for each chapter, in order, as cache keys: what an
+    // audiobook of the download is made of.
+    QMap<int, QStringList> plannedKeys() const { return m_plannedKeys; }
     // A full cast, so downloads are read by the voices listening uses.
     void setCast(Cast *cast) { m_cast = cast; }
 
@@ -119,6 +122,7 @@ private:
     int m_nextChapter = 0;
     QSet<int> m_waiting;  // chapters whose blocks or direction are on their way
     QList<Job> m_queue;
+    QMap<int, QStringList> m_plannedKeys;
     QList<QPointer<Ai::Reply>> m_replies;
     double m_minutesReady = 0;
     double m_minutesTotal = 0;

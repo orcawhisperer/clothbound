@@ -19,6 +19,8 @@ public:
     bool migrate();
     // The file holding this narration, or "" when it hasn't been made.
     QString lookup(const QString &key);
+    // How long a kept clip is, in seconds (0 if it isn't kept).
+    double seconds(const QString &key);
     // `boundaries`: where each sentence ends, in samples, when the voice said.
     void store(const QString &key, const QByteArray &pcm, int sampleRate, const QList<qint64> &boundaries = {});
     QList<qint64> boundaries(const QString &key);
