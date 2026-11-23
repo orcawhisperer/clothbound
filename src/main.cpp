@@ -10,6 +10,7 @@
 #include "library.h"
 #include "narration.h"
 #include "voicecatalog.h"
+#include "mpris.h"
 #include "portalfilepicker.h"
 #include "reader.h"
 #include "theme.h"
@@ -17,6 +18,7 @@
 
 #include <QCommandLineParser>
 #include <QDBusConnection>
+#include <QWindow>
 #include <QDBusMessage>
 #include <QDBusVariant>
 #include <QFont>
@@ -157,6 +159,7 @@ int main(int argc, char *argv[]) {
     AudioCache audioCache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/audio"),
                           library.database().connectionName());
     Narration narration(&ai, &audioCache, &reader, &library);
+    Mpris mpris(&narration, &reader, &library);
     VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
                         QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/voices.json"));
     // A book named on the command line joins the library (it may live
@@ -193,6 +196,13 @@ int main(int argc, char *argv[]) {
         return 1;
     if (bookToOpen)
         QMetaObject::invokeMethod(engine.rootObjects().first(), "openBook", Q_ARG(QVariant, bookToOpen));
+    // The desktop's media controls can ask for the window.
+    if (auto *window = qobject_cast<QWindow *>(engine.rootObjects().first()))
+        QObject::connect(&mpris, &Mpris::raiseRequested, window, [window] {
+            window->show();
+            window->raise();
+            window->requestActivate();
+        });
     // New books in watched folders are picked up each time Dogear starts.
     if (!library.folders().isEmpty())
         QTimer::singleShot(400, &library, &Library::rescan);
