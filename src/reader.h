@@ -58,6 +58,8 @@ public:
     // Some of the book's text from a chapter on, past short pages (a title
     // page, the contents), up to `maxChars`: what the book sounds like.
     Q_INVOKABLE QString passageFrom(int chapter, int maxChars = 4000) const;
+    // How many characters of text a chapter has.
+    Q_INVOKABLE qint64 charactersIn(int chapter) const { return m_lengths.value(chapter); }
     bool hasPageList() const { return m_hasPageList; }
     int chapter() const { return m_chapter; }
     int chapterCount() const { return int(m_chapterTitles.size()); }

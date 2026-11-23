@@ -144,6 +144,11 @@ FocusScope {
     }
 
     Connections {
+        target: download
+        function onBlocksWanted(chapter) { view.js("dogear.requestSpeakable(" + chapter + ")") }
+        function onReady() { toast.show(qsTr("Ready to listen offline")) }
+    }
+    Connections {
         target: narration
         function onBlocksWanted(chapter) { view.js("dogear.requestSpeakable(" + chapter + ")") }
         function onSpeaking(chapter, start, end) {

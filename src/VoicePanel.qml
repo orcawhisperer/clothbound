@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Material
 import QtQuick.Layouts
 
+import "Format.js" as Format
 import "Icons.js" as Icons
 import "Ui.js" as Ui
 
@@ -76,6 +77,15 @@ FocusScope {
             parts.push(qsTr("age %1").arg(voice.age))
         return parts.join(" · ")
     }
+
+    // Downloading for offline listening: this chapter, or to the end.
+    readonly property int lastChapter: reader.chapterCount - 1
+    readonly property var chapterEstimate: open && voices.count >= 0 ? download.estimate(reader.chapter, reader.chapter) : ({})
+    readonly property var restEstimate: open && voices.count >= 0 ? download.estimate(reader.chapter, lastChapter) : ({})
+    function money(dollars) {
+        return dollars < 0.01 ? qsTr("under $0.01") : qsTr("about %1").arg("$" + dollars.toLocaleString(Qt.locale(), 'f', 2))
+    }
+    readonly property bool downloadingThisBook: download.active && download.bookId === reader.bookId
 
     readonly property string language: reader.language
     // `count` changes whenever the voices do, which keeps these fresh.
@@ -536,6 +546,89 @@ FocusScope {
                         visible: voices.casting === "failed"
                         text: qsTr("Try again")
                         onClicked: voices.cast(reader.passageFrom(reader.chapter, 4000))
+                    }
+                }
+            }
+
+            Heading { text: qsTr("Offline") }
+            Note {
+                visible: !panel.downloadingThisBook
+                text: qsTr("Download the narration to listen without a connection. It's made at Gemini's slower Flex tier, for half the price.")
+            }
+            RowLayout {
+                visible: !panel.downloadingThisBook && ai.canSpeak
+                Layout.fillWidth: true
+                spacing: 8
+                Action {
+                    text: qsTr("This chapter")
+                    enabled: (panel.chapterEstimate.chapters || 0) > 0
+                    onClicked: download.start(reader.chapter, reader.chapter)
+                }
+                Note {
+                    Layout.fillWidth: true
+                    text: (panel.chapterEstimate.chapters || 0) > 0 && translator.language !== ""
+                          ? Format.duration(panel.chapterEstimate.minutes) + " · " + panel.money(panel.chapterEstimate.cost) : ""
+                }
+            }
+            RowLayout {
+                visible: !panel.downloadingThisBook && ai.canSpeak && (panel.restEstimate.chapters || 0) > 1
+                Layout.fillWidth: true
+                spacing: 8
+                Action {
+                    text: qsTr("To the end")
+                    onClicked: download.start(reader.chapter, panel.lastChapter)
+                }
+                Note {
+                    Layout.fillWidth: true
+                    text: translator.language !== ""
+                          ? qsTr("%n chapters", "", panel.restEstimate.chapters || 0) + " · " + Format.duration(panel.restEstimate.minutes || 0)
+                            + " · " + panel.money(panel.restEstimate.cost || 0) : ""
+                }
+            }
+            Note {
+                visible: !panel.downloadingThisBook && (panel.restEstimate.cost || 0) > 0 && !ai.fitsBudget(panel.restEstimate.cost)
+                text: qsTr("Downloading to the end would pass your monthly budget; it stops there.")
+                color: theme.colors.orange || "#e5a050"
+            }
+
+            // A download under way, or done.
+            ColumnLayout {
+                visible: panel.downloadingThisBook
+                Layout.fillWidth: true
+                spacing: 8
+                ProgressBar {
+                    Layout.fillWidth: true
+                    value: download.fraction
+                    indeterminate: download.running && download.fraction === 0
+                }
+                Note {
+                    text: download.finished ? (download.firstChapter === download.lastChapter
+                                               ? qsTr("This chapter is ready to listen offline.")
+                                               : qsTr("Ready to listen offline, to the end of the book."))
+                        : translator.language === "" ? ""
+                        : qsTr("%1 of %2 ready").arg(Format.duration(download.minutesReady)).arg(Format.duration(download.minutesTotal))
+                          + (download.running && download.secondsLeft > 0
+                             ? " · " + qsTr("about %1 left").arg(Format.duration(download.secondsLeft / 60)) : "")
+                          + (!download.running ? " · " + qsTr("paused") : "")
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: download.problem !== ""
+                    text: download.problem
+                    color: theme.colors.orange || "#e5a050"
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
+                RowLayout {
+                    spacing: 8
+                    Action {
+                        visible: !download.finished
+                        text: download.running ? qsTr("Pause") : qsTr("Go on")
+                        onClicked: download.running ? download.pause() : download.resume()
+                    }
+                    Action {
+                        text: download.finished ? qsTr("Done") : qsTr("Stop")
+                        onClicked: download.cancel()
                     }
                 }
             }
