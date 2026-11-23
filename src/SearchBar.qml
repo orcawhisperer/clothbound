@@ -14,6 +14,8 @@ FocusScope {
     property bool open: false
     // The list is showing (while typing or choosing); folded otherwise.
     property bool expanded: false
+    property bool pendingJump: false
+    property bool pendingBackwards: false
     property var look
 
     signal jumped(var hit)
@@ -24,6 +26,7 @@ FocusScope {
     function show() {
         open = true
         expanded = true
+        pendingJump = false
         input.forceActiveFocus()
         input.selectAll()
     }
@@ -32,6 +35,8 @@ FocusScope {
             return
         open = false
         expanded = false
+        pendingJump = false
+        typing.stop()
         bookSearch.clear()
         closed()
     }
@@ -49,15 +54,42 @@ FocusScope {
     }
     function submit(backwards) {
         typing.stop()
+        const wanted = input.text.trim()
+        if (wanted === "")
+            return
+        // If results for this exact query are already ready, step right to them;
+        // otherwise start the search and wait (never folding before async results arrive).
+        if (wanted === bookSearch.query && !bookSearch.searching && bookSearch.count > 0) {
+            if (backwards)
+                previous()
+            else
+                next()
+            fold()
+            return
+        }
+        pendingBackwards = !!backwards
+        pendingJump = !bookSearch.byMeaning
+        bar.expanded = true
         bookSearch.find(input.text)
-        if (backwards)
-            previous()
-        else
-            next()
-        fold()
     }
     function next() { jump(bookSearch.current + 1) }
     function previous() { jump(bookSearch.current < 0 ? bookSearch.count - 1 : bookSearch.current - 1) }
+
+    Connections {
+        target: bookSearch
+        function onChanged() {
+            if (bar.pendingJump && !bookSearch.searching) {
+                bar.pendingJump = false
+                if (bookSearch.count > 0) {
+                    if (bar.pendingBackwards)
+                        bar.previous()
+                    else
+                        bar.next()
+                    bar.fold()
+                }
+            }
+        }
+    }
 
     function escaped(text) {
         return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -70,7 +102,7 @@ FocusScope {
     Timer {
         id: typing
         interval: 220
-        onTriggered: bookSearch.find(input.text)
+        onTriggered: if (!bookSearch.byMeaning) bookSearch.find(input.text)
     }
 
     Rectangle {
@@ -82,6 +114,13 @@ FocusScope {
         color: bar.look.popover
         border.color: bar.look.border
         clip: true
+
+        // Keep clicks and wheel inside the card from dismissing it via the scrim.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onWheel: (wheel) => wheel.accepted = true
+        }
 
         RowLayout {
             id: header
@@ -99,6 +138,7 @@ FocusScope {
             TextInput {
                 id: input
                 Layout.fillWidth: true
+                Layout.minimumWidth: 140
                 Layout.leftMargin: 6
                 color: bar.look.fg
                 selectionColor: Ui.tint(bar.look.link, 0.4)
@@ -107,7 +147,9 @@ FocusScope {
                 clip: true
                 onTextEdited: {
                     bar.expanded = true
-                    typing.restart()
+                    bar.pendingJump = false
+                    if (!bookSearch.byMeaning)
+                        typing.restart()
                 }
                 onActiveFocusChanged: if (activeFocus) bar.expanded = true
                 Keys.onReturnPressed: (event) => bar.submit(event.modifiers & Qt.ShiftModifier)
@@ -117,10 +159,12 @@ FocusScope {
 
                 Label {
                     anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width
                     visible: !parent.text
                     text: bookSearch.byMeaning ? qsTr("Describe what you're looking for") : qsTr("Search in the book")
                     color: bar.look.muted
                     font.pixelSize: 15
+                    elide: Text.ElideRight
                 }
             }
             // Words, or meaning.
@@ -131,7 +175,15 @@ FocusScope {
                 implicitWidth: meaningLabel.implicitWidth + 18
                 hoverEnabled: true
                 focusPolicy: Qt.NoFocus
-                onClicked: bookSearch.byMeaning = !bookSearch.byMeaning
+                onClicked: {
+                    typing.stop()
+                    bar.pendingJump = false
+                    const turningOn = !bookSearch.byMeaning
+                    bookSearch.byMeaning = turningOn
+                    if (!turningOn && input.text.trim().length >= 2)
+                        bookSearch.find(input.text)
+                    input.forceActiveFocus()
+                }
                 ToolTip.visible: hovered
                 ToolTip.delay: 500
                 ToolTip.text: qsTr("Find passages by what they're about, not their words. %1.").arg(bookSearch.where)
@@ -151,6 +203,8 @@ FocusScope {
                 }
             }
             Label {
+                Layout.maximumWidth: 190
+                elide: Text.ElideRight
                 text: bookSearch.preparing !== "" ? bookSearch.preparing
                     : bookSearch.searching ? qsTr("Searching…")
                     : bookSearch.query.length < 2 ? ""
@@ -165,7 +219,7 @@ FocusScope {
             IconButton {
                 glyph: Icons.chevronLeft
                 rotation: 90
-                tone: bar.look.fg
+                look: bar.look
                 enabled: bookSearch.count > 0
                 tip: qsTr("Previous (⇧N)")
                 onClicked: bar.previous()
@@ -173,7 +227,7 @@ FocusScope {
             IconButton {
                 glyph: Icons.chevronRight
                 rotation: 90
-                tone: bar.look.fg
+                look: bar.look
                 enabled: bookSearch.count > 0
                 tip: qsTr("Next (N)")
                 onClicked: bar.next()
@@ -181,6 +235,7 @@ FocusScope {
             IconButton {
                 Layout.rightMargin: 8
                 glyph: Icons.close
+                look: bar.look
                 tone: bar.look.muted
                 tip: qsTr("Close (Esc)")
                 onClicked: bar.close()
@@ -214,6 +269,7 @@ FocusScope {
             ScrollBar.vertical: ScrollBar {}
             keyNavigationEnabled: true
             Keys.onReturnPressed: { bar.jump(currentIndex); bar.fold() }
+            Keys.onEnterPressed: { bar.jump(currentIndex); bar.fold() }
             Keys.onEscapePressed: bar.close()
             Keys.onUpPressed: currentIndex <= 0 ? input.forceActiveFocus() : decrementCurrentIndex()
 
@@ -231,7 +287,10 @@ FocusScope {
                     topPadding: row.index === 0 ? 4 : 12
                     bottomPadding: 4
                     leftPadding: 12
-                    text: reader.titleOfChapter(row.modelData.chapter) || qsTr("Chapter %1").arg(row.modelData.chapter + 1)
+                    text: reader.titleOfChapter(row.modelData.chapter)
+                          || (reader.format === "pdf"
+                              ? qsTr("p. %1").arg(reader.pdfPageLabel(row.modelData.chapter) || (row.modelData.chapter + 1))
+                              : qsTr("Chapter %1").arg(row.modelData.chapter + 1))
                     color: bar.look.muted
                     font.pixelSize: 11
                     font.weight: Font.DemiBold

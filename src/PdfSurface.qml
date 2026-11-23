@@ -23,7 +23,8 @@ Item {
                                    && (layout === "double" || (layout === "auto" && width > height * 1.3))
     readonly property int step: spread ? 2 : 1
     property real zoom: 1.0
-    property bool cropping: true
+    property bool cropping: style.pdfCrop !== undefined ? !!style.pdfCrop : true
+    readonly property bool originalColors: !!style.pdfOriginalColors
     readonly property rect crop: cropping ? reader.pdfCrop : Qt.rect(0, 0, 1, 1)
     readonly property real topRoom: style.marginTop || 54
     readonly property real bottomRoom: style.marginBottom || 54
@@ -31,12 +32,18 @@ Item {
     // What's drawn over the pages.
     property var foundHits: []
     property var foundCurrent: null
+    property int foundVersion: 0
     property var speaking: ({ chapter: -1, start: 0, end: 0 })
     property var selection: null   // {chapter, start, end, text}
     property int marksVersion: 0
 
-    readonly property string colors: "?bg=" + encodeURIComponent(look ? look.bg : "#ffffff")
-                                     + "&fg=" + encodeURIComponent(look ? look.fg : "#000000")
+    signal contextMenuRequested(real x, real y)
+
+    readonly property string colors: originalColors ? ""
+                                     : ("?bg=" + encodeURIComponent(look ? look.bg : "#ffffff")
+                                        + "&fg=" + encodeURIComponent(look ? look.fg : "#000000"))
+
+    onZoomChanged: if (zoom <= 1.01) pageList.panX = 0
 
     // --- The surface's calls --------------------------------------------------
 
@@ -44,13 +51,20 @@ Item {
         style = newStyle
         history = []
         current = 0
+        zoom = 1.0
+        pageList.panX = 0
+        foundHits = []
+        foundCurrent = null
+        foundVersion++
+        selection = null
+        speaking = { chapter: -1, start: 0, end: 0 }
         goTo(position)
-        return true
+        return Promise.resolve(true)
     }
     function setStyle(newStyle) { style = newStyle; report() }
     function next() {
         if (scrolling) {
-            pageList.contentY = Math.min(pageList.contentHeight - pageList.height, pageList.contentY + pageList.height * 0.9)
+            pageList.contentY = Math.min(Math.max(0, pageList.contentHeight - pageList.height), pageList.contentY + pageList.height * 0.9)
             return
         }
         show(Math.min(count - 1, firstOfSpread(current) + step))
@@ -88,11 +102,12 @@ Item {
     }
     function goTo(target) {
         if (!target)
-            return
+            return Promise.resolve()
         const page = Math.max(0, Math.min(count - 1, target.chapter || 0))
         if (Math.abs(page - current) > step && !target.quiet)
             history = history.concat([current])
         show(page)
+        return Promise.resolve()
     }
     function listeningStart() { return { chapter: current, offset: 0 } }
     function clearSelection() { selection = null }
@@ -107,6 +122,7 @@ Item {
     function found(hits, currentHit) {
         foundHits = hits || []
         foundCurrent = currentHit
+        foundVersion++
     }
     function setMarks() { marksVersion++ }
     function speak(start, end, follow) {
@@ -130,7 +146,7 @@ Item {
         const words = reader.pdfSelect(hit.page, Math.max(0, hit.x - 0.002), hit.y, hit.x + 0.002, hit.y)
         let offset = words.start !== undefined ? words.start : 0
         const text = reader.pdfPageText(hit.page)
-        while (offset > 0 && !/[.!?]\s/.test(text.substr(offset - 2, 2)))
+        while (offset > 0 && !(offset >= 2 && /[.!?\u2026]\s/.test(text.slice(offset - 2, offset))) && text[offset - 1] !== "\n")
             --offset
         return { chapter: hit.page, offset: offset, selected: selection ? selection.text : "" }
     }
@@ -210,7 +226,12 @@ Item {
         function toPageX(x) { return (x + surface.crop.x * fullWidth) / fullWidth }
         function toPageY(y) { return (y + surface.crop.y * fullHeight) / fullHeight }
 
-        Rectangle { anchors.fill: parent; color: surface.look ? surface.look.bg : "white" }
+        Rectangle {
+            anchors.fill: parent
+            color: surface.originalColors ? "white" : (surface.look ? surface.look.bg : "white")
+            border.width: 1
+            border.color: surface.look ? surface.look.border : "transparent"
+        }
         Item {
             id: whole
             x: -surface.crop.x * pageItem.fullWidth
@@ -223,7 +244,8 @@ Item {
                 cache: false
                 retainWhileLoading: true
                 source: pageItem.page >= 0 && reader.pdfSource !== "" ? reader.pdfSource + "/" + pageItem.page + surface.colors : ""
-                sourceSize.width: Math.round(pageItem.fullWidth * Screen.devicePixelRatio)
+                // Bucket width to 64 px steps so slight resizes hit the LRU cache.
+                sourceSize.width: Math.max(64, Math.ceil(pageItem.fullWidth * Screen.devicePixelRatio / 64) * 64)
                 fillMode: Image.Stretch
             }
             // Highlights.
@@ -235,7 +257,7 @@ Item {
                         return out
                     for (const mark of marks.highlightsIn(pageItem.page))
                         for (const rect of reader.pdfRects(pageItem.page, mark.start, mark.end))
-                            out.push({ rect: rect, color: mark.color, id: mark.id })
+                            out.push({ rect: rect, color: mark.color, id: mark.id, noted: !!mark.noted })
                     return out
                 }
                 delegate: Rectangle {
@@ -246,17 +268,32 @@ Item {
                     height: modelData.rect.height * whole.height
                     color: ({ yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" })[modelData.color] || "#f2c94c"
                     opacity: 0.38
+                    Rectangle {
+                        visible: modelData.noted
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        height: 2
+                        color: surface.look ? surface.look.link : "#8a5a12"
+                        opacity: 1.0
+                    }
                 }
             }
-            // Search results.
+            // Search results (handles both chapter-tagged hits and per-page queries).
             Repeater {
                 model: {
+                    surface.foundVersion
                     const out = []
-                    for (const hit of surface.foundHits)
-                        if (hit.chapter === pageItem.page)
-                            for (const rect of reader.pdfRects(pageItem.page, hit.start, hit.end))
-                                out.push({ rect: rect, current: !!surface.foundCurrent && surface.foundCurrent.start === hit.start
-                                                                 && surface.foundCurrent.chapter === hit.chapter })
+                    if (pageItem.page < 0)
+                        return out
+                    let pageHits = bookSearch.count > 0 ? bookSearch.inChapter(pageItem.page) : []
+                    if (!pageHits.length && surface.foundHits.length)
+                        pageHits = surface.foundHits.filter(h => (h.chapter !== undefined ? h.chapter : reader.chapter) === pageItem.page)
+                    const cur = surface.foundCurrent
+                    const curChapter = cur && cur.chapter !== undefined ? cur.chapter : reader.chapter
+                    for (const hit of pageHits)
+                        for (const rect of reader.pdfRects(pageItem.page, hit.start, hit.end))
+                            out.push({ rect: rect, current: !!cur && cur.start === hit.start && curChapter === pageItem.page })
                     return out
                 }
                 delegate: Rectangle {
@@ -301,22 +338,57 @@ Item {
             }
         }
 
-        // Selecting with the mouse; a click on a highlight opens it, a click
-        // in the margins turns the page.
+        // Selecting with the mouse (or dragging to pan while zoomed in; Shift+drag
+        // still selects while zoomed); right-click opens the page menu; a click on
+        // a highlight opens it; a click in the margins turns the page.
         MouseArea {
             id: mouse
             anchors.fill: parent
-            acceptedButtons: Qt.LeftButton
-            cursorShape: Qt.IBeamCursor
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            cursorShape: surface.zoom > 1.01 ? (pressed && panning ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.IBeamCursor
             preventStealing: true
             property point from
             property bool dragged: false
+            property bool panning: false
+            property point panStart
+            property real startContentX: 0
+            property real startContentY: 0
             onPressed: (event) => {
+                if (event.button === Qt.RightButton) {
+                    const at = mouse.mapToItem(surface, event.x, event.y)
+                    surface.contextMenuRequested(at.x, at.y)
+                    event.accepted = true
+                    return
+                }
                 from = Qt.point(pageItem.toPageX(event.x), pageItem.toPageY(event.y))
                 dragged = false
-                surface.selection = null
+                panning = surface.zoom > 1.01 && !(event.modifiers & Qt.ShiftModifier)
+                if (panning) {
+                    panStart = mouse.mapToItem(surface, event.x, event.y)
+                    startContentX = surface.scrolling ? pageList.panX : zoomed.contentX
+                    startContentY = surface.scrolling ? pageList.contentY : zoomed.contentY
+                } else {
+                    surface.selection = null
+                }
             }
             onPositionChanged: (event) => {
+                if (!(event.buttons & Qt.LeftButton))
+                    return
+                if (panning) {
+                    const now = mouse.mapToItem(surface, event.x, event.y)
+                    const dx = now.x - panStart.x, dy = now.y - panStart.y
+                    if (!dragged && Math.abs(dx) + Math.abs(dy) < 4)
+                        return
+                    dragged = true
+                    if (surface.scrolling) {
+                        pageList.panX = Math.max(-pageList.maxPanX, Math.min(pageList.maxPanX, startContentX - dx))
+                        pageList.contentY = Math.max(0, Math.min(Math.max(0, pageList.contentHeight - pageList.height), startContentY - dy))
+                    } else {
+                        zoomed.contentX = Math.max(0, Math.min(Math.max(0, zoomed.contentWidth - zoomed.width), startContentX - dx))
+                        zoomed.contentY = Math.max(0, Math.min(Math.max(0, zoomed.contentHeight - zoomed.height), startContentY - dy))
+                    }
+                    return
+                }
                 const to = Qt.point(pageItem.toPageX(event.x), pageItem.toPageY(event.y))
                 if (Math.abs(to.x - from.x) + Math.abs(to.y - from.y) < 0.004)
                     return
@@ -325,6 +397,13 @@ Item {
                 surface.selection = chosen.text ? chosen : null
             }
             onReleased: (event) => {
+                if (event.button === Qt.RightButton)
+                    return
+                if (panning && dragged) {
+                    panning = false
+                    return
+                }
+                panning = false
                 if (dragged && surface.selection) {
                     const rects = reader.pdfRects(pageItem.page, surface.selection.start, surface.selection.end)
                     let top = 1, left = 1, right = 0, bottom = 0
@@ -365,8 +444,8 @@ Item {
         anchors.fill: parent
         visible: !surface.scrolling
         // The space for pages, under the title and above the listen bar.
-        readonly property real roomHeight: height - surface.topRoom - surface.bottomRoom + 20
-        readonly property real roomWidth: width - 48
+        readonly property real roomHeight: Math.max(120, height - surface.topRoom - surface.bottomRoom + 20)
+        readonly property real roomWidth: Math.max(120, width - 48)
         Flickable {
             id: zoomed
             anchors.fill: parent
@@ -377,7 +456,7 @@ Item {
             clip: true
             Row {
                 id: spreadPages
-                spacing: surface.spread ? 2 : 0
+                spacing: surface.spread ? 12 : 0
                 x: Math.max(24, (zoomed.width - width) / 2)
                 y: Math.max(surface.topRoom - 10, (zoomed.height - height) / 2)
                 readonly property var pages: surface.visiblePages()
@@ -385,7 +464,8 @@ Item {
                     const first = surface.firstOfSpread(surface.current)
                     const size = reader.pdfPageSize(first)
                     const aspect = ((size.height || 792) * surface.crop.height) / ((size.width || 612) * surface.crop.width)
-                    const each = Math.min(spreadRow.roomWidth / pages.length - spacing, spreadRow.roomHeight / aspect)
+                    const gapTotal = pages.length > 1 ? spacing * (pages.length - 1) : 0
+                    const each = Math.min((spreadRow.roomWidth - gapTotal) / pages.length, spreadRow.roomHeight / aspect)
                     return Math.max(100, each) * surface.zoom
                 }
                 Repeater {
@@ -403,15 +483,36 @@ Item {
                 onWheel: (event) => surface.zoom = Math.max(1, Math.min(4, surface.zoom * (event.angleDelta.y > 0 ? 1.1 : 0.9)))
             }
         }
-        // The wheel turns pages, as on the EPUB page (unless zoomed in).
+        // The wheel turns pages, as on the EPUB page (unless zoomed in), with
+        // an inertia cooldown so touchpad flicks advance one spread at a time.
+        Timer {
+            id: spreadWheelReset
+            interval: 200
+            onTriggered: spreadWheel.gathered = 0
+        }
         WheelHandler {
+            id: spreadWheel
             enabled: surface.zoom <= 1.01
             acceptedModifiers: Qt.NoModifier
             property real gathered: 0
+            property double quietUntil: 0
             onWheel: (event) => {
-                gathered += event.angleDelta.y + event.angleDelta.x
-                if (gathered <= -120) { gathered = 0; surface.next() }
-                else if (gathered >= 120) { gathered = 0; surface.prev() }
+                const now = Date.now()
+                if (now < quietUntil)
+                    return
+                const delta = Math.abs(event.angleDelta.x) > Math.abs(event.angleDelta.y)
+                              ? -event.angleDelta.x : event.angleDelta.y
+                gathered += delta
+                spreadWheelReset.restart()
+                if (gathered <= -120) {
+                    gathered = 0
+                    quietUntil = now + 280
+                    surface.next()
+                } else if (gathered >= 120) {
+                    gathered = 0
+                    quietUntil = now + 280
+                    surface.prev()
+                }
             }
         }
     }
@@ -429,6 +530,36 @@ Item {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar {}
+        property real panX: 0
+        readonly property real baseWidth: Math.min(Math.max(120, width - 48), 920)
+        readonly property real maxPanX: Math.max(0, (baseWidth * surface.zoom - Math.max(120, width - 48)) / 2)
+        onMaxPanXChanged: panX = Math.max(-maxPanX, Math.min(maxPanX, panX))
+        WheelHandler {
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            acceptedModifiers: Qt.ControlModifier
+            onWheel: (event) => surface.zoom = Math.max(1, Math.min(4, surface.zoom * (event.angleDelta.y > 0 ? 1.1 : 0.9)))
+        }
+        WheelHandler {
+            enabled: surface.zoom > 1.01
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            acceptedModifiers: Qt.ShiftModifier
+            onWheel: (event) => {
+                const delta = event.angleDelta.x !== 0 ? event.angleDelta.x : event.angleDelta.y
+                pageList.panX = Math.max(-pageList.maxPanX, Math.min(pageList.maxPanX, pageList.panX - delta * 0.5))
+            }
+        }
+        WheelHandler {
+            enabled: surface.zoom > 1.01
+            acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
+            acceptedModifiers: Qt.NoModifier
+            onWheel: (event) => {
+                if (Math.abs(event.angleDelta.x) > Math.abs(event.angleDelta.y)) {
+                    pageList.panX = Math.max(-pageList.maxPanX, Math.min(pageList.maxPanX, pageList.panX - event.angleDelta.x * 0.5))
+                } else {
+                    event.accepted = false
+                }
+            }
+        }
         delegate: Item {
             required property int index
             readonly property int page: index
@@ -439,8 +570,8 @@ Item {
             Page {
                 id: inner
                 page: index
-                x: (parent.width - width) / 2
-                fullWidth: Math.min(pageList.width - 48, 920) * surface.zoom / surface.crop.width
+                x: (parent.width - width) / 2 - pageList.panX
+                fullWidth: pageList.baseWidth * surface.zoom / surface.crop.width
             }
         }
         onContentYChanged: reportTimer.restart()

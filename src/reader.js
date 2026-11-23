@@ -39,6 +39,8 @@ const dogear = (() => {
     const overlay = () => document.getElementById('overlay')
     const chapterDocument = () => frame().contentDocument
     const clamp = (value, low, high) => Math.max(low, Math.min(high, value))
+    const sessionId = () => (state.book && state.book.session) || 0
+    const escapeAttr = text => String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 
     function log(message) {
         if (state.bridge)
@@ -60,22 +62,26 @@ const dogear = (() => {
     // comfortable measure and centers the frame.
     function computeGeometry() {
         const s = state.style
-        const W = stage().clientWidth, H = stage().clientHeight
+        const W = Math.max(160, stage().clientWidth), H = Math.max(160, stage().clientHeight)
         const em = 16 * s.fontScale
         const measure = s.measure * em
-        const side = Math.max(20, Math.round(W * s.margin))
+        const side = Math.max(20, Math.min(Math.round(W * s.margin), Math.floor((W - 120) / 2)))
         if (s.layout === 'scroll') {
-            const column = Math.floor(Math.min(measure, W - 2 * side))
+            const column = Math.max(120, Math.floor(Math.min(measure, W - 2 * side)))
             const width = column + 2 * side
             return { scroll: true, width, height: H, top: 0, left: Math.round((W - width) / 2), columns: 1,
                      gap: 2 * side, column, step: Math.max(100, H - s.marginTop - s.marginBottom - 2 * em) }
         }
         const height = Math.max(160, H - s.marginTop - s.marginBottom)
         const twoFit = (W - 4 * side) / 2 >= 22 * em
-        const columns = s.layout === 'double' || (s.layout === 'auto' && twoFit && W > H * 1.15) ? 2 : 1
-        const gap = columns === 2 ? clamp(2 * side, 56, 160) : 2 * side
-        const column = Math.floor(Math.min(measure, columns === 2 ? (W - 2 * gap) / 2 : W - gap))
-        const width = columns * (column + gap)
+        // Fall back to one column when tiled too narrow for two readable columns.
+        const wantDouble = s.layout === 'double' || (s.layout === 'auto' && twoFit && W > H * 1.15)
+        const columns = wantDouble && W >= 360 ? 2 : 1
+        let gap = columns === 2 ? clamp(2 * side, 56, 160) : 2 * side
+        if (columns === 2 && W - 2 * gap < 240)
+            gap = Math.max(24, Math.floor((W - 240) / 2) & ~1)
+        const column = Math.max(120, Math.floor(Math.min(measure, columns === 2 ? (W - 2 * gap) / 2 : W - gap)))
+        const width = Math.max(120, columns * (column + gap))
         return { scroll: false, width, height, top: s.marginTop, left: Math.round((W - width) / 2),
                  columns, gap, column, step: width }
     }
@@ -175,8 +181,10 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
 
     // Running text is marked so the reader's alignment applies to it and
     // not to centered headings, verse, or right-aligned signatures.
+    // Batch style reads before attribute writes to avoid O(N²) reflows.
     function markFlow(doc) {
         const view = doc.defaultView
+        const flow = []
         for (const element of doc.querySelectorAll('p, li, dd, blockquote, div')) {
             let hasText = false
             for (const child of element.childNodes)
@@ -188,8 +196,10 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 continue
             const align = view.getComputedStyle(element).textAlign
             if (align === 'start' || align === 'left' || align === 'justify' || align === '-webkit-auto')
-                element.setAttribute('data-dg-flow', '')
+                flow.push(element)
         }
+        for (const element of flow)
+            element.setAttribute('data-dg-flow', '')
     }
 
     function hyphenate(doc) {
@@ -223,6 +233,13 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         doc.addEventListener('click', onChapterClick, true)
         doc.addEventListener('wheel', onWheel, { passive: false })
         doc.addEventListener('keydown', onKey, true)
+        doc.addEventListener('copy', event => {
+            const selection = doc.getSelection()
+            if (!selection || selection.isCollapsed || !event.clipboardData)
+                return
+            event.clipboardData.setData('text/plain', selection.toString().split(SHY).join(''))
+            event.preventDefault()
+        })
         doc.addEventListener('dragstart', event => event.preventDefault())
         doc.addEventListener('selectionchange', onSelection)
         doc.addEventListener('mousemove', onHover, { passive: true })
@@ -246,8 +263,12 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 event.preventDefault()
                 if (fromHereBlock && state.bridge) {
                     const start = blockStart(fromHereBlock)
-                    if (start !== null)
-                        state.bridge.listenFrom(state.chapter, start)
+                    if (start !== null) {
+                        if (state.bridge.listenFromSession)
+                            state.bridge.listenFromSession(sessionId(), state.chapter, start)
+                        else
+                            state.bridge.listenFrom(state.chapter, start)
+                    }
                 }
                 hideFromHere(0)
             })
@@ -327,7 +348,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         // From the start of the sentence the click was in.
         const text = state.index.text
         let start = offset
-        while (start > 0 && !/[.!?\u2026]\s/.test(text.substr(start - 2, 2)) && text[start - 1] !== '\n')
+        while (start > 0 && !(start >= 2 && /[.!?\u2026]\s/.test(text.slice(start - 2, start))) && text[start - 1] !== '\n')
             --start
         while (start < text.length && /\s/.test(text[start]))
             ++start
@@ -379,16 +400,44 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     }
 
     function offsetOf(node, index) {
-        const entry = state.index && state.index.byNode.get(node)
-        if (!entry)
+        if (!state.index || !node)
             return null
-        if (!entry.shy)
-            return entry.start + Math.min(index, entry.length)
-        let model = 0
-        for (let i = 0; i < index && i < node.data.length; ++i)
-            if (node.data[i] !== SHY)
-                ++model
-        return entry.start + model
+        const entry = state.index.byNode.get(node)
+        if (entry) {
+            if (!entry.shy)
+                return entry.start + Math.min(index, entry.length)
+            let model = 0
+            for (let i = 0; i < index && i < node.data.length; ++i)
+                if (node.data[i] !== SHY)
+                    ++model
+            return entry.start + model
+        }
+        // Selections (e.g. triple-click, cross-paragraph drags) often land on
+        // an Element boundary instead of a Text node: map that DOM boundary to
+        // the exact text-model offset via binary search over indexed nodes.
+        const nodes = state.index.nodes
+        if (!nodes.length)
+            return 0
+        const doc = chapterDocument()
+        if (!doc || !doc.contains(node))
+            return null
+        const boundary = doc.createRange()
+        try {
+            const childCount = node.childNodes ? node.childNodes.length : 0
+            boundary.setStart(node, clamp(index || 0, 0, childCount))
+            boundary.collapse(true)
+        } catch (e) {
+            return null
+        }
+        let low = 0, high = nodes.length
+        while (low < high) {
+            const mid = (low + high) >> 1
+            if (boundary.comparePoint(nodes[mid].node, 0) < 0)
+                low = mid + 1
+            else
+                high = mid
+        }
+        return low < nodes.length ? nodes[low].start : state.index.length
     }
 
     // The text node and index for an offset, preferring a node that has the
@@ -534,15 +583,27 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             let lowChar = 0, highChar = data.length - 1, first = -1
             while (lowChar <= highChar) {
                 const middle = (lowChar + highChar) >> 1
-                range.setStart(entry.node, middle)
-                range.setEnd(entry.node, middle + 1)
-                const rects = range.getClientRects()
-                const rect = rects.length ? rects[rects.length - 1] : null
+                // Unbroken soft hyphens and collapsed whitespace have no boxes;
+                // probe forward to the next visible character before deciding.
+                let probe = middle, rect = null
+                while (probe <= highChar) {
+                    const code = data.charCodeAt(probe)
+                    const step = code >= 0xD800 && code <= 0xDBFF && probe + 1 < data.length ? 2 : 1
+                    range.setStart(entry.node, probe)
+                    range.setEnd(entry.node, probe + step)
+                    const rects = range.getClientRects()
+                    const candidate = rects.length ? rects[rects.length - 1] : null
+                    if (candidate && (candidate.width > 0 || candidate.height > 0)) {
+                        rect = candidate
+                        break
+                    }
+                    probe += step
+                }
                 if (rect && past(rect)) {
-                    first = middle
+                    first = probe
                     highChar = middle - 1
                 } else {
-                    lowChar = middle + 1
+                    lowChar = probe + 1
                 }
             }
             if (first >= 0) {
@@ -634,6 +695,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
 
     function turnTo(page, animate) {
         cancelAnimation()
+        closeNote()
         const g = state.geometry
         state.page = clamp(page, 0, state.pages - 1)
         const el = scroller()
@@ -695,11 +757,12 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             chapter: state.chapter,
             offset,
             end: nextPageOffset(),
-            snippet: state.index.text.substr(offset, 48),
+            snippet: state.index.text.slice(offset, offset + 48),
             page: state.page,
             pages: state.pages,
             pageLabel: labelForPage(state.page),
             atEnd: state.page >= state.pages - 1 && linearAfter(state.chapter) < 0,
+            session: sessionId(),
         }
         if (state.bridge)
             state.bridge.relocated(state.location)
@@ -803,8 +866,13 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         if (chapter === state.chapter)
             return chapterDocument()
         const response = await fetch(url.origin + url.pathname)
+        const text = await response.text()
         const type = (response.headers.get('content-type') || 'application/xhtml+xml').split(';')[0]
-        return new DOMParser().parseFromString(await response.text(), type === 'text/html' ? 'text/html' : 'application/xhtml+xml')
+        const parser = new DOMParser()
+        const parsed = parser.parseFromString(text, type === 'text/html' ? 'text/html' : 'application/xhtml+xml')
+        if (type !== 'text/html' && parsed.querySelector('parsererror'))
+            return parser.parseFromString(text, 'text/html')
+        return parsed
     }
 
     // The note's own text: its block, without the link back to the text.
@@ -818,9 +886,11 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         const clone = element.cloneNode(true)
         for (const link of [...clone.querySelectorAll('a')]) {
             const href = hrefOf(link)
-            const backward = /^[\s↩↑⮐⤴]+$|^(back|return)$/i.test(link.textContent.trim()) ||
-                             (href && sourcePath && decodeURIComponent(href.split('#')[0]).endsWith(sourcePath))
-            if (backward && /^[\s↩↑⮐⤴]+$|^(back|return)$/i.test(link.textContent.trim())) {
+            const text = link.textContent.trim()
+            const isBackArrow = /^[\s↩↑⮐⤴]+$|^(back|return)$/i.test(text)
+            const pointsBack = !!(href && sourcePath && decodeURIComponent(href.split('#')[0]).endsWith(sourcePath))
+            const isMarker = text.length <= 6 && /^[\s↩↑⮐⤴\[\]()0-9*†‡§¶.]+$/.test(text)
+            if (isBackArrow || (pointsBack && isMarker)) {
                 link.remove()
             } else {
                 const span = link.ownerDocument.createElementNS('http://www.w3.org/1999/xhtml', 'span')
@@ -876,7 +946,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         const view = document.createElement('iframe')
         view.setAttribute('sandbox', 'allow-same-origin')
         view.style.colorScheme = t.dark ? 'dark' : 'light'
-        view.srcdoc = `<!doctype html><html><head><base href="${url.origin + url.pathname}"><style>${noteCss()}</style></head><body>${html}</body></html>`
+        view.srcdoc = `<!doctype html><html><head><base href="${escapeAttr(url.origin + url.pathname)}"><style>${noteCss()}</style></head><body>${html}</body></html>`
         const actions = document.createElement('div')
         actions.className = 'actions'
         const go = document.createElement('button')
@@ -901,12 +971,15 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         note.style.width = width + 'px'
         const x = clamp(frameRect.left + rect.left - 40, 16, window.innerWidth - width - 16)
         note.style.left = x + 'px'
-        view.addEventListener('load', () => {
+        view.addEventListener('load', async () => {
             const content = view.contentDocument
+            if (!content || state.note !== note)
+                return
+            try { await content.fonts.ready } catch (e) { }
+            if (state.note !== note)
+                return
             const height = Math.min(window.innerHeight * 0.45, content.documentElement.scrollHeight + 2)
             view.style.height = height + 'px'
-            if (content.documentElement.scrollHeight > height)
-                view.style.overflowY = 'auto'
             const below = frameRect.top + rect.bottom + 10
             const total = note.offsetHeight
             const y = below + total < window.innerHeight - 12 ? below : Math.max(12, frameRect.top + rect.top - total - 10)
@@ -961,11 +1034,17 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         if (mark) {
             event.preventDefault()
             const range = rangeFor(mark.start, mark.end)
-            const rect = range ? range.getBoundingClientRect() : { left: event.clientX, top: event.clientY, width: 0, height: 0 }
+            let rect = { left: event.clientX, top: event.clientY, width: 0, height: 0 }
+            if (range) {
+                const rects = [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0)
+                rect = rects.find(r => event.clientX >= r.left - 4 && event.clientX <= r.right + 4
+                                    && event.clientY >= r.top - 4 && event.clientY <= r.bottom + 4)
+                    || rects[0] || range.getBoundingClientRect()
+            }
             const frameRect = frame().getBoundingClientRect()
             if (state.bridge)
                 state.bridge.markClicked(mark.id, { x: frameRect.left + rect.left, y: frameRect.top + rect.top,
-                                                    width: rect.width, height: rect.height })
+                                                    width: rect.width, height: rect.height, session: sessionId() })
             return
         }
         const fraction = event.clientX / state.geometry.width
@@ -1022,11 +1101,19 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     // A sideways swipe on a touchpad moves the page with the fingers; when
     // they lift it settles on the next page, or back if it went only a little.
     function settleSwipe() {
+        if (!swipe)
+            return
         const moved = scroller().scrollLeft - swipe.from
+        const rawDelta = swipe.delta
         const page = swipe.page
         swipe = null
+        // At page 0 or the final page, scrollLeft clamps to the edge; fall
+        // back to accumulated deltaX so swiping still crosses chapter bounds.
+        const effective = Math.abs(moved) > 1 ? moved : rawDelta
         const threshold = state.geometry.step * 0.12
-        const forward = moved > threshold, backward = moved < -threshold
+        const forward = effective > threshold, backward = effective < -threshold
+        if (forward || backward)
+            wheelQuietUntil = performance.now() + 320
         if (forward && page + 1 >= state.pages) {
             turnTo(page, true).then(() => { if (state.bridge) state.bridge.tapped('turn'); api.next() })
             return
@@ -1046,11 +1133,14 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             return
         if (!state.geometry.scroll && event.deltaMode === 0 && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
             event.preventDefault()
+            if (!swipe && performance.now() < wheelQuietUntil)
+                return
             const el = scroller()
             if (!swipe) {
                 cancelAnimation()
-                swipe = { from: el.scrollLeft, page: state.page }
+                swipe = { from: el.scrollLeft, page: state.page, delta: 0 }
             }
+            swipe.delta += event.deltaX
             // Never more than a page either way.
             const step = state.geometry.step
             const next = clamp(el.scrollLeft + event.deltaX, swipe.from - step, swipe.from + step)
@@ -1111,13 +1201,22 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 return
             const selection = chapterDocument().getSelection()
             if (!selection || selection.isCollapsed || !selection.rangeCount) {
-                state.bridge.selectionChanged({})
+                state.bridge.selectionChanged({ session: sessionId() })
                 return
             }
             const range = selection.getRangeAt(0)
             const start = offsetOf(range.startContainer, range.startOffset)
             const end = offsetOf(range.endContainer, range.endOffset)
-            const rect = range.getBoundingClientRect()
+            if (start === null || end === null || end <= start) {
+                state.bridge.selectionChanged({ session: sessionId() })
+                return
+            }
+            let rect = range.getBoundingClientRect()
+            if (state.geometry && rect.width > state.geometry.column * 1.1) {
+                const rects = [...range.getClientRects()].filter(r => r.width > 0 && r.height > 0 && r.right > 0 && r.left < state.geometry.width)
+                if (rects.length)
+                    rect = rects[0]
+            }
             const frameRect = frame().getBoundingClientRect()
             state.bridge.selectionChanged({
                 chapter: state.chapter,
@@ -1125,6 +1224,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
                 text: selection.toString().split(SHY).join(''),
                 x: frameRect.left + rect.left, y: frameRect.top + rect.top,
                 width: rect.width, height: rect.height,
+                session: sessionId(),
             })
         }, 220)
     }
@@ -1138,6 +1238,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     async function relayout() {
         if (!state.index || !state.location)
             return
+        closeNote()
         const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
         applyLayout()
         measure()
@@ -1198,22 +1299,50 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     const api = {
         open(book, position, style) {
             return run(async () => {
+                cancelAnimation()
+                closeNote()
+                hideFromHere(0)
                 state.book = book
                 state.style = style
                 state.history = []
                 state.chapter = -1
                 state.index = null
+                state.location = null
+                state.decorated = -1
+                state.decorations = {}
+                state.marks = []
                 applyPageColors()
                 await show({ chapter: position.chapter || 0, offset: position.offset || 0, snippet: position.snippet || '' }, false)
             })
         },
 
-        setStyle(style) {
-            const reload = !state.style || style.hyphenate !== state.style.hyphenate || style.justify !== state.style.justify ||
-                           style.font !== state.style.font || style.publisher !== state.style.publisher
-            state.style = style
-            applyPageColors()
+        close() {
             return run(async () => {
+                cancelAnimation()
+                closeNote()
+                hideFromHere(0)
+                clearTimeout(selectionTimer)
+                state.book = null
+                state.chapter = -1
+                state.index = null
+                state.location = null
+                state.decorated = -1
+                state.decorations = {}
+                state.marks = []
+                state.history = []
+                const f = frame()
+                f.classList.remove('shown')
+                f.onload = null
+                f.src = 'about:blank'
+            })
+        },
+
+        setStyle(style) {
+            return run(async () => {
+                const reload = !state.style || style.hyphenate !== state.style.hyphenate || style.justify !== state.style.justify ||
+                               style.font !== state.style.font || style.publisher !== state.style.publisher
+                state.style = style
+                applyPageColors()
                 if (!state.index || !state.location)
                     return
                 const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
@@ -1371,12 +1500,21 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         // The blocks to read aloud from a chapter, reported to the bridge
         // when they're ready (the window can't wait on a promise).
         requestSpeakable(chapter) {
+            const sid = sessionId()
             const wanted = chapter === undefined || chapter === null || chapter < 0 ? state.chapter : chapter
+            const deliver = blocks => {
+                if (sid !== sessionId() || !state.bridge)
+                    return
+                if (state.bridge.speakableReadyFor)
+                    state.bridge.speakableReadyFor(sid, wanted, blocks)
+                else
+                    state.bridge.speakableReady(wanted, blocks)
+            }
             blocksOfChapter(wanted)
-                .then(blocks => state.bridge.speakableReady(wanted, JSON.stringify(blocks)))
+                .then(blocks => deliver(JSON.stringify(blocks)))
                 .catch(error => {
                     log(error && error.stack || error)
-                    state.bridge.speakableReady(wanted, '[]')
+                    deliver('[]')
                 })
         },
 

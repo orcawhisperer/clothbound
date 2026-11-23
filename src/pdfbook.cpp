@@ -1,11 +1,13 @@
 #include "pdfbook.h"
 
+#include <QJsonObject>
 #include <QPainter>
 #include <QPdfBookmarkModel>
 #include <QPdfDocument>
 #include <QPdfSelection>
-#include <QJsonObject>
 #include <QRegularExpression>
+#include <algorithm>
+#include <cmath>
 
 PdfBook::PdfBook(const QString &path) : m_path(path), m_document(std::make_unique<QPdfDocument>()) {}
 
@@ -99,11 +101,23 @@ QList<PdfOutlineEntry> PdfBook::outline() const {
 }
 
 QImage PdfBook::renderPage(int page, const QSize &size) const {
-    if (page < 0 || page >= pageCount() || size.isEmpty())
+    if (page < 0 || page >= pageCount() || size.width() <= 0 || size.height() <= 0)
         return {};
+    constexpr int maxDim = 6000;
+    constexpr qint64 maxPixels = 24LL * 1000 * 1000;
+    int width = qBound(1, size.width(), maxDim);
+    int height = qBound(1, size.height(), maxDim);
+    if (qint64(width) * qint64(height) > maxPixels) {
+        const double scale = std::sqrt(double(maxPixels) / (double(width) * double(height)));
+        width = qMax(1, int(std::floor(width * scale)));
+        height = qMax(1, int(std::floor(height * scale)));
+    }
+    const QSize bounded(width, height);
     // PDFium leaves unpainted areas transparent; books are printed on white.
-    const QImage rendered = m_document->render(page, size);
-    QImage image(size, QImage::Format_RGB32);
+    const QImage rendered = m_document->render(page, bounded);
+    if (rendered.isNull())
+        return {};
+    QImage image(bounded, QImage::Format_RGB32);
     image.fill(Qt::white);
     QPainter painter(&image);
     painter.drawImage(0, 0, rendered);
@@ -111,13 +125,15 @@ QImage PdfBook::renderPage(int page, const QSize &size) const {
 }
 
 QImage PdfBook::renderCover(int height) const {
-    if (pageCount() < 1)
+    if (pageCount() < 1 || height <= 0)
         return {};
     const QSizeF points = m_document->pagePointSize(0);
-    if (points.isEmpty())
+    if (points.width() <= 0 || points.height() <= 0 || !std::isfinite(points.width()) || !std::isfinite(points.height()))
         return {};
-    const int width = qMax(1, qRound(height * points.width() / points.height()));
-    return renderPage(0, QSize(width, height));
+    const int clampedHeight = qBound(1, height, 2048);
+    const double ratio = std::clamp(points.width() / points.height(), 0.2, 5.0);
+    const int width = qBound(1, qRound(clampedHeight * ratio), 2048);
+    return renderPage(0, QSize(width, clampedHeight));
 }
 
 QString PdfBook::pageText(int page) const {
@@ -166,22 +182,30 @@ QJsonArray PdfBook::speakable(const QString &pageText, const QString &bookTitle)
         QString text;
     };
     QList<Line> lines;
-    qint64 at = 0;
-    const QStringList raw = QString(pageText).replace(QLatin1String("\r\n"), QLatin1String("\n")).split(QLatin1Char('\n'));
-    // "\r\n" counts two characters in the page's text: keep offsets true.
-    const bool crlf = pageText.contains(QLatin1String("\r\n"));
-    for (const QString &line : raw) {
-        lines.append({at, line});
-        at += line.size() + (crlf ? 2 : 1);
+    qsizetype pos = 0;
+    const qsizetype len = pageText.size();
+    while (pos <= len) {
+        qsizetype end = pos;
+        while (end < len && pageText[end] != QLatin1Char('\n') && pageText[end] != QLatin1Char('\r'))
+            ++end;
+        lines.append({pos, pageText.mid(pos, end - pos)});
+        if (end >= len)
+            break;
+        pos = end + (pageText[end] == QLatin1Char('\r') && end + 1 < len && pageText[end + 1] == QLatin1Char('\n') ? 2 : 1);
     }
     const auto isFurniture = [&bookTitle](const QString &line) {
         const QString t = line.trimmed();
         static const QRegularExpression number(QStringLiteral("^[\\[(]?[0-9ivxlcdmIVXLCDM]{1,6}[\\])]?$"));
         if (number.match(t).hasMatch())
             return true;
-        // A running head: short, and the book's title or all capitals.
+        // A running head: short, and the book's title or all capitals —
+        // never a chapter or section heading like "CHAPTER ONE" or "PROLOGUE".
         if (t.size() < 60 && !bookTitle.isEmpty() && t.compare(bookTitle, Qt::CaseInsensitive) == 0)
             return true;
+        static const QRegularExpression heading(
+            QStringLiteral("^(?:CHAPTER|PART|BOOK|SECTION|PROLOGUE|EPILOGUE|INTRODUCTION|PREFACE|FOREWORD|AFTERWORD|APPENDIX|ACT|SCENE|CANTO)\\b"));
+        if (heading.match(t).hasMatch())
+            return false;
         return t.size() < 50 && t.size() > 3 && t == t.toUpper() && t.contains(QRegularExpression(QStringLiteral("[A-Z]{3}")));
     };
     // Drop a page number or running head at the top and bottom.

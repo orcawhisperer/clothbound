@@ -90,16 +90,17 @@ Item {
             yAxis.enabled: false
             onActiveChanged: {
                 if (active) {
+                    scrubber.dragValue = Math.max(0, Math.min(1, centroid.position.x / Math.max(1, track.width)))
                     scrubber.dragging = true
                 } else {
                     scrubber.dragging = false
                     scrubber.go(reader.targetForFraction(scrubber.dragValue))
                 }
             }
-            onCentroidChanged: if (active) scrubber.dragValue = Math.max(0, Math.min(1, centroid.position.x / track.width))
+            onCentroidChanged: if (active) scrubber.dragValue = Math.max(0, Math.min(1, centroid.position.x / Math.max(1, track.width)))
         }
         TapHandler {
-            onTapped: (point) => scrubber.go(reader.targetForFraction(Math.max(0, Math.min(1, point.position.x / track.width))))
+            onTapped: (point) => scrubber.go(reader.targetForFraction(Math.max(0, Math.min(1, point.position.x / Math.max(1, track.width)))))
         }
     }
 }

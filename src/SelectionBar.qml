@@ -26,17 +26,31 @@ Rectangle {
     readonly property var colors: ["yellow", "green", "blue", "pink"]
     readonly property var swatches: ({ yellow: "#f2c94c", green: "#6fcf97", blue: "#56ccf2", pink: "#f78fb3" })
 
+    property var anchorRect: null
+    property var anchorArea: null
+
     // Above the words, or below them when there's no room.
     function place(rect, area) {
-        x = Math.max(8, Math.min(area.width - width - 8, rect.x + rect.width / 2 - width / 2))
+        anchorRect = rect
+        anchorArea = area
+        const w = row.implicitWidth + 16
+        x = Math.max(8, Math.min(area.width - w - 8, rect.x + rect.width / 2 - w / 2))
         y = rect.y - height - 10 >= 8 ? rect.y - height - 10 : Math.min(area.height - height - 8, rect.y + rect.height + 10)
     }
+    onWidthChanged: if (visible && anchorRect && anchorArea) place(anchorRect, anchorArea)
 
     width: row.implicitWidth + 16
     height: 44
     radius: Math.min(10, theme.radius)
     color: look.popover
     border.color: look.border
+
+    // Keep clicks on padding or dividers from turning the page underneath.
+    MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        onWheel: (wheel) => wheel.accepted = true
+    }
 
     Rectangle {
         z: -1
@@ -94,7 +108,7 @@ Rectangle {
         IconButton {
             anchors.verticalCenter: parent.verticalCenter
             glyph: Icons.note
-            tone: bar.look.fg
+            look: bar.look
             active: bar.forMark && (bar.target.note || "") !== ""
             tip: bar.forMark && (bar.target.note || "") !== "" ? qsTr("Edit the note") : qsTr("Add a note")
             onClicked: bar.note()
@@ -102,7 +116,7 @@ Rectangle {
         IconButton {
             anchors.verticalCenter: parent.verticalCenter
             glyph: Icons.copy
-            tone: bar.look.fg
+            look: bar.look
             tip: qsTr("Copy")
             onClicked: bar.copy()
         }
@@ -116,21 +130,21 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             visible: (bar.target.text || bar.target.quote || "").trim().split(/\s+/).length <= 3
             glyph: Icons.dictionary
-            tone: bar.look.fg
+            look: bar.look
             tip: qsTr("Define")
             onClicked: bar.companion("define")
         }
         IconButton {
             anchors.verticalCenter: parent.verticalCenter
             glyph: Icons.sparkle
-            tone: bar.look.fg
+            look: bar.look
             tip: qsTr("Explain")
             onClicked: bar.companion("explain")
         }
         IconButton {
             anchors.verticalCenter: parent.verticalCenter
             glyph: Icons.translate
-            tone: bar.look.fg
+            look: bar.look
             tip: qsTr("Translate")
             onClicked: bar.companion("translate")
         }
@@ -138,7 +152,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             visible: !bar.forMark
             glyph: Icons.headphones
-            tone: bar.look.fg
+            look: bar.look
             tip: qsTr("Listen from here")
             onClicked: bar.listen()
         }
@@ -146,7 +160,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             visible: bar.forMark
             glyph: Icons.trash
-            tone: bar.look.fg
+            look: bar.look
             tip: qsTr("Remove the highlight")
             onClicked: bar.remove()
         }
