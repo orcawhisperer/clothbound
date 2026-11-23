@@ -16,6 +16,7 @@
 #include <QPdfSelection>
 #include <QProcess>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSettings>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -42,13 +43,54 @@ QStringList parseSdcvJson(const QByteArray &json, const QString &word) {
     QStringList out;
     for (const QJsonValue &entry : QJsonDocument::fromJson(json).array()) {
         const QJsonObject object = entry.toObject();
-        if (object.value(QStringLiteral("word")).toString().compare(word, Qt::CaseInsensitive) == 0 || out.isEmpty())
-            out.append(object.value(QStringLiteral("definition")).toString().trimmed() + QStringLiteral("\n— ") +
-                       object.value(QStringLiteral("dict")).toString());
+        const QString def = object.value(QStringLiteral("definition")).toString().trimmed();
+        if (def.isEmpty())
+            continue;
+        if (object.value(QStringLiteral("word")).toString().compare(word, Qt::CaseInsensitive) == 0 || out.isEmpty()) {
+            const QString dict = object.value(QStringLiteral("dict")).toString().trimmed();
+            out.append(dict.isEmpty() ? def : def + QStringLiteral("\n— ") + dict);
+        }
         if (out.size() >= 2)
             break;
     }
     return out;
+}
+
+QString cleanDictLookupWord(const QString &raw) {
+    QString out = raw.trimmed();
+    out.replace(QChar(0x2019), QLatin1Char('\''));
+    out.replace(QChar(0x2018), QLatin1Char('\''));
+    static const QRegularExpression lead(QStringLiteral("^[^\\p{L}\\p{N}]+"));
+    static const QRegularExpression trail(QStringLiteral("[^\\p{L}\\p{N}]+$"));
+    out.remove(lead);
+    out.remove(trail);
+    return out;
+}
+
+QJsonObject extractJsonObject(const QString &raw) {
+    const QString trimmed = raw.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(trimmed.toUtf8(), &err);
+    if (err.error == QJsonParseError::NoError && doc.isObject())
+        return doc.object();
+    static const QRegularExpression fence(QStringLiteral("```(?:json)?\\s*([\\s\\S]*?)\\s*```"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    const auto match = fence.match(trimmed);
+    if (match.hasMatch()) {
+        doc = QJsonDocument::fromJson(match.captured(1).trimmed().toUtf8(), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject())
+            return doc.object();
+    }
+    const qsizetype open = trimmed.indexOf(QLatin1Char('{'));
+    const qsizetype close = trimmed.lastIndexOf(QLatin1Char('}'));
+    if (open >= 0 && close > open) {
+        doc = QJsonDocument::fromJson(trimmed.mid(open, close - open + 1).toUtf8(), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject())
+            return doc.object();
+    }
+    return {};
 }
 
 const char *noSpoilers =
@@ -211,7 +253,8 @@ FirstSeen resolveFirstSeen(const QList<Companion::Chapter> &chapters, const QStr
     if (chapters.isEmpty())
         return result;
 
-    // 1. Search the actual chapters read so far for the character's earliest mention.
+    // 1. Search the actual chapters read so far for the character's EARLIEST mention
+    // across full name, aliases, and surname (chapter order first, then earliest offset).
     QStringList probes;
     auto addProbe = [&probes](const QString &candidate) {
         const QString trimmed = candidate.trimmed();
@@ -221,25 +264,49 @@ FirstSeen resolveFirstSeen(const QList<Companion::Chapter> &chapters, const QStr
     addProbe(name);
     for (const QString &alias : also.split(QRegularExpression(QStringLiteral("[,;/()]")), Qt::SkipEmptyParts))
         addProbe(alias);
+    static const QSet<QString> honorifics = {
+        QStringLiteral("mr"),      QStringLiteral("mrs"),      QStringLiteral("miss"),    QStringLiteral("ms"),
+        QStringLiteral("dr"),      QStringLiteral("sir"),      QStringLiteral("lord"),    QStringLiteral("lady"),
+        QStringLiteral("captain"), QStringLiteral("doctor"),   QStringLiteral("professor"), QStringLiteral("master"),
+        QStringLiteral("king"),    QStringLiteral("queen"),    QStringLiteral("prince"),  QStringLiteral("princess"),
+        QStringLiteral("father"),  QStringLiteral("mother"),   QStringLiteral("uncle"),   QStringLiteral("aunt"),
+        QStringLiteral("the"),     QStringLiteral("old"),      QStringLiteral("young"),
+    };
     const QStringList nameParts = name.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-    if (nameParts.size() >= 2 && nameParts.last().size() >= 3)
-        addProbe(nameParts.last());
+    if (nameParts.size() >= 2) {
+        const QString &last = nameParts.last();
+        if (last.size() >= 3 && !honorifics.contains(last.toLower()))
+            addProbe(last);
+        const QString &first = nameParts.first();
+        if (first.size() >= 3 && !honorifics.contains(first.toLower()))
+            addProbe(first);
+    }
 
+    QList<QRegularExpression> regexes;
+    regexes.reserve(probes.size());
     for (const QString &probe : probes) {
-        const QRegularExpression rx(QStringLiteral("(?<!\\p{L})") + QRegularExpression::escape(probe) +
-                                        QStringLiteral("(?!\\p{L})"),
-                                    QRegularExpression::CaseInsensitiveOption);
-        for (const Companion::Chapter &ch : chapters) {
+        regexes.append(QRegularExpression(
+            QStringLiteral("(?<!\\p{L})") + QRegularExpression::escape(probe) + QStringLiteral("(?!\\p{L})"),
+            QRegularExpression::CaseInsensitiveOption));
+    }
+    for (const Companion::Chapter &ch : chapters) {
+        qint64 bestOffset = -1;
+        for (const QRegularExpression &rx : regexes) {
             const auto match = rx.match(ch.text);
             if (match.hasMatch()) {
-                result.chapterIndex = ch.index;
-                result.offset = match.capturedStart();
-                if (!ch.title.isEmpty())
-                    result.label = ch.title;
-                else if (result.label.isEmpty())
-                    result.label = chapterDisplayLabel(chapters, ch.index, format);
-                return result;
+                const qint64 pos = match.capturedStart();
+                if (bestOffset < 0 || pos < bestOffset)
+                    bestOffset = pos;
             }
+        }
+        if (bestOffset >= 0) {
+            result.chapterIndex = ch.index;
+            result.offset = bestOffset;
+            if (!ch.title.isEmpty())
+                result.label = ch.title;
+            else if (result.label.isEmpty())
+                result.label = chapterDisplayLabel(chapters, ch.index, format);
+            return result;
         }
     }
 
@@ -292,6 +359,9 @@ FirstSeen resolveFirstSeen(const QList<Companion::Chapter> &chapters, const QStr
 Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent)
     : QObject(parent), m_ai(ai), m_reader(reader), m_connection(databaseConnection), m_index(ai, databaseConnection) {
     m_targetLanguage = companionSettings().value(QStringLiteral("companion/translateLanguage")).toString().trimmed();
+    m_streamFlush.setSingleShot(true);
+    m_streamFlush.setInterval(33);
+    connect(&m_streamFlush, &QTimer::timeout, this, &Companion::flushStreamedAnswer);
     ensureTables();
     if (m_reader && m_reader->bookId() > 0)
         loadBookState(m_reader->bookId());
@@ -306,36 +376,117 @@ Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConn
         m_peopleOffset = -1;
         m_peopleKey.clear();
         m_peopleWhere.clear();
+        m_peopleWhereLocal = false;
+        m_recapText.clear();
+        m_recapLoaded = false;
+        m_recapChapter = -1;
+        m_recapOffset = -1;
+        m_recapWhere.clear();
+        m_recapWhereLocal = false;
+        m_selectionFeature.clear();
+        m_selectionSubject.clear();
+        m_selectionAnswer.clear();
+        m_selectionWhere.clear();
+        m_selectionWhereLocal = false;
         m_conversation.clear();
         m_currentSources.clear();
         m_pendingUserTurn = false;
         m_problem.clear();
+        m_problemIsConfig = false;
+        m_lastAction = {};
+        m_pendingSetup = {};
         if (m_reader && m_reader->bookId() > 0)
             loadBookState(m_reader->bookId());
         emit changed();
         emit answerChanged();
         emit conversationChanged();
+        emit recapChanged();
+        emit selectionChanged();
     });
     connect(reader, &Reader::locationChanged, this, [this] {
-        if (!m_peopleLoaded || !m_reader || m_reader->bookId() <= 0)
+        if (!m_reader || m_reader->bookId() <= 0)
             return;
+        const int bookId = m_reader->bookId();
         const int ch = m_reader->chapter();
         const qint64 end = m_reader->pageEnd();
-        const bool aheadOfReader = m_peopleChapter > ch || (m_peopleChapter == ch && end > 0 && m_peopleOffset > end);
-        if (!aheadOfReader)
-            return;
-        if (!loadWhosWhoSnapshot(m_reader->bookId(), ch, end, m_reader->pageStart(), false)) {
-            m_people.clear();
-            m_peopleLoaded = false;
-            m_peopleChapter = -1;
-            m_peopleOffset = -1;
-            m_peopleKey.clear();
-            m_peopleWhere.clear();
-        } else {
-            m_where = m_peopleWhere;
-            m_whereLocal = m_peopleWhere.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
+        const qint64 start = m_reader->pageStart();
+        // Cancel an in-flight chapter-scoped request only if the reader truly navigated
+        // backward (not when pageEnd shrinks during a 2-column -> 1-column dock resize).
+        if (m_busy && (m_feature == QLatin1String("whoswho") || m_feature == QLatin1String("recap")) &&
+            m_requestChapter >= 0) {
+            const bool movedBack =
+                ch < m_requestChapter || (ch == m_requestChapter && m_requestStart > 0 && start < m_requestStart);
+            if (movedBack)
+                stop();
         }
-        emit changed();
+        bool changedAny = false;
+        bool recapUpdated = false;
+        if (m_peopleLoaded) {
+            const bool aheadOfReader =
+                m_peopleChapter > ch || (m_peopleChapter == ch && end > 0 && m_peopleOffset > end);
+            if (aheadOfReader) {
+                if (!loadWhosWhoSnapshot(bookId, ch, end, start, false)) {
+                    m_people.clear();
+                    m_peopleLoaded = false;
+                    m_peopleChapter = -1;
+                    m_peopleOffset = -1;
+                    m_peopleKey.clear();
+                    m_peopleWhere.clear();
+                    m_peopleWhereLocal = false;
+                } else {
+                    m_where = m_peopleWhere;
+                    m_whereLocal = m_peopleWhereLocal;
+                }
+                changedAny = true;
+            }
+        }
+        if ((!m_peopleLoaded || m_peopleChapter < ch) && !(m_busy && m_feature == QLatin1String("whoswho"))) {
+            if (loadWhosWhoSnapshot(bookId, ch, end, start, true)) {
+                if (m_feature == QLatin1String("whoswho")) {
+                    m_where = m_peopleWhere;
+                    m_whereLocal = m_peopleWhereLocal;
+                }
+                changedAny = true;
+            }
+        }
+        if (m_recapLoaded) {
+            const bool recapAhead =
+                m_recapChapter > ch || (m_recapChapter == ch && end > 0 && m_recapOffset > end);
+            if (recapAhead) {
+                if (!loadRecapSnapshot(bookId, ch, end, start, false)) {
+                    m_recapText.clear();
+                    m_recapLoaded = false;
+                    m_recapChapter = -1;
+                    m_recapOffset = -1;
+                    m_recapWhere.clear();
+                    m_recapWhereLocal = false;
+                }
+                if (m_feature == QLatin1String("recap") && !m_busy) {
+                    m_answer = m_recapText;
+                    m_where = m_recapWhere;
+                    m_whereLocal = m_recapWhereLocal;
+                    emit answerChanged();
+                }
+                recapUpdated = true;
+                changedAny = true;
+            }
+        }
+        if ((!m_recapLoaded || m_recapChapter < ch) && !(m_busy && m_feature == QLatin1String("recap"))) {
+            if (loadRecapSnapshot(bookId, ch, end, start, true)) {
+                if (m_feature == QLatin1String("recap")) {
+                    m_answer = m_recapText;
+                    m_where = m_recapWhere;
+                    m_whereLocal = m_recapWhereLocal;
+                    emit answerChanged();
+                }
+                recapUpdated = true;
+                changedAny = true;
+            }
+        }
+        if (recapUpdated)
+            emit recapChanged();
+        if (changedAny)
+            emit changed();
     });
 }
 
@@ -381,11 +532,34 @@ void Companion::ensureTables() {
         " offset INTEGER NOT NULL,"
         " page_start INTEGER NOT NULL DEFAULT 0,"
         " where_label TEXT NOT NULL DEFAULT '',"
+        " is_local INTEGER NOT NULL DEFAULT -1,"
         " people TEXT NOT NULL,"
         " updated_at INTEGER NOT NULL,"
         " PRIMARY KEY (book_id, chapter, offset))"));
+    bool whoswhoHasLocal = false;
+    QSqlQuery wInfo(db);
+    if (wInfo.exec(QStringLiteral("PRAGMA table_info(companion_whoswho)"))) {
+        while (wInfo.next())
+            if (wInfo.value(1).toString() == QLatin1String("is_local"))
+                whoswhoHasLocal = true;
+    }
+    if (!whoswhoHasLocal)
+        query.exec(QStringLiteral("ALTER TABLE companion_whoswho ADD COLUMN is_local INTEGER NOT NULL DEFAULT -1"));
     query.exec(QStringLiteral(
         "CREATE INDEX IF NOT EXISTS companion_whoswho_book ON companion_whoswho (book_id, chapter DESC, offset DESC)"));
+    query.exec(QStringLiteral(
+        "CREATE TABLE IF NOT EXISTS companion_recaps ("
+        " book_id INTEGER NOT NULL,"
+        " chapter INTEGER NOT NULL,"
+        " offset INTEGER NOT NULL,"
+        " page_start INTEGER NOT NULL DEFAULT 0,"
+        " where_label TEXT NOT NULL DEFAULT '',"
+        " is_local INTEGER NOT NULL DEFAULT 0,"
+        " text TEXT NOT NULL,"
+        " updated_at INTEGER NOT NULL,"
+        " PRIMARY KEY (book_id, chapter, offset))"));
+    query.exec(QStringLiteral(
+        "CREATE INDEX IF NOT EXISTS companion_recaps_book ON companion_recaps (book_id, chapter DESC, offset DESC)"));
     // Clean up companion data automatically when a book is deleted from `books`.
     QSqlQuery hasBooks(db);
     if (hasBooks.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name='books'")) && hasBooks.next()) {
@@ -393,6 +567,10 @@ void Companion::ensureTables() {
             "CREATE TRIGGER IF NOT EXISTS companion_cleanup_book AFTER DELETE ON books BEGIN "
             "DELETE FROM companion_threads WHERE book_id = OLD.id; "
             "DELETE FROM companion_whoswho WHERE book_id = OLD.id; "
+            "END"));
+        query.exec(QStringLiteral(
+            "CREATE TRIGGER IF NOT EXISTS companion_cleanup_recaps AFTER DELETE ON books BEGIN "
+            "DELETE FROM companion_recaps WHERE book_id = OLD.id; "
             "END"));
     }
 }
@@ -404,8 +582,9 @@ void Companion::loadBookState(int bookId) {
     if (loadWhosWhoSnapshot(bookId, m_reader->chapter(), m_reader->pageEnd(), m_reader->pageStart(), false) &&
         m_where.isEmpty()) {
         m_where = m_peopleWhere;
-        m_whereLocal = m_peopleWhere.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
+        m_whereLocal = m_peopleWhereLocal;
     }
+    loadRecapSnapshot(bookId, m_reader->chapter(), m_reader->pageEnd(), m_reader->pageStart(), false);
 }
 
 void Companion::saveConversation(int bookId) {
@@ -473,7 +652,7 @@ bool Companion::loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qin
         return false;
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
-        "SELECT chapter, offset, page_start, where_label, people FROM companion_whoswho "
+        "SELECT chapter, offset, page_start, where_label, is_local, people FROM companion_whoswho "
         "WHERE book_id = ? ORDER BY chapter DESC, offset DESC"));
     query.addBindValue(bookId);
     if (!query.exec())
@@ -495,7 +674,7 @@ bool Companion::loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qin
                 continue;
             }
         }
-        const QJsonArray arr = QJsonDocument::fromJson(query.value(4).toString().toUtf8()).array();
+        const QJsonArray arr = QJsonDocument::fromJson(query.value(5).toString().toUtf8()).array();
         QVariantList loaded;
         loaded.reserve(arr.size());
         for (const QJsonValue &val : arr)
@@ -506,6 +685,10 @@ bool Companion::loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qin
         m_peopleChapter = savedChapter;
         m_peopleOffset = savedOffset;
         m_peopleWhere = query.value(3).toString();
+        const int savedLocal = query.value(4).toInt();
+        m_peopleWhereLocal = savedLocal >= 0
+                                 ? (savedLocal != 0)
+                                 : m_peopleWhere.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
         m_peopleKey = QStringLiteral("%1:%2:%3:%4").arg(bookId).arg(savedChapter).arg(savedOffset).arg(m_peopleWhere);
         return true;
     }
@@ -513,7 +696,7 @@ bool Companion::loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qin
 }
 
 void Companion::saveWhosWhoSnapshot(int bookId, int chapter, qint64 offset, qint64 pageStart, const QString &whereLabel,
-                                    const QVariantList &people) {
+                                    bool isLocal, const QVariantList &people) {
     if (bookId <= 0)
         return;
     QSqlDatabase db = QSqlDatabase::database(m_connection, false);
@@ -526,13 +709,14 @@ void Companion::saveWhosWhoSnapshot(int bookId, int chapter, qint64 offset, qint
     const qint64 now = QDateTime::currentSecsSinceEpoch();
     QSqlQuery ins(db);
     ins.prepare(QStringLiteral(
-        "INSERT OR REPLACE INTO companion_whoswho (book_id, chapter, offset, page_start, where_label, people, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)"));
+        "INSERT OR REPLACE INTO companion_whoswho (book_id, chapter, offset, page_start, where_label, is_local, people, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
     ins.addBindValue(bookId);
     ins.addBindValue(chapter);
     ins.addBindValue(offset);
     ins.addBindValue(pageStart);
     ins.addBindValue(whereLabel);
+    ins.addBindValue(isLocal ? 1 : 0);
     ins.addBindValue(json);
     ins.addBindValue(now);
     if (ins.exec()) {
@@ -541,6 +725,81 @@ void Companion::saveWhosWhoSnapshot(int bookId, int chapter, qint64 offset, qint
         prune.prepare(QStringLiteral(
             "DELETE FROM companion_whoswho WHERE book_id = ? AND rowid NOT IN ("
             "SELECT rowid FROM companion_whoswho WHERE book_id = ? ORDER BY updated_at DESC LIMIT 12)"));
+        prune.addBindValue(bookId);
+        prune.addBindValue(bookId);
+        prune.exec();
+    }
+}
+
+bool Companion::loadRecapSnapshot(int bookId, int chapter, qint64 pageEnd, qint64 pageStart, bool requireSameChapter) {
+    if (bookId <= 0)
+        return false;
+    QSqlDatabase db = QSqlDatabase::database(m_connection, false);
+    if (!db.isOpen())
+        return false;
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+        "SELECT chapter, offset, page_start, where_label, is_local, text FROM companion_recaps "
+        "WHERE book_id = ? ORDER BY chapter DESC, offset DESC"));
+    query.addBindValue(bookId);
+    if (!query.exec())
+        return false;
+    while (query.next()) {
+        const int savedChapter = query.value(0).toInt();
+        const qint64 savedOffset = query.value(1).toLongLong();
+        const qint64 savedStart = query.value(2).toLongLong();
+        // Strictly spoiler-safe: never restore a recap from ahead of the reader.
+        if (savedChapter > chapter)
+            continue;
+        if (requireSameChapter && savedChapter != chapter)
+            continue;
+        if (savedChapter == chapter) {
+            if (pageEnd > 0) {
+                if (savedOffset > pageEnd)
+                    continue;
+            } else if (savedStart > pageStart) {
+                continue;
+            }
+        }
+        const QString savedText = query.value(5).toString();
+        if (savedText.trimmed().isEmpty())
+            continue;
+        m_recapText = savedText;
+        m_recapLoaded = true;
+        m_recapChapter = savedChapter;
+        m_recapOffset = savedOffset;
+        m_recapWhere = query.value(3).toString();
+        m_recapWhereLocal = query.value(4).toInt() != 0;
+        return true;
+    }
+    return false;
+}
+
+void Companion::saveRecapSnapshot(int bookId, int chapter, qint64 offset, qint64 pageStart, const QString &whereLabel,
+                                  bool isLocal, const QString &text) {
+    if (bookId <= 0 || text.trimmed().isEmpty())
+        return;
+    QSqlDatabase db = QSqlDatabase::database(m_connection, false);
+    if (!db.isOpen())
+        return;
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    QSqlQuery ins(db);
+    ins.prepare(QStringLiteral(
+        "INSERT OR REPLACE INTO companion_recaps (book_id, chapter, offset, page_start, where_label, is_local, text, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
+    ins.addBindValue(bookId);
+    ins.addBindValue(chapter);
+    ins.addBindValue(offset);
+    ins.addBindValue(pageStart);
+    ins.addBindValue(whereLabel);
+    ins.addBindValue(isLocal ? 1 : 0);
+    ins.addBindValue(text);
+    ins.addBindValue(now);
+    if (ins.exec()) {
+        QSqlQuery prune(db);
+        prune.prepare(QStringLiteral(
+            "DELETE FROM companion_recaps WHERE book_id = ? AND rowid NOT IN ("
+            "SELECT rowid FROM companion_recaps WHERE book_id = ? ORDER BY updated_at DESC LIMIT 12)"));
         prune.addBindValue(bookId);
         prune.addBindValue(bookId);
         prune.exec();
@@ -561,6 +820,10 @@ void Companion::clearBookHistory(int bookId) {
         q2.prepare(QStringLiteral("DELETE FROM companion_whoswho WHERE book_id = ?"));
         q2.addBindValue(target);
         q2.exec();
+        QSqlQuery q3(db);
+        q3.prepare(QStringLiteral("DELETE FROM companion_recaps WHERE book_id = ?"));
+        q3.addBindValue(target);
+        q3.exec();
     }
     if (m_reader && target == m_reader->bookId()) {
         m_conversation.clear();
@@ -571,9 +834,23 @@ void Companion::clearBookHistory(int bookId) {
         m_peopleOffset = -1;
         m_peopleKey.clear();
         m_peopleWhere.clear();
+        m_peopleWhereLocal = false;
+        m_recapText.clear();
+        m_recapLoaded = false;
+        m_recapChapter = -1;
+        m_recapOffset = -1;
+        m_recapWhere.clear();
+        m_recapWhereLocal = false;
+        m_selectionFeature.clear();
+        m_selectionSubject.clear();
+        m_selectionAnswer.clear();
+        m_selectionWhere.clear();
+        m_selectionWhereLocal = false;
         emit changed();
         emit answerChanged();
         emit conversationChanged();
+        emit recapChanged();
+        emit selectionChanged();
     }
 }
 
@@ -858,12 +1135,34 @@ qint64 Companion::localCharBudget(const QString &feature, bool fast, qint64 fall
     return qMin(fallbackChars, budgeted);
 }
 
+QString Companion::pendingSetupLabel() const {
+    if (m_pendingSetup.feature.isEmpty())
+        return {};
+    if (m_pendingSetup.feature == QLatin1String("ask"))
+        return tr("“%1”").arg(makeExcerpt(m_pendingSetup.text, 64));
+    if (m_pendingSetup.feature == QLatin1String("define"))
+        return tr("Define “%1”").arg(makeExcerpt(m_pendingSetup.text, 48));
+    if (m_pendingSetup.feature == QLatin1String("explain"))
+        return tr("Explain “%1”").arg(makeExcerpt(m_pendingSetup.text, 48));
+    if (m_pendingSetup.feature == QLatin1String("translate"))
+        return tr("Translate “%1”").arg(makeExcerpt(m_pendingSetup.text, 48));
+    if (m_pendingSetup.feature == QLatin1String("recap"))
+        return tr("Previously…");
+    if (m_pendingSetup.feature == QLatin1String("whoswho"))
+        return tr("Who's who");
+    return {};
+}
+
 Ai::TextModel *Companion::modelFor(const QString &feature) {
     Ai::TextModel *model = m_ai->textFor(feature);
-    if (!model)
+    if (!model) {
+        if (!m_ai->hasKey() && !m_ai->hasLocal() && !m_lastAction.feature.isEmpty())
+            m_pendingSetup = m_lastAction;
         fail(m_ai->preset() == QLatin1String("local") || m_ai->overrideFor(feature) == QLatin1String("local")
                  ? tr("This needs a model on this computer: set one up in Intelligence (✦).")
-                 : tr("This needs a Gemini key or a model on this computer, in Intelligence (✦)."));
+                 : tr("This needs a Gemini key or a model on this computer, in Intelligence (✦)."),
+             true);
+    }
     return model;
 }
 
@@ -878,10 +1177,31 @@ bool Companion::checkBudget(const QString &feature, qint64 charsEstimate, bool f
     usage.outputTokens = outputTokens;
     const double cost = AiUsageLedger::cost(model->textModelName(fast), usage, QDate::currentDate(), false);
     if (!m_ai->fitsBudget(cost)) {
-        fail(m_ai->describe(int(Ai::Error::Budget)));
+        fail(m_ai->describe(int(Ai::Error::Budget)), true);
         return false;
     }
     return true;
+}
+
+qint64 Companion::soFarCharsEstimate() const {
+    qint64 soFar = m_reader ? m_reader->pageEnd() : 0;
+    if (m_reader) {
+        for (int i = 0; i < m_reader->chapter(); ++i)
+            soFar += m_reader->charactersIn(i);
+        // While chapter lengths are still being measured, fall back to a conservative
+        // estimate so the cost readout and budget check never under-report as $0.
+        if (soFar <= 0 && m_reader->chapter() > 0)
+            soFar = qint64(m_reader->chapter() + 1) * 12000;
+    }
+    return qMin<qint64>(cloudLimit, soFar);
+}
+
+void Companion::flushStreamedAnswer() {
+    m_streamFlush.stop();
+    if (!m_streamDirty)
+        return;
+    m_streamDirty = false;
+    emit answerChanged();
 }
 
 void Companion::begin(const QString &feature, const QString &subject) {
@@ -891,7 +1211,13 @@ void Companion::begin(const QString &feature, const QString &subject) {
     m_answer.clear();
     m_currentSources.clear();
     m_problem.clear();
+    m_problemIsConfig = false;
     m_busy = true;
+    m_streamDirty = false;
+    m_streamNotifiedFirst = false;
+    m_requestChapter = m_reader ? m_reader->chapter() : -1;
+    m_requestStart = m_reader ? m_reader->pageStart() : -1;
+    m_requestOffset = m_reader ? m_reader->pageEnd() : -1;
     m_where = m_ai->whereFor(feature);
     m_whereLocal = (m_ai->routeFor(feature) == QLatin1String("local") && m_ai->localIsLoopback());
     m_status = tr("Thinking…");
@@ -910,25 +1236,81 @@ void Companion::rollbackPendingTurn() {
     m_pendingUserTurn = false;
     if (!m_answer.trimmed().isEmpty()) {
         m_conversation.append({false, m_answer, m_currentSources, m_where, m_whereLocal});
+        m_answer.clear();
         m_currentSources.clear();
         saveConversation(m_reader->bookId());
         emit conversationChanged();
+        emit answerChanged();
     } else if (!m_conversation.isEmpty() && m_conversation.last().fromUser) {
         m_conversation.removeLast();
+        m_answer.clear();
         m_currentSources.clear();
         emit conversationChanged();
+        emit answerChanged();
     }
 }
 
-void Companion::fail(const QString &problem) {
+void Companion::fail(const QString &problem, bool isConfig) {
+    flushStreamedAnswer();
     rollbackPendingTurn();
     m_problem = problem;
+    m_problemIsConfig = isConfig;
     m_busy = false;
+    m_requestChapter = -1;
+    m_requestStart = -1;
+    m_requestOffset = -1;
     emit changed();
+}
+
+void Companion::clearProblem() {
+    if (m_problem.isEmpty() && !m_problemIsConfig)
+        return;
+    m_problem.clear();
+    m_problemIsConfig = false;
+    emit changed();
+}
+
+void Companion::executeAction(const Action &action) {
+    if (action.feature == QLatin1String("ask"))
+        ask(action.text);
+    else if (action.feature == QLatin1String("define"))
+        define(action.text, action.chapter, action.offset);
+    else if (action.feature == QLatin1String("explain"))
+        explain(action.text, action.chapter, action.offset);
+    else if (action.feature == QLatin1String("translate"))
+        translate(action.text, action.chapter, action.offset);
+    else if (action.feature == QLatin1String("recap"))
+        refreshRecap();
+    else if (action.feature == QLatin1String("whoswho"))
+        refreshWhosWho();
+}
+
+void Companion::retry() {
+    if (m_busy || m_lastAction.feature.isEmpty())
+        return;
+    const Action action = m_lastAction;
+    executeAction(action);
+}
+
+void Companion::resumePendingSetup() {
+    if (m_pendingSetup.feature.isEmpty())
+        return;
+    const Action action = m_pendingSetup;
+    m_pendingSetup = {};
+    m_problem.clear();
+    m_problemIsConfig = false;
+    emit changed();
+    executeAction(action);
 }
 
 void Companion::stop() {
     ++m_generation;
+    m_streamFlush.stop();
+    m_streamDirty = false;
+    m_streamNotifiedFirst = false;
+    m_requestChapter = -1;
+    m_requestStart = -1;
+    m_requestOffset = -1;
     if (m_readCancel) {
         *m_readCancel = true;
         m_readCancel.reset();
@@ -942,8 +1324,12 @@ void Companion::stop() {
         m_dictProcess.clear();
     }
     m_index.cancel();
-    if (m_reply)
-        m_reply->abort();
+    if (m_reply) {
+        QPointer<Ai::Reply> active = m_reply;
+        m_reply.clear();
+        if (active)
+            active->abort();
+    }
     rollbackPendingTurn();
     if (m_busy) {
         m_busy = false;
@@ -994,28 +1380,60 @@ void Companion::run(const QString &feature, const Ai::TextRequest &request, std:
     QPointer<Ai::Provider> providerGuard(provider);
     setStatus(tr("Writing…"));
     connect(reply, &Ai::Reply::textReceived, this, [this, reply, generation](const QString &delta) {
-        if (reply != m_reply || generation != m_generation)
+        if (reply != m_reply || generation != m_generation || delta.isEmpty())
             return;
         m_answer += delta;
-        emit answerChanged();
+        if (!m_streamNotifiedFirst) {
+            m_streamNotifiedFirst = true;
+            m_streamDirty = false;
+            emit answerChanged();
+        } else {
+            m_streamDirty = true;
+            if (!m_streamFlush.isActive())
+                m_streamFlush.start();
+        }
     });
-    connect(reply, &Ai::Reply::finished, this, [this, reply, done, generation, providerGuard] {
+    connect(reply, &Ai::Reply::finished, this, [this, reply, done, generation, providerGuard, feature] {
         reply->deleteLater();
         if (reply != m_reply || generation != m_generation)
             return;
+        m_reply.clear();
+        flushStreamedAnswer();
         if (reply->error()) {
-            if (reply->error().kind != Ai::Error::Cancelled)
-                fail(m_ai->describeFor(providerGuard, int(reply->error().kind), reply->error().message));
+            if (reply->error().kind != Ai::Error::Cancelled) {
+                const auto kind = reply->error().kind;
+                const bool isConfig = (kind == Ai::Error::NoKey || kind == Ai::Error::BadKey ||
+                                       kind == Ai::Error::Budget || kind == Ai::Error::NotFound ||
+                                       (providerGuard && providerGuard->id() == QLatin1String("local") &&
+                                        kind == Ai::Error::Offline));
+                fail(m_ai->describeFor(providerGuard, int(kind), reply->error().message), isConfig);
+            }
             return;
         }
         if (m_answer.isEmpty() && reply->result().isEmpty())
             m_answer = reply->text();
+        if (!done && m_answer.trimmed().isEmpty()) {
+            fail(tr("The model returned an empty answer. Try again."));
+            return;
+        }
+        m_pendingSetup = {};
         m_where = formatProvenance(providerGuard, reply);
         m_whereLocal = providerGuard && providerGuard->isLocal();
+        if (feature == QLatin1String("define") || feature == QLatin1String("explain") ||
+            feature == QLatin1String("translate")) {
+            m_selectionFeature = feature;
+            m_selectionSubject = m_subject;
+            m_selectionAnswer = m_answer;
+            m_selectionWhere = m_where;
+            m_selectionWhereLocal = m_whereLocal;
+            emit selectionChanged();
+        }
         if (done)
             done(reply);
         if (m_problem.isEmpty()) {
             m_busy = false;
+            m_requestChapter = -1;
+            m_requestOffset = -1;
             emit answerChanged();
             emit changed();
         }
@@ -1026,6 +1444,7 @@ void Companion::run(const QString &feature, const Ai::TextRequest &request, std:
 
 void Companion::define(const QString &word, int chapter, qint64 offset) {
     const QString wanted = word.trimmed();
+    m_lastAction = {QStringLiteral("define"), wanted, chapter, offset};
     begin(QStringLiteral("define"), wanted);
     const int generation = m_generation;
     const auto askModel = [this, wanted, chapter, offset, generation] {
@@ -1048,8 +1467,9 @@ void Companion::define(const QString &word, int chapter, qint64 offset) {
             request.fast = true;
             request.stream = true;
             request.system = instructions(QStringLiteral(
-                "You are a dictionary. Give the word's meaning as it is used in this passage: part of speech, a "
-                "one-line definition, and, if the usage is old, rare or figurative, one sentence on that. At most 60 words."));
+                "You are a literary dictionary. Format the first line as *part of speech* — concise one-line "
+                "definition for how the word is used in this passage. If the usage is archaic, rare, or figurative, "
+                "add one brief sentence after. At most 60 words."));
             request.messages = {{true, bookLine() + QStringLiteral("\n\nPassage:\n") + around +
                                            QStringLiteral("\n\nWord: ") + wanted}};
             run(QStringLiteral("define"), request);
@@ -1057,18 +1477,23 @@ void Companion::define(const QString &word, int chapter, qint64 offset) {
     };
 
     // A dictionary on this computer answers first (asynchronously) and costs nothing.
-    if (!wanted.isEmpty() && !wanted.contains(QLatin1Char(' ')) &&
+    const QString lookupWord = cleanDictLookupWord(wanted);
+    if (!lookupWord.isEmpty() && !lookupWord.contains(QLatin1Char(' ')) &&
         !QStandardPaths::findExecutable(QStringLiteral("sdcv")).isEmpty()) {
         setStatus(tr("Checking your dictionary…"));
         auto *sdcv = new QProcess(this);
         m_dictProcess = sdcv;
+        auto handled = std::make_shared<bool>(false);
         auto *timer = new QTimer(sdcv);
         timer->setSingleShot(true);
         connect(timer, &QTimer::timeout, sdcv, [sdcv] {
             if (sdcv->state() != QProcess::NotRunning)
                 sdcv->kill();
         });
-        connect(sdcv, &QProcess::errorOccurred, this, [this, sdcv, generation, askModel](QProcess::ProcessError) {
+        connect(sdcv, &QProcess::errorOccurred, this, [this, sdcv, generation, handled, askModel](QProcess::ProcessError) {
+            if (*handled)
+                return;
+            *handled = true;
             if (sdcv == m_dictProcess)
                 m_dictProcess.clear();
             sdcv->deleteLater();
@@ -1076,19 +1501,32 @@ void Companion::define(const QString &word, int chapter, qint64 offset) {
                 askModel();
         });
         connect(sdcv, &QProcess::finished, this,
-                [this, sdcv, wanted, generation, askModel](int code, QProcess::ExitStatus status) {
+                [this, sdcv, lookupWord, wanted, generation, handled, askModel](int code, QProcess::ExitStatus status) {
+                    if (*handled)
+                        return;
+                    *handled = true;
                     if (sdcv == m_dictProcess)
                         m_dictProcess.clear();
                     const QByteArray output = sdcv->readAllStandardOutput();
                     sdcv->deleteLater();
                     if (generation != m_generation)
                         return;
-                    const QStringList entries = (status == QProcess::NormalExit && code == 0) ? parseSdcvJson(output, wanted) : QStringList();
+                    const QStringList entries =
+                        (status == QProcess::NormalExit && code == 0) ? parseSdcvJson(output, lookupWord) : QStringList();
                     if (!entries.isEmpty()) {
+                        m_pendingSetup = {};
                         m_answer = entries.join(QStringLiteral("\n\n"));
                         m_where = tr("Dictionary on this computer");
                         m_whereLocal = true;
+                        m_selectionFeature = QStringLiteral("define");
+                        m_selectionSubject = wanted;
+                        m_selectionAnswer = m_answer;
+                        m_selectionWhere = m_where;
+                        m_selectionWhereLocal = true;
                         m_busy = false;
+                        m_requestChapter = -1;
+                        m_requestOffset = -1;
+                        emit selectionChanged();
                         emit answerChanged();
                         emit changed();
                         return;
@@ -1097,14 +1535,16 @@ void Companion::define(const QString &word, int chapter, qint64 offset) {
                 });
         timer->start(4000);
         sdcv->start(QStringLiteral("sdcv"),
-                    {QStringLiteral("-n"), QStringLiteral("-j"), QStringLiteral("--utf8-output"), QStringLiteral("--"), wanted});
+                    {QStringLiteral("-n"), QStringLiteral("-j"), QStringLiteral("--utf8-output"), QStringLiteral("--"), lookupWord});
         return;
     }
     askModel();
 }
 
 void Companion::explain(const QString &text, int chapter, qint64 end) {
-    begin(QStringLiteral("explain"), text.trimmed());
+    const QString cleaned = text.trimmed();
+    m_lastAction = {QStringLiteral("explain"), cleaned, chapter, end};
+    begin(QStringLiteral("explain"), cleaned);
     if (!modelFor(m_feature))
         return;
     const bool cloud = cloudFor(m_feature);
@@ -1113,13 +1553,13 @@ void Companion::explain(const QString &text, int chapter, qint64 end) {
         return;
     const int generation = m_generation;
     setStatus(tr("Reading up to here…"));
-    readSoFar(chapter, end, charLimit, [this, text, charLimit, generation](const QList<Chapter> &chapters) {
+    readSoFar(chapter, end, charLimit, [this, cleaned, charLimit, generation](const QList<Chapter> &chapters) {
         if (generation != m_generation)
             return;
         const bool isCloud = cloudFor(QStringLiteral("explain"));
         const qint64 limit = isCloud ? 60000 : qMin(charLimit, localCharBudget(QStringLiteral("explain"), false, 12000));
         const QString context = joined(chapters, limit);
-        if (!checkBudget(QStringLiteral("explain"), context.size() + text.size(), false, 400))
+        if (!checkBudget(QStringLiteral("explain"), context.size() + cleaned.size(), false, 400))
             return;
         Ai::TextRequest request;
         request.feature = QStringLiteral("explain");
@@ -1129,7 +1569,7 @@ void Companion::explain(const QString &text, int chapter, qint64 end) {
             "and any allusion, history, idiom or old usage a modern reader might miss. Use the text before it for "
             "context. Be brief: one to three short paragraphs."));
         request.messages = {{true, bookLine() + QStringLiteral("\n\nThe book up to the selection:\n") + context +
-                                       QStringLiteral("\n\nSelected: \"") + text.trimmed() + QStringLiteral("\"")}};
+                                       QStringLiteral("\n\nSelected: \"") + cleaned + QStringLiteral("\"")}};
         run(QStringLiteral("explain"), request);
     });
 }
@@ -1139,6 +1579,7 @@ void Companion::translate(const QString &text, int chapter, qint64 end) {
     m_lastTranslateText = cleaned;
     m_lastTranslateChapter = chapter;
     m_lastTranslateEnd = end;
+    m_lastAction = {QStringLiteral("translate"), cleaned, chapter, end};
     begin(QStringLiteral("translate"), cleaned);
     if (!modelFor(m_feature))
         return;
@@ -1178,18 +1619,11 @@ void Companion::retranslate() {
 
 QVariantMap Companion::askEstimate() const {
     const bool cloud = cloudFor(QStringLiteral("ask"));
-    // Characters so far, from the reader's progress through the book.
-    qint64 soFar = m_reader->pageEnd();
-    for (int i = 0; i < m_reader->chapter(); ++i)
-        soFar += m_reader->charactersIn(i);
-    // While chapter lengths are still being measured, fall back to a conservative
-    // estimate so the cost readout and budget check never under-report as $0.
-    if (soFar <= 0 && m_reader->chapter() > 0)
-        soFar = qint64(m_reader->chapter() + 1) * 12000;
+    const qint64 soFar = soFarCharsEstimate();
     qint64 historyChars = 0;
     for (const Turn &turn : m_conversation)
         historyChars += turn.text.size();
-    const double characters = qMin<double>(cloudLimit, soFar) + historyChars;
+    const double characters = double(soFar) + historyChars;
     double cost = 0;
     if (cloud) {
         if (Ai::TextModel *model = m_ai->textFor(QStringLiteral("ask"))) {
@@ -1200,7 +1634,7 @@ QVariantMap Companion::askEstimate() const {
         }
     }
     return {{QStringLiteral("where"), m_ai->whereFor(QStringLiteral("ask"))},
-            {QStringLiteral("words"), qRound(qMin<double>(cloudLimit, soFar) / 6)},
+            {QStringLiteral("words"), qRound(double(soFar) / 6.0)},
             {QStringLiteral("cost"), cost},
             {QStringLiteral("local"), !cloud}};
 }
@@ -1213,6 +1647,8 @@ void Companion::newConversation() {
     m_answer.clear();
     m_feature = QStringLiteral("ask");
     m_problem.clear();
+    m_problemIsConfig = false;
+    m_pendingSetup = {};
     if (m_reader && m_reader->bookId() > 0) {
         QSqlDatabase db = QSqlDatabase::database(m_connection, false);
         if (db.isOpen()) {
@@ -1231,6 +1667,8 @@ void Companion::ask(const QString &question) {
     const QString asked = question.trimmed();
     if (asked.isEmpty())
         return;
+    m_lastAction = {QStringLiteral("ask"), asked, m_reader ? m_reader->chapter() : 0,
+                    m_reader ? m_reader->pageEnd() : 0};
     begin(QStringLiteral("ask"), asked);
     if (!modelFor(m_feature))
         return;
@@ -1238,7 +1676,7 @@ void Companion::ask(const QString &question) {
     if (cloud) {
         const double cost = askEstimate().value(QStringLiteral("cost")).toDouble();
         if (!m_ai->fitsBudget(cost)) {
-            fail(m_ai->describe(int(Ai::Error::Budget)));
+            fail(m_ai->describe(int(Ai::Error::Budget)), true);
             return;
         }
     }
@@ -1255,6 +1693,10 @@ void Companion::ask(const QString &question) {
               [this, asked, bookId, format, generation](const QList<Chapter> &chapters) {
                   if (generation != m_generation)
                       return;
+                  if (chapters.isEmpty()) {
+                      fail(tr("There isn't any readable text up to this page yet."));
+                      return;
+                  }
                   const bool isCloud = cloudFor(QStringLiteral("ask"));
                   const auto send = [this, isCloud, bookId, format, chapters, generation](
                                         const QString &context, const QString &how,
@@ -1295,8 +1737,8 @@ void Companion::ask(const QString &question) {
                       request.stream = true;
                       request.system = instructions(
                           QStringLiteral("Answer the reader's questions about the book they are reading, from its text "
-                                         "below (%1). Quote briefly when it helps, and say which chapter. If the text "
-                                         "doesn't say, say so.")
+                                         "below (%1). Be concise, warm, and literary. Quote briefly when it helps, and "
+                                         "mention which chapter it comes from. If the text so far doesn't say, say so plainly.")
                               .arg(how));
                       request.messages = {{true, bookLine() + QStringLiteral("\n\n") + context}};
                       request.messages.append({false, QStringLiteral("I've read it. What would you like to know?")});
@@ -1304,17 +1746,23 @@ void Companion::ask(const QString &question) {
                       run(QStringLiteral("ask"), request, [this, bookId, format, chapters, generation](Ai::Reply *) {
                           if (generation != m_generation)
                               return;
+                          if (m_answer.trimmed().isEmpty()) {
+                              fail(tr("The model returned an empty answer. Try again."));
+                              return;
+                          }
                           m_pendingUserTurn = false;
                           QList<Citation> finalSources = m_currentSources;
-                          if (finalSources.isEmpty() && !m_answer.trimmed().isEmpty()) {
+                          if (finalSources.isEmpty()) {
                               QList<PassageIndex::Passage> passages;
                               for (const Chapter &ch : chapters)
                                   passages += PassageIndex::split(ch.index, ch.text);
                               finalSources =
                                   citationsFromHits(PassageIndex::byWords(passages, m_answer, 3), chapters, format, 3);
                           }
-                          m_conversation.append({false, m_answer, finalSources, m_where, m_whereLocal});
+                          const QString completedAnswer = m_answer;
+                          m_answer.clear();
                           m_currentSources.clear();
+                          m_conversation.append({false, completedAnswer, finalSources, m_where, m_whereLocal});
                           saveConversation(bookId);
                           emit conversationChanged();
                       });
@@ -1384,13 +1832,16 @@ void Companion::ask(const QString &question) {
                       context += QStringLiteral("What the reader read last:\n\n") + joined(chapters, recentBudget);
                       send(context, QStringLiteral("passages found for the question, and the latest pages"), sources);
                   };
-                  if (m_ai->embedder() && m_index.indexed(bookId) < passages.size()) {
-                      setStatus(tr("Getting to know the book…"));
+                  if (m_ai->embedder()) {
+                      // build() skips already-cached passages (0 network calls when warm) and embeds
+                      // any newly-reached or grown page-end passage so hybrid search never silently degrades.
                       m_index.build(
                           bookId, passages,
                           [self, generation](double share) {
                               if (self && self->m_generation == generation)
-                                  self->setStatus(tr("Getting to know the book… %1%").arg(qRound(share * 100)));
+                                  self->setStatus(share > 0.0
+                                                      ? tr("Getting to know the book… %1%").arg(qRound(share * 100))
+                                                      : tr("Getting to know the book…"));
                           },
                           [self, bookId, passages, asked, answer, generation](const QString &) {
                               if (!self || self->m_generation != generation)
@@ -1406,49 +1857,113 @@ void Companion::ask(const QString &question) {
 
 // --- Previously…, Who's who --------------------------------------------------
 
-void Companion::recap() {
-    begin(QStringLiteral("recap"), placeTitle(m_reader->chapter()));
-    if (!modelFor(m_feature))
-        return;
-    const bool cloud = cloudFor(m_feature);
-    if (cloud) {
-        const double cost = askEstimate().value(QStringLiteral("cost")).toDouble();
-        if (!m_ai->fitsBudget(cost)) {
-            fail(m_ai->describe(int(Ai::Error::Budget)));
+void Companion::recap() { runRecap(false); }
+
+void Companion::refreshRecap() { runRecap(true); }
+
+void Companion::runRecap(bool forceRefresh) {
+    const int bookId = m_reader->bookId();
+    const int chapter = m_reader->chapter();
+    const qint64 pageEnd = m_reader->pageEnd();
+    const qint64 pageStart = m_reader->pageStart();
+    m_lastAction = {QStringLiteral("recap"), QString(), chapter, pageEnd};
+    begin(QStringLiteral("recap"), placeTitle(chapter));
+    if (!forceRefresh) {
+        const bool memoryValid = m_recapLoaded && !m_recapText.trimmed().isEmpty() && m_recapChapter == chapter &&
+                                 (pageEnd <= 0 || m_recapOffset <= pageEnd);
+        if (memoryValid) {
+            m_answer = m_recapText;
+            m_where = m_recapWhere;
+            m_whereLocal = m_recapWhereLocal;
+            m_busy = false;
+            m_requestChapter = -1;
+            m_requestOffset = -1;
+            emit answerChanged();
+            emit changed();
+            return;
+        }
+        if (loadRecapSnapshot(bookId, chapter, pageEnd, pageStart, true)) {
+            m_answer = m_recapText;
+            m_where = m_recapWhere;
+            m_whereLocal = m_recapWhereLocal;
+            m_busy = false;
+            m_requestChapter = -1;
+            m_requestOffset = -1;
+            emit recapChanged();
+            emit answerChanged();
+            emit changed();
             return;
         }
     }
+    if (!modelFor(m_feature))
+        return;
+    const bool cloud = cloudFor(m_feature);
+    if (cloud && !checkBudget(m_feature, soFarCharsEstimate(), false, 500))
+        return;
     const qint64 limit = cloud ? cloudLimit : localCharBudget(m_feature, false, localLimit);
     const int generation = m_generation;
     setStatus(tr("Reading the book so far…"));
-    readSoFar(m_reader->chapter(), m_reader->pageEnd(), limit, [this, limit, generation](const QList<Chapter> &chapters) {
-        if (generation != m_generation)
-            return;
-        const bool isCloud = cloudFor(QStringLiteral("recap"));
-        const qint64 effectiveLimit =
-            isCloud ? cloudLimit : qMin(limit, localCharBudget(QStringLiteral("recap"), false, localLimit));
-        QString titles;
-        for (const Chapter &chapter : chapters)
-            if (!chapter.title.isEmpty())
-                titles += QStringLiteral("- ") + chapter.title + QLatin1Char('\n');
-        const QString text = joined(chapters, effectiveLimit);
-        if (!checkBudget(QStringLiteral("recap"), text.size() + titles.size(), false, 500))
-            return;
-        Ai::TextRequest request;
-        request.feature = QStringLiteral("recap");
-        request.stream = true;
-        request.system = instructions(QStringLiteral(
-            "Write \"Previously…\" for a reader coming back to this book: the story so far in a few short "
-            "paragraphs, most about the latest events, ending where they stopped. Name the people who matter now."));
-        request.messages = {{true, bookLine() + QStringLiteral("\n\nChapters so far:\n") + titles + QStringLiteral("\n") +
-                                       text}};
-        run(QStringLiteral("recap"), request);
-    });
+    readSoFar(chapter, pageEnd, limit,
+              [this, bookId, chapter, pageEnd, pageStart, limit, generation](const QList<Chapter> &chapters) {
+                  if (generation != m_generation)
+                      return;
+                  // Spoiler-safety guard in case the reader jumped backward while reading disk.
+                  if (m_reader && (chapter > m_reader->chapter() ||
+                                   (chapter == m_reader->chapter() && m_reader->pageEnd() > 0 && pageEnd > m_reader->pageEnd()))) {
+                      stop();
+                      return;
+                  }
+                  const bool isCloud = cloudFor(QStringLiteral("recap"));
+                  const qint64 effectiveLimit =
+                      isCloud ? cloudLimit : qMin(limit, localCharBudget(QStringLiteral("recap"), false, localLimit));
+                  QString titles;
+                  for (const Chapter &ch : chapters)
+                      if (!ch.title.isEmpty())
+                          titles += QStringLiteral("- ") + ch.title + QLatin1Char('\n');
+                  const QString text = joined(chapters, effectiveLimit);
+                  if (text.trimmed().isEmpty()) {
+                      fail(tr("There isn't any text to summarize yet. Turn a page or two first."));
+                      return;
+                  }
+                  if (!checkBudget(QStringLiteral("recap"), text.size() + titles.size(), false, 500))
+                      return;
+                  Ai::TextRequest request;
+                  request.feature = QStringLiteral("recap");
+                  request.stream = true;
+                  request.system = instructions(QStringLiteral(
+                      "Write \"Previously…\" for a reader coming back to this book: recap the story so far in 2 to 4 "
+                      "crisp, engaging paragraphs, focusing most on the latest events and ending right where they "
+                      "stopped. Name the key people and tensions that matter right now."));
+                  request.messages = {{true, bookLine() + QStringLiteral("\n\nChapters so far:\n") + titles +
+                                                 QStringLiteral("\n") + text}};
+                  run(QStringLiteral("recap"), request,
+                      [this, bookId, chapter, pageEnd, pageStart, generation](Ai::Reply *) {
+                          if (generation != m_generation)
+                              return;
+                          if (m_answer.trimmed().isEmpty()) {
+                              fail(tr("The model returned an empty answer. Try again."));
+                              return;
+                          }
+                          if (m_reader &&
+                              (chapter > m_reader->chapter() ||
+                               (chapter == m_reader->chapter() && m_reader->pageEnd() > 0 && pageEnd > m_reader->pageEnd())))
+                              return;
+                          m_recapText = m_answer;
+                          m_recapLoaded = true;
+                          m_recapChapter = chapter;
+                          m_recapOffset = pageEnd;
+                          m_recapWhere = m_where;
+                          m_recapWhereLocal = m_whereLocal;
+                          saveRecapSnapshot(bookId, chapter, pageEnd, pageStart, m_where, m_whereLocal, m_recapText);
+                          emit recapChanged();
+                      });
+              });
 }
 
 void Companion::refreshWhosWho() {
     m_peopleKey.clear();
     m_peopleWhere.clear();
+    m_peopleWhereLocal = false;
     runWhosWho(true);
 }
 
@@ -1462,6 +1977,7 @@ void Companion::runWhosWho(bool forceRefresh) {
     const QString format = m_reader->format();
     const QString where = m_ai->whereFor(QStringLiteral("whoswho"));
     const QString key = QStringLiteral("%1:%2:%3:%4").arg(bookId).arg(chapter).arg(pageEnd).arg(where);
+    m_lastAction = {QStringLiteral("whoswho"), QString(), chapter, pageEnd};
     begin(QStringLiteral("whoswho"), placeTitle(chapter));
     if (!forceRefresh) {
         const bool memoryValid = m_peopleLoaded && m_peopleChapter == chapter &&
@@ -1469,15 +1985,19 @@ void Companion::runWhosWho(bool forceRefresh) {
                                  (key == m_peopleKey || !m_people.isEmpty());
         if (memoryValid) {
             m_where = m_peopleWhere.isEmpty() ? where : m_peopleWhere;
-            m_whereLocal = m_where.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
+            m_whereLocal = m_peopleWhereLocal;
             m_busy = false;
+            m_requestChapter = -1;
+            m_requestOffset = -1;
             emit changed();
             return;
         }
         if (loadWhosWhoSnapshot(bookId, chapter, pageEnd, pageStart, true)) {
             m_where = m_peopleWhere.isEmpty() ? where : m_peopleWhere;
-            m_whereLocal = m_where.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
+            m_whereLocal = m_peopleWhereLocal;
             m_busy = false;
+            m_requestChapter = -1;
+            m_requestOffset = -1;
             emit changed();
             return;
         }
@@ -1490,18 +2010,14 @@ void Companion::runWhosWho(bool forceRefresh) {
         m_peopleOffset = -1;
         m_peopleKey.clear();
         m_peopleWhere.clear();
+        m_peopleWhereLocal = false;
         emit changed();
     }
     if (!modelFor(m_feature))
         return;
     const bool cloud = cloudFor(m_feature);
-    if (cloud) {
-        const double cost = askEstimate().value(QStringLiteral("cost")).toDouble();
-        if (!m_ai->fitsBudget(cost)) {
-            fail(m_ai->describe(int(Ai::Error::Budget)));
-            return;
-        }
-    }
+    if (cloud && !checkBudget(m_feature, soFarCharsEstimate(), false, 800))
+        return;
     // Budget strictly against the local model's actual context window (2.5 chars/token for JSON/non-Latin safety).
     const qint64 readLimit = cloud ? cloudLimit : localCharBudget(m_feature, false, localWhosWhoLimit, 2.5);
     const int generation = m_generation;
@@ -1510,11 +2026,30 @@ void Companion::runWhosWho(bool forceRefresh) {
               [this, bookId, chapter, pageEnd, pageStart, format, key, readLimit, generation](const QList<Chapter> &chapters) {
                   if (generation != m_generation)
                       return;
+                  if (m_reader && (chapter > m_reader->chapter() ||
+                                   (chapter == m_reader->chapter() && m_reader->pageEnd() > 0 && pageEnd > m_reader->pageEnd()))) {
+                      stop();
+                      return;
+                  }
                   const bool isCloud = cloudFor(QStringLiteral("whoswho"));
                   const qint64 effectiveLimit =
                       isCloud ? cloudLimit
                               : qMin(readLimit, localCharBudget(QStringLiteral("whoswho"), false, localWhosWhoLimit, 2.5));
                   const QString text = joined(chapters, effectiveLimit);
+                  if (text.trimmed().isEmpty()) {
+                      m_people.clear();
+                      m_peopleLoaded = true;
+                      m_peopleChapter = chapter;
+                      m_peopleOffset = pageEnd;
+                      m_peopleKey = key;
+                      m_peopleWhere.clear();
+                      m_peopleWhereLocal = false;
+                      m_busy = false;
+                      m_requestChapter = -1;
+                      m_requestOffset = -1;
+                      emit changed();
+                      return;
+                  }
                   if (!checkBudget(QStringLiteral("whoswho"), text.size(), false, 800))
                       return;
                   const QJsonObject person{{"type", "object"},
@@ -1533,25 +2068,23 @@ void Companion::runWhosWho(bool forceRefresh) {
                                                {"required", QJsonArray{"people"}},
                                                {"additionalProperties", false}};
                   request.system = instructions(QStringLiteral(
-                      "List the people (and named animals or beings) in the book so far, most important first, at most 30: "
-                      "\"name\" as most often called, \"also\" other names or titles (or \"\"), \"who\" one sentence on who "
-                      "they are and their part so far, \"chapter\" where they first appear."));
+                      "List the notable people (and named animals or beings) introduced in the book so far, most "
+                      "important first, at most 30: \"name\" as most often called, \"also\" other names or titles "
+                      "(or \"\"), \"who\" one crisp, spoiler-free sentence on who they are and their role so far, "
+                      "\"chapter\" the exact chapter title or number where they first appear."));
                   request.messages = {{true, bookLine() + QStringLiteral("\n\n") + text}};
                   run(QStringLiteral("whoswho"), request,
                       [this, bookId, chapter, pageEnd, pageStart, format, chapters, key, generation](Ai::Reply *reply) {
                           if (generation != m_generation)
                               return;
+                          if (m_reader &&
+                              (chapter > m_reader->chapter() ||
+                               (chapter == m_reader->chapter() && m_reader->pageEnd() > 0 && pageEnd > m_reader->pageEnd())))
+                              return;
                           QJsonObject result = reply->result();
-                          if (result.isEmpty()) {
-                              QJsonParseError err;
-                              const QJsonDocument doc = QJsonDocument::fromJson(reply->text().toUtf8(), &err);
-                              if (err.error != QJsonParseError::NoError || !doc.isObject()) {
-                                  fail(tr("Who's who couldn't be read from the model's answer. Try again."));
-                                  return;
-                              }
-                              result = doc.object();
-                          }
-                          if (!result.contains(QStringLiteral("people")) ||
+                          if (result.isEmpty())
+                              result = extractJsonObject(reply->text());
+                          if (result.isEmpty() || !result.contains(QStringLiteral("people")) ||
                               !result.value(QStringLiteral("people")).isArray()) {
                               fail(tr("Who's who couldn't be read from the model's answer. Try again."));
                               return;
@@ -1580,8 +2113,9 @@ void Companion::runWhosWho(bool forceRefresh) {
                           m_peopleOffset = pageEnd;
                           m_peopleKey = key;
                           m_peopleWhere = m_where;
+                          m_peopleWhereLocal = m_whereLocal;
                           m_answer.clear();
-                          saveWhosWhoSnapshot(bookId, chapter, pageEnd, pageStart, m_where, m_people);
+                          saveWhosWhoSnapshot(bookId, chapter, pageEnd, pageStart, m_where, m_whereLocal, m_people);
                       });
               });
 }

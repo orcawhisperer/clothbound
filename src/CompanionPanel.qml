@@ -18,6 +18,9 @@ FocusScope {
     property var look
     // "ask", "recap", "whoswho", "pictures", or "selection" (define, explain, translate).
     property string tab: "ask"
+    property bool clearConfirmOpen: false
+    property bool recapCopied: false
+    property bool selectionCopied: false
 
     signal closed()
     signal jumpRequested(int chapter, int offset)
@@ -51,17 +54,29 @@ FocusScope {
         property bool notNow: false
     }
 
+    function openIntelligenceSettings() {
+        if (typeof win !== "undefined" && win && typeof win.showAiSettings === "function")
+            win.showAiSettings()
+    }
+    function focusComposer() {
+        Qt.callLater(() => {
+            if (panel.open && !panel.choosing && panel.tab === "ask")
+                question.forceActiveFocus()
+        })
+    }
     function show(which) {
         if (which)
             tab = which
+        clearConfirmOpen = false
         open = true
         forceActiveFocus()
         if (!choosing && tab === "ask")
-            question.forceActiveFocus()
+            focusComposer()
     }
     function close() {
         if (!open)
             return
+        clearConfirmOpen = false
         if (picturePreview.opened)
             picturePreview.close()
         open = false
@@ -69,12 +84,19 @@ FocusScope {
     }
     function showTab(which) {
         tab = which
-        if (which === "recap" && (companion.feature !== "recap" || companion.problem !== ""))
-            companion.recap()
-        else if (which === "whoswho")
+        clearConfirmOpen = false
+        if (which === "recap") {
+            if (!ai.hasKey && !ai.hasLocal && !companion.recapLoaded)
+                return
+            if (!companion.recapLoaded || companion.recapChapter !== reader.chapter || companion.problem !== "")
+                companion.recap()
+        } else if (which === "whoswho") {
+            if (!ai.hasKey && !ai.hasLocal && !companion.peopleLoaded)
+                return
             companion.whosWho()
-        else if (which === "ask")
-            question.forceActiveFocus()
+        } else if (which === "ask") {
+            focusComposer()
+        }
     }
     function placeLabel(chapter) {
         const ch = chapter >= 0 ? chapter : reader.chapter
@@ -97,9 +119,24 @@ FocusScope {
             return qsTr("%1¢").arg(Math.max(1, Math.round(value * 100)))
         return value.toLocaleCurrencyString(Qt.locale("en_US"), "$")
     }
-    function personInitial(name) {
-        const clean = String(name || "").trim().replace(/^(?:the|an?)\s+/i, "")
-        return clean.length > 0 ? clean.charAt(0).toUpperCase() : "?"
+    function personInitials(name) {
+        const clean = String(name || "").trim().replace(/^(?:the|an?|mr\.?|mrs\.?|ms\.?|miss|dr\.?|sir|lord|lady)\s+/i, "")
+        if (clean.length === 0)
+            return "?"
+        const parts = clean.split(/\s+/).filter(p => p.length > 0)
+        if (parts.length >= 2)
+            return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase()
+        return parts[0].charAt(0).toUpperCase()
+    }
+    function personTint(name) {
+        const key = String(name || "")
+        let hash = 0
+        for (let i = 0; i < key.length; ++i)
+            hash = ((hash << 5) - hash + key.charCodeAt(i)) | 0
+        const paletteDark = ["#2a3548", "#342d46", "#25393a", "#3f3328", "#3d2b36", "#2b382f"]
+        const paletteLight = ["#dfe7f5", "#e9e2f6", "#dceeed", "#f3e7d8", "#f2e1ea", "#e0eee4"]
+        const set = theme.light ? paletteLight : paletteDark
+        return set[Math.abs(hash) % set.length]
     }
     function leftOffLabel() {
         const prev = Number(reader.previousOpenedAt) || 0
@@ -120,27 +157,110 @@ FocusScope {
         const asked = String(raw || "").trim()
         if (asked === "" || companion.busy)
             return
+        if (!ai.hasKey && !ai.hasLocal) {
+            companionChoice.notNow = false
+            return
+        }
+        clearConfirmOpen = false
         if (panel.tab !== "ask")
             panel.tab = "ask"
         talk.stickToBottom = true
         companion.ask(asked)
-        talk.scrollToBottom()
+        Qt.callLater(talk.scrollToBottom)
     }
     function send() {
         if (question.text.trim() === "" || companion.busy)
             return
+        if (!ai.hasKey && !ai.hasLocal) {
+            companionChoice.notNow = false
+            return
+        }
         const asked = question.text
         question.text = ""
         sendText(asked)
     }
+    function askAboutSelection() {
+        const subj = activeSelectionSubject.trim()
+        panel.tab = "ask"
+        clearConfirmOpen = false
+        if (subj !== "") {
+            const snippet = subj.length > 100 ? subj.slice(0, 100).trim() + "…" : subj
+            question.text = qsTr("Tell me more about “%1”").arg(snippet)
+            question.cursorPosition = question.text.length
+        }
+        focusComposer()
+    }
 
-    readonly property bool selectionFeature: ["define", "explain", "translate"].indexOf(companion.feature) >= 0
+    readonly property bool activeSelectionBusy: companion.busy && ["define", "explain", "translate"].indexOf(companion.feature) >= 0
+    readonly property string activeSelectionFeature: activeSelectionBusy
+        ? companion.feature
+        : (companion.selectionFeature !== "" ? companion.selectionFeature
+           : (["define", "explain", "translate"].indexOf(companion.feature) >= 0 ? companion.feature : ""))
+    readonly property string activeSelectionSubject: activeSelectionBusy
+        ? companion.subject
+        : (companion.selectionSubject !== "" ? companion.selectionSubject : companion.subject)
+    readonly property string activeSelectionAnswer: activeSelectionBusy
+        ? companion.answer
+        : (companion.selectionAnswer !== "" ? companion.selectionAnswer
+           : (["define", "explain", "translate"].indexOf(companion.feature) >= 0 ? companion.answer : ""))
+    readonly property string activeSelectionWhere: activeSelectionBusy
+        ? companion.where
+        : (companion.selectionWhere !== "" ? companion.selectionWhere : companion.where)
+    readonly property bool activeSelectionWhereLocal: activeSelectionBusy
+        ? companion.whereLocal
+        : (companion.selectionFeature !== "" ? companion.selectionWhereLocal : companion.whereLocal)
+
+    readonly property bool selectionFeature: activeSelectionFeature !== ""
+    readonly property string recapDisplayText: (companion.busy && companion.feature === "recap")
+        ? companion.answer
+        : (companion.recapText !== "" ? companion.recapText : (companion.feature === "recap" ? companion.answer : ""))
+    readonly property string recapDisplayWhere: (companion.busy && companion.feature === "recap")
+        ? companion.where
+        : (companion.recapWhere !== "" ? companion.recapWhere : companion.where)
+    readonly property bool recapDisplayWhereLocal: (companion.busy && companion.feature === "recap")
+        ? companion.whereLocal
+        : (companion.recapLoaded ? companion.recapWhereLocal : companion.whereLocal)
+
     // The routing feature behind the tab shown, for where its answers are made.
-    readonly property string routeFeature: tab === "selection" ? companion.feature : tab
+    readonly property string routeFeature: tab === "selection" ? (activeSelectionFeature || "explain")
+                                         : tab === "pictures" ? "illustrate" : tab
     // With no key and no model, the panel first asks where the companion
     // should run, unless the reader said "Not now".
     readonly property bool choosing: !ai.hasKey && !ai.hasLocal && !companionChoice.notNow
-    readonly property string featureName: ({ define: qsTr("Define"), explain: qsTr("Explain"), translate: qsTr("Translate") })[companion.feature] || ""
+    readonly property string featureName: ({ define: qsTr("Define"), explain: qsTr("Explain"), translate: qsTr("Translate") })[activeSelectionFeature] || ""
+    readonly property string headerWhere: {
+        void(ai.preset); void(ai.hasKey); void(ai.hasLocal); void(ai.localIsLoopback); void(ai.overrideCount)
+        void(illustrator.available); void(illustrator.budgetOk)
+        if (tab === "pictures")
+            return (illustrator.available && illustrator.budgetOk) ? "cloud" : "none"
+        if (tab === "selection" && activeSelectionFeature === "define" && activeSelectionWhereLocal)
+            return "local"
+        const route = ai.routeFor(routeFeature)
+        if (route === "local")
+            return ai.localIsLoopback ? "local" : "cloud"
+        if (route === "cloud")
+            return "cloud"
+        return "none"
+    }
+    readonly property string headerWhereLabel: {
+        void(ai.preset); void(ai.hasKey); void(ai.hasLocal); void(ai.localIsLoopback); void(ai.localName); void(ai.overrideCount)
+        void(illustrator.available); void(illustrator.budgetOk)
+        if (tab === "pictures") {
+            if (!illustrator.available)
+                return qsTr("Unavailable")
+            return illustrator.budgetOk ? qsTr("Gemini") : qsTr("Budget cap")
+        }
+        if (tab === "selection" && activeSelectionFeature === "define" && activeSelectionWhereLocal) {
+            return activeSelectionWhere === qsTr("Dictionary on this computer")
+                ? qsTr("Dictionary") : qsTr("This computer")
+        }
+        const route = ai.routeFor(routeFeature)
+        if (route === "local")
+            return ai.localIsLoopback ? qsTr("This computer") : (ai.localName || qsTr("Remote"))
+        if (route === "cloud")
+            return qsTr("Gemini")
+        return qsTr("Not set up")
+    }
     readonly property var tryPrompts: {
         void(reader.bookId); void(reader.chapter); void(reader.chapterTitle)
         void(companion.conversation); void(companion.people); void(companion.peopleLoaded)
@@ -148,13 +268,67 @@ FocusScope {
     }
     readonly property var askEstimateInfo: {
         void(reader.chapter); void(reader.pageEnd); void(reader.progress)
-        void(ai.preset); void(ai.localUrl); void(ai.localTextModel); void(ai.hasKey)
+        void(ai.preset); void(ai.localUrl); void(ai.localTextModel); void(ai.hasKey); void(ai.overrideCount)
         return panel.open ? companion.askEstimate() : ({})
+    }
+
+    // Seamless handoff straight from first-run onboarding into the user's pending question or tab.
+    onChoosingChanged: {
+        if (!choosing && (ai.hasKey || ai.hasLocal)) {
+            if (companion.hasPendingSetup) {
+                companion.resumePendingSetup()
+                if (tab === "ask")
+                    focusComposer()
+            } else {
+                companion.clearProblem()
+                if (tab === "recap" && !companion.recapLoaded)
+                    companion.recap()
+                else if (tab === "whoswho" && !companion.peopleLoaded)
+                    companion.whosWho()
+                else if (tab === "ask")
+                    focusComposer()
+            }
+        }
+    }
+
+    Connections {
+        target: illustrator
+        function onSavedCopy(path) {
+            toast.show(qsTr("Saved to %1").arg(path.replace(/^.*\/(Pictures\/)/, "$1")))
+        }
+        function onSaveFailed(message) {
+            toast.show(message || qsTr("Couldn't save a copy of this picture"))
+        }
+    }
+
+    Connections {
+        target: companion
+        function onConversationChanged() {
+            if (talk.stickToBottom)
+                Qt.callLater(talk.scrollToBottom)
+        }
+        function onBusyChanged() {
+            if (!companion.busy && companion.feature === "ask" && talk.stickToBottom)
+                Qt.callLater(talk.scrollToBottom)
+        }
+    }
+
+    Timer {
+        id: recapCopiedTimer
+        interval: 1500
+        onTriggered: panel.recapCopied = false
+    }
+    Timer {
+        id: selectionCopiedTimer
+        interval: 1500
+        onTriggered: panel.selectionCopied = false
     }
 
     Keys.onEscapePressed: {
         if (picturePreview.opened)
             picturePreview.close()
+        else if (clearConfirmOpen)
+            clearConfirmOpen = false
         else
             close()
     }
@@ -202,7 +376,7 @@ FocusScope {
         id: jumpChip
         property string tipText: ""
         implicitHeight: 22
-        implicitWidth: Math.min(320, jumpLabel.implicitWidth + 16)
+        implicitWidth: Math.min(Math.max(120, panel.width - 48), jumpLabel.implicitWidth + 16)
         hoverEnabled: true
         focusPolicy: Qt.TabFocus
         ToolTip.visible: hovered && tipText !== ""
@@ -211,7 +385,9 @@ FocusScope {
         HoverHandler { cursorShape: Qt.PointingHandCursor }
         background: Rectangle {
             radius: Ui.radius(10, theme.radius)
-            color: jumpChip.hovered ? Ui.tint(theme.accent, 0.28) : theme.accentSoft
+            color: jumpChip.pressed ? Ui.tint(theme.accent, 0.34)
+                 : jumpChip.hovered ? Ui.tint(theme.accent, 0.28) : theme.accentSoft
+            Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 90 } }
             Rectangle {
                 anchors.fill: parent
                 anchors.margins: -3
@@ -237,6 +413,7 @@ FocusScope {
     }
     component SmallAction: AbstractButton {
         id: smallAction
+        property bool positive: false
         implicitHeight: 22
         implicitWidth: smallActionLabel.implicitWidth + 12
         hoverEnabled: true
@@ -260,7 +437,8 @@ FocusScope {
         contentItem: Label {
             id: smallActionLabel
             text: smallAction.text
-            color: smallAction.hovered ? theme.ink1 : theme.ink4
+            color: smallAction.positive ? theme.positiveInk
+                 : smallAction.hovered ? theme.ink1 : theme.ink4
             font.pixelSize: 11
             font.weight: Font.Medium
             horizontalAlignment: Text.AlignHCenter
@@ -278,6 +456,17 @@ FocusScope {
         selectionColor: theme.accentSoft
         font.pixelSize: 15
         font.family: "Literata"
+    }
+    // Shimmering prose loading placeholder.
+    component ProseSkeleton: ColumnLayout {
+        property bool compact: false
+        Layout.fillWidth: true
+        spacing: compact ? 8 : 10
+        Skeleton { Layout.fillWidth: true; Layout.preferredHeight: compact ? 12 : 14 }
+        Skeleton { Layout.fillWidth: true; Layout.rightMargin: 22; Layout.preferredHeight: compact ? 12 : 14 }
+        Skeleton { Layout.fillWidth: true; Layout.rightMargin: 48; Layout.preferredHeight: compact ? 12 : 14 }
+        Skeleton { visible: !compact; Layout.fillWidth: true; Layout.topMargin: 6; Layout.rightMargin: 12; Layout.preferredHeight: 14 }
+        Skeleton { visible: !compact; Layout.fillWidth: true; Layout.rightMargin: 76; Layout.preferredHeight: 14 }
     }
     // Provenance line with computer/cloud glyph under each result.
     component ProvenanceRow: RowLayout {
@@ -317,32 +506,122 @@ FocusScope {
         }
         TextButton { size: "compact"; text: qsTr("Stop"); onClicked: companion.stop() }
     }
-    component Problem: Label {
-        property bool active: true
+    component ErrorCard: Rectangle {
+        id: errCard
+        property string message: ""
+        property bool showRetry: false
+        property bool showSettings: false
+        signal retryClicked()
+        signal dismissClicked()
+
         Layout.fillWidth: true
-        visible: active && companion.problem !== ""
-        text: companion.problem
-        color: theme.danger
-        font.pixelSize: 12
-        wrapMode: Text.Wrap
+        visible: message !== ""
+        implicitHeight: errCol.implicitHeight + 20
+        radius: Ui.radius(10, theme.radius)
+        color: Ui.tint(theme.danger, 0.08)
+        border.width: 1
+        border.color: Ui.tint(theme.danger, 0.24)
+
+        ColumnLayout {
+            id: errCol
+            anchors.fill: parent
+            anchors.margins: 10
+            spacing: 8
+            Label {
+                Layout.fillWidth: true
+                text: errCard.message
+                color: theme.danger
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                lineHeight: 1.4
+            }
+            Flow {
+                Layout.fillWidth: true
+                visible: errCard.showRetry || errCard.showSettings
+                spacing: 6
+                TextButton {
+                    visible: errCard.showRetry
+                    size: "compact"
+                    text: qsTr("Try again")
+                    onClicked: errCard.retryClicked()
+                }
+                TextButton {
+                    visible: errCard.showSettings
+                    size: "compact"
+                    primary: !errCard.showRetry
+                    text: qsTr("Intelligence settings")
+                    onClicked: panel.openIntelligenceSettings()
+                }
+                TextButton {
+                    size: "compact"
+                    ghost: true
+                    text: qsTr("Dismiss")
+                    onClicked: errCard.dismissClicked()
+                }
+            }
+        }
+    }
+    component UnconfiguredCard: Rectangle {
+        Layout.fillWidth: true
+        implicitHeight: setupCol.implicitHeight + 24
+        radius: Ui.radius(10, theme.radius)
+        color: Ui.tint(theme.ink1, 0.04)
+        border.width: 1
+        border.color: theme.hairline
+        ColumnLayout {
+            id: setupCol
+            anchors.fill: parent
+            anchors.margins: 12
+            spacing: 8
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Companion isn't set up yet")
+                color: theme.ink1
+                font.pixelSize: 13
+                font.weight: Font.DemiBold
+            }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Choose a model on this computer or connect Gemini with your key to ask about the book.")
+                color: theme.ink3
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                lineHeight: 1.45
+            }
+            RowLayout {
+                spacing: 8
+                TextButton {
+                    size: "compact"
+                    primary: true
+                    text: qsTr("Choose where it runs")
+                    onClicked: companionChoice.notNow = false
+                }
+                TextButton {
+                    size: "compact"
+                    ghost: true
+                    text: qsTr("Settings")
+                    onClicked: panel.openIntelligenceSettings()
+                }
+            }
+        }
     }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
 
-        // --- Header block (title, segmented tabs, spoiler shield) ----------
+        // --- Header block (title, provenance pill, segmented tabs, spoiler shield) ---
         ColumnLayout {
             Layout.fillWidth: true
             Layout.topMargin: 14
             Layout.bottomMargin: 12
             Layout.leftMargin: 16
             Layout.rightMargin: 16
-            spacing: 12
+            spacing: 10
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: 8
+                spacing: 6
                 Glyph { Layout.preferredWidth: 16; Layout.preferredHeight: 16; stroke: 1.8; path: Icons.sparkle; color: theme.accent }
                 Label {
                     Layout.fillWidth: true
@@ -350,15 +629,31 @@ FocusScope {
                     color: theme.ink1
                     font.pixelSize: 14
                     font.weight: Font.DemiBold
+                    elide: Text.ElideRight
+                }
+                ProviderPill {
+                    visible: !panel.choosing
+                    where: panel.headerWhere
+                    text: panel.headerWhereLabel
+                    interactive: true
+                    onClicked: panel.openIntelligenceSettings()
+                    ToolTip.visible: hovered
+                    ToolTip.delay: 450
+                    ToolTip.text: {
+                        const base = panel.tab === "pictures"
+                            ? (illustrator.available && illustrator.budgetOk ? illustrator.where : illustrator.unavailableReason)
+                            : ai.whereFor(panel.routeFeature)
+                        return base ? qsTr("%1 · Open Intelligence settings").arg(base) : qsTr("Open Intelligence settings")
+                    }
                 }
                 IconButton {
                     visible: !panel.choosing && panel.tab === "ask" && companion.conversation.length > 0 && !companion.busy
                     implicitWidth: 28
                     implicitHeight: 28
                     glyph: Icons.plus
-                    tone: theme.ink3
+                    tone: panel.clearConfirmOpen ? theme.accentInk : theme.ink3
                     tip: qsTr("New conversation")
-                    onClicked: companion.newConversation()
+                    onClicked: panel.clearConfirmOpen = !panel.clearConfirmOpen
                 }
                 IconButton {
                     implicitWidth: 28
@@ -367,6 +662,50 @@ FocusScope {
                     tone: theme.ink3
                     tip: qsTr("Close companion (C)")
                     onClicked: panel.close()
+                }
+            }
+
+            // Quiet inline confirmation before clearing a multi-turn thread.
+            Rectangle {
+                visible: !panel.choosing && panel.tab === "ask" && panel.clearConfirmOpen && companion.conversation.length > 0
+                Layout.fillWidth: true
+                implicitHeight: clearRow.implicitHeight + 16
+                radius: Ui.radius(9, theme.radius)
+                color: Ui.tint(theme.ink1, 0.05)
+                border.width: 1
+                border.color: theme.hairline
+                RowLayout {
+                    id: clearRow
+                    anchors.fill: parent
+                    anchors.leftMargin: 10
+                    anchors.rightMargin: 8
+                    anchors.topMargin: 8
+                    anchors.bottomMargin: 8
+                    spacing: 6
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Start a new thread?")
+                        color: theme.ink2
+                        font.pixelSize: 12
+                        font.weight: Font.Medium
+                        elide: Text.ElideRight
+                    }
+                    TextButton {
+                        size: "compact"
+                        ghost: true
+                        text: qsTr("Cancel")
+                        onClicked: panel.clearConfirmOpen = false
+                    }
+                    TextButton {
+                        size: "compact"
+                        primary: true
+                        text: qsTr("Clear")
+                        onClicked: {
+                            panel.clearConfirmOpen = false
+                            companion.newConversation()
+                            panel.focusComposer()
+                        }
+                    }
                 }
             }
 
@@ -424,254 +763,321 @@ FocusScope {
         }
 
         // --- Ask -----------------------------------------------------------
-        Flickable {
-            id: talk
-            property bool stickToBottom: true
-            property bool autoScrolling: false
-            function scrollToBottom() {
-                autoScrolling = true
-                contentY = Math.max(0, contentHeight - height)
-                autoScrolling = false
-            }
+        Item {
             visible: !panel.choosing && panel.tab === "ask"
             Layout.fillWidth: true
             Layout.fillHeight: true
-            clip: true
-            contentHeight: Math.max(height, talkColumn.implicitHeight + 36)
-            boundsBehavior: Flickable.StopAtBounds
-            ScrollBar.vertical: ScrollBar {}
-            // Respect manual upward wheel, drag, or scrollbar scrolling during streaming.
-            onContentYChanged: {
-                if (!autoScrolling)
-                    stickToBottom = (contentY + height >= contentHeight - 24)
-            }
-            onContentHeightChanged: {
-                if (companion.feature === "ask" && companion.busy && stickToBottom)
-                    scrollToBottom()
-            }
 
-            ColumnLayout {
-                id: talkColumn
-                x: 16
-                y: 18
-                width: talk.width - 32
-                height: Math.max(implicitHeight, talk.height - 36)
-                spacing: 16
+            Flickable {
+                id: talk
+                property bool stickToBottom: true
+                property bool autoScrolling: false
+                property real lastContentY: 0
+                function scrollToBottom() {
+                    autoScrolling = true
+                    const targetY = Math.max(0, contentHeight - height)
+                    contentY = targetY
+                    lastContentY = targetY
+                    autoScrolling = false
+                }
+                anchors.fill: parent
+                clip: true
+                contentHeight: Math.max(height, talkColumn.implicitHeight + 36)
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar {}
 
-                // Re-entry card if the reader chose "Not now" earlier and still has no model.
-                Rectangle {
-                    Layout.fillWidth: true
-                    visible: companionChoice.notNow && !ai.hasKey && !ai.hasLocal && companion.conversation.length === 0
-                    implicitHeight: setupCardCol.implicitHeight + 24
-                    radius: Ui.radius(10, theme.radius)
-                    color: Ui.tint(theme.ink1, 0.04)
-                    border.width: 1
-                    border.color: theme.hairline
-                    ColumnLayout {
-                        id: setupCardCol
-                        anchors.fill: parent
-                        anchors.margins: 12
-                        spacing: 8
-                        Label {
+                // Respect manual upward wheel, drag, or scrollbar scrolling during streaming.
+                onContentYChanged: {
+                    if (!autoScrolling) {
+                        const nearBottom = (contentY + height >= contentHeight - 28)
+                        if (nearBottom)
+                            stickToBottom = true
+                        else if (contentY < lastContentY - 2)
+                            stickToBottom = false
+                    }
+                    lastContentY = contentY
+                }
+                onContentHeightChanged: {
+                    if (stickToBottom && (companion.conversation.length > 0 || (companion.feature === "ask" && companion.busy)))
+                        Qt.callLater(scrollToBottom)
+                }
+
+                ColumnLayout {
+                    id: talkColumn
+                    x: 16
+                    y: 18
+                    width: talk.width - 32
+                    height: Math.max(implicitHeight, talk.height - 36)
+                    spacing: 16
+
+                    // Re-entry card if the reader chose "Not now" earlier and still has no model.
+                    UnconfiguredCard {
+                        visible: companionChoice.notNow && !ai.hasKey && !ai.hasLocal && companion.conversation.length === 0
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        visible: !(companionChoice.notNow && !ai.hasKey && !ai.hasLocal)
+                                 && companion.conversation.length === 0 && !(companion.feature === "ask" && companion.busy)
+                        text: qsTr("Ask anything about the book so far: who someone is, why something happened, or what a phrase means. Nothing past your page is read.")
+                        color: theme.ink3
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                        lineHeight: 1.5
+                    }
+
+                    Repeater {
+                        model: companion.conversation
+                        delegate: ColumnLayout {
+                            id: turnBox
+                            required property var modelData
+                            required property int index
+                            property bool copied: false
                             Layout.fillWidth: true
-                            text: qsTr("Companion isn't set up yet")
-                            color: theme.ink1
-                            font.pixelSize: 13
+                            spacing: 10
+
+                            Timer {
+                                id: copyReset
+                                interval: 1500
+                                onTriggered: turnBox.copied = false
+                            }
+
+                            // User bubble (neutral 8%, right-aligned, max 280px) or Assistant reply (Inter 13px).
+                            Item {
+                                Layout.fillWidth: true
+                                implicitHeight: bubbleRect.implicitHeight
+
+                                TextMetrics {
+                                    id: userMetrics
+                                    font: said.font
+                                    text: turnBox.modelData.fromUser ? turnBox.modelData.text : ""
+                                }
+
+                                Rectangle {
+                                    id: bubbleRect
+                                    readonly property real maxBubbleW: Math.min(280, parent.width * 0.88)
+                                    width: turnBox.modelData.fromUser
+                                           ? Math.min(maxBubbleW, Math.max(48, Math.ceil(userMetrics.advanceWidth) + 26))
+                                           : parent.width
+                                    x: turnBox.modelData.fromUser ? Math.max(0, parent.width - width) : 0
+                                    implicitHeight: said.implicitHeight + (turnBox.modelData.fromUser ? 18 : 0)
+                                    height: implicitHeight
+                                    radius: Ui.radius(12, theme.radius)
+                                    color: turnBox.modelData.fromUser ? Ui.tint(theme.ink1, 0.08) : "transparent"
+
+                                    TextEdit {
+                                        id: said
+                                        x: turnBox.modelData.fromUser ? 12 : 0
+                                        y: turnBox.modelData.fromUser ? 9 : 0
+                                        width: parent.width - (turnBox.modelData.fromUser ? 24 : 0)
+                                        text: turnBox.modelData.fromUser ? turnBox.modelData.text : companion.sanitizeMarkdown(turnBox.modelData.text)
+                                        readOnly: true
+                                        selectByMouse: true
+                                        wrapMode: Text.Wrap
+                                        textFormat: turnBox.modelData.fromUser ? TextEdit.PlainText : TextEdit.MarkdownText
+                                        color: turnBox.modelData.fromUser ? theme.ink1 : theme.ink2
+                                        selectionColor: theme.accentSoft
+                                        font.pixelSize: 13
+                                    }
+                                }
+                            }
+
+                            Flow {
+                                Layout.fillWidth: true
+                                visible: !turnBox.modelData.fromUser && !!turnBox.modelData.sources && turnBox.modelData.sources.length > 0
+                                spacing: 6
+                                Repeater {
+                                    model: (!turnBox.modelData.fromUser && turnBox.modelData.sources) ? turnBox.modelData.sources : []
+                                    delegate: JumpChip {
+                                        required property var modelData
+                                        text: modelData.label || panel.placeLabel(modelData.chapter)
+                                        tipText: modelData.excerpt || ""
+                                        onClicked: panel.jumpRequested(modelData.chapter, modelData.offset || 0)
+                                    }
+                                }
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                visible: !turnBox.modelData.fromUser && turnBox.modelData.text !== ""
+                                spacing: 4
+
+                                ProvenanceRow {
+                                    local: !!turnBox.modelData.local
+                                    text: turnBox.modelData.provenance || ""
+                                }
+
+                                RowLayout {
+                                    spacing: 4
+                                    SmallAction {
+                                        positive: turnBox.copied
+                                        text: turnBox.copied ? qsTr("Copied ✓") : qsTr("Copy")
+                                        onClicked: {
+                                            reader.copyText(turnBox.modelData.text)
+                                            turnBox.copied = true
+                                            copyReset.restart()
+                                            toast.show(qsTr("Copied"))
+                                        }
+                                    }
+                                    SmallAction {
+                                        text: qsTr("Save as note")
+                                        onClicked: {
+                                            const turns = companion.conversation
+                                            const prev = turnBox.index > 0 ? turns[turnBox.index - 1] : null
+                                            const quote = prev && prev.fromUser ? prev.text : panel.placeLabel(reader.chapter)
+                                            panel.saveAsNote(quote, turnBox.modelData.text)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Crisp thinking skeleton while waiting for first streamed token.
+                    ProseSkeleton {
+                        compact: true
+                        visible: companion.feature === "ask" && companion.busy && companion.answer === ""
+                    }
+
+                    // Live streaming reply (matches committed assistant turn typography identically).
+                    TextEdit {
+                        Layout.fillWidth: true
+                        visible: companion.feature === "ask" && companion.busy && companion.answer !== ""
+                        readOnly: true
+                        selectByMouse: true
+                        wrapMode: Text.Wrap
+                        textFormat: TextEdit.MarkdownText
+                        text: companion.sanitizeMarkdown(companion.answer)
+                        color: theme.ink2
+                        selectionColor: theme.accentSoft
+                        font.pixelSize: 13
+                    }
+                    Flow {
+                        Layout.fillWidth: true
+                        visible: companion.feature === "ask" && companion.busy && companion.currentSources.length > 0
+                        spacing: 6
+                        Repeater {
+                            model: companion.currentSources
+                            delegate: JumpChip {
+                                required property var modelData
+                                text: modelData.label || panel.placeLabel(modelData.chapter)
+                                tipText: modelData.excerpt || ""
+                                onClicked: panel.jumpRequested(modelData.chapter, modelData.offset || 0)
+                            }
+                        }
+                    }
+                    Working { active: panel.tab === "ask" && companion.feature === "ask" }
+                    ErrorCard {
+                        message: panel.tab === "ask" && companion.feature === "ask" ? companion.problem : ""
+                        showRetry: companion.canRetry
+                        showSettings: companion.problemIsConfig
+                        onRetryClicked: companion.retry()
+                        onDismissClicked: companion.clearProblem()
+                    }
+
+                    Item { Layout.fillHeight: true }
+
+                    // Suggested starter / follow-up prompts ("Try").
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        visible: !companion.busy && (ai.hasKey || ai.hasLocal) && panel.tryPrompts.length > 0
+                        spacing: 6
+                        Label {
+                            text: qsTr("Try")
+                            color: theme.ink4
+                            font.pixelSize: 11
                             font.weight: Font.DemiBold
                         }
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Choose a model on this computer or connect Gemini with your key to ask about the book.")
-                            color: theme.ink3
-                            font.pixelSize: 12
-                            wrapMode: Text.Wrap
-                            lineHeight: 1.4
-                        }
-                        TextButton {
-                            size: "compact"
-                            primary: true
-                            text: qsTr("Choose where it runs")
-                            onClicked: companionChoice.notNow = false
-                        }
-                    }
-                }
-
-                Label {
-                    Layout.fillWidth: true
-                    visible: !(companionChoice.notNow && !ai.hasKey && !ai.hasLocal)
-                             && companion.conversation.length === 0 && !(companion.feature === "ask" && companion.busy)
-                    text: qsTr("Ask anything about the book so far: who someone is, why something happened, or what a phrase means. Nothing past your page is read.")
-                    color: theme.ink3
-                    font.pixelSize: 13
-                    wrapMode: Text.Wrap
-                    lineHeight: 1.5
-                }
-
-                Repeater {
-                    model: companion.conversation
-                    delegate: ColumnLayout {
-                        id: turnBox
-                        required property var modelData
-                        required property int index
-                        Layout.fillWidth: true
-                        spacing: 10
-
-                        // User bubble (neutral 8%, right-aligned, max 280px) or Assistant reply (Inter 13px).
-                        Rectangle {
-                            Layout.fillWidth: !turnBox.modelData.fromUser
-                            Layout.maximumWidth: turnBox.modelData.fromUser ? Math.min(280, talkColumn.width * 0.88) : talkColumn.width
-                            Layout.alignment: turnBox.modelData.fromUser ? Qt.AlignRight : Qt.AlignLeft
-                            implicitWidth: turnBox.modelData.fromUser ? Math.min(280, said.implicitWidth + 24) : talkColumn.width
-                            implicitHeight: said.implicitHeight + (turnBox.modelData.fromUser ? 18 : 0)
-                            radius: Ui.radius(12, theme.radius)
-                            color: turnBox.modelData.fromUser ? Ui.tint(theme.ink1, 0.08) : "transparent"
-
-                            TextEdit {
-                                id: said
-                                x: turnBox.modelData.fromUser ? 12 : 0
-                                y: turnBox.modelData.fromUser ? 9 : 0
-                                width: parent.width - (turnBox.modelData.fromUser ? 24 : 0)
-                                text: turnBox.modelData.fromUser ? turnBox.modelData.text : companion.sanitizeMarkdown(turnBox.modelData.text)
-                                readOnly: true
-                                selectByMouse: true
-                                wrapMode: Text.Wrap
-                                textFormat: turnBox.modelData.fromUser ? TextEdit.PlainText : TextEdit.MarkdownText
-                                color: turnBox.modelData.fromUser ? theme.ink1 : theme.ink2
-                                selectionColor: theme.accentSoft
-                                font.pixelSize: 13
-                            }
-                        }
-
-                        Flow {
-                            Layout.fillWidth: true
-                            visible: !turnBox.modelData.fromUser && !!turnBox.modelData.sources && turnBox.modelData.sources.length > 0
-                            spacing: 6
-                            Repeater {
-                                model: (!turnBox.modelData.fromUser && turnBox.modelData.sources) ? turnBox.modelData.sources : []
-                                delegate: JumpChip {
-                                    required property var modelData
-                                    text: modelData.label || panel.placeLabel(modelData.chapter)
-                                    tipText: modelData.excerpt || ""
-                                    onClicked: panel.jumpRequested(modelData.chapter, modelData.offset || 0)
-                                }
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            visible: !turnBox.modelData.fromUser && turnBox.modelData.text !== ""
-                            spacing: 4
-
-                            ProvenanceRow {
-                                local: !!turnBox.modelData.local
-                                text: turnBox.modelData.provenance || ""
-                            }
-
-                            RowLayout {
-                                spacing: 4
-                                SmallAction {
-                                    text: qsTr("Copy")
-                                    onClicked: {
-                                        reader.copyText(turnBox.modelData.text)
-                                        toast.show(qsTr("Copied"))
+                        Repeater {
+                            model: panel.tryPrompts
+                            delegate: AbstractButton {
+                                id: tryBtn
+                                required property string modelData
+                                Layout.fillWidth: true
+                                implicitHeight: tryLabel.implicitHeight + 16
+                                hoverEnabled: true
+                                focusPolicy: Qt.TabFocus
+                                onClicked: panel.sendText(modelData)
+                                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                background: Rectangle {
+                                    radius: Ui.radius(7, theme.radius)
+                                    color: tryBtn.pressed ? theme.fillPressed
+                                         : tryBtn.hovered ? theme.fill : "transparent"
+                                    border.width: 1
+                                    border.color: theme.hairline
+                                    Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 90 } }
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.margins: -3
+                                        visible: tryBtn.visualFocus
+                                        radius: Ui.radius(10, theme.radius)
+                                        color: "transparent"
+                                        border.width: 2
+                                        border.color: theme.accent
                                     }
                                 }
-                                SmallAction {
-                                    text: qsTr("Save as note")
-                                    onClicked: {
-                                        const turns = companion.conversation
-                                        const prev = turnBox.index > 0 ? turns[turnBox.index - 1] : null
-                                        const quote = prev && prev.fromUser ? prev.text : panel.placeLabel(reader.chapter)
-                                        panel.saveAsNote(quote, turnBox.modelData.text)
-                                    }
+                                contentItem: Label {
+                                    id: tryLabel
+                                    text: tryBtn.modelData
+                                    color: tryBtn.hovered ? theme.ink1 : theme.ink2
+                                    font.pixelSize: 13
+                                    wrapMode: Text.Wrap
+                                    leftPadding: 10
+                                    rightPadding: 10
+                                    topPadding: 8
+                                    bottomPadding: 8
                                 }
                             }
                         }
                     }
                 }
+            }
 
-                // Live streaming reply.
-                TextEdit {
-                    Layout.fillWidth: true
-                    visible: companion.feature === "ask" && companion.busy && companion.answer !== ""
-                    readOnly: true
-                    selectByMouse: true
-                    wrapMode: Text.Wrap
-                    textFormat: TextEdit.MarkdownText
-                    text: companion.sanitizeMarkdown(companion.answer)
-                    color: theme.ink2
-                    selectionColor: theme.accentSoft
-                    font.pixelSize: 13
+            // Floating "Jump to latest" pill when reader scrolls up during a thread or stream.
+            AbstractButton {
+                id: jumpLatestBtn
+                anchors.right: parent.right
+                anchors.rightMargin: 16
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 12
+                readonly property bool wanted: !talk.stickToBottom && talk.contentHeight > talk.height + 40
+                                               && (companion.conversation.length > 0 || (companion.feature === "ask" && companion.busy))
+                opacity: wanted ? 1 : 0
+                visible: opacity > 0.01
+                Behavior on opacity { enabled: !theme.reducedMotion; NumberAnimation { duration: 140 } }
+                implicitHeight: 28
+                implicitWidth: jumpLatestRow.implicitWidth + 18
+                hoverEnabled: true
+                focusPolicy: Qt.TabFocus
+                onClicked: {
+                    talk.stickToBottom = true
+                    talk.scrollToBottom()
                 }
-                Flow {
-                    Layout.fillWidth: true
-                    visible: companion.feature === "ask" && companion.busy && companion.currentSources.length > 0
-                    spacing: 6
-                    Repeater {
-                        model: companion.currentSources
-                        delegate: JumpChip {
-                            required property var modelData
-                            text: modelData.label || panel.placeLabel(modelData.chapter)
-                            tipText: modelData.excerpt || ""
-                            onClicked: panel.jumpRequested(modelData.chapter, modelData.offset || 0)
-                        }
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                background: Rectangle {
+                    radius: Ui.radius(14, theme.radius)
+                    color: jumpLatestBtn.hovered ? theme.raised : theme.overlay
+                    border.width: 1
+                    border.color: theme.separator
+                }
+                contentItem: Row {
+                    id: jumpLatestRow
+                    anchors.centerIn: parent
+                    spacing: 5
+                    Glyph {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 11
+                        height: 11
+                        stroke: 2.2
+                        path: Icons.chevronDown
+                        color: theme.ink1
                     }
-                }
-                Working { active: panel.tab === "ask" && companion.feature === "ask" }
-                Problem { active: panel.tab === "ask" && companion.feature === "ask" }
-
-                Item { Layout.fillHeight: true }
-
-                // Suggested starter / follow-up prompts ("Try").
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    visible: !companion.busy && (ai.hasKey || ai.hasLocal) && panel.tryPrompts.length > 0
-                    spacing: 6
                     Label {
-                        text: qsTr("Try")
-                        color: theme.ink4
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Latest")
+                        color: theme.ink1
                         font.pixelSize: 11
-                        font.weight: Font.DemiBold
-                    }
-                    Repeater {
-                        model: panel.tryPrompts
-                        delegate: AbstractButton {
-                            id: tryBtn
-                            required property string modelData
-                            Layout.fillWidth: true
-                            implicitHeight: tryLabel.implicitHeight + 16
-                            hoverEnabled: true
-                            focusPolicy: Qt.TabFocus
-                            onClicked: panel.sendText(modelData)
-                            HoverHandler { cursorShape: Qt.PointingHandCursor }
-                            background: Rectangle {
-                                radius: Ui.radius(7, theme.radius)
-                                color: tryBtn.pressed ? theme.fillPressed
-                                     : tryBtn.hovered ? theme.fill : "transparent"
-                                border.width: 1
-                                border.color: theme.hairline
-                                Rectangle {
-                                    anchors.fill: parent
-                                    anchors.margins: -3
-                                    visible: tryBtn.visualFocus
-                                    radius: Ui.radius(10, theme.radius)
-                                    color: "transparent"
-                                    border.width: 2
-                                    border.color: theme.accent
-                                }
-                            }
-                            contentItem: Label {
-                                id: tryLabel
-                                text: tryBtn.modelData
-                                color: tryBtn.hovered ? theme.ink1 : theme.ink2
-                                font.pixelSize: 13
-                                wrapMode: Text.Wrap
-                                leftPadding: 10
-                                rightPadding: 10
-                                topPadding: 8
-                                bottomPadding: 8
-                            }
-                        }
+                        font.weight: Font.Medium
                     }
                 }
             }
@@ -693,23 +1099,54 @@ FocusScope {
                 y: 18
                 width: parent.width - 32
                 spacing: 14
-                readonly property bool matchesTab: panel.tab === "recap" ? companion.feature === "recap" : panel.selectionFeature
+                readonly property bool isRecap: panel.tab === "recap"
+                readonly property bool isSelection: panel.tab === "selection"
+                readonly property bool tabBusy: isRecap
+                    ? (companion.busy && companion.feature === "recap")
+                    : panel.activeSelectionBusy
+                readonly property string displayAnswer: isRecap ? panel.recapDisplayText : panel.activeSelectionAnswer
+                readonly property string displayWhere: isRecap ? panel.recapDisplayWhere : panel.activeSelectionWhere
+                readonly property bool displayWhereLocal: isRecap ? panel.recapDisplayWhereLocal : panel.activeSelectionWhereLocal
+                readonly property string tabProblem: {
+                    if (isRecap && companion.feature === "recap")
+                        return companion.problem
+                    if (isSelection && ["define", "explain", "translate"].indexOf(companion.feature) >= 0)
+                        return companion.problem
+                    return ""
+                }
 
-                // Recap eyebrow: "WHERE YOU LEFT OFF · 3 DAYS AGO".
-                Label {
+                // Recap header: "WHERE YOU LEFT OFF · 3 DAYS AGO" + chapter & progress.
+                ColumnLayout {
                     Layout.fillWidth: true
-                    visible: panel.tab === "recap"
-                    text: panel.leftOffLabel()
-                    color: theme.ink4
-                    font.pixelSize: 11
-                    font.weight: Font.DemiBold
-                    font.letterSpacing: 0.45
-                    font.capitalization: Font.AllUppercase
+                    visible: proseColumn.isRecap
+                    spacing: 3
+                    Label {
+                        Layout.fillWidth: true
+                        text: panel.leftOffLabel()
+                        color: theme.ink4
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        font.letterSpacing: 0.45
+                        font.capitalization: Font.AllUppercase
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("%1 · %2%").arg(panel.placeLabel(reader.chapter)).arg(Math.round(reader.progress * 100))
+                        color: theme.ink2
+                        font.pixelSize: 13
+                        font.weight: Font.Medium
+                        elide: Text.ElideRight
+                    }
+                }
+
+                // Unconfigured prompt on Previously tab when user earlier chose "Not now".
+                UnconfiguredCard {
+                    visible: proseColumn.isRecap && !ai.hasKey && !ai.hasLocal && proseColumn.displayAnswer === "" && !proseColumn.tabBusy
                 }
 
                 RowLayout {
                     Layout.fillWidth: true
-                    visible: panel.tab === "selection" && companion.feature === "translate"
+                    visible: proseColumn.isSelection && panel.activeSelectionFeature === "translate"
                     spacing: 8
                     Label {
                         text: qsTr("Translate into")
@@ -731,41 +1168,107 @@ FocusScope {
                     }
                 }
 
-                Label {
+                // Source passage blockquote card for selection actions.
+                Rectangle {
                     Layout.fillWidth: true
-                    visible: panel.tab === "selection" && companion.subject !== ""
-                    text: "“" + companion.subject + "”"
-                    color: theme.ink3
-                    font.pixelSize: 14
-                    font.italic: true
-                    font.family: "Literata"
-                    wrapMode: Text.Wrap
-                    maximumLineCount: 6
-                    elide: Text.ElideRight
+                    visible: proseColumn.isSelection && panel.activeSelectionSubject !== ""
+                    implicitHeight: quoteLabel.implicitHeight + 18
+                    radius: Ui.radius(8, theme.radius)
+                    color: Ui.tint(theme.ink1, 0.03)
+                    Rectangle {
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.topMargin: 8
+                        anchors.bottomMargin: 8
+                        anchors.leftMargin: 8
+                        width: 2
+                        radius: 1
+                        color: theme.accentSoft
+                    }
+                    Label {
+                        id: quoteLabel
+                        anchors.fill: parent
+                        anchors.leftMargin: 18
+                        anchors.rightMargin: 12
+                        anchors.topMargin: 9
+                        anchors.bottomMargin: 9
+                        text: "“" + panel.activeSelectionSubject + "”"
+                        color: theme.ink3
+                        font.pixelSize: 14
+                        font.italic: true
+                        font.family: "Literata"
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 6
+                        elide: Text.ElideRight
+                        lineHeight: 1.45
+                    }
+                }
+
+                // Clean re-trigger prompt if user stopped Recap before it finished.
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: proseColumn.isRecap && (ai.hasKey || ai.hasLocal)
+                             && !proseColumn.tabBusy && proseColumn.tabProblem === "" && proseColumn.displayAnswer === ""
+                    spacing: 10
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Catch up on the story so far without reading ahead of your page.")
+                        color: theme.ink3
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                        lineHeight: 1.5
+                    }
+                    TextButton {
+                        size: "compact"
+                        primary: true
+                        text: qsTr("Write recap")
+                        onClicked: companion.recap()
+                    }
+                }
+
+                // Crisp shimmering skeleton while waiting for first streamed prose token.
+                ProseSkeleton {
+                    visible: proseColumn.tabBusy && proseColumn.displayAnswer === ""
                 }
 
                 Prose {
-                    visible: proseColumn.matchesTab && companion.answer !== ""
-                    text: companion.sanitizeMarkdown(companion.answer)
+                    visible: proseColumn.displayAnswer !== ""
+                    text: companion.sanitizeMarkdown(proseColumn.displayAnswer)
                 }
-                Working { active: proseColumn.matchesTab && (panel.tab === "recap" || panel.tab === "selection") }
-                Problem { active: proseColumn.matchesTab && (panel.tab === "recap" || panel.tab === "selection") }
+                Working { active: proseColumn.tabBusy }
+                ErrorCard {
+                    message: proseColumn.tabProblem
+                    showRetry: companion.canRetry
+                    showSettings: companion.problemIsConfig
+                    onRetryClicked: proseColumn.isRecap ? companion.refreshRecap() : companion.retry()
+                    onDismissClicked: companion.clearProblem()
+                }
 
                 ProvenanceRow {
-                    visible: proseColumn.matchesTab && !companion.busy && companion.answer !== "" && companion.where !== ""
-                    local: companion.whereLocal
-                    text: companion.where
+                    visible: !proseColumn.tabBusy && proseColumn.displayAnswer !== "" && proseColumn.displayWhere !== ""
+                    local: proseColumn.displayWhereLocal
+                    text: proseColumn.isRecap && companion.recapChapter >= 0 && companion.recapChapter !== reader.chapter
+                          ? qsTr("Up to %1 · %2").arg(panel.placeLabel(companion.recapChapter)).arg(proseColumn.displayWhere)
+                          : proseColumn.displayWhere
                 }
 
                 Flow {
                     Layout.fillWidth: true
-                    visible: proseColumn.matchesTab && !companion.busy && companion.answer !== ""
+                    visible: !proseColumn.tabBusy && proseColumn.displayAnswer !== ""
                     spacing: 8
                     TextButton {
                         size: "compact"
-                        text: qsTr("Copy")
+                        text: (proseColumn.isRecap ? panel.recapCopied : panel.selectionCopied) ? qsTr("Copied ✓") : qsTr("Copy")
                         onClicked: {
-                            reader.copyText(companion.answer)
+                            reader.copyText(proseColumn.displayAnswer)
+                            if (proseColumn.isRecap) {
+                                panel.recapCopied = true
+                                recapCopiedTimer.restart()
+                            } else {
+                                panel.selectionCopied = true
+                                selectionCopiedTimer.restart()
+                            }
                             toast.show(qsTr("Copied"))
                         }
                     }
@@ -773,17 +1276,24 @@ FocusScope {
                         size: "compact"
                         text: qsTr("Save as note")
                         onClicked: {
-                            const quote = panel.tab === "recap"
+                            const quote = proseColumn.isRecap
                                 ? qsTr("Previously… (%1)").arg(panel.placeLabel(reader.chapter))
-                                : (companion.subject || panel.placeLabel(reader.chapter))
-                            panel.saveAsNote(quote, companion.answer)
+                                : (panel.activeSelectionSubject || panel.placeLabel(reader.chapter))
+                            panel.saveAsNote(quote, proseColumn.displayAnswer)
                         }
                     }
                     TextButton {
                         size: "compact"
-                        visible: panel.tab === "recap"
-                        text: qsTr("Again")
-                        onClicked: companion.recap()
+                        visible: proseColumn.isRecap
+                        text: qsTr("Refresh")
+                        onClicked: companion.refreshRecap()
+                    }
+                    TextButton {
+                        size: "compact"
+                        ghost: true
+                        visible: proseColumn.isSelection && (ai.hasKey || ai.hasLocal)
+                        text: qsTr("Ask follow-up")
+                        onClicked: panel.askAboutSelection()
                     }
                 }
             }
@@ -812,7 +1322,7 @@ FocusScope {
                 // Style chips (preserved cleanly above hero/gallery).
                 Flow {
                     Layout.fillWidth: true
-                    spacing: 6
+                    spacing: 4
                     Repeater {
                         model: illustrator.styles
                         delegate: AbstractButton {
@@ -820,7 +1330,7 @@ FocusScope {
                             required property var modelData
                             readonly property bool selected: illustrator.style === modelData.id
                             implicitHeight: 24
-                            implicitWidth: styleChipLabel.implicitWidth + 16
+                            implicitWidth: styleChipLabel.implicitWidth + 11
                             hoverEnabled: true
                             focusPolicy: Qt.TabFocus
                             onClicked: illustrator.style = modelData.id
@@ -831,6 +1341,7 @@ FocusScope {
                                      : styleChip.hovered ? theme.fillHover : theme.fill
                                 border.width: styleChip.selected ? 1 : 0
                                 border.color: theme.accent
+                                Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 90 } }
                                 Rectangle {
                                     anchors.fill: parent
                                     anchors.margins: -3
@@ -856,15 +1367,21 @@ FocusScope {
 
                 // 4:3 dashed empty state card when no illustrations exist for this book yet.
                 Item {
-                    visible: illustrator.pictures.length === 0
+                    visible: illustrator.pictures.length === 0 && !illustrator.busy
                     Layout.fillWidth: true
                     Layout.preferredHeight: Math.round(width * 0.75)
+
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: Ui.radius(12, theme.radius)
+                        color: Ui.tint(theme.ink1, 0.025)
+                    }
 
                     Canvas {
                         id: dashedFrame
                         anchors.fill: parent
                         readonly property real corner: Ui.radius(12, theme.radius)
-                        readonly property color strokeColor: Ui.tint(theme.ink1, 0.16)
+                        readonly property color strokeColor: Ui.tint(theme.ink1, 0.24)
                         onWidthChanged: requestPaint()
                         onHeightChanged: requestPaint()
                         onCornerChanged: requestPaint()
@@ -925,42 +1442,101 @@ FocusScope {
                     }
                 }
 
-                // Full-width 34px accent CTA with embedded cost.
+                // 4:3 shimmering generating preview card while an illustration is in progress.
+                Item {
+                    visible: illustrator.busy
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: Math.round(width * 0.75)
+
+                    Skeleton {
+                        anchors.fill: parent
+                        radius: Ui.radius(12, theme.radius)
+                    }
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: Ui.radius(12, theme.radius)
+                        color: "transparent"
+                        border.width: 1
+                        border.color: theme.hairline
+                    }
+                    ColumnLayout {
+                        anchors.centerIn: parent
+                        width: parent.width - 40
+                        spacing: 10
+                        BusyIndicator {
+                            Layout.alignment: Qt.AlignHCenter
+                            running: illustrator.busy
+                            implicitWidth: 24
+                            implicitHeight: 24
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            horizontalAlignment: Text.AlignHCenter
+                            text: illustrator.status || qsTr("Drawing…")
+                            color: theme.ink2
+                            font.pixelSize: 13
+                            font.weight: Font.Medium
+                            wrapMode: Text.Wrap
+                        }
+                        TextButton {
+                            Layout.alignment: Qt.AlignHCenter
+                            size: "compact"
+                            text: qsTr("Stop")
+                            onClicked: illustrator.stop()
+                        }
+                    }
+                }
+
+                // Full-width 34px accent CTA with embedded cost (hidden when unavailable notice shows its own primary CTA).
                 TextButton {
                     Layout.fillWidth: true
+                    visible: illustrator.available && illustrator.budgetOk
                     primary: true
                     size: "large"
-                    enabled: illustrator.available && !illustrator.busy
-                    text: illustrator.available && illustrator.cost > 0
+                    enabled: !illustrator.busy
+                    text: illustrator.cost > 0
                           ? qsTr("Illustrate · about %1").arg(panel.formatCents(illustrator.cost))
                           : qsTr("Illustrate this page")
                     onClicked: illustrator.illustrate("", reader.chapter, reader.pageEnd)
                 }
 
-                RowLayout {
+                // Crystal-clear notice when unavailable (local-only mode, missing key, or budget reached).
+                Rectangle {
                     Layout.fillWidth: true
-                    visible: illustrator.busy
-                    spacing: 8
-                    BusyIndicator { running: parent.visible; implicitWidth: 18; implicitHeight: 18 }
-                    Label {
-                        Layout.fillWidth: true
-                        text: illustrator.status
-                        color: theme.ink3
-                        font.pixelSize: 12
-                        elide: Text.ElideRight
+                    visible: (!illustrator.available || !illustrator.budgetOk) && illustrator.problem === ""
+                    implicitHeight: unavailCol.implicitHeight + 20
+                    radius: Ui.radius(10, theme.radius)
+                    color: Ui.tint(theme.ink1, 0.04)
+                    border.width: 1
+                    border.color: theme.hairline
+                    ColumnLayout {
+                        id: unavailCol
+                        anchors.fill: parent
+                        anchors.margins: 10
+                        spacing: 8
+                        Label {
+                            Layout.fillWidth: true
+                            text: illustrator.unavailableReason
+                            color: theme.ink3
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.45
+                        }
+                        TextButton {
+                            size: "compact"
+                            primary: true
+                            text: qsTr("Open Intelligence settings")
+                            onClicked: panel.openIntelligenceSettings()
+                        }
                     }
-                    TextButton { size: "compact"; text: qsTr("Stop"); onClicked: illustrator.stop() }
                 }
 
-                Label {
-                    Layout.fillWidth: true
-                    visible: illustrator.problem !== "" || !illustrator.available
-                    text: illustrator.problem !== "" ? illustrator.problem
-                        : ai.hasKey ? qsTr("Pictures need Gemini: switch to Hybrid or Cloud in Intelligence settings.")
-                                    : qsTr("Pictures are made with Gemini: add your key in Intelligence settings.")
-                    color: illustrator.problem !== "" ? theme.danger : theme.ink3
-                    font.pixelSize: 12
-                    wrapMode: Text.Wrap
+                ErrorCard {
+                    message: illustrator.problem
+                    showRetry: illustrator.canRetry && illustrator.available && illustrator.budgetOk
+                    showSettings: illustrator.problemIsConfig || !illustrator.available || !illustrator.budgetOk
+                    onRetryClicked: illustrator.retryLast()
+                    onDismissClicked: illustrator.clearProblem()
                 }
 
                 Item { Layout.preferredHeight: illustrator.pictures.length > 0 ? 4 : 0 }
@@ -969,10 +1545,17 @@ FocusScope {
             delegate: ColumnLayout {
                 id: picItem
                 required property var modelData
+                property bool confirmRemove: false
                 readonly property bool fileMissing: modelData.exists === false || pictureImage.status === Image.Error
                 readonly property int picRadius: Ui.radius(12, theme.radius)
                 width: ListView.view.width
                 spacing: 10
+
+                Timer {
+                    id: removeResetTimer
+                    interval: 3500
+                    onTriggered: picItem.confirmRemove = false
+                }
 
                 Item {
                     id: picFrame
@@ -1010,7 +1593,16 @@ FocusScope {
                             radius: picItem.picRadius
                         }
                     }
+                    Rectangle {
+                        anchors.fill: parent
+                        radius: picItem.picRadius
+                        color: "transparent"
+                        border.width: 1
+                        border.color: picMouse.containsMouse ? Ui.tint(theme.ink1, 0.22) : theme.hairline
+                        Behavior on border.color { enabled: !theme.reducedMotion; ColorAnimation { duration: 110 } }
+                    }
                     MouseArea {
+                        id: picMouse
                         anchors.fill: parent
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
@@ -1078,17 +1670,11 @@ FocusScope {
                         size: "normal"
                         enabled: !picItem.fileMissing
                         text: qsTr("Save a copy")
-                        onClicked: {
-                            const path = illustrator.saveCopy(picItem.modelData.id)
-                            if (path)
-                                toast.show(qsTr("Saved in %1").arg(path.replace(/^.*\/(Pictures\/)/, "$1")))
-                            else
-                                toast.show(qsTr("Couldn't save a copy of this picture"))
-                        }
+                        onClicked: illustrator.chooseSaveCopy(picItem.modelData.id)
                     }
                     TextButton {
                         size: "normal"
-                        enabled: illustrator.available && !illustrator.busy
+                        enabled: illustrator.available && illustrator.budgetOk && !illustrator.busy
                         text: qsTr("Another take")
                         onClicked: illustrator.regenerate(picItem.modelData.id)
                     }
@@ -1100,9 +1686,18 @@ FocusScope {
                     }
                     TextButton {
                         size: "compact"
-                        ghost: true
-                        text: qsTr("Remove")
-                        onClicked: illustrator.remove(picItem.modelData.id)
+                        ghost: !picItem.confirmRemove
+                        text: picItem.confirmRemove ? qsTr("Remove?") : qsTr("Remove")
+                        onClicked: {
+                            if (picItem.confirmRemove) {
+                                removeResetTimer.stop()
+                                picItem.confirmRemove = false
+                                illustrator.remove(picItem.modelData.id)
+                            } else {
+                                picItem.confirmRemove = true
+                                removeResetTimer.restart()
+                            }
+                        }
                     }
                 }
             }
@@ -1126,22 +1721,59 @@ FocusScope {
             header: ColumnLayout {
                 width: ListView.view.width
                 spacing: 8
+
+                UnconfiguredCard {
+                    Layout.leftMargin: 8
+                    Layout.rightMargin: 8
+                    visible: !ai.hasKey && !ai.hasLocal && companion.people.length === 0 && !companion.busy
+                }
+
                 Working {
                     Layout.leftMargin: 8
                     Layout.rightMargin: 8
                     active: panel.tab === "whoswho" && companion.feature === "whoswho"
                 }
-                Problem {
+
+                // Shimmering cast skeleton on initial scan.
+                ColumnLayout {
+                    Layout.fillWidth: true
                     Layout.leftMargin: 8
                     Layout.rightMargin: 8
-                    active: panel.tab === "whoswho" && companion.feature === "whoswho"
+                    visible: panel.tab === "whoswho" && companion.feature === "whoswho" && companion.busy && companion.people.length === 0
+                    spacing: 14
+                    Repeater {
+                        model: 4
+                        delegate: RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 12
+                            Skeleton { Layout.preferredWidth: 32; Layout.preferredHeight: 32; radius: 16 }
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Skeleton { Layout.preferredWidth: 110; Layout.preferredHeight: 12 }
+                                Skeleton { Layout.fillWidth: true; Layout.preferredHeight: 11 }
+                                Skeleton { Layout.fillWidth: true; Layout.rightMargin: 44; Layout.preferredHeight: 11 }
+                            }
+                        }
+                    }
                 }
+
+                ErrorCard {
+                    Layout.leftMargin: 8
+                    Layout.rightMargin: 8
+                    message: panel.tab === "whoswho" && companion.feature === "whoswho" ? companion.problem : ""
+                    showRetry: companion.canRetry
+                    showSettings: companion.problemIsConfig
+                    onRetryClicked: companion.refreshWhosWho()
+                    onDismissClicked: companion.clearProblem()
+                }
+
                 ColumnLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 8
                     Layout.rightMargin: 8
                     Layout.topMargin: 6
-                    visible: (companion.feature === "whoswho" || companion.peopleLoaded)
+                    visible: (ai.hasKey || ai.hasLocal) && companion.peopleLoaded
                              && !companion.busy && companion.problem === "" && companion.people.length === 0
                     spacing: 8
                     Label {
@@ -1153,10 +1785,35 @@ FocusScope {
                     }
                     TextButton {
                         size: "compact"
-                        text: qsTr("Try again")
+                        text: qsTr("Scan again")
                         onClicked: companion.refreshWhosWho()
                     }
                 }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 8
+                    Layout.rightMargin: 8
+                    Layout.topMargin: 6
+                    visible: (ai.hasKey || ai.hasLocal) && !companion.peopleLoaded
+                             && !companion.busy && companion.problem === "" && companion.people.length === 0
+                    spacing: 10
+                    Label {
+                        Layout.fillWidth: true
+                        text: qsTr("Build a spoiler-free cast list of everyone introduced up to %1.").arg(panel.placeLabel(reader.chapter))
+                        color: theme.ink3
+                        font.pixelSize: 13
+                        wrapMode: Text.Wrap
+                        lineHeight: 1.5
+                    }
+                    TextButton {
+                        size: "compact"
+                        primary: true
+                        text: qsTr("Scan characters")
+                        onClicked: companion.whosWho()
+                    }
+                }
+
                 RowLayout {
                     Layout.fillWidth: true
                     Layout.leftMargin: 8
@@ -1165,15 +1822,15 @@ FocusScope {
                     visible: companion.people.length > 0 && !companion.busy
                     spacing: 8
                     ProvenanceRow {
-                        local: companion.whereLocal
+                        local: companion.peopleWhereLocal
                         readonly property string place: panel.placeLabel(companion.peopleChapter >= 0 ? companion.peopleChapter : reader.chapter)
-                        text: companion.where ? qsTr("Up to %1 · %2").arg(place).arg(companion.where)
-                                              : qsTr("Up to %1").arg(place)
+                        text: companion.peopleWhere ? qsTr("Up to %1 · %2").arg(place).arg(companion.peopleWhere)
+                                                    : qsTr("Up to %1").arg(place)
                     }
                     TextButton {
                         size: "compact"
                         ghost: true
-                        text: qsTr("Again")
+                        text: qsTr("Refresh")
                         onClicked: companion.refreshWhosWho()
                     }
                 }
@@ -1199,12 +1856,12 @@ FocusScope {
                         Layout.preferredWidth: 32
                         Layout.preferredHeight: 32
                         radius: 16
-                        color: Ui.tint(theme.ink1, 0.08)
+                        color: panel.personTint(personItem.modelData.name)
                         Label {
                             anchors.centerIn: parent
-                            text: panel.personInitial(personItem.modelData.name)
-                            color: theme.ink2
-                            font.pixelSize: 12
+                            text: panel.personInitials(personItem.modelData.name)
+                            color: theme.ink1
+                            font.pixelSize: 11
                             font.weight: Font.DemiBold
                         }
                     }
@@ -1275,7 +1932,7 @@ FocusScope {
 
             // Quiet pre-send cost transparency line while composing.
             ProvenanceRow {
-                visible: question.text.trim() !== "" && !!panel.askEstimateInfo.where
+                visible: question.text.trim() !== "" && !!panel.askEstimateInfo.where && (ai.hasKey || ai.hasLocal)
                 local: !!panel.askEstimateInfo.local
                 text: !panel.askEstimateInfo.where ? ""
                     : panel.askEstimateInfo.local
@@ -1291,6 +1948,7 @@ FocusScope {
                 color: Ui.tint(theme.ink1, 0.06)
                 border.width: 1
                 border.color: question.activeFocus ? theme.accent : theme.hairline
+                Behavior on border.color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
 
                 RowLayout {
                     anchors.fill: parent
@@ -1335,12 +1993,19 @@ FocusScope {
                                 else
                                     panel.send()
                             }
-                            Keys.onEscapePressed: panel.close()
+                            Keys.onEscapePressed: {
+                                if (panel.clearConfirmOpen)
+                                    panel.clearConfirmOpen = false
+                                else
+                                    panel.close()
+                            }
 
                             Text {
                                 anchors.fill: parent
                                 visible: question.text === ""
-                                text: qsTr("Ask about the book so far…")
+                                text: (!ai.hasKey && !ai.hasLocal)
+                                      ? qsTr("Set up a model to ask about the book…")
+                                      : qsTr("Ask about the book so far…")
                                 color: theme.ink4
                                 font: question.font
                                 elide: Text.ElideRight
@@ -1348,27 +2013,33 @@ FocusScope {
                         }
                     }
 
+                    // Send button smoothly becomes Stop mid-stream so cancel is always one click away.
                     AbstractButton {
                         id: sendBtn
+                        readonly property bool stopping: companion.busy && companion.feature === "ask"
                         Layout.alignment: Qt.AlignBottom
                         Layout.bottomMargin: 6
                         implicitWidth: 28
                         implicitHeight: 28
                         hoverEnabled: true
                         focusPolicy: Qt.TabFocus
-                        enabled: question.text.trim() !== "" && !companion.busy
+                        enabled: stopping || (question.text.trim() !== "" && !companion.busy)
                         opacity: enabled ? 1 : 0.35
-                        Accessible.name: qsTr("Ask")
-                        onClicked: panel.send()
+                        Accessible.name: stopping ? qsTr("Stop") : qsTr("Ask")
+                        onClicked: stopping ? companion.stop() : panel.send()
                         HoverHandler { enabled: sendBtn.enabled; cursorShape: Qt.PointingHandCursor }
                         ToolTip.visible: hovered
                         ToolTip.delay: 500
-                        ToolTip.text: qsTr("Ask (Enter)")
+                        ToolTip.text: stopping ? qsTr("Stop generating") : qsTr("Ask (Enter)")
                         background: Rectangle {
                             radius: Ui.radius(7, theme.radius)
-                            color: sendBtn.enabled && sendBtn.pressed ? Qt.darker(theme.accent, 1.12)
-                                 : sendBtn.enabled && sendBtn.hovered ? Qt.lighter(theme.accent, 1.06)
-                                 : theme.accent
+                            color: sendBtn.stopping
+                                 ? (sendBtn.pressed ? Ui.tint(theme.ink1, 0.24)
+                                    : sendBtn.hovered ? Ui.tint(theme.ink1, 0.18) : Ui.tint(theme.ink1, 0.13))
+                                 : (sendBtn.enabled && sendBtn.pressed ? Qt.darker(theme.accent, 1.12)
+                                    : sendBtn.enabled && sendBtn.hovered ? Qt.lighter(theme.accent, 1.06)
+                                    : theme.accent)
+                            Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
                             Rectangle {
                                 anchors.fill: parent
                                 anchors.margins: -3
@@ -1381,12 +2052,21 @@ FocusScope {
                         }
                         contentItem: Item {
                             Glyph {
+                                visible: !sendBtn.stopping
                                 anchors.centerIn: parent
                                 width: 14
                                 height: 14
                                 stroke: 2.4
                                 path: Icons.arrowUp
                                 color: theme.accentOn
+                            }
+                            Rectangle {
+                                visible: sendBtn.stopping
+                                anchors.centerIn: parent
+                                width: 10
+                                height: 10
+                                radius: 2
+                                color: theme.ink1
                             }
                         }
                     }
@@ -1413,6 +2093,22 @@ FocusScope {
         padding: 0
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
+        // Always-dark modal palette so buttons stay razor-sharp in light AND dark themes.
+        palette.windowText: "#f5f5f7"
+        palette.buttonText: "#f5f5f7"
+        palette.mid: "#b8bcc8"
+        palette.highlight: theme.accent
+        palette.highlightedText: theme.accentOn
+
+        enter: Transition {
+            enabled: !theme.reducedMotion
+            NumberAnimation { property: "opacity"; from: 0.0; to: 1.0; duration: 160; easing.type: Easing.OutCubic }
+        }
+        exit: Transition {
+            enabled: !theme.reducedMotion
+            NumberAnimation { property: "opacity"; from: 1.0; to: 0.0; duration: 120; easing.type: Easing.InCubic }
+        }
+
         Connections {
             target: illustrator
             function onPicturesChanged() {
@@ -1425,12 +2121,14 @@ FocusScope {
         }
 
         background: Rectangle {
-            color: Ui.tint("#000000", 0.84)
+            color: Ui.tint("#000000", 0.86)
             TapHandler { onTapped: picturePreview.close() }
         }
 
         contentItem: Item {
             anchors.fill: parent
+            TapHandler { onTapped: picturePreview.close() }
+
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 32
@@ -1444,7 +2142,7 @@ FocusScope {
                               ? qsTr("%1 · %2").arg(panel.placeLabel(picturePreview.item.chapter)).arg(picturePreview.item.styleLabel)
                               : picturePreview.item ? panel.placeLabel(picturePreview.item.chapter) : ""
                         color: "white"
-                        opacity: 0.8
+                        opacity: 0.85
                         font.pixelSize: 13
                     }
                     IconButton {
@@ -1495,7 +2193,7 @@ FocusScope {
                     }
                     TextButton {
                         visible: !!picturePreview.item
-                        enabled: illustrator.available && !illustrator.busy
+                        enabled: illustrator.available && illustrator.budgetOk && !illustrator.busy
                         text: qsTr("Another take")
                         onClicked: {
                             const target = picturePreview.item
@@ -1509,13 +2207,8 @@ FocusScope {
                         enabled: fullPreviewImage.status !== Image.Error
                         text: qsTr("Save a copy")
                         onClicked: {
-                            if (!picturePreview.item)
-                                return
-                            const path = illustrator.saveCopy(picturePreview.item.id)
-                            if (path)
-                                toast.show(qsTr("Saved in %1").arg(path.replace(/^.*\/(Pictures\/)/, "$1")))
-                            else
-                                toast.show(qsTr("Couldn't save a copy of this picture"))
+                            if (picturePreview.item)
+                                illustrator.chooseSaveCopy(picturePreview.item.id)
                         }
                     }
                 }

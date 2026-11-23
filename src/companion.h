@@ -5,6 +5,7 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QTimer>
 #include <QVariantList>
 #include <atomic>
 #include <memory>
@@ -30,6 +31,20 @@ class Companion : public QObject {
     Q_PROPERTY(QVariantList people READ people NOTIFY changed)
     Q_PROPERTY(bool peopleLoaded READ peopleLoaded NOTIFY changed)
     Q_PROPERTY(int peopleChapter READ peopleChapter NOTIFY changed)
+    Q_PROPERTY(QString peopleWhere READ peopleWhere NOTIFY changed)
+    Q_PROPERTY(bool peopleWhereLocal READ peopleWhereLocal NOTIFY changed)
+    // Persisted spoiler-safe "Previously…" recap so tab switches never re-bill or lose it.
+    Q_PROPERTY(QString recapText READ recapText NOTIFY recapChanged)
+    Q_PROPERTY(bool recapLoaded READ recapLoaded NOTIFY recapChanged)
+    Q_PROPERTY(int recapChapter READ recapChapter NOTIFY recapChanged)
+    Q_PROPERTY(QString recapWhere READ recapWhere NOTIFY recapChanged)
+    Q_PROPERTY(bool recapWhereLocal READ recapWhereLocal NOTIFY recapChanged)
+    // Preserved selection result (Define / Explain / Translate) across tab switches.
+    Q_PROPERTY(QString selectionFeature READ selectionFeature NOTIFY selectionChanged)
+    Q_PROPERTY(QString selectionSubject READ selectionSubject NOTIFY selectionChanged)
+    Q_PROPERTY(QString selectionAnswer READ selectionAnswer NOTIFY selectionChanged)
+    Q_PROPERTY(QString selectionWhere READ selectionWhere NOTIFY selectionChanged)
+    Q_PROPERTY(bool selectionWhereLocal READ selectionWhereLocal NOTIFY selectionChanged)
     // Ask's completed conversation turns: {fromUser, text, sources: [{chapter, offset, label, excerpt}]}.
     // Live streaming text arrives via `answer` so existing message delegates aren't torn down per token.
     Q_PROPERTY(QVariantList conversation READ conversation NOTIFY conversationChanged)
@@ -42,6 +57,10 @@ class Companion : public QObject {
     // What's happening ("Reading the book so far…"), while busy.
     Q_PROPERTY(QString status READ status NOTIFY changed)
     Q_PROPERTY(QString problem READ problem NOTIFY changed)
+    Q_PROPERTY(bool problemIsConfig READ problemIsConfig NOTIFY changed)
+    Q_PROPERTY(bool canRetry READ canRetry NOTIFY changed)
+    Q_PROPERTY(bool hasPendingSetup READ hasPendingSetup NOTIFY changed)
+    Q_PROPERTY(QString pendingSetupLabel READ pendingSetupLabel NOTIFY changed)
     // Where the answer was made, in a few words.
     Q_PROPERTY(QString where READ where NOTIFY changed)
     Q_PROPERTY(bool whereLocal READ whereLocal NOTIFY changed)
@@ -75,6 +94,18 @@ public:
     QVariantList people() const { return m_people; }
     bool peopleLoaded() const { return m_peopleLoaded; }
     int peopleChapter() const { return m_peopleChapter; }
+    QString peopleWhere() const { return m_peopleWhere; }
+    bool peopleWhereLocal() const { return m_peopleWhereLocal; }
+    QString recapText() const { return m_recapText; }
+    bool recapLoaded() const { return m_recapLoaded; }
+    int recapChapter() const { return m_recapChapter; }
+    QString recapWhere() const { return m_recapWhere; }
+    bool recapWhereLocal() const { return m_recapWhereLocal; }
+    QString selectionFeature() const { return m_selectionFeature; }
+    QString selectionSubject() const { return m_selectionSubject; }
+    QString selectionAnswer() const { return m_selectionAnswer; }
+    QString selectionWhere() const { return m_selectionWhere; }
+    bool selectionWhereLocal() const { return m_selectionWhereLocal; }
     QVariantList conversation() const;
     QVariantList currentSources() const;
     QString targetLanguage() const;
@@ -83,6 +114,10 @@ public:
     bool busy() const { return m_busy; }
     QString status() const { return m_status; }
     QString problem() const { return m_problem; }
+    bool problemIsConfig() const { return m_problemIsConfig; }
+    bool canRetry() const { return !m_lastAction.feature.isEmpty() && !m_busy; }
+    bool hasPendingSetup() const { return !m_pendingSetup.feature.isEmpty(); }
+    QString pendingSetupLabel() const;
     QString where() const { return m_where; }
     bool whereLocal() const { return m_whereLocal; }
 
@@ -97,8 +132,12 @@ public:
     Q_INVOKABLE void ask(const QString &question);
     Q_INVOKABLE void newConversation();
     Q_INVOKABLE void recap();
+    Q_INVOKABLE void refreshRecap();
     Q_INVOKABLE void whosWho();
     Q_INVOKABLE void refreshWhosWho();
+    Q_INVOKABLE void retry();
+    Q_INVOKABLE void resumePendingSetup();
+    Q_INVOKABLE void clearProblem();
     Q_INVOKABLE void stop();
     // Removes persisted Ask threads and Who's Who snapshots for a book.
     Q_INVOKABLE void clearBookHistory(int bookId = 0);
@@ -126,19 +165,34 @@ signals:
     void answerChanged();
     void conversationChanged();
     void targetLanguageChanged();
+    void recapChanged();
+    void selectionChanged();
 
 private:
+    struct Action {
+        QString feature;
+        QString text;
+        int chapter = 0;
+        qint64 offset = 0;
+    };
+
     void ensureTables();
     void loadBookState(int bookId);
     void saveConversation(int bookId);
     void loadConversation(int bookId);
     bool loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qint64 pageStart, bool requireSameChapter);
     void saveWhosWhoSnapshot(int bookId, int chapter, qint64 offset, qint64 pageStart, const QString &whereLabel,
-                             const QVariantList &people);
+                             bool isLocal, const QVariantList &people);
+    bool loadRecapSnapshot(int bookId, int chapter, qint64 pageEnd, qint64 pageStart, bool requireSameChapter);
+    void saveRecapSnapshot(int bookId, int chapter, qint64 offset, qint64 pageStart, const QString &whereLabel,
+                           bool isLocal, const QString &text);
     void begin(const QString &feature, const QString &subject);
     void setStatus(const QString &status);
-    void fail(const QString &problem);
+    void fail(const QString &problem, bool isConfig = false);
     void rollbackPendingTurn();
+    void flushStreamedAnswer();
+    void executeAction(const Action &action);
+    qint64 soFarCharsEstimate() const;
     // Reads the book up to the reader's place on a worker thread, then `then`.
     void readSoFar(int chapter, qint64 offset, qint64 limit, std::function<void(const QList<Chapter> &)> then);
     void run(const QString &feature, const Ai::TextRequest &request, std::function<void(Ai::Reply *)> done = nullptr);
@@ -149,6 +203,7 @@ private:
     QString placeTitle(int chapter) const;
     bool cloudFor(const QString &feature) const;
     QString formatProvenance(const Ai::Provider *provider, const Ai::Reply *reply) const;
+    void runRecap(bool forceRefresh);
     void runWhosWho(bool forceRefresh);
 
     AiServices *m_ai;
@@ -162,23 +217,43 @@ private:
     bool m_peopleLoaded = false;
     int m_peopleChapter = -1;
     qint64 m_peopleOffset = -1;
+    QString m_peopleKey;
+    QString m_peopleWhere;
+    bool m_peopleWhereLocal = false;
+    QString m_recapText;
+    bool m_recapLoaded = false;
+    int m_recapChapter = -1;
+    qint64 m_recapOffset = -1;
+    QString m_recapWhere;
+    bool m_recapWhereLocal = false;
+    QString m_selectionFeature;
+    QString m_selectionSubject;
+    QString m_selectionAnswer;
+    QString m_selectionWhere;
+    bool m_selectionWhereLocal = false;
     QList<Turn> m_conversation;
     QList<Citation> m_currentSources;
     bool m_pendingUserTurn = false;
     bool m_busy = false;
     QString m_status;
     QString m_problem;
+    bool m_problemIsConfig = false;
     QString m_where;
     bool m_whereLocal = false;
     QString m_targetLanguage;
     QString m_lastTranslateText;
     int m_lastTranslateChapter = 0;
     qint64 m_lastTranslateEnd = 0;
+    Action m_lastAction;
+    Action m_pendingSetup;
+    int m_requestChapter = -1;
+    qint64 m_requestStart = -1;
+    qint64 m_requestOffset = -1;
+    QTimer m_streamFlush;
+    bool m_streamDirty = false;
+    bool m_streamNotifiedFirst = false;
     QPointer<Ai::Reply> m_reply;
     QPointer<QProcess> m_dictProcess;
     std::shared_ptr<std::atomic_bool> m_readCancel;
     int m_generation = 0;
-    // Who's who, kept for a book, place and provider so it isn't asked again.
-    QString m_peopleKey;
-    QString m_peopleWhere;
 };
