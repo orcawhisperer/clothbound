@@ -8,13 +8,14 @@ import "Ui.js" as Ui
 // The floating listening deck: always-dark warm charcoal so it stays calm and
 // legible over Paper, Sepia, Dusk, Night, or Omarchy pages. Row 1 pairs the
 // book cover, title, clickable narrator + provenance, centered transport
-// controls (with ±15s skip & sentence stepping), speed, sleep timer (with 10s
-// fade), background listen, and stop. Row 2 scrubs the chapter's audio clock.
+// controls (with ±15s skip & sentence stepping), speed popover, sleep timer
+// (with 10s fade indicator), background listen, and stop. Row 2 scrubs the
+// chapter's audio clock with zero layout jitter.
 Rectangle {
     id: bar
 
     property var look
-    readonly property bool menuOpen: sleepMenu.opened
+    readonly property bool menuOpen: sleepMenu.opened || speedMenu.opened
 
     signal voiceRequested()
     signal followRequested()
@@ -66,6 +67,19 @@ Rectangle {
         if (h > 0)
             return h + ":" + (m < 10 ? "0" + m : String(m)) + ":" + ss
         return m + ":" + ss
+    }
+    function formatRate(rate) {
+        const rounded = Math.round(rate * 100) / 100
+        const decimals = Math.round(rounded * 100) % 10 !== 0 ? 2 : 1
+        return Number(rounded).toLocaleString(Qt.locale(), 'f', decimals) + "×"
+    }
+
+    onVisibleChanged: {
+        if (!visible) {
+            speedMenu.close()
+            sleepMenu.close()
+            scrubber.dragging = false
+        }
     }
 
     // Keep child controls (BusyIndicator, Popup, MenuRow, ToolTip) dark-native.
@@ -133,15 +147,17 @@ Rectangle {
         anchors.rightMargin: 10
         spacing: 8
 
-        // --- Row 1: Book/Narrator · Transport · Speed/Sleep/Background/Stop ---
+        // --- Row 1: Book/Narrator · Centered Transport · Speed/Sleep/Background/Stop ---
         RowLayout {
             Layout.fillWidth: true
-            spacing: 12
+            spacing: 10
 
-            // Left zone: 32×46 mini cover + book title + clickable narrator/provenance.
+            // Left zone: 32×46 mini cover + book title + clickable narrator switcher.
+            // Equal weight with Right zone keeps Play/Pause dead-center with zero jitter.
             RowLayout {
-                Layout.preferredWidth: Math.min(254, Math.max(136, Math.round(bar.width * 0.35)))
-                Layout.maximumWidth: 264
+                Layout.fillWidth: true
+                Layout.minimumWidth: 108
+                Layout.preferredWidth: 1
                 spacing: 10
 
                 Item {
@@ -169,6 +185,7 @@ Rectangle {
 
                 ColumnLayout {
                     Layout.fillWidth: true
+                    Layout.minimumWidth: 0
                     Layout.alignment: Qt.AlignVCenter
                     spacing: 3
 
@@ -190,16 +207,26 @@ Rectangle {
                         Accessible.name: narration.voiceName
                                          + (bar.voiceAccent !== "" ? ", " + bar.voiceAccent : "")
                                          + ", " + bar.provenanceLabel
-                        onClicked: bar.voiceRequested()
+                        onClicked: {
+                            speedMenu.close()
+                            sleepMenu.close()
+                            bar.voiceRequested()
+                        }
+
+                        readonly property real contentNaturalW:
+                            voiceNameLabel.implicitWidth
+                            + 4 + voiceChevron.width
+                            + (provPill.visible ? 6 + provPill.implicitWidth : 0)
 
                         background: Rectangle {
                             x: -4
                             y: -2
-                            width: Math.min(voiceButton.width + 8, voiceMetaRow.implicitWidth + 8)
+                            width: Math.min(voiceButton.width + 8, voiceButton.contentNaturalW + 8)
                             height: voiceButton.height + 4
                             radius: Ui.radius(5, theme.radius)
                             color: voiceButton.pressed ? bar.deckHover
                                  : voiceButton.hovered ? bar.deckFill : "transparent"
+                            Behavior on color { ColorAnimation { duration: 100 } }
                             Rectangle {
                                 anchors.fill: parent
                                 anchors.margins: -2
@@ -211,13 +238,17 @@ Rectangle {
                             }
                         }
 
-                        contentItem: RowLayout {
+                        contentItem: Row {
                             id: voiceMetaRow
-                            spacing: 6
+                            spacing: 5
 
                             Label {
-                                Layout.fillWidth: true
-                                Layout.maximumWidth: implicitWidth
+                                id: voiceNameLabel
+                                anchors.verticalCenter: parent.verticalCenter
+                                readonly property real maxTextW: Math.max(24, voiceButton.width
+                                    - voiceChevron.width - 5
+                                    - (provPill.visible ? provPill.implicitWidth + 5 : 0))
+                                width: Math.min(implicitWidth, maxTextW)
                                 text: narration.voiceName
                                       + (bar.voiceAccent !== "" ? " · " + bar.voiceAccent : "")
                                 color: voiceButton.hovered ? bar.deckFg : bar.deckSub
@@ -225,11 +256,23 @@ Rectangle {
                                 elide: Text.ElideRight
                             }
 
+                            Glyph {
+                                id: voiceChevron
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 11
+                                height: 11
+                                stroke: 2.0
+                                path: Icons.chevronsUpDown
+                                color: voiceButton.hovered ? bar.deckSoft : bar.deckMuted
+                            }
+
                             Rectangle {
-                                visible: narration.voiceName !== "" && bar.width >= 540
-                                Layout.alignment: Qt.AlignVCenter
-                                implicitWidth: provText.implicitWidth + 12
-                                implicitHeight: 17
+                                id: provPill
+                                visible: narration.voiceName !== "" && bar.width >= 570
+                                anchors.verticalCenter: parent.verticalCenter
+                                implicitWidth: provText.implicitWidth + 10
+                                width: implicitWidth
+                                height: 17
                                 radius: 9
                                 color: bar.voiceIsLocal || bar.voiceIsStudio ? bar.deckFill : theme.cloudSoft
                                 Label {
@@ -253,7 +296,8 @@ Rectangle {
 
             // Center zone: −15s · Prev sentence · 44×44 Play/Pause · Next sentence · +15s.
             Item {
-                Layout.fillWidth: true
+                Layout.fillWidth: false
+                Layout.preferredWidth: transportRow.implicitWidth
                 implicitHeight: 44
                 implicitWidth: transportRow.implicitWidth
 
@@ -266,7 +310,7 @@ Rectangle {
                         id: back15Btn
                         visible: bar.width >= 560
                         anchors.verticalCenter: parent.verticalCenter
-                        implicitWidth: back15Label.implicitWidth + 10
+                        implicitWidth: 32
                         implicitHeight: 30
                         hoverEnabled: true
                         focusPolicy: Qt.TabFocus
@@ -287,7 +331,6 @@ Rectangle {
                             }
                         }
                         contentItem: Label {
-                            id: back15Label
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                             text: "−15"
@@ -296,6 +339,7 @@ Rectangle {
                             font.weight: Font.DemiBold
                             font.features: ({ "tnum": 1 })
                         }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
                         ToolTip.visible: hovered
                         ToolTip.text: qsTr("Back 15 seconds (⇧←)")
                         ToolTip.delay: 600
@@ -334,6 +378,7 @@ Rectangle {
                                 color: bar.deckFg
                             }
                         }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
                         ToolTip.visible: hovered
                         ToolTip.text: qsTr("Previous sentence")
                         ToolTip.delay: 600
@@ -347,6 +392,11 @@ Rectangle {
                         hoverEnabled: true
                         focusPolicy: Qt.TabFocus
                         Accessible.name: narration.playing ? qsTr("Pause") : qsTr("Play")
+                        scale: playBtn.pressed && !theme.reducedMotion ? 0.94 : 1.0
+                        Behavior on scale {
+                            enabled: !theme.reducedMotion
+                            NumberAnimation { duration: 90; easing.type: Easing.OutCubic }
+                        }
                         onClicked: narration.toggle()
                         background: Rectangle {
                             radius: 22
@@ -378,10 +428,13 @@ Rectangle {
                                 anchors.centerIn: parent
                                 visible: (narration.buffering || narration.preparing) && narration.playing
                                 running: visible
-                                implicitWidth: 26
-                                implicitHeight: 26
+                                implicitWidth: 24
+                                implicitHeight: 24
+                                // Contrast cleanly on top of the solid theme.accent circle.
+                                palette.highlight: theme.accentOn
                             }
                         }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
                         ToolTip.visible: hovered
                         ToolTip.text: narration.playing ? qsTr("Pause (P)") : qsTr("Play (P)")
                         ToolTip.delay: 600
@@ -420,6 +473,7 @@ Rectangle {
                                 color: bar.deckFg
                             }
                         }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
                         ToolTip.visible: hovered
                         ToolTip.text: qsTr("Next sentence")
                         ToolTip.delay: 600
@@ -429,7 +483,7 @@ Rectangle {
                         id: fwd15Btn
                         visible: bar.width >= 560
                         anchors.verticalCenter: parent.verticalCenter
-                        implicitWidth: fwd15Label.implicitWidth + 10
+                        implicitWidth: 32
                         implicitHeight: 30
                         hoverEnabled: true
                         focusPolicy: Qt.TabFocus
@@ -450,7 +504,6 @@ Rectangle {
                             }
                         }
                         contentItem: Label {
-                            id: fwd15Label
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
                             text: "+15"
@@ -459,6 +512,7 @@ Rectangle {
                             font.weight: Font.DemiBold
                             font.features: ({ "tnum": 1 })
                         }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
                         ToolTip.visible: hovered
                         ToolTip.text: qsTr("Forward 15 seconds (⇧→)")
                         ToolTip.delay: 600
@@ -466,9 +520,11 @@ Rectangle {
                 }
             }
 
-            // Right zone: Speed pill · Sleep timer · Background tray · Stop ×.
+            // Right zone: Speed popover pill · Sleep timer · Background tray · Stop ×.
             Item {
-                Layout.preferredWidth: Math.min(216, Math.max(rightRow.implicitWidth, Math.round(bar.width * 0.29)))
+                Layout.fillWidth: true
+                Layout.minimumWidth: rightRow.implicitWidth
+                Layout.preferredWidth: 1
                 implicitHeight: 30
                 implicitWidth: rightRow.implicitWidth
 
@@ -476,20 +532,24 @@ Rectangle {
                     id: rightRow
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    spacing: 2
+                    spacing: 3
 
                     AbstractButton {
                         id: rateButton
                         anchors.verticalCenter: parent.verticalCenter
                         implicitHeight: 30
-                        implicitWidth: rateLabel.implicitWidth + 18
+                        // Pinned width so 1.0× ↔ 1.25× never jitters the row.
+                        implicitWidth: 48
                         hoverEnabled: true
                         focusPolicy: Qt.TabFocus
                         Accessible.name: qsTr("Speed %1").arg(rateLabel.text)
                         background: Rectangle {
                             radius: Ui.radius(7, theme.radius)
-                            color: rateButton.pressed ? bar.deckPressed
+                            color: speedMenu.opened ? bar.deckHover
+                                 : rateButton.pressed ? bar.deckPressed
                                  : rateButton.hovered ? bar.deckHover : Qt.rgba(1, 1, 1, 0.07)
+                            border.width: speedMenu.opened ? 1 : 0
+                            border.color: Qt.rgba(1, 1, 1, 0.14)
                             Rectangle {
                                 anchors.fill: parent
                                 anchors.margins: -2
@@ -504,20 +564,129 @@ Rectangle {
                             id: rateLabel
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
-                            text: Number(narration.rate).toLocaleString(Qt.locale(), 'f', narration.rate * 20 % 2 ? 2 : 1) + "×"
+                            text: bar.formatRate(narration.rate)
                             color: bar.deckFg
                             font.pixelSize: 12
                             font.weight: Font.DemiBold
                             font.features: ({ "tnum": 1 })
                         }
                         onClicked: {
-                            const steps = [1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 0.75, 0.9]
-                            const at = steps.findIndex(step => Math.abs(step - narration.rate) < 0.01)
-                            narration.rate = steps[(at + 1) % steps.length]
+                            sleepMenu.close()
+                            speedMenu.opened ? speedMenu.close() : speedMenu.open()
                         }
-                        ToolTip.visible: hovered
-                        ToolTip.text: qsTr("Speed (< and >)")
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        ToolTip.visible: hovered && !speedMenu.opened
+                        ToolTip.text: qsTr("Playback speed (< and >)")
                         ToolTip.delay: 600
+
+                        Popup {
+                            id: speedMenu
+                            y: -height - 12
+                            x: Math.max(-rateButton.x, Math.min(rateButton.width - width, rateButton.width / 2 - width / 2))
+                            width: 196
+                            padding: 6
+                            background: Rectangle {
+                                radius: Ui.radius(10, theme.radius)
+                                color: bar.deckMenuBg
+                                border.width: 1
+                                border.color: Qt.rgba(1, 1, 1, 0.12)
+                                Rectangle {
+                                    z: -1
+                                    anchors.fill: parent
+                                    anchors.topMargin: 6
+                                    anchors.bottomMargin: -6
+                                    anchors.leftMargin: -3
+                                    anchors.rightMargin: -3
+                                    radius: parent.radius > 0 ? parent.radius + 2 : 0
+                                    color: Qt.rgba(0, 0, 0, 0.32)
+                                }
+                            }
+                            contentItem: Column {
+                                spacing: 2
+
+                                // Fine ±0.05× stepper row for exact pacing.
+                                RowLayout {
+                                    width: parent.width
+                                    spacing: 4
+
+                                    AbstractButton {
+                                        id: slowerBtn
+                                        Layout.preferredWidth: 32
+                                        Layout.preferredHeight: 28
+                                        enabled: narration.rate > 0.755
+                                        hoverEnabled: true
+                                        focusPolicy: Qt.TabFocus
+                                        opacity: enabled ? 1 : 0.35
+                                        Accessible.name: qsTr("Slower")
+                                        onClicked: narration.rate = narration.rate - 0.05
+                                        background: Rectangle {
+                                            radius: Ui.radius(6, theme.radius)
+                                            color: slowerBtn.pressed ? bar.deckPressed
+                                                 : slowerBtn.hovered ? bar.deckHover : bar.deckFill
+                                        }
+                                        contentItem: Label {
+                                            text: "−"
+                                            color: bar.deckFg
+                                            font.pixelSize: 15
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        horizontalAlignment: Text.AlignHCenter
+                                        text: bar.formatRate(narration.rate)
+                                        color: bar.deckFg
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
+                                        font.features: ({ "tnum": 1 })
+                                    }
+                                    AbstractButton {
+                                        id: fasterBtn
+                                        Layout.preferredWidth: 32
+                                        Layout.preferredHeight: 28
+                                        enabled: narration.rate < 1.995
+                                        hoverEnabled: true
+                                        focusPolicy: Qt.TabFocus
+                                        opacity: enabled ? 1 : 0.35
+                                        Accessible.name: qsTr("Faster")
+                                        onClicked: narration.rate = narration.rate + 0.05
+                                        background: Rectangle {
+                                            radius: Ui.radius(6, theme.radius)
+                                            color: fasterBtn.pressed ? bar.deckPressed
+                                                 : fasterBtn.hovered ? bar.deckHover : bar.deckFill
+                                        }
+                                        contentItem: Label {
+                                            text: "+"
+                                            color: bar.deckFg
+                                            font.pixelSize: 15
+                                            horizontalAlignment: Text.AlignHCenter
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+                                    }
+                                }
+
+                                Rectangle {
+                                    width: parent.width
+                                    height: 1
+                                    color: Qt.rgba(1, 1, 1, 0.08)
+                                }
+
+                                Repeater {
+                                    model: [0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0]
+                                    delegate: MenuRow {
+                                        required property real modelData
+                                        text: bar.formatRate(modelData)
+                                        hint: Math.abs(modelData - 1.0) < 0.01 ? qsTr("Normal") : ""
+                                        checked: Math.abs(narration.rate - modelData) < 0.015
+                                        onClicked: {
+                                            narration.rate = modelData
+                                            speedMenu.close()
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     AbstractButton {
@@ -525,15 +694,35 @@ Rectangle {
                         anchors.verticalCenter: parent.verticalCenter
                         readonly property bool timerActive: narration.sleepSecondsLeft > 0 || narration.sleepAtChapterEnd
                         implicitHeight: 30
-                        implicitWidth: timerActive ? sleepRow.implicitWidth + 16 : 30
+                        // Stable active width prevents jitter as countdown ticks 10:00 → 9:59 → 0:09.
+                        implicitWidth: timerActive ? Math.max(66, sleepRow.implicitWidth + 16) : 30
                         hoverEnabled: true
                         focusPolicy: Qt.TabFocus
                         Accessible.name: sleepButton.ToolTip.text
                         background: Rectangle {
                             radius: Ui.radius(7, theme.radius)
+                            clip: true
                             color: narration.sleepFading ? theme.cloudSoft
+                                 : sleepMenu.opened ? bar.deckHover
                                  : sleepButton.pressed ? bar.deckPressed
                                  : sleepButton.hovered ? bar.deckFill : "transparent"
+                            border.width: narration.sleepFading ? 1 : 0
+                            border.color: Ui.tint(theme.cloud, 0.40)
+
+                            // 10-second fade-out progress bar draining along the bottom edge.
+                            Rectangle {
+                                visible: narration.sleepFading
+                                anchors.left: parent.left
+                                anchors.bottom: parent.bottom
+                                height: 2
+                                width: parent.width * Math.max(0, Math.min(1, narration.sleepSecondsLeft / 10.0))
+                                color: theme.cloud
+                                Behavior on width {
+                                    enabled: !theme.reducedMotion
+                                    NumberAnimation { duration: 150 }
+                                }
+                            }
+
                             Rectangle {
                                 anchors.fill: parent
                                 anchors.margins: -2
@@ -549,12 +738,20 @@ Rectangle {
                             anchors.centerIn: parent
                             spacing: 5
                             Glyph {
+                                id: sleepMoon
                                 anchors.verticalCenter: parent.verticalCenter
                                 width: 15
                                 height: 15
                                 path: Icons.moon
                                 color: narration.sleepFading ? theme.cloudInk
                                      : sleepButton.timerActive ? theme.accent : bar.deckSoft
+                                SequentialAnimation on opacity {
+                                    running: narration.sleepFading && bar.visible && !theme.reducedMotion
+                                    loops: Animation.Infinite
+                                    NumberAnimation { to: 0.45; duration: 600; easing.type: Easing.InOutSine }
+                                    NumberAnimation { to: 1.0; duration: 600; easing.type: Easing.InOutSine }
+                                    onRunningChanged: if (!running) sleepMoon.opacity = 1.0
+                                }
                             }
                             Label {
                                 anchors.verticalCenter: parent.verticalCenter
@@ -569,8 +766,12 @@ Rectangle {
                                 font.features: ({ "tnum": 1 })
                             }
                         }
-                        onClicked: sleepMenu.opened ? sleepMenu.close() : sleepMenu.open()
-                        ToolTip.visible: hovered
+                        onClicked: {
+                            speedMenu.close()
+                            sleepMenu.opened ? sleepMenu.close() : sleepMenu.open()
+                        }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        ToolTip.visible: hovered && !sleepMenu.opened
                         ToolTip.text: narration.sleepFading ? qsTr("Fading out… %1").arg(bar.formatClock(narration.sleepSecondsLeft))
                                     : narration.sleepSecondsLeft > 0 ? qsTr("Stopping in %1").arg(bar.formatClock(narration.sleepSecondsLeft))
                                     : narration.sleepAtChapterEnd ? qsTr("Sleep timer: end of chapter") : qsTr("Sleep timer")
@@ -580,16 +781,50 @@ Rectangle {
                             id: sleepMenu
                             y: -height - 12
                             x: Math.max(-sleepButton.x, Math.min(sleepButton.width - width, sleepButton.width / 2 - width / 2))
-                            width: 224
+                            width: 228
                             padding: 6
                             background: Rectangle {
                                 radius: Ui.radius(10, theme.radius)
                                 color: bar.deckMenuBg
                                 border.width: 1
-                                border.color: Qt.rgba(1, 1, 1, 0.10)
+                                border.color: Qt.rgba(1, 1, 1, 0.12)
+                                Rectangle {
+                                    z: -1
+                                    anchors.fill: parent
+                                    anchors.topMargin: 6
+                                    anchors.bottomMargin: -6
+                                    anchors.leftMargin: -3
+                                    anchors.rightMargin: -3
+                                    radius: parent.radius > 0 ? parent.radius + 2 : 0
+                                    color: Qt.rgba(0, 0, 0, 0.32)
+                                }
                             }
                             contentItem: Column {
                                 spacing: 2
+                                // Live active countdown / fade banner inside the sleep menu.
+                                Label {
+                                    visible: sleepButton.timerActive
+                                    width: parent.width
+                                    leftPadding: 10
+                                    rightPadding: 10
+                                    topPadding: 4
+                                    bottomPadding: 4
+                                    text: narration.sleepFading
+                                          ? qsTr("Fading out · %1").arg(bar.formatClock(narration.sleepSecondsLeft))
+                                          : narration.sleepSecondsLeft > 0
+                                            ? qsTr("Stopping in %1").arg(bar.formatClock(narration.sleepSecondsLeft))
+                                            : qsTr("Stopping at chapter end")
+                                    color: narration.sleepFading ? theme.cloudInk : bar.deckSub
+                                    font.pixelSize: 11
+                                    font.weight: Font.DemiBold
+                                    font.features: ({ "tnum": 1 })
+                                }
+                                Rectangle {
+                                    visible: sleepButton.timerActive
+                                    width: parent.width
+                                    height: 1
+                                    color: Qt.rgba(1, 1, 1, 0.08)
+                                }
                                 Repeater {
                                     model: [5, 15, 30, 60]
                                     delegate: MenuRow {
@@ -645,6 +880,7 @@ Rectangle {
                                 color: trayBtn.hovered ? bar.deckFg : bar.deckSoft
                             }
                         }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
                         ToolTip.visible: hovered
                         ToolTip.text: qsTr("Keep listening in the background")
                         ToolTip.delay: 600
@@ -683,6 +919,7 @@ Rectangle {
                                 color: stopBtn.hovered ? bar.deckFg : bar.deckSoft
                             }
                         }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
                         ToolTip.visible: hovered
                         ToolTip.text: qsTr("Stop listening (⇧P)")
                         ToolTip.delay: 600
@@ -705,8 +942,10 @@ Rectangle {
             readonly property string chapterName: reader.titleOfChapter(narration.chapter)
 
             Label {
+                Layout.minimumWidth: bar.totalSec >= 3600 ? 46 : 34
+                horizontalAlignment: Text.AlignRight
                 text: bar.formatClock(timelineRow.shownElapsed)
-                color: bar.deckMuted
+                color: scrubber.dragging ? bar.deckFg : bar.deckMuted
                 font.pixelSize: 11
                 font.features: ({ "tnum": 1 })
             }
@@ -715,11 +954,33 @@ Rectangle {
                 id: scrubber
                 Layout.fillWidth: true
                 implicitHeight: 16
+                activeFocusOnTab: narration.durationUs > 0
+                Accessible.role: Accessible.Slider
+                Accessible.name: qsTr("Chapter timeline")
                 property bool dragging: false
                 property real dragFrac: 0
 
                 function fracAt(px) {
                     return width > 0 ? Math.max(0, Math.min(1, px / width)) : 0
+                }
+
+                Keys.onLeftPressed: (event) => {
+                    narration.skipSeconds(-15)
+                    event.accepted = true
+                }
+                Keys.onRightPressed: (event) => {
+                    narration.skipSeconds(15)
+                    event.accepted = true
+                }
+
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: -2
+                    visible: scrubber.activeFocus
+                    radius: Ui.radius(6, theme.radius)
+                    color: "transparent"
+                    border.width: 1.5
+                    border.color: theme.accent
                 }
 
                 Rectangle {
@@ -740,15 +1001,39 @@ Rectangle {
                 }
 
                 Rectangle {
-                    visible: narration.durationUs > 0 && (scrubMouse.containsMouse || scrubber.dragging)
+                    id: scrubKnob
+                    visible: narration.durationUs > 0 && (scrubMouse.containsMouse || scrubber.dragging || scrubber.activeFocus)
                     x: Math.max(0, Math.min(parent.width - width, parent.width * timelineRow.displayFrac - width / 2))
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 10
-                    height: 10
-                    radius: 5
+                    width: scrubber.dragging ? 12 : 10
+                    height: width
+                    radius: width / 2
                     color: bar.deckFg
                     border.width: 2
                     border.color: theme.accent
+                }
+
+                // Live scrub timestamp pill while dragging so you can seek precisely.
+                Rectangle {
+                    visible: scrubber.dragging && bar.totalSec > 0
+                    z: 20
+                    x: Math.max(0, Math.min(parent.width - width, parent.width * timelineRow.displayFrac - width / 2))
+                    y: -height - 6
+                    width: scrubTipLabel.implicitWidth + 12
+                    height: 22
+                    radius: Ui.radius(6, theme.radius)
+                    color: bar.deckMenuBg
+                    border.width: 1
+                    border.color: Qt.rgba(1, 1, 1, 0.14)
+                    Label {
+                        id: scrubTipLabel
+                        anchors.centerIn: parent
+                        text: bar.formatClock(timelineRow.shownElapsed)
+                        color: bar.deckFg
+                        font.pixelSize: 11
+                        font.weight: Font.DemiBold
+                        font.features: ({ "tnum": 1 })
+                    }
                 }
 
                 MouseArea {
@@ -769,22 +1054,36 @@ Rectangle {
                         if (!scrubber.dragging)
                             return
                         const frac = scrubber.fracAt(mouse.x)
-                        scrubber.dragging = false
                         if (narration.durationUs > 0)
                             narration.seekToUs(Math.round(frac * narration.durationUs))
+                        scrubber.dragging = false
                     }
                     onCanceled: scrubber.dragging = false
                 }
             }
 
-            Label {
-                Layout.maximumWidth: Math.max(90, bar.width * 0.38)
-                text: (bar.totalSec > 0 ? "−" + bar.formatClock(timelineRow.shownRemaining) : "−0:00")
-                      + (timelineRow.chapterName !== "" ? " · " + timelineRow.chapterName : "")
-                color: bar.deckMuted
-                font.pixelSize: 11
-                font.features: ({ "tnum": 1 })
-                elide: Text.ElideRight
+            // Remaining clock (fixed minimum width) + optional elided chapter title.
+            RowLayout {
+                spacing: 4
+                Layout.maximumWidth: Math.max(96, bar.width * 0.38)
+
+                Label {
+                    Layout.minimumWidth: bar.totalSec >= 3600 ? 52 : 40
+                    horizontalAlignment: Text.AlignRight
+                    text: bar.totalSec > 0 ? "−" + bar.formatClock(timelineRow.shownRemaining) : "−0:00"
+                    color: bar.deckMuted
+                    font.pixelSize: 11
+                    font.features: ({ "tnum": 1 })
+                }
+                Label {
+                    visible: timelineRow.chapterName !== "" && bar.width >= 460
+                    Layout.fillWidth: true
+                    Layout.maximumWidth: Math.max(64, bar.width * 0.26)
+                    text: "· " + timelineRow.chapterName
+                    color: bar.deckMuted
+                    font.pixelSize: 11
+                    elide: Text.ElideRight
+                }
             }
         }
 

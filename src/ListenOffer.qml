@@ -41,6 +41,9 @@ Rectangle {
         if (pack && pack.voice) {
             offeredVoice = pack.voice
             offeredBytes = pack.bytes || 0
+        } else {
+            offeredVoice = null
+            offeredBytes = 0
         }
         step = (voicePacks.busy && pendingVoice !== "") ? "busy" : "idle"
         open = true
@@ -50,14 +53,23 @@ Rectangle {
     // download ("Keep reading; it starts by itself."). Only the explicit
     // Cancel button cancels the download.
     function close() {
-        voices.stopPreview()
         open = false
-        if (step === "done") {
-            step = "idle"
-            offeredVoice = null
-            offeredBytes = 0
+    }
+
+    // Ensure cleanup runs whether closed via close() or external `open = false`
+    // (such as EpubReader's Esc handler or closeBook()).
+    onOpenChanged: {
+        if (!open) {
+            voices.stopPreview()
+            if (step === "done") {
+                step = "idle"
+                offeredVoice = null
+                offeredBytes = 0
+            }
         }
     }
+
+    Component.onDestruction: voices.stopPreview()
 
     // Wear app chrome (independent of the reading theme underneath).
     palette.window: theme.raised
@@ -71,6 +83,7 @@ Rectangle {
     palette.midlight: theme.hairline
     palette.dark: theme.separator
     palette.light: theme.overlay
+    palette.shadow: theme.shadow
     palette.highlight: theme.accent
     palette.highlightedText: theme.accentOn
     palette.link: theme.accentInk
@@ -86,21 +99,43 @@ Rectangle {
     border.color: theme.hairline
     visible: opacity > 0.01
     opacity: open ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 120 : 160; easing.type: Easing.OutCubic } }
+    transformOrigin: Item.TopRight
+    scale: open || theme.reducedMotion ? 1.0 : 0.965
+    transform: Translate {
+        y: offer.open || theme.reducedMotion ? 0 : -4
+        Behavior on y {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+        }
+    }
+    Behavior on opacity {
+        NumberAnimation { duration: theme.reducedMotion ? 100 : (offer.open ? 160 : 120); easing.type: Easing.OutCubic }
+    }
+    Behavior on scale {
+        enabled: !theme.reducedMotion
+        NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+    }
     Accessible.role: Accessible.Dialog
     Accessible.name: qsTr("Read aloud")
 
-    // Deep drop shadow.
-    Rectangle {
-        z: -2
-        anchors.fill: parent
-        anchors.topMargin: 16
-        anchors.bottomMargin: -12
-        anchors.leftMargin: -4
-        anchors.rightMargin: -4
-        radius: offer.radius > 0 ? offer.radius + 4 : 0
-        color: theme.shadow
-        opacity: 0.6
+    // Soft layered popover shadow matching app-chrome modals.
+    Repeater {
+        model: [
+            { spread: 1, yOff: 3, alpha: 0.26 },
+            { spread: 5, yOff: 8, alpha: 0.16 },
+            { spread: 10, yOff: 14, alpha: 0.08 }
+        ]
+        Rectangle {
+            required property var modelData
+            z: -2
+            x: -modelData.spread
+            y: modelData.yOff
+            width: offer.width + modelData.spread * 2
+            height: offer.height + modelData.spread
+            radius: offer.radius > 0 ? offer.radius + modelData.spread : 0
+            color: theme.shadow
+            opacity: modelData.alpha
+        }
     }
 
     // Top rotated-45° callout caret pointing to the headphones button.
@@ -155,6 +190,17 @@ Rectangle {
             offer.pendingVoice = ""
             offer.step = "idle"
         }
+        function onProgressChanged() {
+            // If an in-flight download was cancelled elsewhere (e.g. VoicePanel),
+            // never leave this popover stuck in "busy".
+            if (offer.step === "busy" && !voicePacks.busy && offer.pendingVoice !== "") {
+                const v = voicePacks.voice(offer.pendingVoice)
+                if (!v || !v.installed) {
+                    offer.pendingVoice = ""
+                    offer.step = "idle"
+                }
+            }
+        }
     }
 
     ColumnLayout {
@@ -181,7 +227,9 @@ Rectangle {
             }
             Label {
                 Layout.fillWidth: true
-                text: qsTr("A voice made on this computer: free, private, and it works offline. It downloads once.")
+                text: offer.voice !== null
+                      ? qsTr("A voice made on this computer: free, private, and it works offline. It downloads once.")
+                      : qsTr("Choose a narration voice to read this book aloud.")
                 color: theme.ink3
                 font.pixelSize: 13
                 wrapMode: Text.Wrap
@@ -267,7 +315,7 @@ Rectangle {
                     hoverEnabled: true
                     focusPolicy: playable ? Qt.TabFocus : Qt.NoFocus
                     opacity: playable ? 1.0 : 0.40
-                    Accessible.name: qsTr("Hear a sample")
+                    Accessible.name: playing ? qsTr("Stop sample") : qsTr("Hear a sample")
                     onClicked: {
                         if (!offer.voice)
                             return
@@ -279,8 +327,11 @@ Rectangle {
                     background: Rectangle {
                         radius: 15
                         color: sampleBtn.playing ? theme.accentSoft
+                             : sampleBtn.pressed && sampleBtn.playable ? theme.fillPressed
                              : sampleBtn.hovered && sampleBtn.playable ? theme.fillHover
                              : Ui.tint(theme.ink1, 0.08)
+                        border.width: sampleBtn.playing ? 1 : 0
+                        border.color: Ui.tint(theme.accent, 0.45)
                         Rectangle {
                             anchors.fill: parent
                             anchors.margins: -2
@@ -297,11 +348,20 @@ Rectangle {
                             anchors.horizontalCenterOffset: sampleBtn.playing ? 0 : 1
                             width: 12
                             height: 12
+                            visible: !(sampleBtn.playing && voices.previewBuffering)
                             path: sampleBtn.playing ? Icons.pauseSolid : Icons.playSolid
                             filled: true
                             color: sampleBtn.playing ? theme.accentInk : theme.ink1
                         }
+                        BusyIndicator {
+                            anchors.centerIn: parent
+                            implicitWidth: 20
+                            implicitHeight: 20
+                            visible: sampleBtn.playing && voices.previewBuffering
+                            running: visible
+                        }
                     }
+                    HoverHandler { cursorShape: sampleBtn.playable ? Qt.PointingHandCursor : Qt.ArrowCursor }
                     ToolTip.visible: hovered
                     ToolTip.text: playable
                                   ? (playing ? qsTr("Stop sample") : qsTr("Hear a sample"))
@@ -331,11 +391,25 @@ Rectangle {
                     Layout.fillWidth: true
                     primary: true
                     size: "large"
-                    text: qsTr("Download and listen")
+                    enabled: !voicePacks.busy
+                    text: voicePacks.busy ? qsTr("Download in progress…") : qsTr("Download and listen")
                     onClicked: {
+                        if (voicePacks.busy || !offer.voice)
+                            return
                         offer.pendingVoice = offer.voice.id
                         offer.step = "busy"
                         voicePacks.installVoice(offer.voice.id)
+                    }
+                }
+                TextButton {
+                    visible: offer.voice === null
+                    Layout.fillWidth: true
+                    primary: true
+                    size: "large"
+                    text: qsTr("Choose a voice…")
+                    onClicked: {
+                        offer.close()
+                        offer.moreVoices()
                     }
                 }
                 TextButton {
@@ -356,7 +430,7 @@ Rectangle {
 
             AbstractButton {
                 id: otherVoicesLink
-                visible: offer.step === "idle"
+                visible: offer.step === "idle" && offer.voice !== null
                 Layout.fillWidth: true
                 implicitHeight: otherVoicesLabel.implicitHeight + 4
                 hoverEnabled: true
@@ -401,9 +475,11 @@ Rectangle {
                     color: theme.ink1
                     font.pixelSize: 12
                     font.features: ({ "tnum": 1 })
+                    elide: Text.ElideRight
                 }
                 Label {
-                    text: Math.round(Math.min(1, voicePacks.progress) * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
+                    visible: voicePacks.progress < 1.0
+                    text: Math.round(Math.max(0, Math.min(1, voicePacks.progress)) * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
                     color: theme.ink3
                     font.pixelSize: 12
                     font.features: ({ "tnum": 1 })
@@ -420,7 +496,7 @@ Rectangle {
                 clip: true
 
                 Rectangle {
-                    visible: voicePacks.progress < 1.0
+                    visible: voicePacks.progress > 0 && voicePacks.progress < 1.0
                     width: parent.width * Math.max(0.02, Math.min(1, voicePacks.progress))
                     height: parent.height
                     radius: 3
@@ -432,13 +508,13 @@ Rectangle {
                 }
                 Rectangle {
                     id: busyGlide
-                    visible: voicePacks.progress >= 1.0
+                    visible: voicePacks.progress <= 0 || voicePacks.progress >= 1.0
                     width: parent.width * 0.34
                     height: parent.height
                     radius: 3
                     color: theme.accent
                     XAnimator on x {
-                        running: offer.visible && offer.step === "busy" && voicePacks.progress >= 1.0 && !theme.reducedMotion
+                        running: offer.visible && offer.step === "busy" && (voicePacks.progress <= 0 || voicePacks.progress >= 1.0) && !theme.reducedMotion
                         from: -busyGlide.width
                         to: busyGlide.parent ? busyGlide.parent.width : 360
                         duration: 1100
@@ -507,6 +583,8 @@ Rectangle {
                         narration.startPending()
                     else if (narration.active && !narration.playing)
                         narration.resume()
+                    else if (!narration.active && reader.open)
+                        narration.start(reader.chapter, reader.pageStart)
                 }
             }
         }
