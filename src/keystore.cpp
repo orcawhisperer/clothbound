@@ -56,6 +56,8 @@ QPair<bool, QString> SecretKeyStore::store(const QString &provider, const QStrin
         message = QString::fromUtf8(error->message);
         g_error_free(error);
     }
+    if (!ok && message.isEmpty())
+        message = QCoreApplication::translate("KeyStore", "keyring unavailable");
     return {bool(ok), message};
 }
 

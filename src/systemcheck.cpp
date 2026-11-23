@@ -112,8 +112,8 @@ void SystemCheck::rebuildSummary() {
     m_summaryVerdicts = rows;
 }
 
-void SystemCheck::refresh() {
-    if (m_inspected || m_inspecting)
+void SystemCheck::refresh(bool force) {
+    if ((!force && m_inspected) || m_inspecting)
         return;
     m_inspecting = true;
     QPointer<SystemCheck> self(this);

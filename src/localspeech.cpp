@@ -443,6 +443,18 @@ double LocalSpeech::speedOf(const QString &voiceId) const {
     return model ? m_speeds.value(model->key) : 0.0;
 }
 
+double LocalSpeech::averageSpeed() const {
+    double sum = 0;
+    int count = 0;
+    for (auto it = m_speeds.cbegin(); it != m_speeds.cend(); ++it) {
+        if (it.value() > 0) {
+            sum += it.value();
+            ++count;
+        }
+    }
+    return count > 0 ? sum / count : 0.0;
+}
+
 void LocalSpeech::noteSpeed(const QString &modelKey, double speed) {
     const double before = m_speeds.value(modelKey);
     const double now = before > 0 ? 0.7 * before + 0.3 * speed : speed;

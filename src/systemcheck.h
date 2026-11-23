@@ -60,7 +60,7 @@ public:
     QString tier() const { return tierFor(m_machine); }
     QString recommendation() const { return m_recommendation; }
 
-    Q_INVOKABLE void refresh();
+    Q_INVOKABLE void refresh(bool force = false);
     Q_INVOKABLE void run();
     Q_INVOKABLE void cancel();
 

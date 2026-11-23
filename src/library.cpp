@@ -509,6 +509,8 @@ int Library::idForPath(const QString &path) const {
 }
 
 void Library::addFolder(const QString &path) {
+    if (path.trimmed().isEmpty())
+        return;
     const QString folder = canonical(path);
     if (!QFileInfo(folder).isDir()) {
         emit problem(tr("%1 isn't a folder.").arg(path));
@@ -580,6 +582,8 @@ void Library::addUrls(const QList<QUrl> &urls) {
 }
 
 void Library::removeFolder(const QString &path) {
+    if (path.trimmed().isEmpty())
+        return;
     const QString folder = canonical(path);
     const qsizetype folderIndex = m_folders.indexOf(folder);
     if (folderIndex < 0)
@@ -620,6 +624,37 @@ void Library::removeFolder(const QString &path) {
         m_books[id].missing = true;
     emit foldersChanged();
     changed();
+    if (m_scanning) {
+        cancelScan();
+        if (!m_folders.isEmpty())
+            rescan();
+    }
+}
+
+QVariantList Library::folderStats() const {
+    QVariantList result;
+    result.reserve(m_folders.size());
+    for (const QString &folder : std::as_const(m_folders)) {
+        int books = 0;
+        for (const auto &record : std::as_const(m_books))
+            if (record.visible() && isUnder(record.path, folder))
+                ++books;
+        const QFileInfo info(folder);
+        const QString name = info.fileName().isEmpty() ? folder : info.fileName();
+        result.append(QVariantMap{{QStringLiteral("path"), folder},
+                                  {QStringLiteral("name"), name},
+                                  {QStringLiteral("exists"), info.isDir()},
+                                  {QStringLiteral("books"), books}});
+    }
+    return result;
+}
+
+void Library::openFolder(const QString &path) const {
+    if (path.trimmed().isEmpty())
+        return;
+    const QFileInfo info(path);
+    if (info.isDir())
+        QDesktopServices::openUrl(QUrl::fromLocalFile(info.absoluteFilePath()));
 }
 
 void Library::rescan() {

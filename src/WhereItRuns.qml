@@ -7,8 +7,9 @@ import "Icons.js" as Icons
 import "Ui.js" as Ui
 
 // Right-column "This computer" card on Settings › Intelligence: hardware spec,
-// local model server status (with expandable model/server configuration &
-// Ollama setup), compact 3-row hardware summary verdicts, and full benchmark.
+// local model server status (with live Test connection, model pickers, custom
+// server URL, Ollama setup & one-click pull with progress/cancel), compact
+// hardware summary verdicts, and full benchmark with cancel & refresh.
 Rectangle {
     id: section
 
@@ -17,15 +18,27 @@ Rectangle {
     property bool otherServerOpen: false
     property bool detailsOpen: false
 
+    function normUrl(u) {
+        return String(u || "").replace(/\/+$/, "").replace("://127.0.0.1", "://localhost").replace("://[::1]", "://localhost")
+    }
+    function modelsWithSaved(list, saved) {
+        const out = [qsTr("None")].concat(list || [])
+        if (saved && saved !== "" && out.indexOf(saved) < 0)
+            out.push(saved)
+        return out
+    }
+
     readonly property bool reachable: ai.localUrl !== "" && ai.localServers.some(
-        s => s.url.replace(/\/+$/, "") === ai.localUrl.replace(/\/+$/, ""))
+        s => normUrl(s.url) === normUrl(ai.localUrl))
     readonly property var currentServer: {
-        const current = ai.localUrl.replace(/\/+$/, "")
+        const current = normUrl(ai.localUrl)
         for (const s of ai.localServers)
-            if (s.url.replace(/\/+$/, "") === current)
+            if (normUrl(s.url) === current)
                 return s
         return null
     }
+    readonly property bool currentIsOllama: currentServer ? currentServer.kind === "ollama"
+                                          : (ai.localName === "Ollama" && localSetup.running)
     readonly property string modelsLine: {
         void(ai.localTextModel); void(ai.localEmbeddingModel); void(ai.localSpeechModel)
         const summary = ai.localModelsSummary()
@@ -103,7 +116,7 @@ Rectangle {
                     radius: 3.5
                     color: ai.localUrl === "" ? (localSetup.running ? theme.positive : theme.ink4)
                          : section.reachable ? theme.positive
-                         : ai.findingLocal ? theme.cloud
+                         : (ai.findingLocal || ai.testingLocal) ? theme.cloud
                          : theme.danger
                 }
                 ColumnLayout {
@@ -132,7 +145,7 @@ Rectangle {
                     }
                 }
                 BusyIndicator {
-                    visible: ai.findingLocal
+                    visible: ai.findingLocal || ai.testingLocal
                     running: visible
                     implicitWidth: 16
                     implicitHeight: 16
@@ -144,6 +157,61 @@ Rectangle {
                     text: section.configureOpen ? qsTr("Done") : qsTr("Configure")
                     onClicked: section.configureOpen = !section.configureOpen
                 }
+            }
+        }
+
+        // Live test result or local server probe error.
+        Label {
+            Layout.fillWidth: true
+            visible: ai.localError !== "" || ai.localTestResult !== ""
+            text: ai.localError !== "" ? ai.localError : ai.localTestResult
+            color: ai.localError !== "" ? theme.danger : theme.positiveInk
+            font.pixelSize: 11
+            wrapMode: Text.Wrap
+        }
+
+        // Active Ollama pull / install progress (shown whether already configured or not).
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: localSetup.waiting || localSetup.pulling || localSetup.status !== "" || localSetup.problem !== ""
+            spacing: 6
+
+            Label {
+                Layout.fillWidth: true
+                visible: localSetup.waiting
+                text: qsTr("Finish in the terminal (it asks for your password), and Dogear carries on by itself.")
+                color: theme.ink3
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                visible: localSetup.pulling || localSetup.waiting
+                spacing: 8
+                BusyIndicator {
+                    visible: localSetup.waiting
+                    running: visible
+                    implicitWidth: 14
+                    implicitHeight: 14
+                }
+                ProgressBar {
+                    Layout.fillWidth: true
+                    visible: localSetup.pulling
+                    value: localSetup.progress
+                }
+                TextButton {
+                    size: "compact"
+                    text: localSetup.pulling ? qsTr("Stop") : qsTr("Cancel")
+                    onClicked: localSetup.cancel()
+                }
+            }
+            Label {
+                Layout.fillWidth: true
+                visible: localSetup.status !== "" || localSetup.problem !== ""
+                text: localSetup.problem !== "" ? localSetup.problem : localSetup.status
+                color: localSetup.problem !== "" ? theme.danger : theme.ink3
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
             }
         }
 
@@ -171,7 +239,7 @@ Rectangle {
                 ComboBox {
                     Layout.fillWidth: true
                     visible: !!section.currentServer
-                    model: section.currentServer ? [qsTr("None")].concat(section.currentServer.textModels) : []
+                    model: section.currentServer ? section.modelsWithSaved(section.currentServer.textModels, ai.localTextModel) : []
                     currentIndex: Math.max(0, model.indexOf(ai.localTextModel))
                     onActivated: (index) => ai.useLocal(section.currentServer.kind, ai.localUrl,
                                                          index === 0 ? "" : model[index], ai.localEmbeddingModel, ai.localSpeechModel)
@@ -185,7 +253,7 @@ Rectangle {
                 }
                 Label {
                     Layout.fillWidth: true
-                    visible: !section.currentServer || (section.currentServer.speechModels.length === 0 && ai.localSpeechModel !== "")
+                    visible: !section.currentServer || (section.currentServer.speechModels.length === 0 && ai.localSpeechModel === "")
                     text: ai.localSpeechModel || qsTr("None")
                     color: ai.localSpeechModel ? theme.ink1 : theme.ink4
                     font.pixelSize: 12
@@ -193,8 +261,8 @@ Rectangle {
                 }
                 ComboBox {
                     Layout.fillWidth: true
-                    visible: !!section.currentServer && section.currentServer.speechModels.length > 0
-                    model: section.currentServer ? [qsTr("None")].concat(section.currentServer.speechModels) : []
+                    visible: !!section.currentServer && (section.currentServer.speechModels.length > 0 || ai.localSpeechModel !== "")
+                    model: section.currentServer ? section.modelsWithSaved(section.currentServer.speechModels, ai.localSpeechModel) : []
                     currentIndex: Math.max(0, model.indexOf(ai.localSpeechModel))
                     onActivated: (index) => ai.useLocal(section.currentServer.kind, ai.localUrl, ai.localTextModel,
                                                          ai.localEmbeddingModel, index === 0 ? "" : model[index])
@@ -212,10 +280,59 @@ Rectangle {
                 ComboBox {
                     Layout.fillWidth: true
                     visible: !!section.currentServer
-                    model: section.currentServer ? [qsTr("None")].concat(section.currentServer.embeddingModels) : []
+                    model: section.currentServer ? section.modelsWithSaved(section.currentServer.embeddingModels, ai.localEmbeddingModel) : []
                     currentIndex: Math.max(0, model.indexOf(ai.localEmbeddingModel))
                     onActivated: (index) => ai.useLocal(section.currentServer.kind, ai.localUrl, ai.localTextModel,
                                                          index === 0 ? "" : model[index], ai.localSpeechModel)
+                }
+            }
+
+            // One-click pull for missing Ollama embedding model or any Ollama model tag.
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: section.currentIsOllama
+                spacing: 6
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: ai.localEmbeddingModel === "" && localSetup.searchModel.model !== undefined
+                    spacing: 8
+                    Label {
+                        Layout.fillWidth: true
+                        text: (localSetup.searchModel.bytes || 0) > 0
+                              ? qsTr("Search model not installed (%1)").arg(Format.size(localSetup.searchModel.bytes, Qt.locale()))
+                              : qsTr("Search model not installed")
+                        color: theme.ink3
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+                    TextButton {
+                        size: "compact"
+                        enabled: !localSetup.pulling
+                        text: qsTr("Pull %1").arg(localSetup.searchModel.title || localSetup.searchModel.model || "")
+                        onClicked: localSetup.pullModel(localSetup.searchModel.model)
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    TextField {
+                        id: pullModelInput
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Pull Ollama model (e.g. qwen3.5:4b)")
+                        Keys.onReturnPressed: if (text.trim() !== "" && !localSetup.pulling) { localSetup.pullModel(text.trim()); text = "" }
+                        Keys.onEnterPressed: if (text.trim() !== "" && !localSetup.pulling) { localSetup.pullModel(text.trim()); text = "" }
+                    }
+                    TextButton {
+                        size: "compact"
+                        text: qsTr("Pull")
+                        enabled: pullModelInput.text.trim() !== "" && !localSetup.pulling
+                        onClicked: {
+                            localSetup.pullModel(pullModelInput.text.trim())
+                            pullModelInput.text = ""
+                        }
+                    }
                 }
             }
 
@@ -232,7 +349,7 @@ Rectangle {
 
             // Other servers found, not yet in use.
             Repeater {
-                model: ai.localServers.filter(s => s.url.replace(/\/+$/, "") !== ai.localUrl.replace(/\/+$/, ""))
+                model: ai.localServers.filter(s => section.normUrl(s.url) !== section.normUrl(ai.localUrl))
                 delegate: RowLayout {
                     required property var modelData
                     readonly property int totalModels: modelData.textModels.length + modelData.embeddingModels.length + modelData.speechModels.length
@@ -257,9 +374,35 @@ Rectangle {
                 }
             }
 
+            // Probe or connect to another OpenAI-compatible URL without forgetting current server first.
             RowLayout {
                 Layout.fillWidth: true
+                spacing: 6
+                TextField {
+                    id: customUrlInput
+                    Layout.fillWidth: true
+                    placeholderText: qsTr("Custom server URL (e.g. localhost:1234)")
+                    onTextChanged: section.address = text
+                    Keys.onReturnPressed: if (text.trim() !== "" && !ai.findingLocal) ai.findLocal(text.trim())
+                    Keys.onEnterPressed: if (text.trim() !== "" && !ai.findingLocal) ai.findLocal(text.trim())
+                }
+                TextButton {
+                    size: "compact"
+                    text: qsTr("Probe")
+                    enabled: customUrlInput.text.trim() !== "" && !ai.findingLocal
+                    onClicked: ai.findLocal(customUrlInput.text.trim())
+                }
+            }
+
+            Flow {
+                Layout.fillWidth: true
                 spacing: 8
+                TextButton {
+                    size: "compact"
+                    text: ai.testingLocal ? qsTr("Testing…") : qsTr("Test connection")
+                    enabled: !ai.testingLocal && !ai.findingLocal
+                    onClicked: ai.testLocal()
+                }
                 TextButton {
                     size: "compact"
                     text: qsTr("Find again")
@@ -311,7 +454,7 @@ Rectangle {
                 }
             }
 
-            RowLayout {
+            Flow {
                 Layout.fillWidth: true
                 visible: localSetup.textModel.model !== undefined
                 spacing: 8
@@ -330,21 +473,12 @@ Rectangle {
                     enabled: !localSetup.pulling
                     readonly property bool have: ai.localServers.some(
                         server => server.kind === "ollama" && server.textModels.indexOf(localSetup.textModel.model) >= 0)
-                    text: have ? qsTr("Use %1").arg(localSetup.textModel.title)
-                               : qsTr("Download %1").arg(localSetup.textModel.title)
+                    text: have ? qsTr("Use %1").arg(localSetup.textModel.title || "")
+                               : (localSetup.textModel.bytes || 0) > 0
+                               ? qsTr("Download %1 (%2)").arg(localSetup.textModel.title || "")
+                                                         .arg(Format.size(localSetup.textModel.bytes, Qt.locale()))
+                               : qsTr("Download %1").arg(localSetup.textModel.title || "")
                     onClicked: have ? localSetup.useExisting() : localSetup.download()
-                }
-                TextButton {
-                    visible: localSetup.pulling || localSetup.waiting
-                    size: "compact"
-                    text: localSetup.pulling ? qsTr("Stop") : qsTr("Cancel")
-                    onClicked: localSetup.cancel()
-                }
-                BusyIndicator {
-                    visible: localSetup.waiting
-                    running: visible
-                    implicitWidth: 16
-                    implicitHeight: 16
                 }
                 TextButton {
                     size: "compact"
@@ -353,28 +487,6 @@ Rectangle {
                     text: section.otherServerOpen ? qsTr("Hide") : qsTr("Other server…")
                     onClicked: section.otherServerOpen = !section.otherServerOpen
                 }
-            }
-
-            Label {
-                Layout.fillWidth: true
-                visible: localSetup.waiting
-                text: qsTr("Finish in the terminal (it asks for your password), and Dogear carries on by itself.")
-                color: theme.ink3
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
-            }
-            ProgressBar {
-                Layout.fillWidth: true
-                visible: localSetup.pulling
-                value: localSetup.progress
-            }
-            Label {
-                Layout.fillWidth: true
-                visible: localSetup.status !== "" || localSetup.problem !== ""
-                text: localSetup.problem !== "" ? localSetup.problem : localSetup.status
-                color: localSetup.problem !== "" ? theme.danger : theme.ink3
-                font.pixelSize: 12
-                wrapMode: Text.Wrap
             }
 
             // Custom server address (llama.cpp, LM Studio, MLX, vLLM).
@@ -395,7 +507,7 @@ Rectangle {
                     TextField {
                         id: addressInput
                         Layout.fillWidth: true
-                        placeholderText: qsTr("localhost:5000")
+                        placeholderText: qsTr("localhost:1234")
                         onTextChanged: section.address = text
                         Keys.onReturnPressed: if (text.trim() !== "" && !ai.findingLocal) ai.findLocal(text.trim())
                         Keys.onEnterPressed: if (text.trim() !== "" && !ai.findingLocal) ai.findLocal(text.trim())
@@ -446,17 +558,23 @@ Rectangle {
             }
         }
 
-        // --- Benchmark button + optional full report toggle ----------------
+        // --- Benchmark button + Cancel + optional full report toggle -------
         RowLayout {
             Layout.fillWidth: true
             spacing: 8
             TextButton {
                 size: "compact"
                 text: systemCheck.running ? qsTr("Testing…")
-                    : systemCheck.verdicts.length ? qsTr("Test this computer again")
+                    : systemCheck.verdicts.length ? qsTr("Test again")
                     : qsTr("Test this computer")
                 enabled: !systemCheck.running
                 onClicked: systemCheck.run()
+            }
+            TextButton {
+                size: "compact"
+                visible: systemCheck.running
+                text: qsTr("Cancel")
+                onClicked: systemCheck.cancel()
             }
             BusyIndicator {
                 visible: systemCheck.running
@@ -468,19 +586,57 @@ Rectangle {
             TextButton {
                 size: "compact"
                 ghost: true
-                visible: systemCheck.verdicts.length > 0
+                visible: systemCheck.verdicts.length > 0 || systemCheck.machine.memoryGb > 0
                 text: section.detailsOpen ? qsTr("Hide details") : qsTr("Details")
                 onClicked: section.detailsOpen = !section.detailsOpen
             }
         }
 
-        // Detailed measured benchmark breakdown (preserved cleanly on demand).
+        // Detailed hardware & measured benchmark breakdown.
         ColumnLayout {
             Layout.fillWidth: true
-            visible: section.detailsOpen && systemCheck.verdicts.length > 0
+            visible: section.detailsOpen
             spacing: 8
 
             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.hairline }
+
+            // Hardware specification summary + Refresh button.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Label {
+                    Layout.fillWidth: true
+                    text: {
+                        const m = systemCheck.machine || ({})
+                        const lines = []
+                        if (m.processor)
+                            lines.push(m.processor)
+                        if (m.memoryGb > 0)
+                            lines.push(qsTr("Memory: %1 GB total (%2 GB free)")
+                                       .arg(Number(m.memoryGb).toLocaleString(Qt.locale(), 'f', 1))
+                                       .arg(Number(m.availableGb || 0).toLocaleString(Qt.locale(), 'f', 1)))
+                        if (m.graphics)
+                            lines.push(m.graphicsMemoryGb > 0
+                                       ? qsTr("Graphics: %1 (%2 GB)").arg(m.graphics).arg(Math.round(m.graphicsMemoryGb))
+                                       : qsTr("Graphics: %1").arg(m.graphics))
+                        if (m.features && m.features.length > 0)
+                            lines.push(qsTr("Acceleration: %1").arg(m.features.join(", ")))
+                        return lines.join("\n")
+                    }
+                    visible: text !== ""
+                    color: theme.ink3
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.35
+                }
+                TextButton {
+                    Layout.alignment: Qt.AlignTop
+                    size: "compact"
+                    ghost: true
+                    text: qsTr("Refresh")
+                    onClicked: systemCheck.refresh(true)
+                }
+            }
 
             Repeater {
                 model: systemCheck.verdicts

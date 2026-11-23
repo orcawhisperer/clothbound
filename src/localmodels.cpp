@@ -11,6 +11,7 @@
 #include <QNetworkRequest>
 #include <QPointer>
 #include <QRegularExpression>
+#include <QSet>
 
 namespace {
 
@@ -705,12 +706,34 @@ void ServerFinder::cancel() {
 void ServerFinder::find(const QList<QUrl> &extra) {
     cancel();
     m_found.clear();
-    QList<QUrl> places = usualPlaces();
+    // Deduplicate loopback aliases (localhost vs 127.0.0.1 on the same port/path)
+    // while preferring an explicit extra URL so it matches a saved localUrl.
+    auto endpointKey = [](const QUrl &u) {
+        QString host = u.host().toLower();
+        if (host == QLatin1String("localhost") || host == QLatin1String("localhost."))
+            host = QStringLiteral("127.0.0.1");
+        const int port = u.port(u.scheme().toLower() == QLatin1String("https") ? 443 : 80);
+        return QStringLiteral("%1://%2:%3%4").arg(u.scheme().toLower(), host).arg(port).arg(u.path());
+    };
+    QList<QUrl> places;
+    QSet<QString> seen;
     for (const QUrl &url : extra) {
         // Strip trailing API endpoint suffixes (/v1, /api/tags, ...) while preserving reverse-proxy base paths.
         const QUrl origin = LocalModels::normalizeServerUrl(url);
-        if (LocalModels::isHttpUrl(origin) && !places.contains(origin))
+        if (!LocalModels::isHttpUrl(origin))
+            continue;
+        const QString key = endpointKey(origin);
+        if (!seen.contains(key)) {
+            seen.insert(key);
             places.append(origin);
+        }
+    }
+    for (const QUrl &origin : usualPlaces()) {
+        const QString key = endpointKey(origin);
+        if (!seen.contains(key)) {
+            seen.insert(key);
+            places.append(origin);
+        }
     }
     const int generation = m_generation;
     m_pending = int(places.size());

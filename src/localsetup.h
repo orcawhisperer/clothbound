@@ -52,6 +52,8 @@ public:
     Q_INVOKABLE void install();
     // Downloads the recommended models, then uses them.
     Q_INVOKABLE void download();
+    // Downloads a specific Ollama model tag (e.g. "qwen3-embedding:0.6b"), with progress.
+    Q_INVOKABLE void pullModel(const QString &model);
     // Uses recommended models already installed in Ollama (works offline).
     Q_INVOKABLE void useExisting();
     Q_INVOKABLE void cancel();
@@ -80,6 +82,9 @@ private:
     bool m_running = false;
     bool m_waiting = false;
     bool m_pulling = false;
+    bool m_pullCustom = false;
+    int m_pullGen = 0;
+    QString m_customPulledModel;
     double m_progress = 0;
     QString m_status;
     QString m_problem;

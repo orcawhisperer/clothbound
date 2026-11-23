@@ -143,6 +143,7 @@ QString Scanner::coverFileFor(const QString &bookPath) {
 void Scanner::cancel() {
     m_cancelled->store(true);
     m_queue.clear();
+    m_running = false;
 }
 
 void Scanner::scan(const QStringList &folders, const QStringList &files,
