@@ -26,6 +26,8 @@ const dogear = (() => {
         rtl: false,
         vertical: '',
         geometry: null,
+        stageWidth: 0,
+        stageHeight: 0,
         index: null,
         labels: [],
         location: null,
@@ -223,6 +225,9 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 
     function applyLayout() {
         const doc = chapterDocument()
+        const s = stage()
+        state.stageWidth = s ? s.clientWidth : 0
+        state.stageHeight = s ? s.clientHeight : 0
         const g = state.geometry = computeGeometry()
         const f = frame()
         f.style.left = g.left + 'px'
@@ -1572,6 +1577,18 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
     }
 
     let resizeTimer = 0
+    let refreshGen = 0
+    let refreshCleanupTimer = 0
+    function clearRefreshStyles() {
+        clearTimeout(refreshCleanupTimer)
+        refreshCleanupTimer = 0
+        for (const doc of [document, frame() && frame().contentDocument]) {
+            if (!doc || !doc.documentElement)
+                continue
+            doc.documentElement.style.opacity = ''
+            doc.documentElement.style.transform = ''
+        }
+    }
     function onResize() {
         clearTimeout(resizeTimer)
         resizeTimer = setTimeout(() => run(relayout), 120)
@@ -1579,6 +1596,10 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 
     async function relayout() {
         if (!state.index || !state.location)
+            return
+        const s = stage()
+        if (s && state.stageWidth > 0 && state.stageHeight > 0
+            && s.clientWidth === state.stageWidth && s.clientHeight === state.stageHeight)
             return
         closeNote()
         const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
@@ -1655,6 +1676,8 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
                 state.prefetched = new Set()
                 state.hyphenatedNodes = new Map()
                 state.chapter = -1
+                state.stageWidth = 0
+                state.stageHeight = 0
                 state.index = null
                 state.location = null
                 state.decorated = -1
@@ -1671,10 +1694,14 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
                 closeNote()
                 hideFromHere(0)
                 clearTimeout(selectionTimer)
+                ++refreshGen
+                clearRefreshStyles()
                 state.book = null
                 state.rtl = false
                 state.vertical = ''
                 state.chapter = -1
+                state.stageWidth = 0
+                state.stageHeight = 0
                 state.index = null
                 state.location = null
                 state.decorated = -1
@@ -1973,16 +2000,29 @@ p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 
         placeAt(x, y) { return placeAt(x, y) },
 
-        // The window is back in view: paint a fresh frame now, rather than
-        // whenever something next changes (Chromium dropped its last one).
+        // The window is back in view: force Blink and cc's damage tracker to
+        // submit a real CompositorFrame (a transparent outline is elided as
+        // zero-damage). An opacity delta of 0.001 (< 1/255) plus a transient
+        // layer promotion guarantees a fresh frame with zero visible flicker
+        // and zero layout reflow, and cleans up via both double-rAF and timer.
         refresh() {
+            const gen = ++refreshGen
+            clearTimeout(refreshCleanupTimer)
             for (const doc of [document, frame() && frame().contentDocument]) {
                 if (!doc || !doc.documentElement)
                     continue
                 const root = doc.documentElement
-                root.style.outline = '1px solid transparent'
-                requestAnimationFrame(() => requestAnimationFrame(() => { root.style.outline = '' }))
+                root.style.opacity = '0.999'
+                root.style.transform = 'translateZ(0)'
+                void root.offsetWidth
             }
+            const restore = () => {
+                if (gen !== refreshGen)
+                    return
+                clearRefreshStyles()
+            }
+            requestAnimationFrame(() => requestAnimationFrame(restore))
+            refreshCleanupTimer = setTimeout(restore, 120)
             return true
         },
 

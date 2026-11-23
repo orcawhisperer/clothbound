@@ -178,6 +178,7 @@ FocusScope {
     function openBook() {
         if (!reader.open)
             return
+        clearSurfaceNudge()
         if (!pdf)
             webNeeded = true
         if (!surfaceReady && !pdf)
@@ -189,6 +190,9 @@ FocusScope {
            + JSON.stringify(style()) + ")")
     }
     function closeBook() {
+        clearSurfaceNudge()
+        refreshTimer.stop()
+        refreshLater.stop()
         closePanels()
         lightbox.close()
         jumpPillVisible = false
@@ -483,6 +487,7 @@ FocusScope {
         target: download
         function onBlocksWanted(chapter) { view.js("dogear.requestSpeakable(" + chapter + ")") }
         function onReady() { toast.show(qsTr("Ready to listen offline")) }
+        function onChanged() { if (view.web) view.web.updateLifecycleState() }
     }
     Connections {
         target: narration
@@ -504,6 +509,8 @@ FocusScope {
             }
             if (!narration.active)
                 view.js("dogear.highlight('dg-speaking', [])")
+            if (view.web)
+                view.web.updateLifecycleState()
         }
         function onNeedsKey() {
             toast.show(qsTr("Listening uses your Gemini key. Add it to start."))
@@ -515,28 +522,91 @@ FocusScope {
         }
     }
 
-    // Back from another workspace or app: a fresh frame of the page, at once
-    // and again a moment later (as the compositor settles).
-    Connections {
-        target: win
-        function onActiveChanged() { if (win.active) view.refreshSoon() }
-        function onVisibilityChanged() {
-            if (win.visible && win.visibility !== Window.Minimized && win.visibility !== Window.Hidden)
-                view.refreshSoon()
-        }
+    // Back from another workspace, monitor sleep, or tray: force Qt Quick and
+    // Chromium's Viz compositor to produce and bind a fresh frame, even when
+    // Dogear returns tiled and unfocused. A transient 1 px bottom-margin nudge
+    // (inside the solid reading margin) forces visualPropertiesChanged() to
+    // allocate a new LocalSurfaceId and backing GPU texture, while reader.js
+    // ignores no-op resizes once restored so pagination never shifts.
+    property bool surfaceNudge: false
+    property double lastNudgeMs: 0
+
+    function clearSurfaceNudge() {
+        nudgeRestoreTimer.stop()
+        if (surfaceNudge)
+            surfaceNudge = false
     }
-    Connections {
-        target: Qt.application
-        function onStateChanged() { if (Qt.application.state === Qt.ApplicationActive) view.refreshSoon() }
-    }
-    function refreshSoon() {
-        if (pdf || !surfaceReady || !reader.open)
+
+    function runSurfacePaint() {
+        if (!reader.open || !win.visible)
             return
+        if (pdf) {
+            surfaceWatcher.forceItemUpdate(pdfSurface)
+            return
+        }
+        if (!surfaceReady || !web)
+            return
+        surfaceWatcher.forceItemUpdate(web)
+        view.js("dogear.refresh && dogear.refresh()")
+    }
+
+    function refreshSoon(reason) {
+        if (!reader.open || !win.visible)
+            return
+        if (pdf) {
+            surfaceWatcher.forceItemUpdate(pdfSurface)
+            return
+        }
+        if (!surfaceReady || !web)
+            return
+        surfaceWatcher.forceItemUpdate(web)
+        const strongTrigger = reason === "expose" || reason === "sceneGraph"
+                              || reason === "visibility" || reason === "hyprWorkspace"
+        const now = Date.now()
+        if (surfaceWatcher.exposed && !surfaceNudge && (strongTrigger || now - lastNudgeMs > 180)) {
+            lastNudgeMs = now
+            surfaceNudge = true
+            nudgeRestoreTimer.restart()
+        }
         refreshTimer.restart()
         refreshLater.restart()
     }
-    Timer { id: refreshTimer; interval: 16; onTriggered: if (!view.pdf && view.surfaceReady && reader.open) view.js("dogear.refresh && dogear.refresh()") }
-    Timer { id: refreshLater; interval: 350; onTriggered: if (!view.pdf && view.surfaceReady && reader.open) view.js("dogear.refresh && dogear.refresh()") }
+
+    Connections {
+        target: surfaceWatcher
+        function onRepaintRequested(reason) { view.refreshSoon(reason) }
+        function onExposedChanged() {
+            if (!surfaceWatcher.exposed) {
+                view.clearSurfaceNudge()
+                refreshTimer.stop()
+                refreshLater.stop()
+            }
+        }
+    }
+    Connections {
+        target: win
+        function onVisibleChanged() {
+            if (!win.visible) {
+                view.clearSurfaceNudge()
+                refreshTimer.stop()
+                refreshLater.stop()
+            }
+            if (view.web)
+                view.web.updateLifecycleState()
+        }
+    }
+    onPdfChanged: if (pdf) clearSurfaceNudge()
+    Timer {
+        id: nudgeRestoreTimer
+        interval: 48
+        onTriggered: {
+            view.surfaceNudge = false
+            if (!view.pdf && view.surfaceReady && reader.open && view.web)
+                surfaceWatcher.forceItemUpdate(view.web)
+        }
+    }
+    Timer { id: refreshTimer; interval: 16; onTriggered: view.runSurfacePaint() }
+    Timer { id: refreshLater; interval: 320; onTriggered: view.runSurfacePaint() }
 
     Connections {
         target: reader
@@ -656,7 +726,11 @@ FocusScope {
 
     Loader {
         id: webLoader
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: view.surfaceNudge && parent.height > 2 ? 1 : 0
         active: view.webNeeded
         opacity: view.pdf ? 0 : 1
         enabled: !view.pdf
@@ -699,7 +773,16 @@ FocusScope {
         WebEngineView {
             id: webItem
             profile: readerProfile
+            visible: win.visible && win.visibility !== Window.Minimized
             backgroundColor: view.look.bg
+            function updateLifecycleState() {
+                const target = (!visible && !narration.active && !download.active)
+                    ? WebEngineView.LifecycleState.Frozen : WebEngineView.LifecycleState.Active
+                if (lifecycleState !== target)
+                    lifecycleState = target
+            }
+            onVisibleChanged: updateLifecycleState()
+            Component.onCompleted: updateLifecycleState()
             // Chromium only takes the mouse (selecting words, a tap on the
             // margin) when it has focus; the window's shortcuts still come first.
             activeFocusOnPress: true

@@ -56,6 +56,7 @@ HEADERS += \
     src/localspeech.h \
     src/voicepacks.h \
     src/sseparser.h \
+    src/surfacewatcher.h \
     src/theme.h \
     src/translator.h \
     src/voicecatalog.h \
@@ -100,6 +101,7 @@ SOURCES += \
     src/localspeech.cpp \
     src/voicepacks.cpp \
     src/sseparser.cpp \
+    src/surfacewatcher.cpp \
     src/theme.cpp \
     src/translator.cpp \
     src/voicecatalog.cpp \

@@ -29,6 +29,7 @@
 #include "instance.h"
 #include "portalfilepicker.h"
 #include "reader.h"
+#include "surfacewatcher.h"
 #include "theme.h"
 #include "translator.h"
 
@@ -223,8 +224,12 @@ int main(int argc, char *argv[]) {
     }
 
     // GUI launch (or --screenshot / --run): Qt requires QtWebEngineQuick to be
-    // initialized before QGuiApplication is constructed.
+    // initialized before QGuiApplication is constructed. Keep occluded-workspace
+    // surfaces alive in Chromium so returning from another Hyprland workspace
+    // doesn't find an evicted Viz surface; explicit tray hides still freeze via
+    // WebEngineView.lifecycleState.
     registerBookScheme();
+    SurfaceWatcher::applyChromiumFlags();
     QtWebEngineQuick::initialize();
 
     QGuiApplication app(argc, argv);
@@ -364,8 +369,10 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("illustrator", &illustrator);
     engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
     Notifier notifier;
+    SurfaceWatcher surfaceWatcher;
     engine.rootContext()->setContextProperty("desktop", &notifier);
     engine.rootContext()->setContextProperty("instance", &instance);
+    engine.rootContext()->setContextProperty("surfaceWatcher", &surfaceWatcher);
     engine.rootContext()->setContextProperty("systemCheck", &systemCheck);
     engine.rootContext()->setContextProperty("localSetup", &localSetup);
     engine.rootContext()->setContextProperty("localSpeech", &localSpeech);
@@ -397,13 +404,15 @@ int main(int argc, char *argv[]) {
                 notifier.notify(QObject::tr("Dogear can't open this book"), library.errorString());
         });
     }
-    // (The window's graphics aren't kept while it's away: Chromium drops the
-    // page's frame when hidden, and a kept one showed black. The reader asks
-    // the page for a fresh frame as the window comes back instead.)
-    // While debugging, a pointer that --run can move.
-    if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first());
-        window && qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
-        engine.rootContext()->setContextProperty("pointer", new PointerDriver(window, &app));
+    // Watch window exposure, scene-graph rebuilds, and Hyprland workspace
+    // switches so the reading surface always acquires a fresh compositor frame
+    // on return (even when tiled and unfocused).
+    if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
+        surfaceWatcher.attach(window);
+        // While debugging, a pointer that --run can move.
+        if (qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
+            engine.rootContext()->setContextProperty("pointer", new PointerDriver(window, &app));
+    }
     // The desktop's media controls can ask for the window.
     QObject::connect(&mpris, &Mpris::raiseRequested, &instance, [&instance] { instance.bringBack(); });
     // New books in watched folders are picked up each time Dogear starts.

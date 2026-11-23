@@ -12,6 +12,7 @@
 #include <QCryptographicHash>
 #include <QProcess>
 #include <QPromise>
+#include <QQuickItem>
 #include <QQuickTextureFactory>
 #include <QQuickWindow>
 #include <QRegularExpression>
@@ -53,6 +54,7 @@
 #include "portalfilepicker.h"
 #include "voicepacks.h"
 #include "sseparser.h"
+#include "surfacewatcher.h"
 #include "bookname.h"
 #include "bookscheme.h"
 #include "booksearch.h"
@@ -5286,6 +5288,148 @@ private slots:
         const QString helpOut = QString::fromUtf8(helpProc.readAllStandardOutput());
         QVERIFY(helpOut.contains(QStringLiteral("Usage:")));
         QVERIFY(QString::fromUtf8(helpProc.readAllStandardError()).trimmed().isEmpty());
+    }
+
+    // --- Workspace-return repaint / black-surface regression tests ----------
+
+    void surfaceWatcherMergesChromiumFlagsCleanly() {
+        QCOMPARE(SurfaceWatcher::mergeChromiumFlags({}),
+                 QByteArray("--disable-backgrounding-occluded-windows"));
+        QCOMPARE(SurfaceWatcher::mergeChromiumFlags("  --enable-features=Foo\t--ozone-platform=wayland  "),
+                 QByteArray("--enable-features=Foo --ozone-platform=wayland --disable-backgrounding-occluded-windows"));
+        // Idempotent when already present.
+        const QByteArray once = SurfaceWatcher::mergeChromiumFlags("--foo --disable-backgrounding-occluded-windows --bar");
+        QCOMPARE(once, QByteArray("--foo --disable-backgrounding-occluded-windows --bar"));
+        QCOMPARE(SurfaceWatcher::mergeChromiumFlags(once), once);
+        // Token-accurate: a flag merely sharing the prefix must not suppress adding the real flag.
+        QCOMPARE(SurfaceWatcher::mergeChromiumFlags("--disable-backgrounding-occluded-windows-custom"),
+                 QByteArray("--disable-backgrounding-occluded-windows-custom --disable-backgrounding-occluded-windows"));
+
+        // applyChromiumFlags() updates QTWEBENGINE_CHROMIUM_FLAGS cleanly.
+        const bool hadOrig = qEnvironmentVariableIsSet("QTWEBENGINE_CHROMIUM_FLAGS");
+        const QByteArray orig = qgetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+        qputenv("QTWEBENGINE_CHROMIUM_FLAGS", "--use-gl=egl");
+        SurfaceWatcher::applyChromiumFlags();
+        QCOMPARE(qgetenv("QTWEBENGINE_CHROMIUM_FLAGS"),
+                 QByteArray("--use-gl=egl --disable-backgrounding-occluded-windows"));
+        if (hadOrig)
+            qputenv("QTWEBENGINE_CHROMIUM_FLAGS", orig);
+        else
+            qunsetenv("QTWEBENGINE_CHROMIUM_FLAGS");
+    }
+
+    void surfaceWatcherHandlesExposeHyprlandAndSceneGraph() {
+        // Hyprland .socket2.sock workspace event filter.
+        QVERIFY(SurfaceWatcher::isHyprWorkspaceEvent("workspace>>2"));
+        QVERIFY(SurfaceWatcher::isHyprWorkspaceEvent("workspacev2>>2,reading\n"));
+        QVERIFY(SurfaceWatcher::isHyprWorkspaceEvent("focusedmon>>DP-1,2"));
+        QVERIFY(SurfaceWatcher::isHyprWorkspaceEvent("focusedmonv2>>DP-1,2"));
+        QVERIFY(SurfaceWatcher::isHyprWorkspaceEvent("activespecial>>scratch,DP-1"));
+        QVERIFY(SurfaceWatcher::isHyprWorkspaceEvent("activespecialv2>>-98,special:scratch,DP-1"));
+        QVERIFY(!SurfaceWatcher::isHyprWorkspaceEvent("activewindow>>kitty,zsh"));
+        QVERIFY(!SurfaceWatcher::isHyprWorkspaceEvent("openwindow>>0x1,1,dogear,Dogear"));
+        QVERIFY(!SurfaceWatcher::isHyprWorkspaceEvent(""));
+
+        QTemporaryDir dir;
+        const QString sockPath = dir.filePath(".socket2.sock");
+        QLocalServer server;
+        QVERIFY(server.listen(sockPath));
+        QPointer<QLocalSocket> serverPeer;
+        QObject::connect(&server, &QLocalServer::newConnection, &server, [&] {
+            serverPeer = server.nextPendingConnection();
+        });
+
+        QQuickWindow win;
+        win.resize(640, 480);
+        win.show();
+        QVERIFY(QTest::qWaitFor([&] { return win.isExposed(); }, 2000));
+
+        SurfaceWatcher watcher;
+        watcher.setHyprEventSocketForTesting(sockPath);
+        watcher.attach(&win);
+        QVERIFY(watcher.isExposed());
+        QTRY_VERIFY(serverPeer != nullptr);
+
+        QSignalSpy repaintSpy(&watcher, &SurfaceWatcher::repaintRequested);
+        QSignalSpy exposedSpy(&watcher, &SurfaceWatcher::exposedChanged);
+
+        // Unrelated Hyprland events must not trigger unnecessary repaints.
+        serverPeer->write("activewindow>>kitty,term\n");
+        serverPeer->flush();
+        QTest::qWait(40);
+        QCOMPARE(repaintSpy.count(), 0);
+
+        // Returning to a workspace while tiled and unfocused must still request a repaint.
+        serverPeer->write("workspacev2>>1,1\n");
+        serverPeer->flush();
+        QTRY_COMPARE(repaintSpy.count(), 1);
+        QCOMPARE(repaintSpy.last().first().toString(), QStringLiteral("hyprWorkspace"));
+
+        // Fragmented socket reads are buffered until newline.
+        serverPeer->write("workspacev2>>");
+        serverPeer->flush();
+        QTest::qWait(30);
+        QCOMPARE(repaintSpy.count(), 1);
+        serverPeer->write("2,2\n");
+        serverPeer->flush();
+        QTRY_COMPARE(repaintSpy.count(), 2);
+        QCOMPARE(repaintSpy.last().first().toString(), QStringLiteral("hyprWorkspace"));
+
+        // Hide -> Show (unexposed -> exposed) emits exposedChanged and requests repaint on return.
+        const int beforeHide = repaintSpy.count();
+        win.hide();
+        QTRY_VERIFY(!win.isExposed());
+        QVERIFY(!watcher.isExposed());
+        QVERIFY(exposedSpy.count() >= 1);
+
+        // Workspace events while unexposed must not fire prematurely while hidden.
+        serverPeer->write("workspacev2>>3,3\n");
+        serverPeer->flush();
+        QTest::qWait(40);
+        QCOMPARE(repaintSpy.count(), beforeHide);
+
+        win.show();
+        QTRY_VERIFY(win.isExposed());
+        QVERIFY(watcher.isExposed());
+        QTRY_VERIFY(repaintSpy.count() > beforeHide);
+
+        // Queued sceneGraphInitialized triggers a sceneGraph repaint when exposed.
+        const int beforeSg = repaintSpy.count();
+        emit win.sceneGraphInitialized();
+        QTRY_VERIFY(repaintSpy.count() > beforeSg);
+        QCOMPARE(repaintSpy.last().first().toString(), QStringLiteral("sceneGraph"));
+
+        // forceItemUpdate safely marks parent, nested child items (like WebEngine's delegate), and window.
+        QQuickItem parentItem(win.contentItem());
+        parentItem.setSize(QSizeF(400, 300));
+        QQuickItem childItem(&parentItem);
+        childItem.setSize(QSizeF(400, 300));
+        watcher.forceItemUpdate(&parentItem);
+        watcher.forceItemUpdate(nullptr);
+
+        // Detaching cleanly clears state without crashing on subsequent window events.
+        watcher.attach(nullptr);
+        QVERIFY(!watcher.isExposed());
+    }
+
+    void readerSurfaceRefreshAvoidsElidedOutlineAndNoOpRelayout() {
+        QFile jsFile(QFINDTESTDATA("../src/reader.js"));
+        QVERIFY(jsFile.open(QIODevice::ReadOnly));
+        const QString js = QString::fromUtf8(jsFile.readAll());
+        QVERIFY(!js.contains(QStringLiteral("1px solid transparent")));
+        QVERIFY(js.contains(QStringLiteral("root.style.opacity = '0.999'")));
+        QVERIFY(js.contains(QStringLiteral("root.style.transform = 'translateZ(0)'")));
+        QVERIFY(js.contains(QStringLiteral("s.clientWidth === state.stageWidth && s.clientHeight === state.stageHeight")));
+
+        QFile qmlFile(QFINDTESTDATA("../src/EpubReader.qml"));
+        QVERIFY(qmlFile.open(QIODevice::ReadOnly));
+        const QString qml = QString::fromUtf8(qmlFile.readAll());
+        QVERIFY(qml.contains(QStringLiteral("backgroundColor: view.look.bg")));
+        QVERIFY(qml.contains(QStringLiteral("target: surfaceWatcher")));
+        QVERIFY(qml.contains(QStringLiteral("surfaceWatcher.forceItemUpdate")));
+        QVERIFY(qml.contains(QStringLiteral("anchors.bottomMargin: view.surfaceNudge")));
+        QVERIFY(qml.contains(QStringLiteral("visible: win.visible && win.visibility !== Window.Minimized")));
+        QVERIFY(qml.contains(QStringLiteral("WebEngineView.LifecycleState.Frozen")));
     }
 };
 

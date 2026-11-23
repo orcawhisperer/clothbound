@@ -34,6 +34,7 @@ HEADERS += \
     ../src/instance.h \
     ../src/keystore.h \
     ../src/sseparser.h \
+    ../src/surfacewatcher.h \
     fakeserver.h \
     ../src/bookinfo.h \
     ../src/bookname.h \
@@ -83,6 +84,7 @@ SOURCES += \
     ../src/systemcheck.cpp \
     ../src/keystore.cpp \
     ../src/sseparser.cpp \
+    ../src/surfacewatcher.cpp \
     ../src/bookinfo.cpp \
     ../src/bookname.cpp \
     ../src/bookscheme.cpp \
