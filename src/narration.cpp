@@ -3,6 +3,7 @@
 #include "ai.h"
 #include "aiservices.h"
 #include "audiocache.h"
+#include "director.h"
 #include "library.h"
 #include "reader.h"
 #include "speechplayer.h"
@@ -39,7 +40,7 @@ constexpr int sampleRate = 24000;
 
 Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, QObject *parent)
     : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_library(library),
-      m_player(new SpeechPlayer(sampleRate, this)) {
+      m_director(new Director(ai, cache, reader, this)), m_player(new SpeechPlayer(sampleRate, this)) {
     connect(m_player, &SpeechPlayer::position, this, &Narration::heard);
     connect(m_player, &SpeechPlayer::starvedChanged, this, [this](bool starved) {
         if (m_wanted)
@@ -88,11 +89,6 @@ Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library 
 }
 
 Narration::~Narration() { stop(); }
-
-QString Narration::directorPrompt() {
-    QFile file(QStringLiteral(":/prompts/director.md"));
-    return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
-}
 
 void Narration::loadVoice() {
     QSettings s = settings();
@@ -666,102 +662,27 @@ int Narration::sleepMinutes() const {
     return qMax(1, int(std::ceil(QDateTime::currentDateTime().secsTo(m_sleepAt) / 60.0)));
 }
 
-Ai::TextRequest Narration::directionsRequest(int chapter) const {
-    const QList<SpeechBlock> blocks = m_blocks.value(chapter);
-    QString paragraphs;
-    for (int i = 0; i < blocks.size(); ++i)
-        if (blocks[i].kind != QStringLiteral("break"))
-            paragraphs += QStringLiteral("[%1] %2\n").arg(i).arg(blocks[i].text.simplified().left(1600));
-    Ai::TextRequest request;
-    if (paragraphs.isEmpty())
-        return request;
-    request.feature = QStringLiteral("director");
-    request.fast = true;
-    request.effort = QStringLiteral("low");
-    request.system = directorPrompt();
-    request.messages = {{true, QStringLiteral("Book: %1, by %2.\nChapter: %3.\nPerformance: %4.\n\n%5")
-                                   .arg(m_reader->title(), m_reader->author(), m_reader->titleOfChapter(chapter),
-                                        m_performance, paragraphs)}};
-    QJsonArray moods;
-    for (const QString &mood : Speech::moods())
-        moods.append(mood);
-    request.schema = QJsonObject{
-        {"type", "object"},
-        {"properties", QJsonObject{{"changes", QJsonObject{
-            {"type", "array"},
-            {"items", QJsonObject{{"type", "object"},
-                                  {"properties", QJsonObject{{"paragraph", QJsonObject{{"type", "integer"}}},
-                                                             {"mood", QJsonObject{{"type", "string"}, {"enum", moods}}}}},
-                                  {"required", QJsonArray{"paragraph", "mood"}}}}}}}},
-        {"required", QJsonArray{"changes"}},
-    };
-    return request;
-}
-
-// The same chapter, performance, prompt and model always get the same
-// direction: asked once, then kept.
-QString Narration::directionsKey(const Ai::TextRequest &request) const {
-    return AudioCache::keyFor(m_ai->provider()->id(), m_ai->text()->textModelName(true), QStringLiteral("director"),
-                              request.system, request.messages.value(0).text);
-}
-
-QMap<int, QString> Narration::parseDirections(const QString &json, int blocks) {
-    QMap<int, QString> changes;
-    for (const auto &value : QJsonDocument::fromJson(json.toUtf8()).object().value("changes").toArray()) {
-        const QJsonObject change = value.toObject();
-        const int paragraph = change.value("paragraph").toInt(-1);
-        const QString mood = change.value("mood").toString();
-        if (paragraph >= 0 && paragraph < blocks && Speech::moods().contains(mood))
-            changes.insert(paragraph, mood == QStringLiteral("neutral") ? QString() : mood);
-    }
-    return changes;
-}
-
 bool Narration::keptDirections(int chapter) {
-    const Ai::TextRequest request = directionsRequest(chapter);
-    if (request.messages.isEmpty())
+    const auto kept = m_director->kept(chapter, m_blocks.value(chapter), m_performance);
+    if (!kept)
         return false;
-    const QString kept = m_cache->directions(directionsKey(request));
-    if (kept.isEmpty())
-        return false;
-    const QMap<int, QString> changes = parseDirections(kept, int(m_blocks.value(chapter).size()));
-    trace(QStringLiteral("director (kept): %1 changes for chapter %2").arg(changes.size()).arg(chapter));
-    m_moods.insert(chapter, changes);
+    trace(QStringLiteral("director (kept): %1 changes for chapter %2").arg(kept->size()).arg(chapter));
+    m_moods.insert(chapter, *kept);
     return true;
 }
 
-QSet<int> Narration::breaksFor(int chapter) const {
-    QSet<int> breaks;
-    const QMap<int, QString> moods = m_moods.value(chapter);
-    for (auto it = moods.cbegin(); it != moods.cend(); ++it)
-        breaks.insert(it.key());
-    return breaks;
-}
+QSet<int> Narration::breaksFor(int chapter) const { return Director::breaks(m_moods.value(chapter)); }
 
 void Narration::requestDirections(int chapter) {
-    const Ai::TextRequest request = directionsRequest(chapter);
-    if (request.messages.isEmpty())
-        return;
-    const QString key = directionsKey(request);
-    const int blocks = int(m_blocks.value(chapter).size());
     m_directionsAsked.insert(chapter, nowMs());
-    Ai::Reply *reply = m_ai->text()->generate(request);
-    m_ai->track(reply);
-    connect(reply, &Ai::Reply::finished, this, [this, reply, chapter, key, blocks] {
-        reply->deleteLater();
+    m_director->ask(chapter, m_blocks.value(chapter), m_performance, this, [this, chapter](const QMap<int, QString> &moods) {
         if (!m_active || !m_blocks.contains(chapter))
             return;
-        QMap<int, QString> changes;
-        if (!reply->error()) {
-            changes = parseDirections(reply->text(), blocks);
-            m_cache->storeDirections(key, reply->text());
-        }
         QStringList said;
-        for (auto it = changes.cbegin(); it != changes.cend(); ++it)
+        for (auto it = moods.cbegin(); it != moods.cend(); ++it)
             said.append(QStringLiteral("%1 %2").arg(it.key()).arg(it.value().isEmpty() ? "neutral" : it.value()));
         trace(QStringLiteral("director: chapter %1: %2").arg(chapter).arg(said.join(", ")));
-        // No direction (or a failed request) means the ordinary reading, not a wait.
-        applyMoods(chapter, changes);
+        applyMoods(chapter, moods);
     });
 }
 

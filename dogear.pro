@@ -29,6 +29,7 @@ HEADERS += \
     src/library.h \
     src/librarymodel.h \
     src/narration.h \
+    src/director.h \
     src/mpris.h \
     src/pdfbook.h \
     src/portalfilepicker.h \
@@ -57,6 +58,7 @@ SOURCES += \
     src/library.cpp \
     src/librarymodel.cpp \
     src/narration.cpp \
+    src/director.cpp \
     src/mpris.cpp \
     src/main.cpp \
     src/pdfbook.cpp \

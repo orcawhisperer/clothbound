@@ -17,6 +17,7 @@ class AiServices;
 class AudioCache;
 class Library;
 class Reader;
+class Director;
 class SpeechPlayer;
 
 // Listening: the open book read aloud from where the reader is. Each
@@ -86,7 +87,6 @@ public:
 
     // A chapter's blocks, as the reading surface reports them.
     void addBlocks(int chapter, const QString &json);
-    static QString directorPrompt();
 
 signals:
     void stateChanged();
@@ -128,9 +128,6 @@ private:
     qint64 expectedSamples(const Clip &clip) const;
     void setBuffering(bool buffering);
     void setProblem(const QString &problem);
-    Ai::TextRequest directionsRequest(int chapter) const;
-    QString directionsKey(const Ai::TextRequest &request) const;
-    static QMap<int, QString> parseDirections(const QString &json, int blocks);
     bool keptDirections(int chapter);
     QSet<int> breaksFor(int chapter) const;
     void requestDirections(int chapter);
@@ -146,6 +143,7 @@ private:
     Reader *m_reader;
     Library *m_library;
 
+    Director *m_director;
     SpeechPlayer *m_player;
     QList<Clip> m_clips;
     int m_current = -1;
