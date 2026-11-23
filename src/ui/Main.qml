@@ -262,16 +262,68 @@ ApplicationWindow {
         }
         pendingJump = { bookId: bookId, chapter: chapter, offset: offset }
         openBook(bookId)
-        if (reader.open && reader.bookId === bookId && reader.format === "pdf") {
+        if (!reader.open || reader.bookId !== bookId) {
+            pendingJump = null
+            return
+        }
+        if (reader.format === "pdf") {
             Qt.callLater(flushPendingJump)
         }
+    }
+    function openBookPassage(bookId, chapter, quote) {
+        if (!bookId || bookId <= 0)
+            return
+        const targetChapter = Math.max(0, chapter || 0)
+        const cleanQuote = (quote || "").replace(/\u2026+$/, "").replace(/\s+/g, " ").trim()
+        if (readerOpen && reader.bookId === bookId && readerLoader.item) {
+            applyJump({ bookId: bookId, chapter: targetChapter, offset: 0, quote: cleanQuote })
+            return
+        }
+        pendingJump = { bookId: bookId, chapter: targetChapter, offset: 0, quote: cleanQuote }
+        openBook(bookId)
+        if (!reader.open || reader.bookId !== bookId) {
+            pendingJump = null
+            return
+        }
+        if (reader.format === "pdf") {
+            Qt.callLater(flushPendingJump)
+        }
+    }
+    function applyJump(target) {
+        if (!target || !reader.open || !readerLoader.item)
+            return
+        const chapter = Math.max(0, target.chapter || 0)
+        const offset = Math.max(0, target.offset || 0)
+        const quote = (target.quote || "").trim()
+        const place = { chapter: chapter, offset: offset, instant: true }
+        if (quote !== "") {
+            place.snippet = quote.slice(0, 64)
+            if (reader.format === "pdf") {
+                const pageText = reader.pdfPageText(chapter)
+                const findQuoteSpan = (needle) => {
+                    if (!needle || needle.length < 4 || !pageText)
+                        return null
+                    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")
+                    const match = new RegExp(escaped, "i").exec(pageText)
+                    return match ? { chapter: chapter, start: match.index, end: match.index + match[0].length } : null
+                }
+                const hit = findQuoteSpan(quote.slice(0, 64)) || findQuoteSpan(quote.slice(0, 28))
+                readerLoader.item.goTo(place)
+                if (hit) {
+                    readerLoader.item.js("clothbound.found(" + JSON.stringify([hit]) + "," + JSON.stringify(hit) + ")")
+                    readerLoader.item.foundChapter = chapter
+                }
+                return
+            }
+        }
+        readerLoader.item.goTo(place)
     }
     function flushPendingJump() {
         if (!pendingJump || !reader.open || reader.bookId !== pendingJump.bookId || !readerLoader.item)
             return
         const target = pendingJump
         pendingJump = null
-        readerLoader.item.goTo({ chapter: target.chapter, offset: target.offset, instant: true })
+        applyJump(target)
     }
     function runPaletteAction(actionId) {
         if (actionId === "add-folder") {
@@ -373,6 +425,12 @@ ApplicationWindow {
                 win.flushPendingJump()
             if ((win.pendingListen || win.pendingCompanionQuestion !== "") && reader.relocationSeq > 0)
                 win.flushPendingReaderActions()
+        }
+    }
+    Connections {
+        target: companion
+        function onOpenBookPassage(bookId, chapter, quote) {
+            win.openBookPassage(bookId, chapter, quote)
         }
     }
 

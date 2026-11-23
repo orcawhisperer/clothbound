@@ -26,10 +26,13 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
+#include <QtConcurrent>
 #include <cmath>
+#include <limits>
 #include <QtTest>
 
 #include "ai/aiservices.h"
+#include "mcp/mcpserver.h"
 #include "audio/audiocache.h"
 #include "ai/aiusage.h"
 #include "formats/bookinfo.h"
@@ -8369,6 +8372,1386 @@ domReady();
         QVERIFY(QFileInfo::exists(legacyCfg + QStringLiteral("/settings.ini")));
         QVERIFY(QFileInfo::exists(legacyData + QStringLiteral("/library.sqlite")));
         QVERIFY(QFileInfo::exists(legacyCache + QStringLiteral("/voices.json")));
+    }
+
+    // --- Wave 4 Regression Tests (Track A: Study Companion, Track B: PDF Research Craft, Track C: Local MCP & CLI) ---
+
+    void wave4MultimodalPayloadsAndVisionErrors() {
+        const QByteArray samplePng = png(48, 32);
+        const QString expectedBase64 = QString::fromLatin1(samplePng.toBase64());
+
+        // 1. GeminiProvider::textBody() attaches inline base64 image part to the LAST user turn.
+        {
+            Ai::TextRequest req;
+            req.feature = QStringLiteral("ask");
+            req.system = QStringLiteral("Be concise.");
+            req.stream = true;
+            req.imagePng = samplePng;
+            req.messages = {
+                {true, QStringLiteral("Earlier question")},
+                {false, QStringLiteral("Earlier answer")},
+                {true, QStringLiteral("Explain this equation")},
+            };
+            const QJsonObject body = GeminiProvider::textBody(req, QStringLiteral("gemini-2.5-flash"));
+            QVERIFY(body.value(QStringLiteral("stream")).toBool());
+            const QJsonArray input = body.value(QStringLiteral("input")).toArray();
+            QCOMPARE(input.size(), 3);
+            QCOMPARE(input[0].toObject().value(QStringLiteral("content")).toArray().size(), 1);
+            const QJsonArray lastContent = input[2].toObject().value(QStringLiteral("content")).toArray();
+            QCOMPARE(lastContent.size(), 2);
+            QCOMPARE(lastContent[0].toObject().value(QStringLiteral("type")).toString(), QStringLiteral("text"));
+            QCOMPARE(lastContent[0].toObject().value(QStringLiteral("text")).toString(),
+                     QStringLiteral("Explain this equation"));
+            const QJsonObject imgPart = lastContent[1].toObject();
+            QCOMPARE(imgPart.value(QStringLiteral("type")).toString(), QStringLiteral("image"));
+            QCOMPARE(imgPart.value(QStringLiteral("mime_type")).toString(), QStringLiteral("image/png"));
+            QCOMPARE(imgPart.value(QStringLiteral("data")).toString(), expectedBase64);
+
+            // Image-only request with no user messages still emits a valid user_input turn.
+            Ai::TextRequest imageOnly;
+            imageOnly.imagePng = samplePng;
+            const QJsonObject onlyBody = GeminiProvider::textBody(imageOnly, QStringLiteral("gemini-2.5-flash"));
+            const QJsonArray onlyInput = onlyBody.value(QStringLiteral("input")).toArray();
+            QCOMPARE(onlyInput.size(), 1);
+            QCOMPARE(onlyInput[0].toObject().value(QStringLiteral("content")).toArray()[0].toObject().value(QStringLiteral("type")).toString(),
+                     QStringLiteral("image"));
+        }
+
+        // 2. GeminiProvider::generate() streams SSE multimodal response cleanly.
+        {
+            FakeServer server;
+            const QByteArray sse =
+                "event: step.delta\n"
+                "data: {\"delta\":{\"type\":\"text\",\"text\":\"Euler's identity \"}}\n\n"
+                "event: step.delta\n"
+                "data: {\"delta\":{\"type\":\"text\",\"text\":\"holds.\"}}\n\n"
+                "event: interaction.completed\n"
+                "data: {\"interaction\":{\"usage\":{\"total_input_tokens\":42,\"total_output_tokens\":9}}}\n\n";
+            server.responses.append({200, "text/event-stream", sse});
+
+            GeminiProvider gemini(nullptr, server.endpoint());
+            gemini.setKey(QStringLiteral("test-key"));
+            Ai::TextRequest req;
+            req.feature = QStringLiteral("ask");
+            req.stream = true;
+            req.imagePng = samplePng;
+            req.messages = {{true, QStringLiteral("What is shown?")}};
+            Ai::Reply *reply = gemini.generate(req);
+            QString streamed;
+            QObject::connect(reply, &Ai::Reply::textReceived, [&](const QString &d) { streamed += d; });
+            QTRY_VERIFY_WITH_TIMEOUT(reply->isFinished(), 5000);
+            QVERIFY(!reply->error());
+            QCOMPARE(streamed, QStringLiteral("Euler's identity holds."));
+            QCOMPARE(reply->usage().inputTokens, qint64(42));
+            QCOMPARE(server.requests.size(), 1);
+            QVERIFY(server.requests.first().body.contains(samplePng.toBase64()));
+            delete reply;
+        }
+
+        // 3. LocalModels::chatBody() uses OpenAI content array (text + image_url data URI) across backends.
+        {
+            Ai::TextRequest req;
+            req.feature = QStringLiteral("ask");
+            req.stream = true;
+            req.imagePng = samplePng;
+            req.messages = {{true, QStringLiteral("Convert to LaTeX")}};
+            const QString expectedUri = QStringLiteral("data:image/png;base64,") + expectedBase64;
+
+            for (LocalModels::Kind kind : {LocalModels::Ollama, LocalModels::LmStudio, LocalModels::LlamaCpp}) {
+                const QJsonObject body = LocalModels::chatBody(kind, req, QStringLiteral("qwen2.5vl:7b"));
+                // Ollama multimodal switches to OpenAI format (no native `options` block).
+                QVERIFY(!body.contains(QStringLiteral("options")));
+                const QJsonArray msgs = body.value(QStringLiteral("messages")).toArray();
+                QCOMPARE(msgs.size(), 1);
+                const QJsonArray content = msgs[0].toObject().value(QStringLiteral("content")).toArray();
+                QCOMPARE(content.size(), 2);
+                QCOMPARE(content[0].toObject().value(QStringLiteral("type")).toString(), QStringLiteral("text"));
+                QCOMPARE(content[1].toObject().value(QStringLiteral("type")).toString(), QStringLiteral("image_url"));
+                QCOMPARE(content[1].toObject().value(QStringLiteral("image_url")).toObject().value(QStringLiteral("url")).toString(),
+                         expectedUri);
+            }
+        }
+
+        // 4. Ollama multimodal routes to /v1/chat/completions (while text-only uses /api/chat),
+        //    and HTTP 400 / 422 / unsupported-image errors map to LocalModels::visionUnsupportedMessage().
+        {
+            FakeServer server;
+            LocalModels local;
+            LocalModels::Server cfg;
+            cfg.kind = LocalModels::Ollama;
+            cfg.url = QUrl(server.origin());
+            local.configure(cfg, QStringLiteral("gemma3:12b"));
+
+            // Multimodal -> /v1/chat/completions
+            const QByteArray openAiSse =
+                "data: {\"choices\":[{\"delta\":{\"content\":\"x^2 + y^2\"}}]}\n\n"
+                "data: [DONE]\n\n";
+            server.responses.append({200, "text/event-stream", openAiSse});
+            Ai::TextRequest mmReq;
+            mmReq.feature = QStringLiteral("ask");
+            mmReq.stream = true;
+            mmReq.imagePng = samplePng;
+            mmReq.messages = {{true, QStringLiteral("Read formula")}};
+            Ai::Reply *mmReply = local.generate(mmReq);
+            QTRY_VERIFY_WITH_TIMEOUT(mmReply->isFinished(), 5000);
+            QVERIFY2(!mmReply->error(), qPrintable(mmReply->error().message));
+            QCOMPARE(mmReply->text(), QStringLiteral("x^2 + y^2"));
+            QCOMPARE(server.requests.last().path, QByteArray("/v1/chat/completions"));
+            delete mmReply;
+
+            // Text-only -> /api/chat
+            server.responses.append({200, "application/x-ndjson",
+                                     "{\"message\":{\"content\":\"Plain text reply\"},\"done\":true}\n"});
+            Ai::TextRequest txtReq;
+            txtReq.feature = QStringLiteral("ask");
+            txtReq.stream = true;
+            txtReq.messages = {{true, QStringLiteral("Hello")}};
+            Ai::Reply *txtReply = local.generate(txtReq);
+            QTRY_VERIFY_WITH_TIMEOUT(txtReply->isFinished(), 5000);
+            QVERIFY(!txtReply->error());
+            QCOMPARE(server.requests.last().path, QByteArray("/api/chat"));
+            delete txtReply;
+
+            // HTTP 400, 422, and 500 vision-unsupported responses map cleanly to visionUnsupportedMessage().
+            const QList<QPair<int, QByteArray>> errorCases{
+                {400, "{\"error\":{\"message\":\"invalid input\"}}"},
+                {422, "{\"error\":\"unprocessable multimodal content\"}"},
+                {500, "{\"error\":\"model does not support vision or image inputs\"}"},
+            };
+            for (const auto &[status, body] : errorCases) {
+                server.responses.append({status, "application/json", body});
+                Ai::Reply *errReply = local.generate(mmReq);
+                QTRY_VERIFY_WITH_TIMEOUT(errReply->isFinished(), 5000);
+                QCOMPARE(errReply->error().kind, Ai::Error::Invalid);
+                QCOMPARE(errReply->error().message, LocalModels::visionUnsupportedMessage());
+                QVERIFY(errReply->error().message.contains(QStringLiteral("Gemma 3")));
+                QVERIFY(errReply->error().message.contains(QStringLiteral("Qwen2.5-VL")));
+                delete errReply;
+            }
+        }
+    }
+
+    void wave4AdaptiveReadingModePersistenceAndGlossary() {
+        // 1. Companion::detectReadingMode() classification heuristics.
+        QCOMPARE(Companion::detectReadingMode(QStringLiteral("pdf"), QStringLiteral("A Novel"), {}, QStringLiteral("Once upon a time.")),
+                 QStringLiteral("study"));
+        QCOMPARE(Companion::detectReadingMode(QStringLiteral("epub"), QStringLiteral("Preprint"), {},
+                                              QStringLiteral("See arXiv:2401.12345 for details.")),
+                 QStringLiteral("study"));
+        QCOMPARE(Companion::detectReadingMode(QStringLiteral("epub"), QStringLiteral("Article"), {},
+                                              QStringLiteral("doi:10.1145/1234567.1234568")),
+                 QStringLiteral("study"));
+        QCOMPARE(Companion::detectReadingMode(QStringLiteral("epub"), QStringLiteral("Notes"), {},
+                                              QStringLiteral("We prove Theorem 3.2 using induction.")),
+                 QStringLiteral("study"));
+        QCOMPARE(Companion::detectReadingMode(QStringLiteral("epub"), QStringLiteral("Survey"),
+                                              {QStringLiteral("Abstract"), QStringLiteral("1. Intro"), QStringLiteral("References")},
+                                              QStringLiteral("Plain overview.")),
+                 QStringLiteral("study"));
+        QCOMPARE(Companion::detectReadingMode(QStringLiteral("epub"), QStringLiteral("The Lantern Keeper"),
+                                              {QStringLiteral("Chapter One"), QStringLiteral("The Storm")},
+                                              QStringLiteral("The lamp's light shone across the harbor.")),
+                 QStringLiteral("fiction"));
+        // A single weak signal alone (only "Abstract" without references/formal markers) stays fiction.
+        QCOMPARE(Companion::detectReadingMode(QStringLiteral("epub"), QStringLiteral("Abstract Art"),
+                                              {QStringLiteral("Abstract")},
+                                              QStringLiteral("Gallery paintings from the summer.")),
+                 QStringLiteral("fiction"));
+
+        // 2. Database schema stays at version 4; companion_mode persists in book_settings;
+        //    companion_recaps & companion_whoswho stay isolated by mode + migrate legacy tables + cascade on book delete.
+        QTemporaryDir dir;
+        const QString fictionPath = dir.filePath(QStringLiteral("story.epub"));
+        const QString pdfPath = dir.filePath(QStringLiteral("paper.pdf"));
+        const QByteArray opf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            "    <dc:title>Harbor Tale</dc:title><dc:creator>Ada Marsh</dc:creator><dc:language>en</dc:language>\n"
+            "  </metadata>\n"
+            "  <manifest><item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>\n"
+            "  <spine><itemref idref=\"c1\"/></spine>\n"
+            "</package>";
+        QVERIFY(TestBooks::write(
+            fictionPath,
+            TestBooks::epub({
+                {"OEBPS/content.opf", opf},
+                {"OEBPS/c1.xhtml",
+                 TestBooks::chapter("Ch 1",
+                                    "<p>Ada Marsh studies SGD optimization where θ minimizes the loss ℒ with gradient ∇ℒ(θ).</p>")},
+            })));
+        QVERIFY(TestBooks::write(pdfPath, TestBooks::pdf("Optimization Paper", "Jane Doe")));
+
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restoreSettings = qScopeGuard([&] {
+            QSettings s(settingsPath, QSettings::IniFormat);
+            s.remove(QStringLiteral("ai/preset"));
+        });
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        QCOMPARE(library.schemaVersion(), 4);
+
+        const int fictionId = library.addBookFile(fictionPath);
+        const int pdfId = library.addBookFile(pdfPath);
+        QVERIFY(fictionId > 0);
+        QVERIFY(pdfId > 0);
+
+        // Seed pre-Wave-3 legacy tables (without `mode` column) BEFORE instantiating Companion to test zero-loss migration.
+        {
+            QSqlQuery q(library.database());
+            QVERIFY(q.exec(QStringLiteral(
+                "CREATE TABLE companion_whoswho ("
+                " book_id INTEGER NOT NULL, chapter INTEGER NOT NULL, offset INTEGER NOT NULL,"
+                " page_start INTEGER NOT NULL DEFAULT 0, where_label TEXT NOT NULL DEFAULT '',"
+                " is_local INTEGER NOT NULL DEFAULT -1, people TEXT NOT NULL, updated_at INTEGER NOT NULL,"
+                " PRIMARY KEY (book_id, chapter, offset))")));
+            QVERIFY(q.exec(QStringLiteral(
+                "INSERT INTO companion_whoswho (book_id, chapter, offset, page_start, where_label, is_local, people, updated_at) "
+                "VALUES (%1, 0, 120, 0, 'Ollama', 1, "
+                "'[{\"name\":\"Ada Marsh\",\"also\":\"\",\"who\":\"Legacy keeper\",\"chapter\":\"Ch 1\",\"chapterIndex\":0,\"offset\":0}]', 100)")
+                               .arg(fictionId)));
+            QVERIFY(q.exec(QStringLiteral(
+                "CREATE TABLE companion_recaps ("
+                " book_id INTEGER NOT NULL, chapter INTEGER NOT NULL, offset INTEGER NOT NULL,"
+                " page_start INTEGER NOT NULL DEFAULT 0, where_label TEXT NOT NULL DEFAULT '',"
+                " is_local INTEGER NOT NULL DEFAULT 0, text TEXT NOT NULL, updated_at INTEGER NOT NULL,"
+                " PRIMARY KEY (book_id, chapter, offset))")));
+            QVERIFY(q.exec(QStringLiteral(
+                "INSERT INTO companion_recaps (book_id, chapter, offset, page_start, where_label, is_local, text, updated_at) "
+                "VALUES (%1, 0, 120, 0, 'Ollama', 1, 'Legacy fiction recap.', 100)")
+                               .arg(fictionId)));
+        }
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(fictionId));
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 120}, {"page", 0}, {"pages", 1}});
+
+        FakeServer server;
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        LocalModels::Server cfg;
+        cfg.kind = LocalModels::Ollama;
+        cfg.url = QUrl(server.origin());
+        local.configure(cfg, QStringLiteral("qwen3.5:4b"));
+        services.setLocalModels(&local);
+        services.setPreset(QStringLiteral("local"));
+
+        Companion companion(&services, &reader, library.database().connectionName());
+        // Fiction book auto-detects "fiction" + default scope "upto" + restores migrated legacy rows!
+        QCOMPARE(companion.readingMode(), QStringLiteral("fiction"));
+        QVERIFY(!companion.studyMode());
+        QCOMPARE(companion.scope(), QStringLiteral("upto"));
+        QVERIFY(companion.recapLoaded());
+        QCOMPARE(companion.recapText(), QStringLiteral("Legacy fiction recap."));
+        QVERIFY(companion.peopleLoaded());
+        QCOMPARE(companion.people().first().toMap().value(QStringLiteral("name")).toString(), QStringLiteral("Ada Marsh"));
+
+        // Switch manually to Study mode: persisted in book_settings, scope flips to "book", caches stay isolated.
+        companion.setReadingMode(QStringLiteral("study"));
+        QCOMPARE(companion.readingMode(), QStringLiteral("study"));
+        QVERIFY(companion.studyMode());
+        QCOMPARE(companion.scope(), QStringLiteral("book"));
+        QCOMPARE(library.bookSetting(fictionId, QStringLiteral("companion_mode")), QStringLiteral("study"));
+        QCOMPARE(library.schemaVersion(), 4);
+        QVERIFY(!companion.recapLoaded());
+        QVERIFY(!companion.peopleLoaded());
+
+        // Generate Study Brief & Study Glossary (with symbols θ, ℒ, ∇, SGD and First-defined offsets).
+        server.responses.append({200, "application/x-ndjson",
+                                 "{\"message\":{\"content\":\"**Core Claims**\\nMinimizes loss $\\\\mathcal{L}(\\\\theta)$.\"},\"done\":true}\n"});
+        companion.recap();
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QVERIFY(companion.recapLoaded());
+        QVERIFY(companion.recapText().contains(QStringLiteral("Core Claims")));
+
+        const QByteArray glossaryReply =
+            "{\"message\":{\"content\":\"{\\\"people\\\":["
+            "{\\\"name\\\":\\\"θ\\\",\\\"also\\\":\\\"parameters\\\",\\\"who\\\":\\\"Model weights\\\",\\\"chapter\\\":\\\"Ch 1\\\"},"
+            "{\\\"name\\\":\\\"ℒ\\\",\\\"also\\\":\\\"loss\\\",\\\"who\\\":\\\"Objective function\\\",\\\"chapter\\\":\\\"Ch 1\\\"},"
+            "{\\\"name\\\":\\\"∇\\\",\\\"also\\\":\\\"gradient\\\",\\\"who\\\":\\\"Gradient operator\\\",\\\"chapter\\\":\\\"Ch 1\\\"},"
+            "{\\\"name\\\":\\\"SGD\\\",\\\"also\\\":\\\"\\\",\\\"who\\\":\\\"Stochastic Gradient Descent\\\",\\\"chapter\\\":\\\"Ch 1\\\"}"
+            "]}\"},\"done\":true}\n";
+        server.responses.append({200, "application/x-ndjson", glossaryReply});
+        companion.whosWho();
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QVERIFY(companion.peopleLoaded());
+        QCOMPARE(companion.people().size(), 4);
+        for (const QVariant &v : companion.people()) {
+            const QVariantMap entry = v.toMap();
+            QCOMPARE(entry.value(QStringLiteral("chapterIndex")).toInt(), 0);
+            QVERIFY2(entry.value(QStringLiteral("offset")).toLongLong() > 0,
+                     qPrintable(entry.value(QStringLiteral("name")).toString()));
+        }
+
+        // Fresh Companion restores persisted "study" override + Study caches; switching back to "fiction" restores legacy fiction caches.
+        {
+            Companion restored(&services, &reader, library.database().connectionName());
+            QCOMPARE(restored.readingMode(), QStringLiteral("study"));
+            QVERIFY(restored.recapLoaded());
+            QVERIFY(restored.recapText().contains(QStringLiteral("Core Claims")));
+            QCOMPARE(restored.people().size(), 4);
+
+            restored.setReadingMode(QStringLiteral("fiction"));
+            QVERIFY(restored.recapLoaded());
+            QCOMPARE(restored.recapText(), QStringLiteral("Legacy fiction recap."));
+            QCOMPARE(restored.people().size(), 1);
+            QCOMPARE(restored.people().first().toMap().value(QStringLiteral("name")).toString(),
+                     QStringLiteral("Ada Marsh"));
+        }
+
+        // PDF book auto-detects "study" mode with default scope "book".
+        QVERIFY(reader.openBook(pdfId));
+        QCOMPARE(companion.readingMode(), QStringLiteral("study"));
+        QCOMPARE(companion.scope(), QStringLiteral("book"));
+
+        // AFTER DELETE ON books trigger cascades both fiction & study rows in companion_recaps / companion_whoswho.
+        {
+            QSqlQuery del(library.database());
+            QVERIFY(del.exec(QStringLiteral("DELETE FROM books WHERE id = %1").arg(fictionId)));
+            QSqlQuery check(library.database());
+            QVERIFY(check.exec(QStringLiteral("SELECT COUNT(*) FROM companion_recaps WHERE book_id = %1").arg(fictionId)));
+            QVERIFY(check.next());
+            QCOMPARE(check.value(0).toInt(), 0);
+            QVERIFY(check.exec(QStringLiteral("SELECT COUNT(*) FROM companion_whoswho WHERE book_id = %1").arg(fictionId)));
+            QVERIFY(check.next());
+            QCOMPARE(check.value(0).toInt(), 0);
+        }
+    }
+
+    void wave4SmartScopeSpoilerGuardAndShelfCitations() {
+        QTemporaryDir dir;
+        auto writeSimpleEpub = [&](const QString &fileName, const QString &title,
+                                   const QList<QPair<QString, QString>> &chapters) {
+            const QString path = dir.filePath(fileName);
+            QByteArray manifest, spine;
+            QList<QPair<QString, QByteArray>> files;
+            for (int i = 0; i < chapters.size(); ++i) {
+                const QByteArray id = "c" + QByteArray::number(i + 1);
+                const QByteArray href = id + ".xhtml";
+                manifest += "    <item id=\"" + id + "\" href=\"" + href + "\" media-type=\"application/xhtml+xml\"/>\n";
+                spine += "<itemref idref=\"" + id + "\"/>";
+                files.append({QStringLiteral("OEBPS/") + QString::fromLatin1(href),
+                              TestBooks::chapter(chapters[i].first.toUtf8(),
+                                                 "<p>" + chapters[i].second.toUtf8() + "</p>")});
+            }
+            const QByteArray opf =
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+                "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                "    <dc:title>" + title.toUtf8() + "</dc:title><dc:creator>Researcher</dc:creator><dc:language>en</dc:language>\n"
+                "  </metadata>\n"
+                "  <manifest>\n" + manifest + "  </manifest>\n"
+                "  <spine>" + spine + "</spine>\n"
+                "</package>";
+            files.prepend({QStringLiteral("OEBPS/content.opf"), opf});
+            return TestBooks::write(path, TestBooks::epub(files)) ? path : QString();
+        };
+
+        const QString book1Path = writeSimpleEpub(
+            QStringLiteral("main.epub"), QStringLiteral("Attention Mechanisms"),
+            {{QStringLiteral("Introduction"), QStringLiteral("Self-attention computes scaled dot products across query tokens.")},
+             {QStringLiteral("Appendix"), QStringLiteral("Secret Appendix Proof of Lemma Nine: eigenvalues decay exponentially.")}});
+        const QString book2Path = writeSimpleEpub(
+            QStringLiteral("shelf_peer.epub"), QStringLiteral("Variational Bounds"),
+            {{QStringLiteral("Chapter 1"), QStringLiteral("Variational inference uses the ELBO objective to bound log-likelihood cleanly.")}});
+        const QString book3Path = writeSimpleEpub(
+            QStringLiteral("outside.epub"), QStringLiteral("Outside Unrelated"),
+            {{QStringLiteral("Chapter 1"), QStringLiteral("Outside-only ELBO sentinel SECRET_OUTSIDE_SHELF_TOKEN should never leak.")}});
+        QVERIFY(!book1Path.isEmpty() && !book2Path.isEmpty() && !book3Path.isEmpty());
+
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restoreSettings = qScopeGuard([&] {
+            QSettings s(settingsPath, QSettings::IniFormat);
+            s.remove(QStringLiteral("ai/preset"));
+        });
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int book1Id = library.addBookFile(book1Path);
+        const int book2Id = library.addBookFile(book2Path);
+        const int book3Id = library.addBookFile(book3Path);
+        QVERIFY(book1Id > 0 && book2Id > 0 && book3Id > 0);
+
+        const int shelfId = library.createCollection(QStringLiteral("ML Papers"));
+        QVERIFY(shelfId > 0);
+        QVERIFY(library.addToCollection(book1Id, shelfId));
+        QVERIFY(library.addToCollection(book2Id, shelfId));
+        // book3Id is intentionally NOT in "ML Papers".
+
+        FakeServer server;
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        LocalModels::Server cfg;
+        cfg.kind = LocalModels::Ollama;
+        cfg.url = QUrl(server.origin());
+        local.configure(cfg, QStringLiteral("qwen3.5:4b"), QStringLiteral("nomic-embed-text"));
+        services.setLocalModels(&local);
+        services.setPreset(QStringLiteral("local"));
+
+        // 1. PassageIndex::rankLibrary() and searchLibrary() enforce `bookIds` scoping.
+        server.routes.insert("/api/embed",
+                             {200, "application/json", "{\"embeddings\":[[1.0,0.0,0.0]]}"});
+        {
+            PassageIndex pIndex(&services, library.database().connectionName());
+            auto embedBook = [&](int id, const QString &text) {
+                bool done = false;
+                pIndex.build(id, {{0, 0, text.size(), text}}, nullptr, [&](const QString &err) {
+                    QVERIFY2(err.isEmpty(), qPrintable(err));
+                    done = true;
+                });
+                QTRY_VERIFY_WITH_TIMEOUT(done, 5000);
+            };
+            embedBook(book1Id, QStringLiteral("Self-attention scaled dot products."));
+            embedBook(book2Id, QStringLiteral("Variational inference ELBO bound."));
+            embedBook(book3Id, QStringLiteral("Outside-only ELBO sentinel."));
+
+            const QSet<int> shelfSet{book1Id, book2Id};
+            const QList<PassageIndex::LibraryHit> ranked =
+                PassageIndex::rankLibrary(library.database().databaseName(), QStringLiteral("local/nomic-embed-text"),
+                                          {1.0f, 0.0f, 0.0f}, 10, 0.25, shelfSet);
+            QCOMPARE(ranked.size(), 2);
+            for (const auto &h : ranked)
+                QVERIFY(shelfSet.contains(h.bookId));
+
+            QList<PassageIndex::LibraryHit> searched;
+            bool searchDone = false;
+            pIndex.searchLibrary(QStringLiteral("ELBO"), 10,
+                                 [&](const QList<PassageIndex::LibraryHit> &hits) {
+                                     searched = hits;
+                                     searchDone = true;
+                                 },
+                                 shelfSet);
+            QTRY_VERIFY_WITH_TIMEOUT(searchDone, 5000);
+            QCOMPARE(searched.size(), 2);
+            for (const auto &h : searched)
+                QVERIFY(shelfSet.contains(h.bookId));
+        }
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(book1Id));
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+
+        Companion companion(&services, &reader, library.database().connectionName());
+        QCOMPARE(companion.shelfLabel(), QStringLiteral("ML Papers"));
+
+        // 2. "upto" scope enforces spoiler guard (never sends Ch 1 Appendix while reader is on Ch 0).
+        companion.setReadingMode(QStringLiteral("fiction"));
+        QCOMPARE(companion.scope(), QStringLiteral("upto"));
+        server.requests.clear();
+        server.responses.append({200, "application/x-ndjson",
+                                 "{\"message\":{\"content\":\"Scaled dot products.\"},\"done\":true}\n"});
+        companion.ask(QStringLiteral("What about Lemma Nine?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QByteArray uptoBody;
+        for (const auto &r : server.requests)
+            if (r.path == "/api/chat")
+                uptoBody = r.body;
+        QVERIFY(!uptoBody.isEmpty());
+        QVERIFY(!uptoBody.contains("Secret Appendix Proof of Lemma Nine"));
+
+        // 3. "book" scope accesses later chapters / appendix while reader is still on Ch 0.
+        companion.setReadingMode(QStringLiteral("study"));
+        QCOMPARE(companion.scope(), QStringLiteral("book"));
+        companion.newConversation();
+        server.requests.clear();
+        server.responses.append({200, "application/x-ndjson",
+                                 "{\"message\":{\"content\":\"Eigenvalues decay exponentially.\"},\"done\":true}\n"});
+        companion.ask(QStringLiteral("Explain Secret Appendix Proof of Lemma Nine"));
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QByteArray bookBody;
+        for (const auto &r : server.requests)
+            if (r.path == "/api/chat")
+                bookBody = r.body;
+        QVERIFY(bookBody.contains("Secret Appendix Proof of Lemma Nine"));
+
+        // 4. "shelf" scope searches strictly inside "ML Papers" (includes Book 2, excludes Book 3).
+        companion.setScope(QStringLiteral("shelf"));
+        QCOMPARE(companion.scope(), QStringLiteral("shelf"));
+        companion.newConversation();
+        server.requests.clear();
+        server.responses.append({200, "application/x-ndjson",
+                                 "{\"message\":{\"content\":\"ELBO bounds log-likelihood [Variational Bounds, Ch. 1].\"},\"done\":true}\n"});
+        companion.ask(QStringLiteral("How does the ELBO objective work across this shelf?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QByteArray shelfBody;
+        for (const auto &r : server.requests)
+            if (r.path == "/api/chat")
+                shelfBody = r.body;
+        QVERIFY(shelfBody.contains("Variational Bounds"));
+        QVERIFY(!shelfBody.contains("SECRET_OUTSIDE_SHELF_TOKEN"));
+
+        // 5. activateCitation() emits openBookPassage only for cross-book citations.
+        QSignalSpy jumpSpy(&companion, &Companion::openBookPassage);
+        companion.activateCitation(book1Id, 0, 0, QStringLiteral("Self-attention"));
+        QCOMPARE(jumpSpy.count(), 0);
+        companion.activateCitation(book2Id, 0, 12, QStringLiteral("Variational inference uses the ELBO"));
+        QCOMPARE(jumpSpy.count(), 1);
+        QCOMPARE(jumpSpy.first().at(0).toInt(), book2Id);
+        QCOMPARE(jumpSpy.first().at(1).toInt(), 0);
+        QCOMPARE(jumpSpy.first().at(2).toString(), QStringLiteral("Variational inference uses the ELBO"));
+    }
+
+    void wave4OfflineLatexMathAndSsrfPreservation() {
+        QTemporaryDir dir;
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        Companion companion(&services, &reader, library.database().connectionName());
+
+        // 1. Inline ($...$, \(...\)) and display ($$...$$, \[...\]) math: Greek, operators, \mathbb, \mathcal, \sqrt, sup/sub, \frac.
+        const QString inlineMath =
+            Companion::cleanMarkdown(QStringLiteral("Let $\\theta \\in \\mathbb{R}^d$ minimize $\\mathcal{L}(x_i) = \\sqrt{a + b}$ and \\(\\alpha \\to \\beta\\)."));
+        QVERIFY(inlineMath.contains(QStringLiteral("class=\"math-inline\"")));
+        QVERIFY(inlineMath.contains(QStringLiteral("θ")));
+        QVERIFY(inlineMath.contains(QStringLiteral("ℝ")));
+        QVERIFY(inlineMath.contains(QStringLiteral("<sup>d</sup>")));
+        QVERIFY(inlineMath.contains(QStringLiteral("ℒ")));
+        QVERIFY(inlineMath.contains(QStringLiteral("<sub>i</sub>")));
+        QVERIFY(inlineMath.contains(QStringLiteral("√")));
+        QVERIFY(inlineMath.contains(QStringLiteral("→")));
+        QVERIFY(companion.hasMath(QStringLiteral("Check $\\nabla \\mathcal{L}$")));
+
+        const QString displayMath =
+            Companion::cleanMarkdown(QStringLiteral("Formula:\n$$\\sum_{i=1}^n \\frac{x_i}{n} \\le \\int_0^1 f(t) dt$$\nAlso:\n\\[a \\times b\\]"));
+        QVERIFY(displayMath.contains(QStringLiteral("class=\"math-block\"")));
+        QVERIFY(displayMath.contains(QStringLiteral("∑")));
+        QVERIFY(displayMath.contains(QStringLiteral("≤")));
+        QVERIFY(displayMath.contains(QStringLiteral("∫")));
+        QVERIFY(displayMath.contains(QStringLiteral("×")));
+
+        const QString rich = companion.formatDisplayHtml(
+            QStringLiteral("**Result**: $\\alpha + \\beta$\n\n$$\\frac{1}{2}$$"), QStringLiteral("#222633"));
+        QVERIFY(rich.contains(QStringLiteral("α")));
+        QVERIFY(rich.contains(QStringLiteral("#222633")));
+
+        // 2. Currency preservation ($5 to $10 stays literal plain text, not math).
+        const QString currency = QStringLiteral("Tickets cost $5 to $10, or $12.50 at the door.");
+        QVERIFY(!companion.hasMath(currency));
+        const QString cleanedCurrency = Companion::cleanMarkdown(currency);
+        QCOMPARE(cleanedCurrency, currency);
+
+        // 3. Fenced code block preservation (LaTeX inside ```latex ... ``` stays verbatim).
+        const QString fenced = QStringLiteral("```latex\n$\\alpha + \\beta$\n```");
+        const QString cleanedFence = Companion::cleanMarkdown(fenced);
+        QVERIFY(!cleanedFence.contains(QStringLiteral("class=\"math-inline\"")));
+        QVERIFY(cleanedFence.contains(QStringLiteral("$\\alpha + \\beta$")));
+
+        // 4. Zero-click SSRF preservation (outside AND inside math delimiters!).
+        const QString hostile = QStringLiteral(
+            "Text <img src=\"http://evil.invalid/a.png\"> ![leak](https://evil.invalid/b.png) "
+            "<script>alert(1)</script><link rel=\"stylesheet\" href=\"http://evil.invalid/c.css\">"
+            "<iframe src=\"http://evil.invalid/d\"></iframe> "
+            "Math $\\alpha <img src=\"http://evil.invalid/m.png\"> + \\beta$ "
+            "$$![nested](http://evil.invalid/n.png) + \\theta$$");
+        const QString safe = Companion::cleanMarkdown(hostile);
+        QVERIFY(!safe.contains(QStringLiteral("<img"), Qt::CaseInsensitive));
+        QVERIFY(!safe.contains(QStringLiteral("<script"), Qt::CaseInsensitive));
+        QVERIFY(!safe.contains(QStringLiteral("<link"), Qt::CaseInsensitive));
+        QVERIFY(!safe.contains(QStringLiteral("<iframe"), Qt::CaseInsensitive));
+        QVERIFY(!safe.contains(QStringLiteral("evil.invalid")));
+        QVERIFY(!safe.contains(QStringLiteral("![")));
+        QVERIFY(safe.contains(QStringLiteral("α")));
+        QVERIFY(safe.contains(QStringLiteral("θ")));
+    }
+
+    void wave4VisualSnipEntryAndPrivacyBudgetInvariants() {
+        QTemporaryDir dir;
+        const QString pdfPath = dir.filePath(QStringLiteral("eq.pdf"));
+        QVERIFY(TestBooks::write(pdfPath, TestBooks::pdf("Equations", "A. Researcher")));
+
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restoreSettings = qScopeGuard([&] {
+            QSettings s(settingsPath, QSettings::IniFormat);
+            s.remove(QStringLiteral("ai/preset"));
+            s.remove(QStringLiteral("ai/budget"));
+        });
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(pdfPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        FakeServer localServer;
+        FakeServer cloudServer;
+        GeminiProvider gemini(nullptr, cloudServer.endpoint());
+        MemoryKeyStore keys;
+        keys.save(QStringLiteral("gemini"), QStringLiteral("test-cloud-key"));
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        LocalModels::Server cfg;
+        cfg.kind = LocalModels::Ollama;
+        cfg.url = QUrl(localServer.origin());
+        local.configure(cfg, QStringLiteral("qwen2.5vl:7b"));
+        services.setLocalModels(&local);
+        services.setPreset(QStringLiteral("local"));
+
+        Companion companion(&services, &reader, library.database().connectionName());
+        const QString b64 = QString::fromLatin1(png(40, 24).toBase64());
+
+        // 1. "ask" with empty prompt attaches pending snip & emits openAskRequested() without network call.
+        QSignalSpy openAskSpy(&companion, &Companion::openAskRequested);
+        companion.askAboutSnipBase64(b64, QStringLiteral("ask"), QString(), 0);
+        QVERIFY(companion.hasPendingSnip());
+        QVERIFY(companion.pendingSnipUrl().startsWith(QStringLiteral("data:image/png;base64,")));
+        QCOMPARE(companion.pendingSnipPage(), 0);
+        QCOMPARE(openAskSpy.count(), 1);
+        QCOMPARE(localServer.requests.size(), 0);
+
+        // Sending ask() consumes pending snip, posts image to /v1/chat/completions, and restricts snipUrl strictly to user turn.
+        localServer.responses.append({200, "text/event-stream",
+                                      "data: {\"choices\":[{\"delta\":{\"content\":\"Solved: $x = 2$.\"}}]}\n\n"
+                                      "data: [DONE]\n\n"});
+        companion.ask(QStringLiteral("Solve for x"));
+        QVERIFY(!companion.hasPendingSnip());
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        QCOMPARE(localServer.requests.size(), 1);
+        QCOMPARE(localServer.requests.first().path, QByteArray("/v1/chat/completions"));
+        QCOMPARE(companion.conversation().size(), 2);
+        QVERIFY(companion.conversation()[0].toMap().value(QStringLiteral("fromUser")).toBool());
+        QVERIFY(companion.conversation()[0].toMap().value(QStringLiteral("snipUrl")).toString().startsWith(QStringLiteral("data:image/png;base64,")));
+        QVERIFY(!companion.conversation()[1].toMap().value(QStringLiteral("fromUser")).toBool());
+        QVERIFY(companion.conversation()[1].toMap().value(QStringLiteral("snipUrl")).toString().isEmpty());
+
+        // 2. Direct snip actions: "explain", "latex", "table".
+        for (const QString &action : {QStringLiteral("explain"), QStringLiteral("latex"), QStringLiteral("table")}) {
+            localServer.responses.append({200, "text/event-stream",
+                                          "data: {\"choices\":[{\"delta\":{\"content\":\"Answer for " + action.toUtf8() + "\"}}]}\n\n"
+                                          "data: [DONE]\n\n"});
+            companion.askAboutSnipBase64(b64, action, QString(), 0);
+            QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+            QVERIFY2(companion.problem().isEmpty(), qPrintable(companion.problem()));
+        }
+        QCOMPARE(localServer.requests.size(), 4);
+
+        // 3. Invalid image payload fails cleanly without sending a request.
+        companion.askAboutSnipBase64(QStringLiteral("not-valid-png!!!"), QStringLiteral("explain"), QString(), 0);
+        QVERIFY(!companion.problem().isEmpty());
+        QCOMPARE(localServer.requests.size(), 4);
+
+        // 4. Strict "local" invariant: when local server rejects images (HTTP 400), NEVER fall back to Gemini even with key set.
+        localServer.responses.append({400, "application/json", "{\"error\":\"vision unsupported\"}"});
+        companion.askAboutSnipBase64(b64, QStringLiteral("explain"), QString(), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QCOMPARE(companion.problem(), LocalModels::visionUnsupportedMessage());
+        QCOMPARE(cloudServer.requests.size(), 0);
+
+        // 5. $0 cloud budget invariant: switching to "cloud" with $0 budget blocks outbound cloud snip & ask calls.
+        services.setPreset(QStringLiteral("cloud"));
+        services.setBudget(0.0);
+        companion.clearProblem();
+        companion.askAboutSnipBase64(b64, QStringLiteral("explain"), QString(), 0);
+        QTRY_VERIFY_WITH_TIMEOUT(!companion.busy(), 5000);
+        QVERIFY(!companion.problem().isEmpty());
+        QCOMPARE(cloudServer.requests.size(), 0);
+    }
+
+    void wave4PdfRegionSnipClampingAndThreadSafety() {
+        QTemporaryDir dir;
+        const QString pdfPath = dir.filePath(QStringLiteral("rendered.pdf"));
+        {
+            QPdfWriter writer(pdfPath);
+            writer.setPageSize(QPageSize(QPageSize::A4));
+            writer.setResolution(72);
+            QPainter painter(&writer);
+            painter.fillRect(QRect(40, 60, 460, 140), QColor(QStringLiteral("#224488")));
+            painter.setPen(Qt::white);
+            painter.drawText(QRect(60, 100, 400, 60), QStringLiteral("Equation 1: E = mc^2"));
+            writer.newPage();
+            painter.fillRect(QRect(40, 400, 460, 140), QColor(QStringLiteral("#884422")));
+            painter.end();
+        }
+
+        PdfBook pdf(pdfPath);
+        QVERIFY2(pdf.open(), qPrintable(pdf.errorString()));
+        QCOMPARE(pdf.pageCount(), 2);
+
+        // Valid normalized rect renders crisp non-blank PNG matching target width.
+        const QByteArray regionPng = pdf.renderRegionPng(0, 0.05, 0.05, 0.85, 0.25, 700);
+        QVERIFY(!regionPng.isEmpty());
+        const QImage decoded = QImage::fromData(regionPng, "PNG");
+        QVERIFY(!decoded.isNull());
+        QVERIFY(decoded.width() >= 600 && decoded.width() <= 800);
+        QVERIFY(decoded.height() > 50);
+
+        // Partially out-of-range rects clamp cleanly into [0..1] and still produce a valid PNG.
+        const QByteArray clampedPng = pdf.renderRegionPng(0, -0.2, -0.1, 0.6, 0.5, 400);
+        QVERIFY(!clampedPng.isEmpty());
+        QVERIFY(!QImage::fromData(clampedPng, "PNG").isNull());
+
+        // Invalid / degenerate / NaN / Inf / out-of-bounds page rects return empty safely.
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double inf = std::numeric_limits<double>::infinity();
+        QVERIFY(pdf.renderRegionPng(-1, 0.1, 0.1, 0.5, 0.5).isEmpty());
+        QVERIFY(pdf.renderRegionPng(2, 0.1, 0.1, 0.5, 0.5).isEmpty());
+        QVERIFY(pdf.renderRegionPng(0, 1.5, 0.1, 0.2, 0.2).isEmpty());
+        QVERIFY(pdf.renderRegionPng(0, 0.2, 0.2, 0.0, 0.2).isEmpty());
+        QVERIFY(pdf.renderRegionPng(0, 0.2, 0.2, -0.3, 0.2).isEmpty());
+        QVERIFY(pdf.renderRegionPng(0, 0.2, 0.2, 0.0001, 0.2).isEmpty());
+        QVERIFY(pdf.renderRegionPng(0, nan, 0.2, 0.3, 0.3).isEmpty());
+        QVERIFY(pdf.renderRegionPng(0, 0.2, inf, 0.3, 0.3).isEmpty());
+
+        // Reader::snipPdfRegionBase64() returns valid base64 PNG for open PDF and empty when closed.
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(pdfPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.snipPdfRegionBase64(0, 0.1, 0.1, 0.5, 0.3).isEmpty());
+        QVERIFY(reader.openBook(bookId));
+        const QString b64 = reader.snipPdfRegionBase64(0, 0.05, 0.05, 0.85, 0.25);
+        QVERIFY(!b64.isEmpty());
+        QVERIFY(!QImage::fromData(QByteArray::fromBase64(b64.toLatin1()), "PNG").isNull());
+        QVERIFY(reader.snipPdfRegionBase64(99, 0.1, 0.1, 0.5, 0.3).isEmpty());
+
+        // Thread safety: concurrent renderRegionPng() calls on a shared PdfBook stay race-free.
+        QList<QFuture<QByteArray>> futures;
+        for (int i = 0; i < 6; ++i) {
+            const int page = i % 2;
+            const double y = 0.05 + 0.05 * i;
+            futures.append(QtConcurrent::run([&pdf, page, y] {
+                return pdf.renderRegionPng(page, 0.05, y, 0.7, 0.25, 320);
+            }));
+        }
+        for (auto &f : futures) {
+            const QByteArray bytes = f.result();
+            QVERIFY(!bytes.isEmpty());
+            QVERIFY(!QImage::fromData(bytes, "PNG").isNull());
+        }
+    }
+
+    void wave4PdfLinksDestYAndPeekDestination() {
+        // Build a 2-page PDF:
+        // - Page 0 has two internal links to Page 1:
+        //   1) /XYZ 0 100 1 (on 300pt height -> ~0.67 down from top)
+        //   2) /Fit (unspecified Y -> destY == 0.0)
+        // - Page 1 has distinct top, middle, and bottom lines.
+        auto makePeekPdf = [] {
+            QByteArray out = "%PDF-1.4\n";
+            QList<qsizetype> offsets;
+            auto object = [&](const QByteArray &body) {
+                offsets.append(out.size());
+                out += QByteArray::number(offsets.size()) + " 0 obj\n" + body + "\nendobj\n";
+            };
+            object("<< /Type /Catalog /Pages 2 0 R >>");                                       // 1
+            object("<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>");                         // 2
+            object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 300] /Contents 4 0 R "
+                   "/Resources << /Font << /F1 5 0 R >> >> /Annots [6 0 R 7 0 R] >>");         // 3 (page 0)
+            const QByteArray s1 = "BT /F1 10 Tf 20 260 Td (See Reference [1] and Figure 1) Tj ET";
+            object("<< /Length " + QByteArray::number(s1.size()) + " >>\nstream\n" + s1 + "\nendstream");  // 4
+            object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");                               // 5
+            object("<< /Type /Annot /Subtype /Link /Rect [20 245 120 270] /A << /S /GoTo /D [8 0 R /XYZ 0 100 1] >> >>");  // 6
+            object("<< /Type /Annot /Subtype /Link /Rect [130 245 220 270] /A << /S /GoTo /D [8 0 R /Fit] >> >>");         // 7
+            object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 240 300] /Contents 9 0 R "
+                   "/Resources << /Font << /F1 5 0 R >> >> >>");                                            // 8 (page 1)
+            const QByteArray s2 =
+                "BT /F1 10 Tf 20 275 Td (Top Figure 1 Architecture Diagram) Tj ET\n"
+                "BT /F1 10 Tf 20 150 Td (Middle Lemma Proof Statement) Tj ET\n"
+                "BT /F1 10 Tf 20 50 Td (Bottom Reference [1] Vaswani et al.) Tj ET";
+            object("<< /Length " + QByteArray::number(s2.size()) + " >>\nstream\n" + s2 + "\nendstream");  // 9
+            const qsizetype xref = out.size();
+            out += "xref\n0 " + QByteArray::number(offsets.size() + 1) + "\n0000000000 65535 f \n";
+            for (const qsizetype off : offsets)
+                out += QByteArray::number(off).rightJustified(10, '0') + " 00000 n \n";
+            out += "trailer\n<< /Size " + QByteArray::number(offsets.size() + 1) + " /Root 1 0 R >>\n";
+            out += "startxref\n" + QByteArray::number(xref) + "\n%%EOF\n";
+            return out;
+        };
+
+        QTemporaryDir dir;
+        const QString pdfPath = dir.filePath(QStringLiteral("peek.pdf"));
+        QVERIFY(TestBooks::write(pdfPath, makePeekPdf()));
+
+        PdfBook pdf(pdfPath);
+        QVERIFY2(pdf.open(), qPrintable(pdf.errorString()));
+        const QList<PdfLinkEntry> links = pdf.pageLinks(0);
+        QCOMPARE(links.size(), 2);
+        bool sawPositioned = false;
+        bool sawDefaultZero = false;
+        for (const PdfLinkEntry &link : links) {
+            QCOMPARE(link.page, 1);
+            QVERIFY(link.destY >= 0.0 && link.destY <= 1.0);
+            if (link.destY > 0.5 && link.destY < 0.85)
+                sawPositioned = true;
+            if (qFuzzyIsNull(link.destY))
+                sawDefaultZero = true;
+        }
+        QVERIFY(sawPositioned);
+        QVERIFY(sawDefaultZero);
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(pdfPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.peekPdfDestination(0, 0.0).isEmpty());
+        QVERIFY(reader.openBook(bookId));
+
+        // Reader::pdfLinks() exposes destY cleanly to QML.
+        const QVariantList qmlLinks = reader.pdfLinks(0);
+        QCOMPARE(qmlLinks.size(), 2);
+        QVERIFY(qmlLinks.first().toMap().contains(QStringLiteral("destY")));
+
+        // Top-strip fallback when destY < 0 captures top line & valid data URL image.
+        const QVariantMap topPeek = reader.peekPdfDestination(1, -1.0);
+        QCOMPARE(topPeek.value(QStringLiteral("page")).toInt(), 1);
+        QCOMPARE(topPeek.value(QStringLiteral("pageLabel")).toString(), QStringLiteral("2"));
+        const QString topUrl = topPeek.value(QStringLiteral("imageDataUrl")).toString();
+        QVERIFY(topUrl.startsWith(QStringLiteral("data:image/png;base64,")));
+        QVERIFY(!QImage::fromData(QByteArray::fromBase64(topUrl.mid(22).toLatin1()), "PNG").isNull());
+        QVERIFY2(topPeek.value(QStringLiteral("excerpt")).toString().contains(QStringLiteral("Top Figure 1")),
+                 qPrintable(topPeek.value(QStringLiteral("excerpt")).toString()));
+
+        // Bottom destY band extracts the bottom reference text rather than top text.
+        const QVariantMap bottomPeek = reader.peekPdfDestination(1, 0.85);
+        QCOMPARE(bottomPeek.value(QStringLiteral("page")).toInt(), 1);
+        QVERIFY2(bottomPeek.value(QStringLiteral("excerpt")).toString().contains(QStringLiteral("Bottom Reference")),
+                 qPrintable(bottomPeek.value(QStringLiteral("excerpt")).toString()));
+        QVERIFY(!bottomPeek.value(QStringLiteral("excerpt")).toString().contains(QStringLiteral("Top Figure 1")));
+
+        // Out-of-range destination pages return empty map.
+        QVERIFY(reader.peekPdfDestination(-1, 0.0).isEmpty());
+        QVERIFY(reader.peekPdfDestination(2, 0.5).isEmpty());
+        QVERIFY(reader.peekPdfDestination(99, -1.0).isEmpty());
+    }
+
+    void wave4PdfAcademicIdExtractionAndCitations() {
+        // 1. PdfBook::extractDoi() edge cases (trailing punctuation vs balanced parens).
+        QCOMPARE(PdfBook::extractDoi(QStringLiteral("Published at doi: 10.1145/3292500.3330701.")),
+                 QStringLiteral("10.1145/3292500.3330701"));
+        QCOMPARE(PdfBook::extractDoi(QStringLiteral("(see https://doi.org/10.1000/xyz.123),")),
+                 QStringLiteral("10.1000/xyz.123"));
+        QCOMPARE(PdfBook::extractDoi(QStringLiteral("DOI: 10.1002/(SICI)1097-4571(1999);")),
+                 QStringLiteral("10.1002/(SICI)1097-4571(1999)"));
+        QVERIFY(PdfBook::extractDoi(QStringLiteral("No identifier in this sentence.")).isEmpty());
+
+        // 2. PdfBook::extractArxivId() edge cases (prefix, case, URL, DataCite DOI).
+        QCOMPARE(PdfBook::extractArxivId(QStringLiteral("Preprint arXiv:2305.14314v2 [cs.LG]")),
+                 QStringLiteral("arXiv:2305.14314v2"));
+        QCOMPARE(PdfBook::extractArxivId(QStringLiteral("ARXIV: 1706.03762")),
+                 QStringLiteral("arXiv:1706.03762"));
+        QCOMPARE(PdfBook::extractArxivId(QStringLiteral("Available at https://arxiv.org/pdf/2401.00001v1")),
+                 QStringLiteral("arXiv:2401.00001v1"));
+        QCOMPARE(PdfBook::extractArxivId(QStringLiteral("DOI: 10.48550/arXiv.2303.08774")),
+                 QStringLiteral("arXiv:2303.08774"));
+        QVERIFY(PdfBook::extractArxivId(QStringLiteral("Plain book text.")).isEmpty());
+
+        // 3. End-to-end PDF scan on Reader::openBook() + cleanup on Reader::close().
+        QTemporaryDir dir;
+        const QString pdfPath = dir.filePath(QStringLiteral("academic.pdf"));
+        {
+            QPdfWriter writer(pdfPath);
+            writer.setPageSize(QPageSize(QPageSize::A4));
+            writer.setResolution(72);
+            writer.setTitle(QStringLiteral("Attention & Scaling 100%"));
+            writer.setCreator(QStringLiteral("Test"));
+            QPainter p(&writer);
+            p.drawText(QRect(20, 60, 550, 120),
+                       QStringLiteral("arXiv:1706.03762v7  DOI: 10.1145/1234567.8901234."));
+            p.end();
+        }
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(pdfPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(!reader.isPdf());
+        QVERIFY(reader.formatCitation(QStringLiteral("bibtex")).isEmpty());
+
+        QVERIFY(reader.openBook(bookId));
+        QVERIFY(reader.isPdf());
+        QCOMPARE(reader.detectedArxiv(), QStringLiteral("arXiv:1706.03762v7"));
+        QCOMPARE(reader.detectedDoi(), QStringLiteral("10.1145/1234567.8901234"));
+        const QString openBib = reader.formatCitation(QStringLiteral("bibtex"));
+        QVERIFY(openBib.startsWith(QStringLiteral("@article{")));
+        QVERIFY(openBib.contains(QStringLiteral("doi = {10.1145/1234567.8901234}")));
+        QVERIFY(openBib.contains(QStringLiteral("eprint = {1706.03762v7}")));
+        QVERIFY(openBib.contains(QStringLiteral("Attention \\& Scaling 100\\%")));
+
+        reader.close();
+        QVERIFY(!reader.isPdf());
+        QVERIFY(reader.detectedDoi().isEmpty());
+        QVERIFY(reader.detectedArxiv().isEmpty());
+
+        // 4. Reader::formatCitationFor() BibTeX (@article / @misc / @book) & APA 7th matrix.
+        const QString bibArticle = Reader::formatCitationFor(
+            {{QStringLiteral("title"), QStringLiteral("The Rate of $O(n)$ & 50% #1")},
+             {QStringLiteral("author"), QStringLiteral("Élodie Müller and Jean-Luc Picard")},
+             {QStringLiteral("year"), 2024},
+             {QStringLiteral("doi"), QStringLiteral("https://doi.org/10.1000/test.42")},
+             {QStringLiteral("format"), QStringLiteral("pdf")}},
+            QStringLiteral("bibtex"));
+        QVERIFY(bibArticle.startsWith(QStringLiteral("@article{muller2024rate,")));
+        QVERIFY(bibArticle.contains(QStringLiteral("author = {Müller, Élodie and Picard, Jean-Luc}")));
+        QVERIFY(bibArticle.contains(QStringLiteral("\\$O(n)\\$ \\& 50\\% \\#1")));
+        QVERIFY(bibArticle.contains(QStringLiteral("doi = {10.1000/test.42}")));
+
+        const QString bibArxiv = Reader::formatCitationFor(
+            {{QStringLiteral("title"), QStringLiteral("QLoRA: Efficient Finetuning")},
+             {QStringLiteral("author"), QStringLiteral("Tim Dettmers")},
+             {QStringLiteral("arxiv"), QStringLiteral("arXiv:2305.14314")},
+             {QStringLiteral("format"), QStringLiteral("pdf")}},
+            QStringLiteral("bibtex"));
+        QVERIFY(bibArxiv.startsWith(QStringLiteral("@misc{dettmers2023qlora,")));
+        QVERIFY(bibArxiv.contains(QStringLiteral("year = {2023}")));
+        QVERIFY(bibArxiv.contains(QStringLiteral("eprint = {2305.14314}")));
+        QVERIFY(bibArxiv.contains(QStringLiteral("archivePrefix = {arXiv}")));
+        QVERIFY(bibArxiv.contains(QStringLiteral("url = {https://arxiv.org/abs/2305.14314}")));
+
+        const QString bibBook = Reader::formatCitationFor(
+            {{QStringLiteral("title"), QStringLiteral("The Lantern Keeper")},
+             {QStringLiteral("author"), QStringLiteral("Ada Marsh")},
+             {QStringLiteral("publisher"), QStringLiteral("Harbor Books")},
+             {QStringLiteral("isbn"), QStringLiteral("978-0-00-000000-2")},
+             {QStringLiteral("year"), 1911},
+             {QStringLiteral("format"), QStringLiteral("epub")}},
+            QStringLiteral("bibtex"));
+        QVERIFY(bibBook.startsWith(QStringLiteral("@book{marsh1911lantern,")));
+        QVERIFY(bibBook.contains(QStringLiteral("publisher = {Harbor Books}")));
+        QVERIFY(bibBook.contains(QStringLiteral("isbn = {978-0-00-000000-2}")));
+
+        // APA 7th: 1 author + arXiv, 2 authors + DOI, 3 authors, editor-only, no-author + (n.d.).
+        QCOMPARE(Reader::formatCitationFor(
+                     {{QStringLiteral("title"), QStringLiteral("QLoRA")},
+                      {QStringLiteral("author"), QStringLiteral("Tim Dettmers")},
+                      {QStringLiteral("arxiv"), QStringLiteral("arXiv:2305.14314")}},
+                     QStringLiteral("apa")),
+                 QStringLiteral("Dettmers, T. (2023). QLoRA. arXiv preprint arXiv:2305.14314. https://arxiv.org/abs/2305.14314"));
+        QCOMPARE(Reader::formatCitationFor(
+                     {{QStringLiteral("title"), QStringLiteral("Joint Work")},
+                      {QStringLiteral("author"), QStringLiteral("Ada Lovelace; Alan Turing")},
+                      {QStringLiteral("year"), 1950},
+                      {QStringLiteral("doi"), QStringLiteral("10.1000/turing")}},
+                     QStringLiteral("apa")),
+                 QStringLiteral("Lovelace, A., & Turing, A. (1950). Joint Work. https://doi.org/10.1000/turing"));
+        QCOMPARE(Reader::formatCitationFor(
+                     {{QStringLiteral("title"), QStringLiteral("Three Minds")},
+                      {QStringLiteral("author"), QStringLiteral("Ada Lovelace; Alan Turing; Grace Hopper")},
+                      {QStringLiteral("year"), 1955}},
+                     QStringLiteral("apa")),
+                 QStringLiteral("Lovelace, A., Turing, A., & Hopper, G. (1955). Three Minds."));
+        QCOMPARE(Reader::formatCitationFor(
+                     {{QStringLiteral("title"), QStringLiteral("Collected Papers")},
+                      {QStringLiteral("editor"), QStringLiteral("Tom Reed")},
+                      {QStringLiteral("year"), 2001}},
+                     QStringLiteral("apa")),
+                 QStringLiteral("Reed, T. (Ed.). (2001). Collected Papers."));
+        QCOMPARE(Reader::formatCitationFor(
+                     {{QStringLiteral("title"), QStringLiteral("Anonymous Treatise?")}},
+                     QStringLiteral("apa")),
+                 QStringLiteral("Anonymous Treatise? (n.d.)."));
+        QVERIFY(Reader::formatCitationFor({{QStringLiteral("title"), QStringLiteral("X")}}, QStringLiteral("chicago")).isEmpty());
+    }
+
+    void wave4McpProtocolKillSwitchToolsAndResources() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath(QStringLiteral("lantern.epub"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(16, 16))));
+
+        // Multi-page PDF with distinct text on pages 1 and 2.
+        const QString pdfPath = dir.filePath(QStringLiteral("quantum.pdf"));
+        {
+            QPdfWriter writer(pdfPath);
+            writer.setPageSize(QPageSize(QPageSize::A4));
+            writer.setResolution(72);
+            writer.setTitle(QStringLiteral("Quantum Circuits Primer"));
+            QPainter p(&writer);
+            p.drawText(QRect(20, 60, 550, 120),
+                       QStringLiteral("Page one introduces Hadamard gates and quantum entanglement clearly."));
+            writer.newPage();
+            p.drawText(QRect(20, 60, 550, 120),
+                       QStringLiteral("Page two derives Bell state fidelity bounds with concise proofs."));
+            p.end();
+        }
+        const QString hiddenPath = dir.filePath(QStringLiteral("hidden.epub"));
+        QVERIFY(TestBooks::write(hiddenPath, TestBooks::epub3(adobeObfuscate(fontPayload()))));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int epubId = library.addBookFile(epubPath);
+        const int pdfId = library.addBookFile(pdfPath);
+        const int hiddenId = library.addBookFile(hiddenPath);
+        QVERIFY(epubId > 0 && pdfId > 0 && hiddenId > 0);
+        library.setHidden(hiddenId, true);
+
+        const int colId = library.createCollection(QStringLiteral("Physics"));
+        QVERIFY(colId > 0);
+        QVERIFY(library.addToCollection(pdfId, colId));
+
+        Marks marks(&library);
+        marks.setBook(epubId);
+        const int markId = marks.addHighlight(0, 12, 36, QStringLiteral("lamp's light & the sea"),
+                                              QStringLiteral("yellow"), QStringLiteral("Chapter One"));
+        QVERIFY(markId > 0);
+        marks.setNote(markId, QStringLiteral("Opening harbor motif"));
+
+        const QString settingsIni = dir.filePath(QStringLiteral("mcp-settings.ini"));
+        const QString indexDb = dir.filePath(QStringLiteral("index.sqlite"));
+        LibraryIndex libIndex(indexDb);
+        QVERIFY(libIndex.available());
+
+        // Set up fake local embedder so we can exercise BOTH lexical and semantic paths of search_passages.
+        const QString appSettings =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restoreSettings = qScopeGuard([&] {
+            QSettings s(appSettings, QSettings::IniFormat);
+            s.remove(QStringLiteral("ai/preset"));
+        });
+        FakeServer embedServer;
+        embedServer.routes.insert("/api/embed",
+                                  {200, "application/json", "{\"embeddings\":[[0.0,1.0,0.0]]}"});
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        LocalModels::Server lcfg;
+        lcfg.kind = LocalModels::Ollama;
+        lcfg.url = QUrl(embedServer.origin());
+        local.configure(lcfg, QStringLiteral("qwen3.5:4b"), QStringLiteral("nomic-embed-text"));
+        services.setLocalModels(&local);
+        services.setPreset(QStringLiteral("local"));
+
+        McpServer server(&library, &libIndex, &services, {settingsIni, indexDb});
+
+        auto rpc = [&](const QJsonValue &id, const QString &method, const QJsonObject &params = {}) {
+            QJsonObject req{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")}, {QStringLiteral("method"), method}};
+            if (!id.isUndefined())
+                req.insert(QStringLiteral("id"), id);
+            if (!params.isEmpty())
+                req.insert(QStringLiteral("params"), params);
+            return server.handleRequest(req);
+        };
+
+        // 1. Handshake, framing, notifications, ping, and protocol error codes.
+        const QJsonObject initOk = rpc(1, QStringLiteral("initialize"), {{QStringLiteral("protocolVersion"), QStringLiteral("2025-03-26")}});
+        QCOMPARE(initOk.value(QStringLiteral("result")).toObject().value(QStringLiteral("protocolVersion")).toString(),
+                 QStringLiteral("2025-03-26"));
+        QCOMPARE(initOk.value(QStringLiteral("result")).toObject().value(QStringLiteral("serverInfo")).toObject().value(QStringLiteral("name")).toString(),
+                 QStringLiteral("clothbound"));
+
+        const QJsonObject initFallback = rpc(2, QStringLiteral("initialize"), {{QStringLiteral("protocolVersion"), QStringLiteral("1999-01-01")}});
+        QCOMPARE(initFallback.value(QStringLiteral("result")).toObject().value(QStringLiteral("protocolVersion")).toString(),
+                 QStringLiteral("2024-11-05"));
+
+        // Notification without id produces empty QJsonObject (no stdout reply).
+        QVERIFY(rpc(QJsonValue::Undefined, QStringLiteral("notifications/initialized")).isEmpty());
+
+        const QJsonObject pingRes = rpc(3, QStringLiteral("ping"));
+        QVERIFY(pingRes.contains(QStringLiteral("result")));
+        QCOMPARE(rpc(4, QStringLiteral("nonexistent/method")).value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(),
+                 -32601);
+        const QJsonObject badRpc = server.handleRequest({{QStringLiteral("jsonrpc"), QStringLiteral("1.0")},
+                                                         {QStringLiteral("id"), 5},
+                                                         {QStringLiteral("method"), QStringLiteral("ping")}});
+        QCOMPARE(badRpc.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32600);
+
+        // 2. tools/list advertises all 6 strictly read-only tools.
+        const QJsonArray tools = rpc(6, QStringLiteral("tools/list")).value(QStringLiteral("result")).toObject().value(QStringLiteral("tools")).toArray();
+        QCOMPARE(tools.size(), 6);
+        QStringList toolNames;
+        for (const QJsonValue &tv : tools) {
+            const QJsonObject t = tv.toObject();
+            toolNames.append(t.value(QStringLiteral("name")).toString());
+            const QJsonObject ann = t.value(QStringLiteral("annotations")).toObject();
+            QVERIFY(ann.value(QStringLiteral("readOnlyHint")).toBool());
+            QVERIFY(!ann.value(QStringLiteral("destructiveHint")).toBool());
+        }
+        for (const QString &expected : {QStringLiteral("list_books"), QStringLiteral("search_library"),
+                                        QStringLiteral("search_passages"), QStringLiteral("get_book_outline"),
+                                        QStringLiteral("read_passage"), QStringLiteral("list_marks")}) {
+            QVERIFY2(toolNames.contains(expected), qPrintable(expected));
+        }
+
+        // 3. Kill-switch: ai/mcpEnabled=false blocks tools/call & resources/read with -32001, re-enabling restores immediately.
+        QVERIFY(server.isEnabled());
+        {
+            QSettings s(settingsIni, QSettings::IniFormat);
+            s.setValue(QStringLiteral("ai/mcpEnabled"), false);
+            s.sync();
+        }
+        QVERIFY(!server.isEnabled());
+        const QJsonObject blockedTool = rpc(7, QStringLiteral("tools/call"),
+                                            {{QStringLiteral("name"), QStringLiteral("list_books")},
+                                             {QStringLiteral("arguments"), QJsonObject{}}});
+        QCOMPARE(blockedTool.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32001);
+        QVERIFY(blockedTool.value(QStringLiteral("error")).toObject().value(QStringLiteral("message")).toString().contains(QStringLiteral("Settings")));
+        const QJsonObject blockedRes = rpc(8, QStringLiteral("resources/read"),
+                                           {{QStringLiteral("uri"), QStringLiteral("clothbound://library/books")}});
+        QCOMPARE(blockedRes.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32001);
+        {
+            QSettings s(settingsIni, QSettings::IniFormat);
+            s.setValue(QStringLiteral("ai/mcpEnabled"), true);
+            s.sync();
+        }
+        QVERIFY(server.isEnabled());
+
+        auto callTool = [&](int id, const QString &name, const QJsonObject &args = {}) {
+            return rpc(id, QStringLiteral("tools/call"),
+                       {{QStringLiteral("name"), name}, {QStringLiteral("arguments"), args}})
+                .value(QStringLiteral("result"))
+                .toObject();
+        };
+
+        // 4. list_books (filtering by format, query, collection name & id, hidden book excluded).
+        const QJsonObject allBooks = callTool(10, QStringLiteral("list_books")).value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(allBooks.value(QStringLiteral("count")).toInt(), 2);
+        const QJsonObject pdfOnly = callTool(11, QStringLiteral("list_books"), {{QStringLiteral("format"), QStringLiteral("pdf")}})
+                                        .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(pdfOnly.value(QStringLiteral("count")).toInt(), 1);
+        QCOMPARE(pdfOnly.value(QStringLiteral("books")).toArray()[0].toObject().value(QStringLiteral("id")).toInt(), pdfId);
+        const QJsonObject byColName = callTool(12, QStringLiteral("list_books"), {{QStringLiteral("collection"), QStringLiteral("physics")}})
+                                          .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(byColName.value(QStringLiteral("count")).toInt(), 1);
+        const QJsonObject byColId = callTool(13, QStringLiteral("list_books"), {{QStringLiteral("collection"), QString::number(colId)}})
+                                        .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(byColId.value(QStringLiteral("count")).toInt(), 1);
+
+        // 5. search_library (whole-library & book_id scoped FTS5).
+        const QJsonObject ftsAll = callTool(14, QStringLiteral("search_library"), {{QStringLiteral("query"), QStringLiteral("Hadamard")}})
+                                       .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(ftsAll.value(QStringLiteral("count")).toInt(), 1);
+        QCOMPARE(ftsAll.value(QStringLiteral("results")).toArray()[0].toObject().value(QStringLiteral("book_id")).toInt(), pdfId);
+        QCOMPARE(ftsAll.value(QStringLiteral("results")).toArray()[0].toObject().value(QStringLiteral("page")).toInt(), 1);
+
+        const QJsonObject ftsScopedMiss = callTool(15, QStringLiteral("search_library"),
+                                                   {{QStringLiteral("query"), QStringLiteral("Hadamard")},
+                                                    {QStringLiteral("book_id"), epubId}})
+                                              .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(ftsScopedMiss.value(QStringLiteral("count")).toInt(), 0);
+
+        // 6. search_passages: lexical FTS5+BM25 fallback first (no vectors yet), then semantic path after building PassageIndex.
+        const QJsonObject lexPassages = callTool(16, QStringLiteral("search_passages"),
+                                                 {{QStringLiteral("query"), QStringLiteral("Bell state fidelity")},
+                                                  {QStringLiteral("collection"), QStringLiteral("Physics")}})
+                                            .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(lexPassages.value(QStringLiteral("mode")).toString(), QStringLiteral("lexical"));
+        QVERIFY(lexPassages.value(QStringLiteral("count")).toInt() >= 1);
+        QCOMPARE(lexPassages.value(QStringLiteral("passages")).toArray()[0].toObject().value(QStringLiteral("book_id")).toInt(), pdfId);
+
+        {
+            PassageIndex pi(&services, library.database().connectionName());
+            bool built = false;
+            pi.build(pdfId, {{0, 0, 60, QStringLiteral("Page one introduces Hadamard gates and quantum entanglement.")}},
+                     nullptr, [&](const QString &err) {
+                         QVERIFY2(err.isEmpty(), qPrintable(err));
+                         built = true;
+                     });
+            QTRY_VERIFY_WITH_TIMEOUT(built, 5000);
+        }
+        const QJsonObject semPassages = callTool(17, QStringLiteral("search_passages"),
+                                                 {{QStringLiteral("query"), QStringLiteral("entanglement")},
+                                                  {QStringLiteral("book_id"), pdfId},
+                                                  {QStringLiteral("limit"), 1}})
+                                            .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(semPassages.value(QStringLiteral("mode")).toString(), QStringLiteral("semantic"));
+        QCOMPARE(semPassages.value(QStringLiteral("count")).toInt(), 1);
+
+        // 7. get_book_outline (EPUB TOC/spine/page_map & PDF pages) + error for missing book.
+        const QJsonObject epubOutline = callTool(18, QStringLiteral("get_book_outline"), {{QStringLiteral("book_id"), epubId}})
+                                            .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(epubOutline.value(QStringLiteral("chapters")).toInt(), 2);
+        QVERIFY(!epubOutline.value(QStringLiteral("toc")).toArray().isEmpty());
+        QVERIFY(!epubOutline.value(QStringLiteral("spine")).toArray().isEmpty());
+        QVERIFY(!epubOutline.value(QStringLiteral("page_map")).toArray().isEmpty());
+
+        const QJsonObject pdfOutline = callTool(19, QStringLiteral("get_book_outline"), {{QStringLiteral("book_id"), pdfId}})
+                                           .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(pdfOutline.value(QStringLiteral("pages")).toInt(), 2);
+        QVERIFY(callTool(20, QStringLiteral("get_book_outline"), {{QStringLiteral("book_id"), 99999}}).value(QStringLiteral("isError")).toBool());
+
+        // 8. read_passage (EPUB chapter, PDF multi-page span, offset pagination, citation header, out-of-range error).
+        const QJsonObject epubRead = callTool(21, QStringLiteral("read_passage"),
+                                              {{QStringLiteral("book_id"), epubId},
+                                               {QStringLiteral("chapter"), 0},
+                                               {QStringLiteral("offset"), 5},
+                                               {QStringLiteral("max_chars"), 999999}});
+        QVERIFY(!epubRead.value(QStringLiteral("isError")).toBool());
+        const QJsonObject epubStruct = epubRead.value(QStringLiteral("structuredContent")).toObject();
+        QVERIFY(epubStruct.value(QStringLiteral("citation")).toString().startsWith(QStringLiteral("[Citation:")));
+        QCOMPARE(epubStruct.value(QStringLiteral("offset")).toInt(), 5);
+        QVERIFY(epubStruct.value(QStringLiteral("text")).toString().contains(QStringLiteral("storm")));
+
+        const QJsonObject pdfRead = callTool(22, QStringLiteral("read_passage"),
+                                             {{QStringLiteral("book_id"), pdfId},
+                                              {QStringLiteral("page"), 1},
+                                              {QStringLiteral("page_end"), 2}});
+        const QJsonObject pdfStruct = pdfRead.value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(pdfStruct.value(QStringLiteral("page")).toInt(), 1);
+        QCOMPARE(pdfStruct.value(QStringLiteral("page_end")).toInt(), 2);
+        QVERIFY(pdfStruct.value(QStringLiteral("text")).toString().contains(QStringLiteral("Hadamard")));
+        QVERIFY(pdfStruct.value(QStringLiteral("text")).toString().contains(QStringLiteral("Bell state")));
+        QVERIFY(callTool(23, QStringLiteral("read_passage"), {{QStringLiteral("book_id"), pdfId}, {QStringLiteral("page"), 50}})
+                    .value(QStringLiteral("isError")).toBool());
+
+        // 9. list_marks (book-scoped & cross-book + query filter).
+        const QJsonObject bookMarks = callTool(24, QStringLiteral("list_marks"),
+                                               {{QStringLiteral("book_id"), epubId}, {QStringLiteral("query"), QStringLiteral("harbor")}})
+                                          .value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(bookMarks.value(QStringLiteral("count")).toInt(), 1);
+        QCOMPARE(bookMarks.value(QStringLiteral("marks")).toArray()[0].toObject().value(QStringLiteral("note")).toString(),
+                 QStringLiteral("Opening harbor motif"));
+        const QJsonObject allMarks = callTool(25, QStringLiteral("list_marks")).value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(allMarks.value(QStringLiteral("count")).toInt(), 1);
+
+        // 10. resources/{list,templates/list,read} + unknown URI -32002.
+        const QJsonArray resList = rpc(26, QStringLiteral("resources/list")).value(QStringLiteral("result")).toObject().value(QStringLiteral("resources")).toArray();
+        QVERIFY(resList.size() >= 5);  // library/books + 2 visible books * (outline + marks)
+        const QJsonArray resTemplates = rpc(27, QStringLiteral("resources/templates/list")).value(QStringLiteral("result")).toObject().value(QStringLiteral("resourceTemplates")).toArray();
+        QCOMPARE(resTemplates.size(), 2);
+
+        for (const QString &uri : {QStringLiteral("clothbound://library/books"),
+                                   QStringLiteral("clothbound://book/%1/outline").arg(epubId),
+                                   QStringLiteral("clothbound://book/%1/marks").arg(epubId)}) {
+            const QJsonObject readRes = rpc(28, QStringLiteral("resources/read"), {{QStringLiteral("uri"), uri}});
+            const QJsonArray contents = readRes.value(QStringLiteral("result")).toObject().value(QStringLiteral("contents")).toArray();
+            QCOMPARE(contents.size(), 1);
+            QCOMPARE(contents[0].toObject().value(QStringLiteral("uri")).toString(), uri);
+            QVERIFY(QJsonDocument::fromJson(contents[0].toObject().value(QStringLiteral("text")).toString().toUtf8()).isObject());
+        }
+        const QJsonObject badUri = rpc(29, QStringLiteral("resources/read"), {{QStringLiteral("uri"), QStringLiteral("clothbound://book/99999/outline")}});
+        QCOMPARE(badUri.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32002);
+    }
+
+    void wave4CliSearchPassageAndMcpStdioPurity() {
+        QVERIFY(isCliCommand(QStringLiteral("mcp")));
+        QVERIFY(isCliCommand(QStringLiteral("search")));
+        QVERIFY(isCliCommand(QStringLiteral("passage")));
+
+        const QString clothboundBin = QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("../clothbound"));
+        if (!QFileInfo::exists(clothboundBin))
+            QSKIP("build/clothbound binary not built yet");
+
+        QTemporaryDir dir;
+        QDir(dir.path()).mkpath(QStringLiteral("config"));
+        QDir(dir.path()).mkpath(QStringLiteral("data"));
+        QDir(dir.path()).mkpath(QStringLiteral("cache"));
+        const QString epubPath = dir.filePath(QStringLiteral("lantern.epub"));
+        const QString pdfPath = dir.filePath(QStringLiteral("paper.pdf"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(16, 16))));
+        {
+            QPdfWriter writer(pdfPath);
+            writer.setPageSize(QPageSize(QPageSize::A4));
+            writer.setResolution(72);
+            writer.setTitle(QStringLiteral("Spectral Graph Theory"));
+            QPainter p(&writer);
+            p.drawText(QRect(20, 60, 550, 120), QStringLiteral("Laplacian eigenvalues bound graph expansion tightly."));
+            writer.newPage();
+            p.drawText(QRect(20, 60, 550, 120), QStringLiteral("Cheeger inequality relates conductance to spectral gap."));
+            p.end();
+        }
+
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.remove(QStringLiteral("DISPLAY"));
+        env.remove(QStringLiteral("WAYLAND_DISPLAY"));
+        env.remove(QStringLiteral("QT_QPA_PLATFORM"));
+        env.insert(QStringLiteral("XDG_CONFIG_HOME"), dir.filePath(QStringLiteral("config")));
+        env.insert(QStringLiteral("XDG_DATA_HOME"), dir.filePath(QStringLiteral("data")));
+        env.insert(QStringLiteral("XDG_CACHE_HOME"), dir.filePath(QStringLiteral("cache")));
+
+        auto runSub = [&](const QStringList &args, const QByteArray &stdinBytes = {}) {
+            QProcess proc;
+            proc.setProcessEnvironment(env);
+            proc.start(clothboundBin, args);
+            if (!proc.waitForStarted(5000))
+                return std::tuple<int, QByteArray, QByteArray>{-1, {}, QByteArray("failed to start")};
+            if (!stdinBytes.isEmpty())
+                proc.write(stdinBytes);
+            proc.closeWriteChannel();
+            if (!proc.waitForFinished(10000)) {
+                proc.kill();
+                proc.waitForFinished(2000);
+                return std::tuple<int, QByteArray, QByteArray>{-2, proc.readAllStandardOutput(), proc.readAllStandardError()};
+            }
+            return std::tuple<int, QByteArray, QByteArray>{proc.exitCode(), proc.readAllStandardOutput(), proc.readAllStandardError()};
+        };
+
+        // 1. Add both books headlessly.
+        auto [addCode, addOut, addErr] = runSub({QStringLiteral("add"), epubPath, pdfPath, QStringLiteral("--json")});
+        QCOMPARE(addCode, 0);
+        QVERIFY2(addErr.isEmpty(), addErr.constData());
+        const QJsonObject addJson = QJsonDocument::fromJson(addOut).object();
+        QCOMPARE(addJson.value(QStringLiteral("books")).toInt(), 2);
+
+        // 2. clothbound search --json (whole library & --book scoped).
+        auto [sCode, sOut, sErr] = runSub({QStringLiteral("search"), QStringLiteral("Cheeger"), QStringLiteral("--json")});
+        QCOMPARE(sCode, 0);
+        QVERIFY2(sErr.isEmpty(), sErr.constData());
+        const QJsonObject sJson = QJsonDocument::fromJson(sOut).object();
+        QCOMPARE(sJson.value(QStringLiteral("count")).toInt(), 1);
+        const QJsonObject firstHit = sJson.value(QStringLiteral("results")).toArray()[0].toObject();
+        const int pdfId = firstHit.value(QStringLiteral("book_id")).toInt();
+        QVERIFY(pdfId > 0);
+        QCOMPARE(firstHit.value(QStringLiteral("page")).toInt(), 2);
+
+        // 3. clothbound passage --page / --page-end --json + invalid book/page exit 1.
+        auto [pCode, pOut, pErr] = runSub({QStringLiteral("passage"), QString::number(pdfId),
+                                           QStringLiteral("--page"), QStringLiteral("1"),
+                                           QStringLiteral("--page-end"), QStringLiteral("2"),
+                                           QStringLiteral("--json")});
+        QCOMPARE(pCode, 0);
+        QVERIFY2(pErr.isEmpty(), pErr.constData());
+        const QJsonObject pJson = QJsonDocument::fromJson(pOut).object();
+        QVERIFY(pJson.value(QStringLiteral("citation")).toString().startsWith(QStringLiteral("[Citation:")));
+        QVERIFY(pJson.value(QStringLiteral("text")).toString().contains(QStringLiteral("Laplacian")));
+        QVERIFY(pJson.value(QStringLiteral("text")).toString().contains(QStringLiteral("Cheeger")));
+
+        auto [badCode, badOut, badErr] = runSub({QStringLiteral("passage"), QStringLiteral("99999"), QStringLiteral("--page"), QStringLiteral("1")});
+        Q_UNUSED(badOut);
+        QCOMPARE(badCode, 1);
+        QVERIFY(!badErr.isEmpty());
+
+        // 4. Live subprocess `clothbound mcp` stdio purity check: 0 stderr bytes, pure newline-delimited JSON-RPC stdout.
+        const QByteArray mcpStdin =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\"}}\n"
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n"
+            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"list_books\",\"arguments\":{}}}\n";
+        auto [mCode, mOut, mErr] = runSub({QStringLiteral("mcp")}, mcpStdin);
+        QCOMPARE(mCode, 0);
+        QCOMPARE(mErr.size(), qsizetype(0));
+        const QList<QByteArray> lines = mOut.split('\n');
+        QList<QJsonObject> replies;
+        for (const QByteArray &line : lines) {
+            if (line.trimmed().isEmpty())
+                continue;
+            QJsonParseError err;
+            const QJsonDocument doc = QJsonDocument::fromJson(line, &err);
+            QVERIFY2(err.error == QJsonParseError::NoError && doc.isObject(), line.constData());
+            replies.append(doc.object());
+        }
+        QCOMPARE(replies.size(), 3);
+        QCOMPARE(replies[0].value(QStringLiteral("id")).toInt(), 1);
+        QCOMPARE(replies[0].value(QStringLiteral("result")).toObject().value(QStringLiteral("serverInfo")).toObject().value(QStringLiteral("name")).toString(),
+                 QStringLiteral("clothbound"));
+        QCOMPARE(replies[1].value(QStringLiteral("id")).toInt(), 2);
+        QCOMPARE(replies[1].value(QStringLiteral("result")).toObject().value(QStringLiteral("tools")).toArray().size(), 6);
+        QCOMPARE(replies[2].value(QStringLiteral("id")).toInt(), 3);
+        QCOMPARE(replies[2].value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("count")).toInt(), 2);
     }
 };
 

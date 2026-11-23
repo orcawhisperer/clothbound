@@ -2086,7 +2086,7 @@ FocusScope {
                                   ? String(personItem.modelData.name || "").trim()
                                   : panel.personInitials(personItem.modelData.name)
                             color: theme.ink1
-                            font.family: personItem.serifSymbol ? "Literata" : Qt.application.font.family
+                            font.family: personItem.serifSymbol ? "Literata" : ""
                             font.italic: personItem.serifSymbol
                             font.pixelSize: personItem.serifSymbol ? 15
                                           : (personItem.symbolBadge && String(personItem.modelData.name || "").trim().length >= 3 ? 9 : 11)
