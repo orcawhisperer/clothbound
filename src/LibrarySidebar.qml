@@ -71,7 +71,8 @@ Rectangle {
         contentItem: Item {
             Glyph {
                 id: icon
-                x: side.collapsed ? (row.width - width) / 2 : 9
+                anchors.left: parent.left
+                anchors.leftMargin: side.collapsed ? (row.width - width) / 2 : 9
                 anchors.verticalCenter: parent.verticalCenter
                 width: 16
                 height: 16
@@ -118,7 +119,8 @@ Rectangle {
         height: side.collapsed ? 14 : 30
         Label {
             id: label
-            x: 18
+            anchors.left: parent.left
+            anchors.leftMargin: 18
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 6
             visible: !side.collapsed
@@ -143,7 +145,8 @@ Rectangle {
         width: parent.width
         height: 52
         Label {
-            x: 18
+            anchors.left: parent.left
+            anchors.leftMargin: 18
             anchors.verticalCenter: parent.verticalCenter
             visible: !side.collapsed
             opacity: side.width > side.expandedWidth - 40 ? 1 : 0
@@ -155,7 +158,8 @@ Rectangle {
         }
         IconButton {
             anchors.verticalCenter: parent.verticalCenter
-            x: side.collapsed ? (side.width - width) / 2 : side.width - width - 10
+            anchors.left: parent.left
+            anchors.leftMargin: side.collapsed ? (side.width - width) / 2 : side.width - width - 10
             glyph: Icons.sidebar
             tip: side.collapsed ? qsTr("Show sidebar (Ctrl+B)") : qsTr("Hide sidebar (Ctrl+B)")
             onClicked: side.toggleRequested()
@@ -219,7 +223,8 @@ Rectangle {
                 width: side.width
                 height: side.collapsed ? 14 : 34
                 Label {
-                    x: 18
+                    anchors.left: parent.left
+                    anchors.leftMargin: 18
                     anchors.bottom: parent.bottom
                     anchors.bottomMargin: 6
                     visible: !side.collapsed
@@ -335,7 +340,8 @@ Rectangle {
         contentItem: Item {
             Glyph {
                 id: spark
-                x: side.collapsed ? (footer.width - width) / 2 : 12
+                anchors.left: parent.left
+                anchors.leftMargin: side.collapsed ? (footer.width - width) / 2 : 12
                 anchors.verticalCenter: parent.verticalCenter
                 width: 16
                 height: 16

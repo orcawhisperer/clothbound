@@ -35,7 +35,8 @@ AbstractButton {
     contentItem: Item {
         Rectangle {
             id: dot
-            x: 12
+            anchors.left: parent.left
+            anchors.leftMargin: 12
             y: 17
             width: 8
             height: 8

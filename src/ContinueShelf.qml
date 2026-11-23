@@ -53,6 +53,7 @@ FocusScope {
     // --- The book read last ---------------------------------------------
     AbstractButton {
         id: hero
+        anchors.left: parent.left
         visible: shelf.lead !== null
         width: shelf.wide && shelf.others.length > 0 ? Math.round(shelf.width * 0.6) : shelf.width
         height: shelf.height
@@ -81,7 +82,8 @@ FocusScope {
             }
             CoverImage {
                 id: cover
-                x: 20
+                anchors.left: parent.left
+                anchors.leftMargin: 20
                 y: 18
                 width: 118
                 height: parent.height - 36
@@ -140,6 +142,7 @@ FocusScope {
                     radius: 2
                     color: theme.separator
                     Rectangle {
+                        anchors.left: parent.left
                         width: parent.width * (shelf.lead ? Math.max(0.02, shelf.lead.progress) : 0)
                         height: parent.height
                         radius: 2
@@ -198,7 +201,8 @@ FocusScope {
                 contentItem: Item {
                     CoverImage {
                         id: thumb
-                        x: 8
+                        anchors.left: parent.left
+                        anchors.leftMargin: 8
                         y: 6
                         width: 40
                         height: parent.height - 12
@@ -235,6 +239,7 @@ FocusScope {
                             radius: 1.5
                             color: theme.separator
                             Rectangle {
+                                anchors.left: parent.left
                                 width: parent.width * Math.max(0.02, other.modelData.progress)
                                 height: parent.height
                                 radius: 1.5
