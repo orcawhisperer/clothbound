@@ -21,6 +21,8 @@
 #include "fakeserver.h"
 #include "gemini.h"
 #include "localmodels.h"
+#include "companion.h"
+#include "passageindex.h"
 #include "systemcheck.h"
 #include "instance.h"
 #include "keystore.h"
@@ -1331,6 +1333,92 @@ private slots:
         SystemCheck::Machine small;
         small.memoryGb = 8;
         QCOMPARE(SystemCheck::tierFor(small), QString("Local voices"));
+    }
+
+    // --- The companion -------------------------------------------------------
+
+    // Nothing past the reader's place: the text stops at the offset given.
+    void companionReadsOnlySoFar() {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("book.epub");
+        QVERIFY(TestBooks::write(path, TestBooks::epub2(png(20, 30))));
+        const QList<Companion::Chapter> all = Companion::textUpTo(path, "epub", 1, -1);
+        QCOMPARE(all.size(), 2);
+        const QList<Companion::Chapter> partway = Companion::textUpTo(path, "epub", 0, 5);
+        QCOMPARE(partway.size(), 1);
+        QCOMPARE(partway.first().text, all.first().text.left(5));
+        // The latest is kept when there's too much.
+        const QString joined = Companion::joined({{0, "One", QString(100, 'a')}, {1, "Two", QString(100, 'b')}}, 120);
+        QVERIFY(joined.contains("## Two"));
+        QVERIFY(joined.endsWith(QString(100, 'b')));
+        QVERIFY(!joined.contains(QString(30, 'a')));
+    }
+
+    void passagesAreFound() {
+        const QString text = "The Eloi were small and gentle.\n\nThey ate fruit.\n\n" + QString(1200, 'x') +
+                             "\nThe Morlocks lived underground, in the dark, and came up at night.\n";
+        const QList<PassageIndex::Passage> passages = PassageIndex::split(3, text, 200);
+        QVERIFY(passages.size() >= 3);
+        QCOMPARE(passages.first().chapter, 3);
+        QCOMPARE(passages.first().start, 0);
+        for (const auto &passage : passages)
+            QVERIFY(text.mid(passage.start).startsWith(passage.text.section('\n', 0, 0)));
+        const auto hits = PassageIndex::byWords(passages, "Where did the Morlocks live?", 2);
+        QVERIFY(!hits.isEmpty());
+        QVERIFY(hits.first().passage.text.contains("Morlocks"));
+        QCOMPARE(PassageIndex::cosine({1, 0}, {1, 0}), 1.0);
+        QCOMPARE(PassageIndex::cosine({1, 0}, {0, 1}), 0.0);
+    }
+
+    // Passages embedded once and kept; a question finds the closest by meaning.
+    void passagesAreFoundByMeaning() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        services.setLocalModels(&local);
+        FakeServer server;
+        LocalModels::Server where;
+        where.kind = LocalModels::Ollama;
+        where.url = QUrl(server.origin());
+        local.configure(where, "qwen3.5:4b", "qwen3-embedding:0.6b");
+        services.setPreset("local");
+        PassageIndex index(&services, library.database().connectionName());
+        const QList<PassageIndex::Passage> passages{{0, 0, 10, "About the Eloi."}, {0, 11, 20, "About the Morlocks."}};
+        server.responses.append({200, "application/json", "{\"embeddings\":[[1,0],[0,1]]}"});
+        QString problem = "unset";
+        index.build(7, passages, nullptr, [&](const QString &error) { problem = error; });
+        QTRY_COMPARE(problem, QString());
+        QCOMPARE(index.indexed(7), 2);
+        // Built again, nothing is asked: it's all kept.
+        problem = "unset";
+        index.build(7, passages, nullptr, [&](const QString &error) { problem = error; });
+        QTRY_COMPARE(problem, QString());
+        QCOMPARE(server.requests.size(), 1);
+        server.responses.append({200, "application/json", "{\"embeddings\":[[0.1,0.9]]}"});
+        QList<PassageIndex::Hit> found;
+        bool byMeaning = false;
+        index.search(7, passages, "underground people", 1, [&](const QList<PassageIndex::Hit> &hits, bool meaning) {
+            found = hits;
+            byMeaning = meaning;
+        });
+        QTRY_COMPARE(found.size(), 1);
+        QVERIFY(byMeaning);
+        QCOMPARE(found.first().passage.text, QString("About the Morlocks."));
+        services.setPreset("cloud");
+        QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.ini", QSettings::IniFormat).remove("ai/preset");
+    }
+
+    void geminiEmbeddingRequests() {
+        const QJsonObject body = GeminiProvider::embedBody({"a", "b"}, true, "gemini-embedding-2");
+        const QJsonArray requests = body["requests"].toArray();
+        QCOMPARE(requests.size(), 2);
+        QCOMPARE(requests[0].toObject()["model"].toString(), QString("models/gemini-embedding-2"));
+        QCOMPARE(requests[0].toObject()["taskType"].toString(), QString("RETRIEVAL_QUERY"));
+        QCOMPARE(requests[1].toObject()["content"].toObject()["parts"].toArray()[0].toObject()["text"].toString(), QString("b"));
     }
 
     // The window doesn't wait for the keyring: the key arrives when it

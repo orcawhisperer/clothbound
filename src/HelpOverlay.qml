@@ -41,6 +41,7 @@ Rectangle {
         { keys: "n  N", action: qsTr("Next / previous result") },
         { keys: "B", action: qsTr("Bookmark this page") },
         { keys: "M", action: qsTr("Highlights, notes, and bookmarks") },
+        { keys: "C", action: qsTr("Companion: ask, previously, who's who") },
         { keys: "A", action: qsTr("Typography and theme") },
         { keys: "+  −  0", action: qsTr("Larger, smaller, default text") },
         { keys: "D", action: qsTr("Next reading theme") },

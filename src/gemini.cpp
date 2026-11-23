@@ -18,7 +18,7 @@ quint32 le32(const char *p) {
 // Ai::Reply signals and results.
 class GeminiReply : public Ai::Reply {
 public:
-    enum Kind { Interaction, Voices, VoiceDesign, Forget, Models };
+    enum Kind { Interaction, Voices, VoiceDesign, Forget, Models, Embed };
 
     GeminiReply(QNetworkReply *reply, Kind kind, const QString &model, const QString &feature, QObject *parent)
         : Ai::Reply(parent), m_reply(reply), m_kind(kind) {
@@ -147,6 +147,16 @@ private:
             for (const auto &model : json.value("models").toArray())
                 names.append(model.toObject().value("name").toString().remove(QStringLiteral("models/")));
             m_result.insert("models", names);
+            break;
+        }
+        case Embed: {
+            for (const auto &embedding : json.value("embeddings").toArray()) {
+                QList<float> vector;
+                for (const auto &value : embedding.toObject().value("values").toArray())
+                    vector.append(float(value.toDouble()));
+                m_vectors.append(vector);
+            }
+            m_usage.inputTokens = json.value("usageMetadata").toObject().value("promptTokenCount").toInteger();
             break;
         }
         case Forget:
@@ -403,4 +413,20 @@ QByteArray GeminiProvider::pcmFromWav(const QByteArray &wav, int *sampleRate) {
         at += 8 + size + (size & 1);
     }
     return {};
+}
+
+QJsonObject GeminiProvider::embedBody(const QStringList &texts, bool query, const QString &model) {
+    QJsonArray requests;
+    for (const QString &text : texts)
+        requests.append(QJsonObject{{"model", "models/" + model},
+                                    {"content", QJsonObject{{"parts", QJsonArray{QJsonObject{{"text", text}}}}}},
+                                    {"taskType", query ? "RETRIEVAL_QUERY" : "RETRIEVAL_DOCUMENT"},
+                                    {"outputDimensionality", 768}});
+    return QJsonObject{{"requests", requests}};
+}
+
+Ai::Reply *GeminiProvider::embed(const QStringList &texts, bool query) {
+    return new GeminiReply(send("POST", QStringLiteral("models/%1:batchEmbedContents").arg(m_embeddingModel),
+                                embedBody(texts, query, m_embeddingModel)),
+                           GeminiReply::Embed, m_embeddingModel, QStringLiteral("embed"), this);
 }

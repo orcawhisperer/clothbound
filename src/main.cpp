@@ -6,6 +6,7 @@
 #include "bookscheme.h"
 #include "gemini.h"
 #include "localmodels.h"
+#include "companion.h"
 #include "systemcheck.h"
 #include "keystore.h"
 #include "cli.h"
@@ -212,6 +213,7 @@ int main(int argc, char *argv[]) {
     Download download(&ai, &audioCache, &reader, &narration);
     BookSearch bookSearch(&reader);
     Marks marks(&library);
+    Companion companion(&ai, &reader, library.database().connectionName());
     QObject::connect(&reader, &Reader::bookChanged, &marks, [&marks, &reader] { marks.setBook(reader.bookId()); });
     VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
                         QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/voices.json"));
@@ -241,6 +243,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("download", &download);
     engine.rootContext()->setContextProperty("bookSearch", &bookSearch);
     engine.rootContext()->setContextProperty("marks", &marks);
+    engine.rootContext()->setContextProperty("companion", &companion);
     engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
     Notifier notifier;
     engine.rootContext()->setContextProperty("desktop", &notifier);

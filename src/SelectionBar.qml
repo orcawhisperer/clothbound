@@ -19,6 +19,8 @@ Rectangle {
     signal note()
     signal copy()
     signal listen()
+    // "define", "explain" or "translate", for the companion.
+    signal companion(string feature)
     signal remove()
 
     readonly property var colors: ["yellow", "green", "blue", "pink"]
@@ -103,6 +105,34 @@ Rectangle {
             tone: bar.look.fg
             tip: qsTr("Copy")
             onClicked: bar.copy()
+        }
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 1
+            height: 22
+            color: bar.look.border
+        }
+        IconButton {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: (bar.target.text || bar.target.quote || "").trim().split(/\s+/).length <= 3
+            glyph: Icons.dictionary
+            tone: bar.look.fg
+            tip: qsTr("Define")
+            onClicked: bar.companion("define")
+        }
+        IconButton {
+            anchors.verticalCenter: parent.verticalCenter
+            glyph: Icons.sparkle
+            tone: bar.look.fg
+            tip: qsTr("Explain")
+            onClicked: bar.companion("explain")
+        }
+        IconButton {
+            anchors.verticalCenter: parent.verticalCenter
+            glyph: Icons.translate
+            tone: bar.look.fg
+            tip: qsTr("Translate")
+            onClicked: bar.companion("translate")
         }
         IconButton {
             anchors.verticalCenter: parent.verticalCenter

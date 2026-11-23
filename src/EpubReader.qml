@@ -24,9 +24,10 @@ FocusScope {
     // The words selected on the page, as the page last said ({} for none).
     property var selection: ({})
     readonly property alias marksPanel: marksPanel
+    readonly property alias companionPanel: companionPanel
     readonly property alias noteEditor: noteEditor
     readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
-                                     || marksPanel.open || noteEditor.open
+                                     || marksPanel.open || noteEditor.open || companionPanel.open
     property bool chromeShown: false
     property bool surfaceReady: false
     property bool listening: false
@@ -106,6 +107,7 @@ FocusScope {
         goTo.close()
         voicePanel.close()
         marksPanel.close()
+        companionPanel.close()
         noteEditor.close()
         if (searchBar.editing)
             searchBar.close()
@@ -231,12 +233,33 @@ FocusScope {
         contents.close()
         appearance.close()
         voicePanel.close()
+        companionPanel.close()
         marksPanel.show()
+    }
+    // The companion, on its own or for words on the page.
+    function showCompanion(tab) {
+        contents.close()
+        appearance.close()
+        voicePanel.close()
+        marksPanel.close()
+        companionPanel.show(tab)
+    }
+    function askCompanion(feature, target) {
+        if (!target || !target.text)
+            return
+        showCompanion("selection")
+        if (feature === "define")
+            companion.define(target.text, target.chapter, target.start)
+        else if (feature === "explain")
+            companion.explain(target.text, target.chapter, target.end)
+        else
+            companion.translate(target.text, target.chapter, target.end)
     }
     function showVoices() {
         contents.close()
         appearance.close()
         marksPanel.close()
+        companionPanel.close()
         voicePanel.show()
     }
     function showChrome() {
@@ -580,6 +603,13 @@ FocusScope {
                 onClicked: marksPanel.open ? marksPanel.close() : view.showMarks()
             }
             IconButton {
+                glyph: Icons.sparkle
+                tone: view.look.fg
+                active: companionPanel.open
+                tip: qsTr("Companion: ask about the book (C)")
+                onClicked: companionPanel.open ? companionPanel.close() : view.showCompanion("ask")
+            }
+            IconButton {
                 glyph: Icons.headphones
                 tone: view.look.fg
                 active: narration.active
@@ -659,6 +689,7 @@ FocusScope {
         // Centered in the room the side panels leave.
         readonly property real leftInset: contents.open ? contents.width : 0
         readonly property real rightInset: voicePanel.open ? voicePanel.width : marksPanel.open ? marksPanel.width
+                                         : companionPanel.open ? companionPanel.width
                                          : appearance.open ? appearance.width : 0
         x: leftInset + (parent.width - leftInset - rightInset - width) / 2
         Behavior on x { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
@@ -742,6 +773,10 @@ FocusScope {
             }
             visible = false
         }
+        onCompanion: (feature) => {
+            view.askCompanion(feature, target)
+            visible = false
+        }
         onNote: {
             const id = forMark ? target.id
                 : marks.addHighlight(target.chapter, target.start, target.end, target.text, "yellow",
@@ -821,6 +856,25 @@ FocusScope {
             text: qsTr("Copy")
             onTriggered: selectionBar.copy()
         }
+        MenuSeparator { visible: pageMenu.hasSelection }
+        MenuItem {
+            visible: pageMenu.hasSelection
+            height: visible ? implicitHeight : 0
+            text: qsTr("Define")
+            onTriggered: view.askCompanion("define", view.selection)
+        }
+        MenuItem {
+            visible: pageMenu.hasSelection
+            height: visible ? implicitHeight : 0
+            text: qsTr("Explain")
+            onTriggered: view.askCompanion("explain", view.selection)
+        }
+        MenuItem {
+            visible: pageMenu.hasSelection
+            height: visible ? implicitHeight : 0
+            text: qsTr("Translate")
+            onTriggered: view.askCompanion("translate", view.selection)
+        }
         MenuSeparator {}
         MenuItem {
             text: view.pageBookmark ? qsTr("Remove the bookmark") : qsTr("Bookmark this page")
@@ -833,6 +887,13 @@ FocusScope {
         onClosed: view.focusPage()
         anchors.centerIn: parent
         z: 7
+        look: view.look
+    }
+
+    CompanionPanel {
+        id: companionPanel
+        onClosed: view.focusPage()
+        height: parent.height
         look: view.look
     }
 
@@ -867,6 +928,7 @@ FocusScope {
     // Listening keys work with a panel open too, unless a field is taking typing.
     readonly property bool typing: win.activeFocusItem !== null && win.activeFocusItem.cursorPosition !== undefined
     readonly property bool listenKeys: visible && !win.helpVisible && !typing
+    Shortcut { sequence: "C"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showCompanion("ask") }
     Shortcut { sequences: ["Right", "PgDown", "L", "J", "Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.next() }
     Shortcut { sequences: ["Left", "PgUp", "H", "K", "Shift+Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prev() }
     Shortcut { sequence: "]"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.nextChapter() }

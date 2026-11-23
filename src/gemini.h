@@ -10,7 +10,8 @@ class QNetworkReply;
 // Google Gemini over its REST API, with the reader's own key: text through
 // the Interactions API, speech through the TTS models, and Voice Design.
 // The only place in Dogear that knows Gemini's wire format.
-class GeminiProvider : public Ai::Provider, public Ai::TextModel, public Ai::SpeechSynthesizer, public Ai::VoiceDesigner {
+class GeminiProvider : public Ai::Provider, public Ai::TextModel, public Ai::SpeechSynthesizer, public Ai::VoiceDesigner,
+                       public Ai::Embedder {
     Q_OBJECT
 
 public:
@@ -29,6 +30,10 @@ public:
     Ai::TextModel *text() override { return this; }
     Ai::SpeechSynthesizer *speech() override { return this; }
     Ai::VoiceDesigner *voiceDesigner() override { return this; }
+    Ai::Embedder *embedder() override { return this; }
+
+    Ai::Reply *embed(const QStringList &texts, bool query) override;
+    QString embeddingModelName() const override { return m_embeddingModel; }
 
     Ai::Reply *generate(const Ai::TextRequest &request) override;
     QString textModelName(bool fast) const override { return fast ? m_fastModel : m_textModel; }
@@ -48,6 +53,7 @@ public:
     // The wire format, public so tests can hold it to the recorded API.
     static QJsonObject textBody(const Ai::TextRequest &request, const QString &model);
     static QJsonObject speechBody(const Ai::SpeechRequest &request, const QString &model);
+    static QJsonObject embedBody(const QStringList &texts, bool query, const QString &model);
     static QJsonObject voiceDesignBody(const Ai::VoiceDesign &voice, const QString &model);
     static Ai::Usage parseUsage(const QJsonObject &usage);
     static Ai::Error parseError(int status, const QByteArray &body, int networkError);
@@ -66,4 +72,5 @@ private:
     QString m_fastModel = QStringLiteral("gemini-3.5-flash-lite");
     QString m_speechModel = QStringLiteral("gemini-3.8-flash-tts");
     QString m_economySpeechModel = QStringLiteral("gemini-3.8-flash-lite-tts");
+    QString m_embeddingModel = QStringLiteral("gemini-embedding-2");
 };
