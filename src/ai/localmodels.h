@@ -91,6 +91,8 @@ public:
 
     // The wire formats, public so tests can hold them to the servers' docs.
     static QJsonObject chatBody(Kind kind, const Ai::TextRequest &request, const QString &model, int contextLimit = 0);
+    // Friendly guidance shown when a local server rejects multimodal image input.
+    static QString visionUnsupportedMessage();
     // A reply's text, without a reasoning model's thinking or a fence
     // around its JSON.
     static QString cleanText(const QString &text, bool json);

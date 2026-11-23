@@ -617,10 +617,13 @@ void PassageIndex::embedNext(int bookId) {
 void PassageIndex::cancel() {
     ++m_generation;
     ++m_searchGeneration;
+    ++m_libraryGeneration;
     if (m_reply)
         m_reply->abort();
     if (m_searchReply)
         m_searchReply->abort();
+    if (m_libraryReply)
+        m_libraryReply->abort();
     m_todo.clear();
     m_buildModel.clear();
     m_done = nullptr;
@@ -725,40 +728,36 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
 
 // --- Across the library ---------------------------------------------------------
 
-QList<PassageIndex::LibraryHit> PassageIndex::rankLibrary(const QString &dbPath, const QString &model,
-                                                          const QList<float> &asked, int count, double minCosine) {
-    QList<LibraryHit> hits;
-    if (dbPath.isEmpty() || model.isEmpty() || asked.isEmpty())
+namespace {
+QList<PassageIndex::LibraryHit> rankLibraryInDb(QSqlDatabase &db, const QString &model, const QList<float> &asked,
+                                                int count, double minCosine, const QSet<int> &bookIds) {
+    QList<PassageIndex::LibraryHit> hits;
+    if (!db.isOpen() || model.isEmpty() || asked.isEmpty() || count <= 0)
         return hits;
-    const QString connName = QStringLiteral("pi-library-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
-    {
-        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
-        db.setDatabaseName(dbPath);
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
-        if (db.open()) {
-            QSqlQuery query(db);
-            query.prepare(QStringLiteral("SELECT book_id, passage, vector FROM passage_vectors WHERE model = ?"));
-            query.addBindValue(model);
-            query.exec();
-            while (query.next()) {
-                const double score = cosine(asked, unpack(query.value(2).toByteArray()));
-                if (score < minCosine)
-                    continue;
-                // The key is chapter:start:end:digest.
-                const QStringList parts = query.value(1).toString().split(QLatin1Char(':'));
-                if (parts.size() < 3)
-                    continue;
-                hits.append({query.value(0).toInt(), parts[0].toInt(), parts[1].toLongLong(), parts[2].toLongLong(), score});
-            }
-            db.close();
-        }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral("SELECT book_id, passage, vector FROM passage_vectors WHERE model = ?"));
+    query.addBindValue(model);
+    if (!query.exec())
+        return hits;
+    while (query.next()) {
+        const int bookId = query.value(0).toInt();
+        if (!bookIds.isEmpty() && !bookIds.contains(bookId))
+            continue;
+        const double score = PassageIndex::cosine(asked, unpack(query.value(2).toByteArray()));
+        if (score < minCosine)
+            continue;
+        // The key is chapter:start:end:digest.
+        const QStringList parts = query.value(1).toString().split(QLatin1Char(':'));
+        if (parts.size() < 3)
+            continue;
+        hits.append({bookId, parts[0].toInt(), parts[1].toLongLong(), parts[2].toLongLong(), score});
     }
-    QSqlDatabase::removeDatabase(connName);
-    std::sort(hits.begin(), hits.end(), [](const LibraryHit &a, const LibraryHit &b) { return a.score > b.score; });
+    std::sort(hits.begin(), hits.end(),
+              [](const PassageIndex::LibraryHit &a, const PassageIndex::LibraryHit &b) { return a.score > b.score; });
     // One passage per chapter of a book, so a single chapter can't fill the list.
-    QList<LibraryHit> best;
+    QList<PassageIndex::LibraryHit> best;
     QSet<QPair<int, int>> seen;
-    for (const LibraryHit &hit : std::as_const(hits)) {
+    for (const PassageIndex::LibraryHit &hit : std::as_const(hits)) {
         if (seen.contains({hit.bookId, hit.chapter}))
             continue;
         seen.insert({hit.bookId, hit.chapter});
@@ -766,6 +765,29 @@ QList<PassageIndex::LibraryHit> PassageIndex::rankLibrary(const QString &dbPath,
         if (best.size() >= count)
             break;
     }
+    return best;
+}
+}  // namespace
+
+QList<PassageIndex::LibraryHit> PassageIndex::rankLibrary(const QString &dbPath, const QString &model,
+                                                          const QList<float> &asked, int count, double minCosine,
+                                                          const QSet<int> &bookIds) {
+    QList<LibraryHit> best;
+    if (dbPath.isEmpty() || model.isEmpty() || asked.isEmpty())
+        return best;
+    const QString connName = QStringLiteral("pi-library-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
+        db.setDatabaseName(dbPath);
+        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        if (db.open()) {
+            QSqlQuery pragma(db);
+            pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
+            best = rankLibraryInDb(db, model, asked, count, minCosine, bookIds);
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connName);
     return best;
 }
 
@@ -779,7 +801,12 @@ int PassageIndex::booksPrepared() const {
     return query.exec() && query.next() ? query.value(0).toInt() : 0;
 }
 
-void PassageIndex::searchLibrary(const QString &query, int count, std::function<void(const QList<LibraryHit> &)> done) {
+void PassageIndex::searchLibrary(const QString &query, int count, std::function<void(const QList<LibraryHit> &)> done,
+                                 const QSet<int> &bookIds) {
+    ++m_libraryGeneration;
+    if (m_libraryReply)
+        m_libraryReply->abort();
+    const int libGen = m_libraryGeneration;
     Ai::Provider *provider = m_ai->embedderProvider();
     Ai::Embedder *embedder = m_ai->embedder();
     const QString name = model();
@@ -798,19 +825,33 @@ void PassageIndex::searchLibrary(const QString &query, int count, std::function<
     }
     Ai::Reply *reply = embedder->embed({query}, true);
     m_ai->track(reply);
+    m_libraryReply = reply;
     const QString path = databasePath();
     QPointer<PassageIndex> self(this);
-    connect(reply, &Ai::Reply::finished, this, [self, reply, path, name, count, done] {
+    connect(reply, &Ai::Reply::finished, this, [self, reply, path, name, count, done, bookIds, libGen] {
         reply->deleteLater();
-        if (!self || reply->error() || reply->vectors().isEmpty()) {
+        if (!self || libGen != self->m_libraryGeneration)
+            return;
+        if (reply->error() || reply->vectors().isEmpty()) {
             done({});
             return;
         }
         const QList<float> asked = reply->vectors().first();
-        (void)QtConcurrent::run([self, path, name, asked, count, done] {
-            const QList<LibraryHit> hits = rankLibrary(path, name, asked, count);
+        if (path.isEmpty() || path == QLatin1String(":memory:")) {
+            QSqlDatabase db = QSqlDatabase::database(self->m_connection, false);
+            done(rankLibraryInDb(db, name, asked, count, minSemanticScore, bookIds));
+            return;
+        }
+        (void)QtConcurrent::run([self, path, name, asked, count, done, bookIds, libGen] {
+            const QList<LibraryHit> hits = rankLibrary(path, name, asked, count, minSemanticScore, bookIds);
             if (QCoreApplication *app = QCoreApplication::instance())
-                QMetaObject::invokeMethod(app, [self, hits, done] { if (self) done(hits); }, Qt::QueuedConnection);
+                QMetaObject::invokeMethod(
+                    app,
+                    [self, hits, done, libGen] {
+                        if (self && libGen == self->m_libraryGeneration)
+                            done(hits);
+                    },
+                    Qt::QueuedConnection);
         });
     });
 }

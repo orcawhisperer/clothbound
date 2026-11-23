@@ -62,6 +62,9 @@ struct TextRequest {
     QString feature;  // for the usage ledger: "ask", "explain", "director"…
     QString system;
     QList<Message> messages;
+    // Optional image attached to the last user message for multimodal vision models.
+    QByteArray imagePng;
+    QString imageMimeType = QStringLiteral("image/png");
     // When set, the reply is JSON matching this schema.
     QJsonObject schema;
     // Quick, cheap work (a director's note, a definition) or careful work

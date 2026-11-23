@@ -24,7 +24,16 @@ bool supportsOllamaThinking(const QString &model) {
     return thinking.match(lower).hasMatch();
 }
 
-Ai::Error errorFor(QNetworkReply *reply, const QByteArray &body) {
+bool looksLikeUnsupportedImageError(const QString &message) {
+    if (message.isEmpty())
+        return false;
+    static const QRegularExpression rx(
+        QStringLiteral("image|vision|multimodal|mmproj|does not support|not support|unsupported|cannot unmarshal"),
+        QRegularExpression::CaseInsensitiveOption);
+    return rx.match(message).hasMatch();
+}
+
+Ai::Error errorFor(QNetworkReply *reply, const QByteArray &body, bool hasImage = false) {
     Ai::Error error;
     const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
     const QJsonObject json = QJsonDocument::fromJson(body).object();
@@ -45,6 +54,9 @@ Ai::Error errorFor(QNetworkReply *reply, const QByteArray &body) {
         error.kind = Ai::Error::NotFound;
     } else if (status == 401 || status == 403) {
         error.kind = Ai::Error::BadKey;
+    } else if (hasImage && (status == 400 || status == 422 || status == 415 || looksLikeUnsupportedImageError(message))) {
+        error.kind = Ai::Error::Invalid;
+        message = LocalModels::visionUnsupportedMessage();
     } else if (status == 400 || status == 422) {
         error.kind = Ai::Error::Invalid;
     } else {
@@ -61,8 +73,8 @@ public:
     enum Mode { Chat, Embed, Speech, Models };
 
     ServerReply(QNetworkReply *reply, Mode mode, LocalModels::Kind kind, const QString &model, const QString &feature,
-                bool json, QObject *parent)
-        : Ai::Reply(parent), m_reply(reply), m_mode(mode), m_kind(kind), m_json(json) {
+                bool json, QObject *parent, bool hasImage = false)
+        : Ai::Reply(parent), m_reply(reply), m_mode(mode), m_kind(kind), m_json(json), m_hasImage(hasImage) {
         m_model = model;
         m_feature = feature;
         reply->setParent(this);
@@ -92,8 +104,8 @@ private:
         if (type.contains("event-stream")) {
             for (const SseParser::Event &event : m_sse.feed(chunk))
                 chatEvent(event.data);
-        } else if (type.contains("ndjson") || m_kind == LocalModels::Ollama) {
-            // Ollama streams a JSON object per line.
+        } else if (type.contains("ndjson") || (m_kind == LocalModels::Ollama && !m_hasImage)) {
+            // Ollama native /api/chat streams a JSON object per line.
             m_body += chunk;
             qsizetype end;
             while ((end = m_body.indexOf('\n')) >= 0) {
@@ -204,7 +216,7 @@ private:
         if (isFinished())
             return;
         if (!ok() || m_reply->error() != QNetworkReply::NoError) {
-            finish(errorFor(m_reply, m_body + m_reply->readAll()));
+            finish(errorFor(m_reply, m_body + m_reply->readAll(), m_hasImage));
             return;
         }
         m_body += m_reply->readAll();
@@ -308,6 +320,7 @@ private:
     Mode m_mode;
     LocalModels::Kind m_kind;
     bool m_json;
+    bool m_hasImage = false;
     QByteArray m_body;
     SseParser m_sse;
     QString m_raw;
@@ -555,20 +568,58 @@ Ai::Reply *LocalModels::check() {
     return new ServerReply(send("GET", path), ServerReply::Models, m_server.kind, {}, QStringLiteral("check"), false, this);
 }
 
+QString LocalModels::visionUnsupportedMessage() {
+    return tr("This local model doesn't support images. Switch to a vision model (such as Gemma 3 or Qwen2.5-VL in Ollama) "
+              "or use Gemini.");
+}
+
 QJsonObject LocalModels::chatBody(Kind kind, const Ai::TextRequest &request, const QString &model, int contextLimit) {
     QJsonArray messages;
     QString system = request.system;
     const bool schema = !request.schema.isEmpty();
+    const bool hasImage = !request.imagePng.isEmpty();
     if (schema && kind == Mlx)
         system += QStringLiteral("\n\nAnswer with JSON only, matching this JSON schema:\n") +
                   QString::fromUtf8(QJsonDocument(request.schema).toJson(QJsonDocument::Compact));
     if (!system.trimmed().isEmpty())
         messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("system")}, {QStringLiteral("content"), system.trimmed()}});
-    for (const Ai::Message &message : request.messages)
-        messages.append(QJsonObject{{QStringLiteral("role"), role(message)}, {QStringLiteral("content"), message.text}});
+
+    qsizetype lastUserIdx = -1;
+    if (hasImage) {
+        for (qsizetype i = 0; i < request.messages.size(); ++i)
+            if (request.messages[i].fromUser)
+                lastUserIdx = i;
+    }
+    const auto imageUrlPart = [&request] {
+        const QString mime = request.imageMimeType.trimmed().isEmpty()
+                                 ? QStringLiteral("image/png")
+                                 : request.imageMimeType.trimmed();
+        const QString dataUri =
+            QStringLiteral("data:%1;base64,%2").arg(mime, QString::fromLatin1(request.imagePng.toBase64()));
+        return QJsonObject{{QStringLiteral("type"), QStringLiteral("image_url")},
+                           {QStringLiteral("image_url"), QJsonObject{{QStringLiteral("url"), dataUri}}}};
+    };
+
+    for (qsizetype i = 0; i < request.messages.size(); ++i) {
+        const Ai::Message &message = request.messages[i];
+        if (hasImage && i == lastUserIdx) {
+            QJsonArray content;
+            if (!message.text.isEmpty())
+                content.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                                           {QStringLiteral("text"), message.text}});
+            content.append(imageUrlPart());
+            messages.append(QJsonObject{{QStringLiteral("role"), role(message)}, {QStringLiteral("content"), content}});
+        } else {
+            messages.append(QJsonObject{{QStringLiteral("role"), role(message)}, {QStringLiteral("content"), message.text}});
+        }
+    }
+    if (hasImage && lastUserIdx < 0) {
+        messages.append(QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
+                                    {QStringLiteral("content"), QJsonArray{imageUrlPart()}}});
+    }
 
     QJsonObject body{{QStringLiteral("model"), model}, {QStringLiteral("messages"), messages}, {QStringLiteral("stream"), request.stream}};
-    if (kind == Ollama) {
+    if (kind == Ollama && !hasImage) {
         // Ollama's own API: its OpenAI one can't set the context, which is
         // 4K by default, too short for a chapter. Clamp to the model's reported
         // context window when known so Ollama never silently truncates or OOMs.
@@ -631,9 +682,14 @@ QString LocalModels::queryText(const QString &model, const QString &text) {
 }
 
 Ai::Reply *LocalModels::generate(const Ai::TextRequest &request) {
-    const QString path = m_server.kind == Ollama ? QStringLiteral("/api/chat") : QStringLiteral("/v1/chat/completions");
-    return new ServerReply(send("POST", path, chatBody(m_server.kind, request, m_textModel, m_contextWindow)), ServerReply::Chat,
-                           m_server.kind, m_textModel, request.feature, !request.schema.isEmpty(), this);
+    const bool hasImage = !request.imagePng.isEmpty();
+    // Use OpenAI-compatible /v1/chat/completions for multimodal image_url payloads
+    // (supported by Ollama vision models, LM Studio, llama.cpp, vLLM, and MLX).
+    const QString path =
+        (m_server.kind == Ollama && !hasImage) ? QStringLiteral("/api/chat") : QStringLiteral("/v1/chat/completions");
+    return new ServerReply(send("POST", path, chatBody(m_server.kind, request, m_textModel, m_contextWindow)),
+                           ServerReply::Chat, m_server.kind, m_textModel, request.feature, !request.schema.isEmpty(),
+                           this, hasImage);
 }
 
 Ai::Reply *LocalModels::embed(const QStringList &texts, bool query) {

@@ -375,11 +375,41 @@ void GeminiProvider::chooseModels(const QStringList &available) {
 
 QJsonObject GeminiProvider::textBody(const Ai::TextRequest &request, const QString &model) {
     QJsonArray input;
-    for (const Ai::Message &message : request.messages)
+    const bool hasImage = !request.imagePng.isEmpty();
+    qsizetype lastUserIdx = -1;
+    if (hasImage) {
+        for (qsizetype i = 0; i < request.messages.size(); ++i)
+            if (request.messages[i].fromUser)
+                lastUserIdx = i;
+    }
+    const auto imagePart = [&request] {
+        const QString mime = request.imageMimeType.trimmed().isEmpty()
+                                 ? QStringLiteral("image/png")
+                                 : request.imageMimeType.trimmed();
+        return QJsonObject{
+            {"type", "image"},
+            {"data", QString::fromLatin1(request.imagePng.toBase64())},
+            {"mime_type", mime},
+        };
+    };
+    for (qsizetype i = 0; i < request.messages.size(); ++i) {
+        const Ai::Message &message = request.messages[i];
+        QJsonArray content;
+        if (!hasImage || i != lastUserIdx || !message.text.isEmpty())
+            content.append(QJsonObject{{"type", "text"}, {"text", message.text}});
+        if (hasImage && i == lastUserIdx)
+            content.append(imagePart());
         input.append(QJsonObject{
             {"type", message.fromUser ? "user_input" : "model_output"},
-            {"content", QJsonArray{QJsonObject{{"type", "text"}, {"text", message.text}}}},
+            {"content", content},
         });
+    }
+    if (hasImage && lastUserIdx < 0) {
+        input.append(QJsonObject{
+            {"type", "user_input"},
+            {"content", QJsonArray{imagePart()}},
+        });
+    }
     QJsonObject body{{"model", model}, {"input", input}, {"store", false}};
     if (!request.system.isEmpty())
         body.insert("system_instruction", request.system);
