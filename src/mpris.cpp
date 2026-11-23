@@ -22,6 +22,7 @@ Mpris::Mpris(Narration *narration, Reader *reader, Library *library, QObject *pa
     connect(narration, &Narration::stateChanged, this, &Mpris::update);
     connect(narration, &Narration::positionChanged, this, &Mpris::update);
     connect(narration, &Narration::rateChanged, this, &Mpris::update);
+    connect(narration, &Narration::volumeChanged, this, &Mpris::update);
     connect(reader, &Reader::bookChanged, this, &Mpris::update);
 }
 
@@ -41,10 +42,14 @@ QString Mpris::playbackStatus() const {
 QVariantMap Mpris::metadata() const {
     if (!m_narration->active())
         return {};
-    const int chapter = m_narration->chapter();
+    const int book = qMax(0, m_reader->bookId());
+    const int chapter = qMax(0, m_narration->chapter());
     QVariantMap map;
     map["mpris:trackid"] = QVariant::fromValue(
-        QDBusObjectPath(QStringLiteral("/org/dogear/book%1/chapter%2").arg(m_reader->bookId()).arg(chapter)));
+        QDBusObjectPath(QStringLiteral("/org/dogear/book%1/chapter%2").arg(book).arg(chapter)));
+    const qint64 length = m_narration->durationUs();
+    if (length > 0)
+        map["mpris:length"] = QVariant::fromValue(qlonglong(length));
     const QString title = m_reader->titleOfChapter(chapter);
     map["xesam:title"] = title.isEmpty() ? m_reader->title() : title;
     map["xesam:album"] = m_reader->title();
@@ -64,20 +69,30 @@ void Mpris::update() {
     if (!bus.isConnected())
         return;
     if (m_narration->active() && !m_registered) {
-        bus.registerObject(path, this, QDBusConnection::ExportAdaptors);
+        if (!bus.registerObject(path, this, QDBusConnection::ExportAdaptors))
+            return;
         m_service = QStringLiteral("org.mpris.MediaPlayer2.dogear");
         // A second Dogear takes a name of its own.
-        if (!bus.registerService(m_service)) {
+        bool registered = bus.registerService(m_service);
+        if (!registered) {
             m_service += QStringLiteral(".instance%1").arg(QCoreApplication::applicationPid());
-            bus.registerService(m_service);
+            registered = bus.registerService(m_service);
+        }
+        if (!registered) {
+            bus.unregisterObject(path);
+            m_service.clear();
+            return;
         }
         m_registered = true;
     } else if (!m_narration->active() && m_registered) {
         bus.unregisterService(m_service);
         bus.unregisterObject(path);
         m_registered = false;
+        m_service.clear();
         m_status.clear();
         m_metadata.clear();
+        m_rate = 1.0;
+        m_volume = 1.0;
         return;
     }
     if (!m_registered)
@@ -97,6 +112,10 @@ void Mpris::update() {
         m_rate = m_narration->rate();
         changed["Rate"] = m_rate;
     }
+    if (!qFuzzyCompare(m_narration->volume(), m_volume)) {
+        m_volume = m_narration->volume();
+        changed["Volume"] = m_volume;
+    }
     if (!changed.isEmpty())
         announce(changed);
 }
@@ -115,7 +134,16 @@ void MprisRoot::Raise() { emit m_mpris->raiseRequested(); }
 MprisPlayer::MprisPlayer(Mpris *mpris) : QDBusAbstractAdaptor(mpris), m_mpris(mpris) {}
 
 double MprisPlayer::rate() const { return m_mpris->narration()->rate(); }
-void MprisPlayer::setRate(double rate) { m_mpris->narration()->setRate(rate); }
+void MprisPlayer::setRate(double rate) {
+    // Per MPRIS2 spec, setting Rate to 0 pauses playback.
+    if (rate <= 0.0)
+        m_mpris->narration()->pause();
+    else
+        m_mpris->narration()->setRate(rate);
+}
+double MprisPlayer::volume() const { return m_mpris->narration()->volume(); }
+void MprisPlayer::setVolume(double volume) { m_mpris->narration()->setVolume(volume); }
+qlonglong MprisPlayer::position() const { return qlonglong(m_mpris->narration()->positionUs()); }
 void MprisPlayer::Next() { m_mpris->narration()->nextParagraph(); }
 void MprisPlayer::Previous() { m_mpris->narration()->previousParagraph(); }
 void MprisPlayer::Pause() { m_mpris->narration()->pause(); }

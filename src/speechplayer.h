@@ -1,6 +1,9 @@
 #pragma once
 
+#include <QAudioDevice>
+#include <QByteArray>
 #include <QList>
+#include <QMediaDevices>
 #include <QObject>
 #include <QTimer>
 #include <QVector>
@@ -30,6 +33,9 @@ private:
     double m_position = 0;
     qint64 m_previous = -1;
     QVector<float> m_tail;
+    QVector<qint16> m_finalTail;
+    int m_finalPos = 0;
+    bool m_flushing = false;
     bool m_done = false;
 };
 
@@ -57,6 +63,8 @@ public:
     bool isPlaying() const { return m_playing; }
     void setRate(double rate);
     void setMuted(bool muted);
+    double volume() const { return m_volume; }
+    void setVolume(double volume);
     bool starved() const { return m_starved; }
     // Everything queued has been heard (or nothing was).
     bool drainedOut() const { return m_drained; }
@@ -68,6 +76,8 @@ signals:
     void starvedChanged(bool starved);
     // Everything queued has been heard.
     void drained();
+    void volumeChanged();
+    void sinkError(const QString &message);
 
 private:
     struct Track {
@@ -84,24 +94,32 @@ private:
     };
 
     void ensureSink();
+    void releaseSink();
+    void handleOutputsChanged();
+    bool flushPending();
     void fill();
     void report();
     Track *track(int id);
     void setStarved(bool starved);
 
     int m_sampleRate;
+    QMediaDevices m_devices;
+    QAudioDevice m_outputDevice;
     QAudioSink *m_sink = nullptr;
     QIODevice *m_out = nullptr;
+    QByteArray m_pendingOut;
     QTimer m_timer;
     QList<Track> m_tracks;
     int m_index = 0;
     Stretcher m_stretcher;
     QList<Mark> m_marks;
-    qint64 m_written = 0;
+    qint64 m_writtenBytes = 0;
     double m_rate = 1.0;
+    double m_volume = 1.0;
     bool m_playing = false;
     bool m_muted = false;
     bool m_starved = false;
+    bool m_recovered = false;
     int m_lastTrack = -1;
     qint64 m_lastSample = -1;
     bool m_drained = true;

@@ -17,9 +17,11 @@
 #include <QSysInfo>
 #include <QtConcurrent>
 #include <algorithm>
+#include <memory>
 
 namespace {
 const QString installedMarker = QStringLiteral(".dogear-installed");
+constexpr int downloadTimeoutMs = 60000;
 
 int gradeRank(const QString &grade) {
     static const QStringList order{"F+", "D-", "D", "D+", "C-", "C", "C+", "B-", "B", "B+", "A-", "A"};
@@ -33,6 +35,11 @@ int qualityRank(const QString &quality) {
 }
 
 QString baseOf(const QString &language) { return language.section('-', 0, 0).section('_', 0, 0).toLower(); }
+
+QString regionOf(const QString &language) {
+    const QString norm = QString(language).replace('_', '-');
+    return norm.section('-', 1, 1).toUpper();
+}
 
 qint64 sizeOf(const QString &directory) {
     qint64 total = 0;
@@ -62,8 +69,18 @@ VoicePacks::VoicePacks(const QString &directory, QObject *parent, const QString 
 }
 
 VoicePacks::~VoicePacks() {
+    ++m_generation;
     if (m_download)
         m_download->abort();
+    if (m_tar) {
+        m_tar->disconnect(this);
+        if (m_tar->state() != QProcess::NotRunning) {
+            m_tar->kill();
+            m_tar->waitForFinished(1000);
+        }
+    }
+    if (m_part)
+        m_part->close();
 }
 
 QString VoicePacks::currentArchitecture() {
@@ -128,6 +145,7 @@ void VoicePacks::load(const QByteArray &manifest) {
             voice.name = v.value("name").toString();
             voice.language = v.value("language").toString();
             voice.gender = v.value("gender").toString();
+            voice.recommended = v.value("recommended").toBool();
             voice.reference = v.value("reference").toString();
             m_voices.append(voice);
         }
@@ -248,7 +266,7 @@ QVariantMap VoicePacks::toMap(const Voice &voice) const {
 
 QVariantList VoicePacks::voices(const QString &language) const {
     const QString base = baseOf(language);
-    const QString region = language.section('-', 1, 1).toUpper();
+    const QString region = regionOf(language);
     QList<const Voice *> found;
     for (const Voice &voice : m_voices)
         if (base.isEmpty() || baseOf(voice.language) == base)
@@ -260,8 +278,8 @@ QVariantList VoicePacks::voices(const QString &language) const {
         const bool installedA = isInstalled(a->pack), installedB = isInstalled(b->pack);
         if (installedA != installedB)
             return installedA;
-        const bool regionA = !region.isEmpty() && a->language.section('-', 1, 1) == region;
-        const bool regionB = !region.isEmpty() && b->language.section('-', 1, 1) == region;
+        const bool regionA = !region.isEmpty() && regionOf(a->language) == region;
+        const bool regionB = !region.isEmpty() && regionOf(b->language) == region;
         if (regionA != regionB)
             return regionA;
         if (a->recommended != b->recommended)
@@ -301,6 +319,7 @@ void VoicePacks::installVoice(const QString &voiceId) {
         fail(tr("There's no built-in speech engine for this computer's processor (%1).").arg(m_architecture));
         return;
     }
+    ++m_generation;
     m_queue.clear();
     if (!engineInstalled())
         m_queue.append(m_engine);
@@ -359,36 +378,67 @@ void VoicePacks::download(const Pack &pack) {
     m_part->seek(had);
     QNetworkRequest request(pack.url);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::NoLessSafeRedirectPolicy);
+    request.setTransferTimeout(downloadTimeoutMs);
     if (had > 0)
         request.setRawHeader("Range", "bytes=" + QByteArray::number(had) + '-');
     QNetworkReply *reply = m_network->get(request);
     m_download = reply;
+    const quint64 gen = m_generation;
     auto started = std::make_shared<bool>(false);
-    connect(reply, &QNetworkReply::readyRead, this, [this, reply, had, started] {
+    auto writeFailed = std::make_shared<bool>(false);
+    connect(reply, &QNetworkReply::readyRead, this, [this, reply, pack, had, gen, started, writeFailed] {
+        if (gen != m_generation || reply != m_download || !m_part || !m_part->isOpen() || *writeFailed)
+            return;
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (status >= 400)
+            return;
         if (!*started) {
             *started = true;
             // A server that ignores the range sends it all again.
-            if (had > 0 && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200) {
+            if (had > 0 && status == 200) {
                 m_part->resize(0);
                 m_part->seek(0);
             }
         }
-        m_part->write(reply->readAll());
+        const QByteArray chunk = reply->readAll();
+        if (!chunk.isEmpty() && m_part->write(chunk) != chunk.size()) {
+            *writeFailed = true;
+            m_part->close();
+            reply->abort();
+            fail(tr("Couldn't write %1: %2").arg(pack.title, m_part->errorString()));
+            return;
+        }
         m_currentBytes = m_part->pos();
         emit progressChanged();
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, pack] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, pack, gen, writeFailed] {
         reply->deleteLater();
-        if (reply != m_download)
+        if (gen != m_generation || reply != m_download)
             return;
         m_download = nullptr;
-        if (reply->bytesAvailable())
-            m_part->write(reply->readAll());
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        const bool complete = status == 416 || (reply->error() == QNetworkReply::NoError && m_part->size() >= pack.size);
-        m_part->close();
-        if (reply->error() == QNetworkReply::OperationCanceledError)
+        if (!*writeFailed && status < 400 && reply->bytesAvailable() > 0 && m_part && m_part->isOpen()) {
+            const QByteArray chunk = reply->readAll();
+            if (!chunk.isEmpty() && m_part->write(chunk) != chunk.size()) {
+                *writeFailed = true;
+                m_part->close();
+                fail(tr("Couldn't write %1: %2").arg(pack.title, m_part->errorString()));
+                return;
+            }
+        }
+        const qint64 partSize = m_part ? m_part->size() : 0;
+        const QString partName = m_part ? m_part->fileName() : QString();
+        if (m_part)
+            m_part->close();
+        if (*writeFailed || reply->error() == QNetworkReply::OperationCanceledError)
             return;
+        if (status == 416 && partSize < pack.size) {
+            QFile::remove(partName);
+            fail(tr("The download of %1 couldn't be resumed. Try again.").arg(pack.title));
+            return;
+        }
+        const bool complete = (status == 416 && partSize >= pack.size) ||
+                              (reply->error() == QNetworkReply::NoError && status < 400 && partSize >= pack.size);
         if (!complete) {
             fail(tr("The download of %1 stopped: %2. It will pick up where it left off.")
                      .arg(pack.title, reply->errorString()));
@@ -396,7 +446,10 @@ void VoicePacks::download(const Pack &pack) {
         }
         const QString archive = archivePath(pack);
         QFile::remove(archive);
-        QFile::rename(m_part->fileName(), archive);
+        if (!QFile::rename(partName, archive)) {
+            fail(tr("Couldn't move the download of %1 into place.").arg(pack.title));
+            return;
+        }
         verifyAndUnpack(pack, archive);
     });
 }
@@ -405,9 +458,12 @@ void VoicePacks::verifyAndUnpack(const Pack &pack, const QString &archive) {
     m_unpacking = true;
     m_currentBytes = pack.size;
     emit progressChanged();
+    const quint64 gen = m_generation;
     auto *watcher = new QFutureWatcher<QByteArray>(this);
-    connect(watcher, &QFutureWatcher<QByteArray>::finished, this, [this, watcher, pack, archive] {
+    connect(watcher, &QFutureWatcher<QByteArray>::finished, this, [this, watcher, pack, archive, gen] {
         watcher->deleteLater();
+        if (gen != m_generation)
+            return;
         if (watcher->result() != pack.sha256) {
             m_unpacking = false;
             QFile::remove(archive);
@@ -419,31 +475,66 @@ void VoicePacks::verifyAndUnpack(const Pack &pack, const QString &archive) {
         QDir(aside).removeRecursively();
         QDir().mkpath(aside);
         auto *tar = new QProcess(this);
-        connect(tar, &QProcess::finished, this, [this, tar, pack, archive, aside](int code, QProcess::ExitStatus status) {
-            tar->deleteLater();
-            m_unpacking = false;
-            const QString target = QDir(m_directory).filePath(pack.dir);
-            if (code != 0 || status != QProcess::NormalExit || !QFileInfo::exists(aside + '/' + pack.dir)) {
-                QDir(aside).removeRecursively();
-                fail(tr("%1 couldn't be unpacked: %2").arg(pack.title, QString::fromLocal8Bit(tar->readAllStandardError()).trimmed()));
+        m_tar = tar;
+        auto handled = std::make_shared<bool>(false);
+        connect(tar, &QProcess::errorOccurred, this, [this, tar, pack, aside, gen, handled](QProcess::ProcessError error) {
+            if (error != QProcess::FailedToStart || *handled)
                 return;
-            }
-            QDir(target).removeRecursively();
-            QDir().rename(aside + '/' + pack.dir, target);
+            *handled = true;
+            if (m_tar == tar)
+                m_tar = nullptr;
+            tar->deleteLater();
             QDir(aside).removeRecursively();
-            QFile marker(target + '/' + installedMarker);
-            if (marker.open(QIODevice::WriteOnly))
-                marker.write(pack.id.toUtf8() + ' ' + pack.sha256 + '\n');
-            marker.close();
-            QFile::remove(archive);
-            m_megabytes += sizeOf(target) / (1024.0 * 1024.0);
-            m_doneBytes += pack.size;
-            m_currentBytes = 0;
-            if (!m_queue.isEmpty())
-                m_queue.removeFirst();
-            emit changed();
-            next();
+            if (gen != m_generation)
+                return;
+            m_unpacking = false;
+            fail(tr("%1 couldn't be unpacked: tar couldn't be started.").arg(pack.title));
         });
+        connect(tar, &QProcess::finished, this,
+                [this, tar, pack, archive, aside, gen, handled](int code, QProcess::ExitStatus status) {
+                    if (*handled)
+                        return;
+                    *handled = true;
+                    if (m_tar == tar)
+                        m_tar = nullptr;
+                    tar->deleteLater();
+                    if (gen != m_generation) {
+                        QDir(aside).removeRecursively();
+                        return;
+                    }
+                    m_unpacking = false;
+                    const QString target = QDir(m_directory).filePath(pack.dir);
+                    if (code != 0 || status != QProcess::NormalExit || !QFileInfo::exists(aside + '/' + pack.dir)) {
+                        QDir(aside).removeRecursively();
+                        fail(tr("%1 couldn't be unpacked: %2")
+                                 .arg(pack.title, QString::fromLocal8Bit(tar->readAllStandardError()).trimmed()));
+                        return;
+                    }
+                    QDir(target).removeRecursively();
+                    if (!QDir().rename(aside + '/' + pack.dir, target)) {
+                        QDir(aside).removeRecursively();
+                        fail(tr("%1 couldn't be moved into place.").arg(pack.title));
+                        return;
+                    }
+                    QDir(aside).removeRecursively();
+                    QFile marker(target + '/' + installedMarker);
+                    const QByteArray markerData = pack.id.toUtf8() + ' ' + pack.sha256 + '\n';
+                    if (!marker.open(QIODevice::WriteOnly) || marker.write(markerData) != markerData.size()) {
+                        marker.close();
+                        QDir(target).removeRecursively();
+                        fail(tr("Couldn't finish installing %1.").arg(pack.title));
+                        return;
+                    }
+                    marker.close();
+                    QFile::remove(archive);
+                    m_megabytes += sizeOf(target) / (1024.0 * 1024.0);
+                    m_doneBytes += pack.size;
+                    m_currentBytes = 0;
+                    if (!m_queue.isEmpty())
+                        m_queue.removeFirst();
+                    emit changed();
+                    next();
+                });
         tar->start(QStringLiteral("tar"), {QStringLiteral("-xjf"), archive, QStringLiteral("-C"), aside});
     });
     watcher->setFuture(QtConcurrent::run([archive] {
@@ -459,6 +550,7 @@ void VoicePacks::fail(const QString &message) {
     m_queue.clear();
     m_waitingVoice.clear();
     m_currentTitle.clear();
+    m_unpacking = false;
     m_problem = message;
     emit changed();
     emit progressChanged();
@@ -466,16 +558,29 @@ void VoicePacks::fail(const QString &message) {
 }
 
 void VoicePacks::cancel() {
+    ++m_generation;
     m_queue.clear();
     m_waitingVoice.clear();
     m_currentTitle.clear();
+    m_unpacking = false;
     if (m_download)
         m_download->abort();  // what came is kept, for next time
     m_download = nullptr;
+    if (m_part) {
+        m_part->close();
+        delete m_part;
+        m_part = nullptr;
+    }
+    if (m_tar) {
+        m_tar->kill();
+        m_tar = nullptr;
+    }
     emit progressChanged();
 }
 
 void VoicePacks::remove(const QString &packId) {
+    if (busy())
+        return;
     const auto found = pack(packId);
     if (!found || found->dir.isEmpty())
         return;
@@ -483,8 +588,12 @@ void VoicePacks::remove(const QString &packId) {
     // Only ever inside Dogear's own folder.
     if (!QFileInfo(target).canonicalFilePath().startsWith(QFileInfo(m_directory).canonicalFilePath() + '/'))
         return;
+    emit aboutToRemove(packId);
     m_megabytes = qMax(0.0, m_megabytes - sizeOf(target) / (1024.0 * 1024.0));
     QDir(target).removeRecursively();
+    const QString archive = archivePath(*found);
+    QFile::remove(archive);
+    QFile::remove(archive + QStringLiteral(".part"));
     emit changed();
 }
 

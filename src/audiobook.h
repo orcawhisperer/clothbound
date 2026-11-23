@@ -1,13 +1,16 @@
 #pragma once
 
+#include <QByteArray>
 #include <QObject>
 #include <QPointer>
 #include <QStringList>
+#include <memory>
 
 class AudioCache;
 class Download;
 class Library;
 class QProcess;
+class QTemporaryDir;
 class Reader;
 
 // A downloaded narration as one audiobook file (M4B): the clips joined in
@@ -23,6 +26,7 @@ class Audiobook : public QObject {
 
 public:
     Audiobook(AudioCache *cache, Download *download, Reader *reader, Library *library, QObject *parent = nullptr);
+    ~Audiobook() override;
 
     bool busy() const { return m_busy; }
     double progress() const { return m_progress; }
@@ -49,6 +53,7 @@ signals:
 
 private:
     void fail(const QString &problem);
+    void cleanupWork();
 
     AudioCache *m_cache;
     Download *m_download;
@@ -59,5 +64,8 @@ private:
     qint64 m_totalMs = 0;
     QString m_problem;
     QString m_saved;
+    QString m_partial;
+    QByteArray m_stdoutBuf;
+    std::unique_ptr<QTemporaryDir> m_work;
     QPointer<QProcess> m_ffmpeg;
 };

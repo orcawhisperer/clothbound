@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QLibrary>
 #include <QThread>
+#include <QTimer>
 #include <QVector>
 #include <atomic>
 #include <functional>
@@ -26,6 +27,8 @@ public:
     virtual int sampleRate() const = 0;
     // One sentence, as samples between -1 and 1; empty when stopped or failed.
     virtual QVector<float> speak(const QString &text, int speaker, const std::atomic_bool &stop) = 0;
+    // Releases loaded model weights while idle or before removing voice files.
+    virtual void unload() {}
 };
 
 // The engine that comes with the built-in voices: sherpa-onnx's C library,
@@ -38,6 +41,7 @@ public:
     QString prepare(const VoicePacks::Model &model) override;
     int sampleRate() const override { return m_rate; }
     QVector<float> speak(const QString &text, int speaker, const std::atomic_bool &stop) override;
+    void unload() override;
     static int threads();
 
 private:
@@ -96,6 +100,9 @@ public:
     Q_INVOKABLE double speedOf(const QString &voiceId) const override;
     // Records a measured pace (from the worker).
     void noteSpeed(const QString &modelKey, double speed);
+    // Stops active work and unloads the voice model synchronously on the worker
+    // thread, so its files can be removed safely.
+    void unloadEngine();
 
 signals:
     void speedChanged();
@@ -105,4 +112,6 @@ private:
     QThread m_thread;
     LocalWorker *m_worker;
     QHash<QString, double> m_speeds;
+    QTimer m_idleTimer;
+    int m_activeJobs = 0;
 };

@@ -12,14 +12,25 @@
 
 namespace {
 bool closing(QChar c) {
-    static const QString marks = QStringLiteral("\"'’”»)]");
+    static const QString marks = QStringLiteral("\"'’”»)]」』》）】");
     return marks.contains(c);
 }
 
 bool opening(QChar c) {
-    static const QString marks = QStringLiteral("\"'‘“«([");
+    static const QString marks = QStringLiteral("\"'‘“«([¡¿—–„‚「『《（【");
     return marks.contains(c);
 }
+
+bool cjkTerminator(QChar c) {
+    return c == QChar(0x3002) || c == QChar(0xFF01) || c == QChar(0xFF1F);
+}
+
+bool sentenceTerminator(QChar c) {
+    return c == '.' || c == '!' || c == '?' || c == QChar(0x2026) || c == QChar(0x0964) || c == QChar(0x0965) ||
+           c == QChar(0x061F) || cjkTerminator(c);
+}
+
+bool caselessLetter(QChar c) { return c.isLetter() && !c.isLower() && !c.isUpper(); }
 
 // Words that end in a period without ending a sentence.
 bool abbreviation(const QString &word) {
@@ -90,14 +101,23 @@ QList<SpeechSentence> sentences(const SpeechBlock &block) {
     qsizetype start = 0;
     for (qsizetype i = 0; i < length; ++i) {
         const QChar c = text[i];
-        if (c != '.' && c != '!' && c != '?' && c != QChar(0x2026))
+        if (!sentenceTerminator(c))
             continue;
+        const bool cjk = cjkTerminator(c);
         qsizetype after = i + 1;
-        while (after < length && (closing(text[after]) || text[after] == '.' || text[after] == '!' ||
-                                  text[after] == '?' || skipped(after)))
+        while (after < length && (closing(text[after]) || sentenceTerminator(text[after]) || skipped(after)))
             ++after;
         if (after >= length)
             break;
+        if (cjk) {
+            qsizetype next = after;
+            while (next < length && text[next].isSpace())
+                ++next;
+            add(start, after);
+            start = next;
+            i = next - 1;
+            continue;
+        }
         if (!text[after].isSpace())
             continue;
         if (c == '.') {
@@ -112,7 +132,8 @@ QList<SpeechSentence> sentences(const SpeechBlock &block) {
         qsizetype next = after;
         while (next < length && text[next].isSpace())
             ++next;
-        if (next < length && !(text[next].isUpper() || text[next].isDigit() || opening(text[next])))
+        if (next < length &&
+            !(text[next].isUpper() || text[next].isDigit() || opening(text[next]) || caselessLetter(text[next])))
             continue;
         add(start, after);
         start = next;
@@ -261,14 +282,58 @@ QList<SpeechClip> clips(int chapter, const QList<SpeechBlock> &blocks, const QSe
                            currentLength + blockLength <= merge && blockLength < merge / 2;
         if (!joins)
             flush();
-        for (const auto &sentence : std::as_const(said)) {
-            // (Sentences are joined with a space.)
-            if (!current.sentences.isEmpty() && currentLength + 1 + sentence.text.size() > longest)
-                flush();
-            if (current.sentences.isEmpty())
-                current.block = b;
-            currentLength += sentence.text.size() + (current.sentences.isEmpty() ? 0 : 1);
-            current.sentences.append(sentence);
+        for (const auto &rawSentence : std::as_const(said)) {
+            QList<SpeechSentence> pieces;
+            if (rawSentence.text.size() <= longest) {
+                pieces.append(rawSentence);
+            } else {
+                // Subdivide overlong sentences (e.g. unpunctuated text or run-on
+                // clauses) at clause punctuation or whitespace so TTS limits hold.
+                const QString &sText = rawSentence.text;
+                const qsizetype sLen = sText.size();
+                const qint64 span = rawSentence.end - rawSentence.start;
+                qsizetype pos = 0;
+                while (pos < sLen) {
+                    qsizetype take = qMin<qsizetype>(longest, sLen - pos);
+                    if (pos + take < sLen) {
+                        qsizetype cut = -1;
+                        for (qsizetype j = pos + take; j > pos + longest / 2; --j) {
+                            const QChar ch = sText[j - 1];
+                            if (ch == ';' || ch == ',' || ch == QChar(0x2014) || ch == QChar(0xFF0C) ||
+                                ch == QChar(0x3001) || ch == QChar(0x061B)) {
+                                cut = j;
+                                break;
+                            }
+                        }
+                        if (cut < 0)
+                            for (qsizetype j = pos + take; j > pos + longest / 2; --j)
+                                if (sText[j - 1].isSpace()) {
+                                    cut = j;
+                                    break;
+                                }
+                        if (cut > pos)
+                            take = cut - pos;
+                    }
+                    const QString chunk = sText.mid(pos, take).trimmed();
+                    if (!chunk.isEmpty()) {
+                        const qint64 pieceStart = rawSentence.start + (sLen > 0 ? span * pos / sLen : 0);
+                        const qint64 pieceEnd = rawSentence.start + (sLen > 0 ? span * (pos + take) / sLen : span);
+                        pieces.append({pieceStart, qMax(pieceStart, pieceEnd), chunk});
+                    }
+                    pos += take;
+                    while (pos < sLen && sText[pos].isSpace())
+                        ++pos;
+                }
+            }
+            for (const auto &sentence : std::as_const(pieces)) {
+                // (Sentences are joined with a space.)
+                if (!current.sentences.isEmpty() && currentLength + 1 + sentence.text.size() > longest)
+                    flush();
+                if (current.sentences.isEmpty())
+                    current.block = b;
+                currentLength += sentence.text.size() + (current.sentences.isEmpty() ? 0 : 1);
+                current.sentences.append(sentence);
+            }
         }
     }
     flush();
@@ -306,10 +371,11 @@ QList<SpeechClip> clipsFrom(int chapter, const QList<SpeechBlock> &blocks, qint6
 QList<QPair<double, double>> timeline(const SpeechClip &clip) {
     QList<double> weights;
     double total = 0;
+    static const QRegularExpression pauses(QStringLiteral("[,;:—]"));
     for (const auto &sentence : clip.sentences) {
         // A sentence takes about as long as its letters, plus a beat for
         // each pause its punctuation asks for.
-        const double weight = sentence.text.size() + 6.0 * sentence.text.count(QRegularExpression(QStringLiteral("[,;:—]"))) + 10.0;
+        const double weight = sentence.text.size() + 6.0 * sentence.text.count(pauses) + 10.0;
         weights.append(weight);
         total += weight;
     }

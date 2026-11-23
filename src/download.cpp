@@ -2,8 +2,8 @@
 
 #include "aiservices.h"
 #include "audiocache.h"
-#include "director.h"
 #include "cast.h"
+#include "director.h"
 #include "narration.h"
 #include "reader.h"
 
@@ -21,11 +21,27 @@ Download::Download(AiServices *ai, AudioCache *cache, Reader *reader, Narration 
     : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_narration(narration),
       m_director(new Director(ai, cache, reader, this)) {
     connect(reader, &Reader::speakable, this, &Download::addBlocks);
-    // The chapters come from the open book's pages, so a download stops
-    // when its book closes; what's made is kept for next time.
+    // The chapters come from the open book's pages, so a download cancels
+    // cleanly when its book closes; what's made is kept for next time.
     connect(reader, &Reader::bookChanged, this, [this] {
-        if (m_active && m_reader->bookId() != m_bookId)
-            stopWith(tr("The download stopped when the book closed. What's made is kept; start it again to finish."));
+        if (m_active && m_reader->bookId() != m_bookId) {
+            cancel();
+            setProblem(tr("The download stopped when the book closed. What's made is kept; start it again to finish."));
+        }
+    });
+    connect(cache, &AudioCache::stored, this, [this](const QString &key) {
+        if (m_storing.remove(key))
+            checkFinished();
+    });
+    connect(cache, &AudioCache::storeFailed, this, [this](const QString &key) {
+        if (m_storing.remove(key) && m_active)
+            stopWith(tr("Couldn't save a clip to the audio cache."));
+    });
+    connect(cache, &AudioCache::storesIdle, this, [this] {
+        if (!m_storing.isEmpty()) {
+            m_storing.clear();
+            checkFinished();
+        }
     });
     m_retry.setSingleShot(true);
     connect(&m_retry, &QTimer::timeout, this, [this] {
@@ -35,12 +51,18 @@ Download::Download(AiServices *ai, AudioCache *cache, Reader *reader, Narration 
 }
 
 Download::~Download() {
+    ++m_session;
     m_active = false;
+    m_director->cancel();
+    if (m_cast)
+        m_cast->cancel();
     const auto replies = m_replies;
     for (const auto &reply : replies)
         if (reply)
             reply->abort();
 }
+
+void Download::setCast(Cast *cast) { m_cast = cast; }
 
 int Download::secondsLeft() const {
     const qint64 ms = m_activeMs + (running() && m_clock.isValid() ? m_clock.elapsed() : 0);
@@ -48,7 +70,7 @@ int Download::secondsLeft() const {
         return -1;
     // Audio made for each second spent: a book's minutes divided by it.
     const double pace = m_audioSeconds / (ms / 1000.0);
-    return int(std::ceil((m_minutesTotal - m_minutesReady) * 60.0 / pace));
+    return int(std::ceil(qMax(0.0, m_minutesTotal - m_minutesReady) * 60.0 / pace));
 }
 
 QList<int> Download::chaptersBetween(int first, int last) const {
@@ -84,16 +106,18 @@ void Download::setProblem(const QString &problem) {
 void Download::start(int first, int last) {
     m_plannedKeys.clear();
     cancel();
-    if (!m_ai->canSpeakWith(m_narration->voice())) {
-        setProblem(AiServices::isBuiltinVoice(m_narration->voice()) ? tr("This built-in voice isn't downloaded yet.")
-                                                                    : m_ai->describe(int(Ai::Error::NoKey)));
+    const QString voice = m_narration->voice();
+    if (!m_ai->canSpeakWith(voice)) {
+        setProblem(AiServices::isBuiltinVoice(voice) ? tr("This built-in voice isn't downloaded yet.")
+                   : AiServices::isStudioVoice(voice) ? tr("This Studio voice needs its model server running.")
+                   : m_ai->describe(int(Ai::Error::NoKey)));
         return;
     }
     m_chapters = chaptersBetween(first, last);
     if (m_chapters.isEmpty())
         return;
     m_bookId = m_reader->bookId();
-    m_voice = m_narration->voice();
+    m_voice = voice;
     m_performance = m_narration->performance();
     m_economy = m_narration->economy();
     m_local = AiServices::isOnThisComputer(m_voice);
@@ -118,8 +142,14 @@ void Download::start(int first, int last) {
 // A chapter or two is planned ahead of the requests, so they never wait
 // on the reading surface.
 void Download::planAhead() {
-    while (m_active && m_nextChapter < m_chapters.size() && m_waiting.size() < 2 && m_queue.size() < 12) {
-        const int chapter = m_chapters[m_nextChapter++];
+    while (running() && m_waiting.size() < 2 && m_queue.size() < 12) {
+        int chapter = -1;
+        if (!m_replan.isEmpty())
+            chapter = m_replan.takeFirst();
+        else if (m_nextChapter < m_chapters.size())
+            chapter = m_chapters[m_nextChapter++];
+        else
+            break;
         m_waiting.insert(chapter);
         emit blocksWanted(chapter);
     }
@@ -127,7 +157,7 @@ void Download::planAhead() {
 }
 
 void Download::addBlocks(int chapter, const QString &json) {
-    if (!m_active || !m_waiting.contains(chapter))
+    if (!running() || !m_waiting.contains(chapter))
         return;
     const QList<SpeechBlock> blocks = Speech::parseBlocks(json);
     // Who speaks what first (with a full cast), then the director's moods.
@@ -135,10 +165,13 @@ void Download::addBlocks(int chapter, const QString &json) {
         if (const auto lines = m_cast->kept(chapter, blocks)) {
             m_cast->learn(chapter, *lines);
         } else {
-            m_cast->ask(chapter, blocks, this, [this, chapter, blocks](const QMap<int, Cast::Line> &lines) {
-                if (!m_active || !m_waiting.contains(chapter))
+            const quint64 session = m_session;
+            const int bookId = m_bookId;
+            m_cast->ask(chapter, blocks, this, [this, session, bookId, chapter, blocks](const QMap<int, Cast::Line> &lines) {
+                if (!running() || session != m_session || m_reader->bookId() != bookId || !m_waiting.contains(chapter))
                     return;
-                m_cast->learn(chapter, lines);
+                if (m_cast)
+                    m_cast->learn(chapter, lines);
                 direct(chapter, blocks);
             });
             return;
@@ -157,18 +190,26 @@ void Download::direct(int chapter, const QList<SpeechBlock> &blocks) {
         plan(chapter, blocks, *kept);
         return;
     }
-    m_director->ask(chapter, blocks, m_performance, this, [this, chapter, blocks](const QMap<int, QString> &moods) {
-        if (m_active && m_waiting.contains(chapter))
+    const quint64 session = m_session;
+    const int bookId = m_bookId;
+    m_director->ask(chapter, blocks, m_performance, this, [this, session, bookId, chapter, blocks](const QMap<int, QString> &moods) {
+        if (running() && session == m_session && m_reader->bookId() == bookId && m_waiting.contains(chapter))
             plan(chapter, blocks, moods);
     });
 }
 
 void Download::plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<int, QString> &moods) {
     m_waiting.remove(chapter);
-    const QString provider = m_ai->providerFor(m_voice)->id();
+    Ai::Provider *baseProvider = m_ai->providerFor(m_voice);
     Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
-    if (!speaker)
+    if (!baseProvider || !speaker) {
+        if (!m_replan.contains(chapter))
+            m_replan.prepend(chapter);
+        stopWith(AiServices::isBuiltinVoice(m_voice) ? tr("This built-in voice isn't downloaded yet.")
+                 : AiServices::isStudioVoice(m_voice) ? tr("This Studio voice needs its model server running.")
+                 : m_ai->describe(int(Ai::Error::NoKey)));
         return;
+    }
     const QString model = speaker->speechModelName(m_economy);
     const bool dramatic = m_performance == QStringLiteral("dramatic");
     const bool styled = m_performance != QStringLiteral("plain") && speaker->supportsStyle();
@@ -176,6 +217,7 @@ void Download::plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<in
     QSet<int> breaks = Director::breaks(moods);
     if (m_cast)
         breaks.unite(m_cast->breaks(chapter, blocks));
+    m_plannedKeys[chapter].clear();
     for (const SpeechClip &clip : Speech::clips(chapter, blocks, breaks)) {
         if (clip.text.isEmpty())
             continue;
@@ -187,13 +229,19 @@ void Download::plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<in
         job.style = styled ? Speech::styleFor(Speech::moodAt(moods, clip.block), dramatic) : QString();
         for (const SpeechSentence &sentence : clip.sentences)
             job.sentences.append(sentence.text);
+        Ai::Provider *jobProvider = m_ai->providerFor(job.voice);
         Ai::SpeechSynthesizer *reader = m_ai->speechFor(job.voice);
-        job.key = AudioCache::keyFor(m_ai->providerFor(job.voice)->id(), reader ? reader->speechModelName(m_economy) : model,
+        if (!jobProvider || !reader) {
+            job.voice = m_voice;
+            jobProvider = baseProvider;
+            reader = speaker;
+        }
+        job.key = AudioCache::keyFor(jobProvider->id(), reader ? reader->speechModelName(m_economy) : model,
                                      job.voice, job.style, job.text);
         job.minutes = job.text.size() / charsPerMinute;
         m_plannedKeys[chapter].append(job.key);
         planned += job.minutes;
-        if (!m_cache->lookup(job.key).isEmpty())
+        if (!m_cache->lookupPath(job.key).isEmpty())
             m_minutesReady += job.minutes;  // heard or downloaded before
         else
             m_queue.append(job);
@@ -249,6 +297,13 @@ void Download::pump() {
 }
 
 void Download::made(const Job &job, Ai::Reply *reply) {
+    if (!m_active)
+        return;
+    if (reply->audio().isEmpty() || reply->sampleRate() <= 0) {
+        failed(job, {Ai::Error::Server, tr("No audio came back for this passage.")});
+        return;
+    }
+    m_storing.insert(job.key);
     m_cache->store(job.key, reply->audio(), reply->sampleRate(), reply->boundaries());
     m_audioSeconds += reply->audio().size() / 2.0 / reply->sampleRate();
     m_minutesReady += job.minutes;
@@ -270,26 +325,19 @@ void Download::failed(Job job, const Ai::Error &error) {
     case Ai::Error::Limited:
     case Ai::Error::Server:
         // Busy or briefly broken: wait a little longer each time, then go on.
+        m_queue.prepend(job);
         if (job.tries <= 4) {
-            m_queue.prepend(job);
             setProblem(error.kind == Ai::Error::Limited ? tr("Gemini's limit for your key was reached; going on in a moment.")
                                                          : tr("Gemini had a problem; trying again in a moment."));
-            m_retry.start(15000 * job.tries);
-            return;
-        }
-        stopWith(m_ai->describe(int(error.kind), error.message));
-        return;
-    case Ai::Error::Invalid:
-        // The slower tier isn't open to every key: the standard one is.
-        if (m_flex) {
-            m_flex = false;
-            m_queue.prepend(job);
-            pump();
+            const int delayMs = error.retryAfterSeconds > 0 ? qBound(1000, error.retryAfterSeconds * 1000, 120000)
+                                                            : 15000 * job.tries;
+            m_retry.start(delayMs);
             return;
         }
         stopWith(m_ai->describe(int(error.kind), error.message));
         return;
     default:
+        // Never silently switch off Flex (2x cost); keep the job queued and pause with the error.
         m_queue.prepend(job);
         stopWith(m_ai->describe(int(error.kind), error.message));
     }
@@ -301,12 +349,14 @@ void Download::stopWith(const QString &problem) {
 }
 
 void Download::checkFinished() {
-    if (!m_active || m_finished || !m_queue.isEmpty() || !m_waiting.isEmpty() || m_nextChapter < m_chapters.size())
+    if (!m_active || m_finished || !m_queue.isEmpty() || !m_waiting.isEmpty() || !m_replan.isEmpty() ||
+        !m_storing.isEmpty() || m_nextChapter < m_chapters.size())
         return;
     m_replies.removeAll(nullptr);
     if (!m_replies.isEmpty())
         return;
     m_finished = true;
+    m_paused = false;
     m_minutesReady = m_minutesTotal;
     if (m_clock.isValid())
         m_activeMs += m_clock.elapsed();
@@ -319,11 +369,20 @@ void Download::checkFinished() {
 void Download::pause() {
     if (!m_active || m_paused)
         return;
+    ++m_session;
     m_paused = true;
     m_retry.stop();
     if (m_clock.isValid())
         m_activeMs += m_clock.elapsed();
     m_clock.invalidate();
+    m_director->cancel();
+    if (m_cast)
+        m_cast->cancel();
+    // Chapters still waiting on blocks/direction are replanned cleanly on resume.
+    for (int chapter : std::as_const(m_waiting))
+        if (!m_replan.contains(chapter))
+            m_replan.append(chapter);
+    m_waiting.clear();
     // What's being made now is let go, and made again on resuming.
     const auto replies = m_replies;
     for (const auto &reply : replies)
@@ -344,10 +403,14 @@ void Download::resume() {
 }
 
 void Download::cancel() {
+    ++m_session;
     const bool was = m_active;
     m_active = false;
     m_paused = false;
     m_retry.stop();
+    m_director->cancel();
+    if (m_cast)
+        m_cast->cancel();
     const auto replies = m_replies;
     for (const auto &reply : replies)
         if (reply)
@@ -355,6 +418,8 @@ void Download::cancel() {
     m_replies.clear();
     m_queue.clear();
     m_waiting.clear();
+    m_replan.clear();
+    m_storing.clear();
     m_chapters.clear();
     m_finished = false;
     if (was) {

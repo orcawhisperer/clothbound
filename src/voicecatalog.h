@@ -98,6 +98,7 @@ private:
     void setProblem(const QString &problem);
     void setCasting(const QString &state, const QString &problem = {});
     int startPreview(const QString &voiceId);
+    void synthesizePreview(int track, const QString &voiceId, const QString &words, const QString &key);
 
     AiServices *m_ai;
     AudioCache *m_cache;
@@ -113,6 +114,8 @@ private:
     SpeechPlayer *m_player;
     QString m_previewing;
     bool m_previewBuffering = false;
+    QPointer<Ai::Reply> m_refreshReply;
+    QPointer<Ai::Reply> m_studioReply;
     QPointer<Ai::Reply> m_previewReply;
     int m_previewTrack = 0;
 

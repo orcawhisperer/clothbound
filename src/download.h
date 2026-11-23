@@ -68,7 +68,7 @@ public:
     // audiobook of the download is made of.
     QMap<int, QStringList> plannedKeys() const { return m_plannedKeys; }
     // A full cast, so downloads are read by the voices listening uses.
-    void setCast(Cast *cast) { m_cast = cast; }
+    void setCast(Cast *cast);
 
 signals:
     void changed();
@@ -106,11 +106,12 @@ private:
     Reader *m_reader;
     Narration *m_narration;
     Director *m_director;
-    Cast *m_cast = nullptr;
+    QPointer<Cast> m_cast;
 
     bool m_active = false;
     bool m_paused = false;
     bool m_finished = false;
+    quint64 m_session = 0;
     int m_bookId = 0;
     QString m_voice;
     QString m_performance;
@@ -120,7 +121,9 @@ private:
     bool m_local = false;
     QList<int> m_chapters;
     int m_nextChapter = 0;
-    QSet<int> m_waiting;  // chapters whose blocks or direction are on their way
+    QList<int> m_replan;      // chapters interrupted while planning, retried on resume
+    QSet<int> m_waiting;      // chapters whose blocks or direction are on their way
+    QSet<QString> m_storing;  // cache encodes still writing to disk
     QList<Job> m_queue;
     QMap<int, QStringList> m_plannedKeys;
     QList<QPointer<Ai::Reply>> m_replies;

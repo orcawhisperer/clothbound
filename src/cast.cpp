@@ -14,31 +14,126 @@
 #include <QRegularExpression>
 #include <QSet>
 #include <QtEndian>
+#include <algorithm>
+
+namespace {
+constexpr int maxCastPromptChars = 24000;
+constexpr double estimatedCastCost = 0.005;
+}
 
 Cast::Cast(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, VoiceCatalog *catalog, VoicePacks *packs,
            QObject *parent)
     : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_library(library), m_catalog(catalog), m_packs(packs) {
     connect(reader, &Reader::bookChanged, this, &Cast::load);
+    if (catalog)
+        connect(catalog, &VoiceCatalog::changed, this, &Cast::changed);
+    if (packs)
+        connect(packs, &VoicePacks::changed, this, &Cast::changed);
+}
+
+Cast::~Cast() { cancel(); }
+
+void Cast::cancel() {
+    ++m_generation;
+    const auto replies = std::exchange(m_replies, {});
+    for (const QPointer<Ai::Reply> &reply : replies)
+        if (reply)
+            reply->abort();
+}
+
+QString Cast::family() const {
+    if (m_narrator.startsWith(QLatin1String("builtin:kokoro:")))
+        return QStringLiteral("kokoro");
+    if (m_narrator.isEmpty() || AiServices::isOnThisComputer(m_narrator))
+        return {};
+    return QStringLiteral("gemini");
+}
+
+bool Cast::voiceMatchesFamily(const QString &voice, const QString &family) {
+    if (family == QLatin1String("kokoro"))
+        return voice.startsWith(QLatin1String("builtin:kokoro:"));
+    if (family == QLatin1String("gemini"))
+        return !voice.isEmpty() && !AiServices::isOnThisComputer(voice);
+    return false;
+}
+
+void Cast::setNarrator(const QString &voice) {
+    if (voice == m_narrator)
+        return;
+    m_narrator = voice;
+    assignMissing();
+    emit changed();
 }
 
 void Cast::load() {
+    cancel();
     m_lines.clear();
-    m_voices.clear();
+    m_countedChapters.clear();
+    m_familyVoices.clear();
     m_genders.clear();
     m_counts.clear();
     const int book = m_reader->bookId();
     m_enabled = book > 0 && m_library->bookSetting(book, QStringLiteral("fullCast")) == QLatin1String("on");
-    const QJsonObject saved = QJsonDocument::fromJson(m_library->bookSetting(book, QStringLiteral("cast")).toUtf8()).object();
-    for (auto it = saved.begin(); it != saved.end(); ++it)
-        m_voices.insert(it.key(), it.value().toString());
+    if (book > 0) {
+        const QJsonObject saved =
+            QJsonDocument::fromJson(m_library->bookSetting(book, QStringLiteral("cast")).toUtf8()).object();
+        if (saved.value(QStringLiteral("v")).toInt() == 2) {
+            const QJsonObject families = saved.value(QStringLiteral("families")).toObject();
+            for (auto fit = families.begin(); fit != families.end(); ++fit) {
+                const QString fam = fit.key();
+                const QJsonObject voices = fit.value().toObject();
+                for (auto vit = voices.begin(); vit != voices.end(); ++vit) {
+                    const QString v = vit.value().toString();
+                    if (voiceMatchesFamily(v, fam))
+                        m_familyVoices[fam].insert(vit.key(), v);
+                }
+            }
+            const QJsonObject counts = saved.value(QStringLiteral("counts")).toObject();
+            for (auto it = counts.begin(); it != counts.end(); ++it)
+                if (it.value().toInt() > 0)
+                    m_counts.insert(it.key(), it.value().toInt());
+            const QJsonObject genders = saved.value(QStringLiteral("genders")).toObject();
+            for (auto it = genders.begin(); it != genders.end(); ++it) {
+                const QString g = it.value().toString();
+                if (g == QLatin1String("female") || g == QLatin1String("male"))
+                    m_genders.insert(it.key(), g);
+            }
+        } else {
+            // Backward compatibility with earlier flat {speaker: voice} saves.
+            for (auto it = saved.begin(); it != saved.end(); ++it) {
+                const QString v = it.value().toString();
+                if (v.startsWith(QLatin1String("builtin:kokoro:")))
+                    m_familyVoices[QStringLiteral("kokoro")].insert(it.key(), v);
+                else if (!v.isEmpty() && !AiServices::isOnThisComputer(v))
+                    m_familyVoices[QStringLiteral("gemini")].insert(it.key(), v);
+                if (!v.isEmpty())
+                    m_counts.insert(it.key(), 1);
+            }
+        }
+    }
+    assignMissing();
     emit changed();
 }
 
 void Cast::save() const {
-    QJsonObject saved;
-    for (auto it = m_voices.cbegin(); it != m_voices.cend(); ++it)
-        saved.insert(it.key(), it.value());
-    m_library->setBookSetting(m_reader->bookId(), QStringLiteral("cast"),
+    const int book = m_reader->bookId();
+    if (book <= 0)
+        return;
+    QJsonObject families;
+    for (auto fit = m_familyVoices.cbegin(); fit != m_familyVoices.cend(); ++fit) {
+        QJsonObject voices;
+        for (auto vit = fit.value().cbegin(); vit != fit.value().cend(); ++vit)
+            voices.insert(vit.key(), vit.value());
+        families.insert(fit.key(), voices);
+    }
+    QJsonObject counts;
+    for (auto it = m_counts.cbegin(); it != m_counts.cend(); ++it)
+        counts.insert(it.key(), it.value());
+    QJsonObject genders;
+    for (auto it = m_genders.cbegin(); it != m_genders.cend(); ++it)
+        genders.insert(it.key(), it.value());
+    const QJsonObject saved{{"v", 2}, {"families", families}, {"counts", counts}, {"genders", genders}};
+    m_library->setBookSetting(book, QStringLiteral("cast"),
                               QString::fromUtf8(QJsonDocument(saved).toJson(QJsonDocument::Compact)));
 }
 
@@ -46,12 +141,15 @@ void Cast::setEnabled(bool enabled) {
     if (enabled == m_enabled)
         return;
     m_enabled = enabled;
-    m_library->setBookSetting(m_reader->bookId(), QStringLiteral("fullCast"), enabled ? QStringLiteral("on") : QString());
+    if (!enabled)
+        cancel();
+    if (m_reader->bookId() > 0)
+        m_library->setBookSetting(m_reader->bookId(), QStringLiteral("fullCast"), enabled ? QStringLiteral("on") : QString());
     emit changed();
     emit recast();
 }
 
-bool Cast::available() const { return pool().size() >= 3; }
+bool Cast::available() const { return !family().isEmpty() && pool().size() >= 3; }
 
 QList<Cast::Choice> Cast::pool() const {
     QList<Choice> out;
@@ -72,8 +170,8 @@ QList<Cast::Choice> Cast::pool() const {
         std::stable_sort(out.begin(), out.end(), [](const Choice &a, const Choice &b) { return a.home && !b.home; });
         return out;
     }
-    if (AiServices::isOnThisComputer(m_narrator))
-        return out;  // Piper and Studio voices: one voice each, nothing to cast from.
+    if (m_narrator.isEmpty() || AiServices::isOnThisComputer(m_narrator))
+        return out;  // Piper, Pocket, and Studio voices: nothing to cast from.
     for (const QVariant &value : m_catalog->classicVoices()) {
         const QVariantMap voice = value.toMap();
         out.append({voice.value(QStringLiteral("id")).toString(), voice.value(QStringLiteral("name")).toString(),
@@ -92,20 +190,24 @@ QVariantList Cast::choices() const {
 QString Cast::voiceFor(const QString &speaker) const {
     if (speaker.isEmpty() || speaker.compare(QLatin1String("narrator"), Qt::CaseInsensitive) == 0)
         return m_narrator;
-    if (m_voices.contains(speaker))
-        return m_voices.value(speaker);
+    const QString fam = family();
+    if (fam.isEmpty())
+        return m_narrator;
+    const QString voice = m_familyVoices.value(fam).value(speaker);
+    if (voiceMatchesFamily(voice, fam))
+        return voice;
     return m_narrator;
 }
 
 QString Cast::voiceAt(int chapter, int block) const {
-    if (!m_enabled)
+    if (!m_enabled || family().isEmpty())
         return m_narrator;
     return voiceFor(m_lines.value(chapter).value(block).speaker);
 }
 
 QSet<int> Cast::breaks(int chapter, const QList<SpeechBlock> &blocks) const {
     QSet<int> out;
-    if (!m_enabled || !m_lines.contains(chapter))
+    if (!m_enabled || family().isEmpty() || !m_lines.contains(chapter))
         return out;
     QString before = m_narrator;
     for (int i = 0; i < blocks.size(); ++i) {
@@ -117,46 +219,84 @@ QSet<int> Cast::breaks(int chapter, const QList<SpeechBlock> &blocks) const {
     return out;
 }
 
-void Cast::learn(int chapter, const QMap<int, Line> &lines) {
-    m_lines.insert(chapter, lines);
-    // New speakers get a voice: their gender's, not the narrator's, not
-    // another's while any are free, and the same one every time.
+bool Cast::assignVoice(const QString &speaker, const QString &gender, const QList<Choice> &choices,
+                       QMap<QString, QString> &familyMap, QSet<QString> &used) {
+    if (familyMap.contains(speaker) || choices.isEmpty())
+        return false;
+    QList<Choice> fitting;
+    for (const Choice &choice : choices)
+        if (gender.isEmpty() || choice.gender.isEmpty() || choice.gender == gender)
+            fitting.append(choice);
+    if (fitting.isEmpty())
+        fitting = choices;
+    QList<Choice> freeHome, freeAway;
+    for (const Choice &choice : fitting)
+        if (!used.contains(choice.id))
+            (choice.home ? freeHome : freeAway).append(choice);
+    const QList<Choice> &from = !freeHome.isEmpty() ? freeHome : !freeAway.isEmpty() ? freeAway : fitting;
+    const quint32 hash = qFromBigEndian<quint32>(QCryptographicHash::hash(speaker.toUtf8(), QCryptographicHash::Md5).constData());
+    const QString voice = from[int(hash % quint32(from.size()))].id;
+    familyMap.insert(speaker, voice);
+    used.insert(voice);
+    return true;
+}
+
+void Cast::assignMissing() {
+    const QString fam = family();
+    if (fam.isEmpty() || m_counts.isEmpty())
+        return;
     const QList<Choice> choices = pool();
-    QSet<QString> used(m_voices.cbegin(), m_voices.cend());
+    if (choices.isEmpty())
+        return;
+    QMap<QString, QString> &familyMap = m_familyVoices[fam];
+    QSet<QString> used(familyMap.cbegin(), familyMap.cend());
     used.insert(m_narrator);
     bool assigned = false;
+    for (auto it = m_counts.cbegin(); it != m_counts.cend(); ++it)
+        if (assignVoice(it.key(), m_genders.value(it.key()), choices, familyMap, used))
+            assigned = true;
+    if (assigned)
+        save();
+}
+
+void Cast::learn(int chapter, const QMap<int, Line> &lines) {
+    m_lines.insert(chapter, lines);
+    const bool firstTime = !m_countedChapters.contains(chapter);
+    m_countedChapters.insert(chapter);
+    // New speakers get a voice from the narrator's own family: their gender's,
+    // not the narrator's, not another's while any are free, and deterministic.
+    const QString fam = family();
+    const QList<Choice> choices = fam.isEmpty() ? QList<Choice>{} : pool();
+    QMap<QString, QString> *familyMap = fam.isEmpty() ? nullptr : &m_familyVoices[fam];
+    QSet<QString> used;
+    if (familyMap)
+        used = QSet<QString>(familyMap->cbegin(), familyMap->cend());
+    used.insert(m_narrator);
+    bool dirty = false;
     for (const Line &line : lines) {
         if (line.speaker.isEmpty() || line.speaker.compare(QLatin1String("narrator"), Qt::CaseInsensitive) == 0)
             continue;
-        ++m_counts[line.speaker];
-        if (!line.gender.isEmpty())
+        if (firstTime) {
+            ++m_counts[line.speaker];
+            dirty = true;
+        }
+        if (!line.gender.isEmpty() && m_genders.value(line.speaker) != line.gender) {
             m_genders.insert(line.speaker, line.gender);
-        if (m_voices.contains(line.speaker) || choices.isEmpty())
-            continue;
-        QList<Choice> fitting;
-        for (const Choice &choice : choices)
-            if (line.gender.isEmpty() || choice.gender.isEmpty() || choice.gender == line.gender)
-                fitting.append(choice);
-        if (fitting.isEmpty())
-            fitting = choices;
-        QList<Choice> freeHome, freeAway;
-        for (const Choice &choice : fitting)
-            if (!used.contains(choice.id))
-                (choice.home ? freeHome : freeAway).append(choice);
-        const QList<Choice> &from = !freeHome.isEmpty() ? freeHome : !freeAway.isEmpty() ? freeAway : fitting;
-        const quint32 hash = qFromBigEndian<quint32>(QCryptographicHash::hash(line.speaker.toUtf8(), QCryptographicHash::Md5).constData());
-        const QString voice = from[int(hash % quint32(from.size()))].id;
-        m_voices.insert(line.speaker, voice);
-        used.insert(voice);
-        assigned = true;
+            dirty = true;
+        }
+        if (familyMap && assignVoice(line.speaker, m_genders.value(line.speaker, line.gender), choices, *familyMap, used))
+            dirty = true;
     }
-    if (assigned)
+    if (dirty)
         save();
     emit changed();
 }
 
 void Cast::setVoice(const QString &speaker, const QString &voice) {
-    m_voices.insert(speaker, voice);
+    const QString fam = family();
+    if (speaker.isEmpty() || fam.isEmpty() || !voiceMatchesFamily(voice, fam))
+        return;
+    m_familyVoices[fam].insert(speaker, voice);
     save();
     emit changed();
     emit recast();
@@ -207,11 +347,21 @@ QMap<int, Cast::Line> Cast::parse(const QString &json, int blocks) {
     return out;
 }
 
-Ai::TextRequest Cast::request(int chapter, const QList<SpeechBlock> &blocks) const {
+QString Cast::formatParagraphs(const QList<SpeechBlock> &blocks) {
     QString paragraphs;
-    for (int i = 0; i < blocks.size(); ++i)
-        if (blocks[i].kind != QLatin1String("break"))
-            paragraphs += QStringLiteral("[%1] %2\n").arg(i).arg(blocks[i].text.simplified().left(1200));
+    for (int i = 0; i < blocks.size(); ++i) {
+        if (blocks[i].kind == QLatin1String("break"))
+            continue;
+        const QString line = QStringLiteral("[%1] %2\n").arg(i).arg(blocks[i].text.simplified().left(1200));
+        if (!paragraphs.isEmpty() && paragraphs.size() + line.size() > maxCastPromptChars)
+            break;
+        paragraphs += line;
+    }
+    return paragraphs;
+}
+
+Ai::TextRequest Cast::request(int chapter, const QList<SpeechBlock> &blocks) const {
+    const QString paragraphs = formatParagraphs(blocks);
     Ai::TextRequest request;
     request.feature = QStringLiteral("cast");
     request.fast = true;
@@ -235,17 +385,18 @@ Ai::TextRequest Cast::request(int chapter, const QList<SpeechBlock> &blocks) con
     return request;
 }
 
-QString Cast::key(const Ai::TextRequest &request) const {
+QString Cast::key(const QList<SpeechBlock> &blocks) const {
     Ai::Provider *provider = m_ai->textProviderFor(QStringLiteral("cast"));
     Ai::TextModel *model = m_ai->textFor(QStringLiteral("cast"));
     return AudioCache::keyFor(provider ? provider->id() : QString(), model ? model->textModelName(true) : QString(),
-                              QStringLiteral("cast"), QString(), request.messages.value(0).text.section(QLatin1Char('\n'), 3));
+                              QStringLiteral("cast"), prompt(), formatParagraphs(blocks));
 }
 
 std::optional<QMap<int, Cast::Line>> Cast::kept(int chapter, const QList<SpeechBlock> &blocks) const {
+    Q_UNUSED(chapter);
     if (!m_ai->textFor(QStringLiteral("cast")))
         return std::nullopt;
-    const QString json = m_cache->directions(key(request(chapter, blocks)));
+    const QString json = m_cache->directions(key(blocks));
     if (json.isEmpty())
         return std::nullopt;
     return parse(json, int(blocks.size()));
@@ -254,26 +405,50 @@ std::optional<QMap<int, Cast::Line>> Cast::kept(int chapter, const QList<SpeechB
 void Cast::ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context,
                std::function<void(const QMap<int, Line> &)> done) {
     Ai::TextModel *model = m_ai->textFor(QStringLiteral("cast"));
+    Ai::Provider *provider = m_ai->textProviderFor(QStringLiteral("cast"));
+    // Match double/curly/guillemet/CJK/German quotes, em-dash dialogue, or
+    // British single-quoted dialogue without triggering on English contractions.
+    static const QRegularExpression dialogueRe(
+        QStringLiteral("[\"“”«»「」『』„‟]|(?:^|\\n)\\s*[—–―]\\s+\\S|(?<!\\w)['‘][^'‘’\\n]{2,}['’](?!\\w)"));
     bool dialogue = false;
     for (const SpeechBlock &block : blocks)
-        dialogue = dialogue || block.text.contains(QRegularExpression(QStringLiteral("[\"“”‘’'«»]")));
-    if (!model || !dialogue) {
+        if (dialogueRe.match(block.text).hasMatch()) {
+            dialogue = true;
+            break;
+        }
+    if (!model || !dialogue || (provider && !provider->isLocal() && !m_ai->fitsBudget(estimatedCastCost))) {
         done({});
         return;
     }
     const Ai::TextRequest question = request(chapter, blocks);
-    const QString keptAs = key(question);
+    const QString keptAs = key(blocks);
     const int count = int(blocks.size());
+    const quint64 gen = m_generation;
+    const int bookId = m_reader->bookId();
     Ai::Reply *reply = model->generate(question);
     m_ai->track(reply);
-    connect(reply, &Ai::Reply::finished, context, [this, reply, keptAs, count, done] {
+    m_replies.removeAll(nullptr);
+    m_replies.append(reply);
+    QPointer<QObject> guard(context ? context : this);
+    connect(reply, &Ai::Reply::finished, this, [this, reply, keptAs, count, gen, bookId, guard, done] {
         reply->deleteLater();
+        m_replies.removeAll(reply);
+        if (gen != m_generation || m_reader->bookId() != bookId || !guard)
+            return;
         if (reply->error()) {
             done({});
             return;
         }
-        const QString text = reply->result().isEmpty() ? reply->text()
-                                                       : QString::fromUtf8(QJsonDocument(reply->result()).toJson(QJsonDocument::Compact));
+        const QString text = reply->result().isEmpty()
+                                 ? reply->text()
+                                 : QString::fromUtf8(QJsonDocument(reply->result()).toJson(QJsonDocument::Compact));
+        QJsonParseError err;
+        const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &err);
+        if (err.error != QJsonParseError::NoError || !doc.isObject() ||
+            !doc.object().value(QStringLiteral("lines")).isArray()) {
+            done({});
+            return;
+        }
         m_cache->storeDirections(keptAs, text);
         done(parse(text, count));
     });

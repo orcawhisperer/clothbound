@@ -27,17 +27,18 @@ FocusScope {
     signal closed()
     signal sampleWanted()
 
-    // Which voices the panel shows: "builtin" or "gemini".
+    // Which voices the panel shows: "builtin", "gemini", or "studio".
     property string source: "gemini"
 
     function show() {
         open = true
         query = ""
-        source = (narration.voice || "").startsWith("studio:") ? "studio"
+        source = studioVoice ? "studio"
                : builtinVoice || (!ai.hasKey && voicePacks.supported) ? "builtin" : "gemini"
         if (ai.localSpeechModel !== "")
             voices.loadStudioVoices()
-        voices.refresh()
+        if (ai.hasKey)
+            voices.refresh()
         sampleWanted()
         forceActiveFocus()
     }
@@ -104,27 +105,40 @@ FocusScope {
         return parts.join(" · ")
     }
 
-    // Downloading for offline listening: this chapter, or to the end.
+    // Voice families.
+    readonly property bool builtinVoice: (narration.voice || "").startsWith("builtin:")
+    readonly property bool studioVoice: (narration.voice || "").startsWith("studio:")
+    readonly property bool localVoice: builtinVoice || studioVoice
+
+    // Downloading for offline listening / audiobook export: this chapter, or to the end.
     readonly property int lastChapter: reader.chapterCount - 1
-    readonly property var chapterEstimate: open && voices.count >= 0 ? download.estimate(reader.chapter, reader.chapter) : ({})
-    readonly property var restEstimate: open && voices.count >= 0 ? download.estimate(reader.chapter, lastChapter) : ({})
+    readonly property var chapterEstimate: open && voices.count >= 0 && narration.voice !== undefined && narration.economy !== undefined && reader.chapterMarks.length >= 0
+        ? download.estimate(reader.chapter, reader.chapter) : ({})
+    readonly property var restEstimate: open && voices.count >= 0 && narration.voice !== undefined && narration.economy !== undefined && reader.chapterMarks.length >= 0
+        ? download.estimate(reader.chapter, lastChapter) : ({})
     function money(dollars) {
         return dollars < 0.01 ? qsTr("under $0.01") : qsTr("about %1").arg("$" + dollars.toLocaleString(Qt.locale(), 'f', 2))
     }
     readonly property bool downloadingThisBook: download.active && download.bookId === reader.bookId
+    readonly property bool offlineApplies: (ai.hasKey || ai.canSpeak || ai.localSpeechModel !== "" || voicePacks.engineInstalled || voicePacks.megabytes >= 0) &&
+                                           narration.voice !== "" && ai.canSpeakWith(narration.voice)
 
     readonly property string language: reader.language
-    // `count` changes whenever the voices do, which keeps these fresh.
+    // `count` and `studioVoices.length` keep these fresh when voices load.
     readonly property var suggestions: voices.count >= 0 ? voices.suggestions(language) : []
     readonly property var narrators: suggestions.filter(voice => voice.kind === "library")
     readonly property var classics: suggestions.filter(voice => voice.kind === "classic")
     readonly property var yours: voices.count >= 0 ? voices.designedVoices() : []
     readonly property var results: query.trim() !== "" && voices.count >= 0 ? voices.search(query, "", 80) : []
-    readonly property var current: voices.count >= 0 && narration.voice
+    readonly property var current: voices.count >= 0 && voices.studioVoices.length >= 0 && voicePacks.megabytes >= 0 && narration.voice
         ? (narration.voice.startsWith("builtin:") ? voicePacks.voice(narration.voice) : voices.voice(narration.voice)) : ({})
+    readonly property var castChoices: cast.available ? cast.choices() : []
+    readonly property bool showCastCard: cast.available && (
+        (panel.source === "builtin" && panel.builtinVoice) ||
+        (panel.source === "gemini" && !panel.localVoice)
+    )
 
     // Built-in voices: made on this computer, downloaded on request.
-    readonly property bool builtinVoice: (narration.voice || "").startsWith("builtin:")
     readonly property var builtins: open && voicePacks.megabytes >= 0 ? voicePacks.voices(language) : []
     readonly property var builtinInstalled: builtins.filter(voice => voice.installed)
     // The best few that are here (and the one reading), until asked for more.
@@ -298,7 +312,6 @@ FocusScope {
         visible: voicePacks.supported
         spacing: 6
 
-
         // None yet for this book's language: the best one, ready to download.
         Rectangle {
             Layout.fillWidth: true
@@ -345,12 +358,15 @@ FocusScope {
             ProgressBar {
                 Layout.fillWidth: true
                 value: voicePacks.progress
+                indeterminate: voicePacks.progress >= 1.0
             }
             RowLayout {
                 Layout.fillWidth: true
                 Note {
                     Layout.fillWidth: true
-                    text: qsTr("Downloading %1…").arg(voicePacks.installing)
+                    text: voicePacks.progress >= 1.0
+                          ? qsTr("Installing %1…").arg(voicePacks.installing)
+                          : qsTr("Downloading %1…").arg(voicePacks.installing)
                 }
                 Action {
                     text: qsTr("Cancel")
@@ -449,6 +465,7 @@ FocusScope {
                 }
             }
             AbstractButton {
+                id: forgetButton
                 visible: row.voice.kind === "designed" && (row.hovered || row.confirming)
                 implicitHeight: 30
                 implicitWidth: row.confirming ? confirmLabel.implicitWidth + 20 : 30
@@ -456,7 +473,7 @@ FocusScope {
                 focusPolicy: Qt.NoFocus
                 background: Rectangle {
                     radius: Math.min(6, theme.radius)
-                    color: row.confirming ? Ui.tint(theme.colors.red || "#e05d5d", 0.2) : parent.hovered ? Ui.tint(panel.look.fg, 0.1) : "transparent"
+                    color: row.confirming ? Ui.tint(theme.colors.red || "#e05d5d", 0.2) : forgetButton.hovered ? Ui.tint(panel.look.fg, 0.1) : "transparent"
                 }
                 contentItem: Item {
                     Glyph {
@@ -513,6 +530,7 @@ FocusScope {
             font.weight: Font.DemiBold
         }
         IconButton {
+            look: panel.look
             glyph: Icons.close
             tone: panel.look.fg
             tip: qsTr("Close (Esc)")
@@ -535,7 +553,6 @@ FocusScope {
             width: panel.width - 44
             spacing: 6
 
-
             // The voice reading now.
             VoiceRow {
                 visible: !!panel.current.id
@@ -546,7 +563,7 @@ FocusScope {
                 text: narration.voiceName
             }
 
-            // Where the voice comes from: made here, or Gemini's.
+            // Where the voice comes from: made here, Gemini, or Studio.
             RowLayout {
                 Layout.fillWidth: true
                 Layout.topMargin: 6
@@ -574,17 +591,17 @@ FocusScope {
                 }
             }
             Note {
-                visible: voicePacks.supported
+                visible: voicePacks.supported || ai.localSpeechModel !== ""
                 text: panel.source === "builtin" ? qsTr("Free, private, and offline. Plainer than Gemini's voices, and without styles.")
                     : panel.source === "studio" ? qsTr("Made by %1 on this computer with %2: free and private.").arg(ai.localName).arg(ai.localSpeechModel)
                     : qsTr("The most natural voices, with styles; they use your own Gemini key.")
             }
 
-            // A full cast: characters in voices of their own.
+            // A full cast: characters in voices of their own (aligned with the active tab/family).
             Rectangle {
                 Layout.fillWidth: true
                 Layout.topMargin: 6
-                visible: cast.available && panel.source !== "studio"
+                visible: panel.showCastCard
                 radius: Math.min(10, theme.radius)
                 color: Ui.tint(panel.look.fg, 0.04)
                 border.color: panel.look.border
@@ -633,10 +650,13 @@ FocusScope {
                             }
                             ComboBox {
                                 Layout.preferredWidth: 170
-                                readonly property var choices: cast.choices()
+                                readonly property var choices: panel.castChoices
                                 model: choices.map(c => c.name + (c.gender ? " · " + c.gender : ""))
                                 currentIndex: choices.findIndex(c => c.id === modelData.voice)
-                                onActivated: (index) => cast.setVoice(modelData.speaker, choices[index].id)
+                                onActivated: (index) => {
+                                    if (index >= 0 && index < choices.length)
+                                        cast.setVoice(modelData.speaker, choices[index].id)
+                                }
                             }
                             Listen { voiceId: modelData.voice }
                         }
@@ -651,11 +671,162 @@ FocusScope {
                 }
             }
 
+            // Performance style: available for Gemini and Studio voices.
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: panel.source === "gemini" || panel.source === "studio" || !voicePacks.supported
+                spacing: 6
+
+                Heading { text: qsTr("Style") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Choice { text: qsTr("Plain"); selected: panel.builtinVoice || narration.performance === "plain"; onClicked: narration.performance = "plain" }
+                    Choice { text: qsTr("Natural"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "natural"; onClicked: narration.performance = "natural" }
+                    Choice { text: qsTr("Dramatic"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "dramatic"; onClicked: narration.performance = "dramatic" }
+                }
+                Note {
+                    text: panel.builtinVoice ? qsTr("Built-in voices read evenly; the other styles need a Gemini or Studio voice.")
+                        : narration.performance === "plain" ? qsTr("An even, clear reading with no direction. Good for study and reference.")
+                        : narration.performance === "dramatic" ? qsTr("A fuller performance, for adventure, horror and genre fiction.")
+                        : qsTr("A storyteller's reading: the mood follows the scene, never acted.")
+                }
+            }
+
+            // Offline preparation and M4B audiobook export: works for Gemini,
+            // Built-in, and Studio voices alike.
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: panel.offlineApplies || panel.downloadingThisBook
+                spacing: 6
+
+                Heading {
+                    text: panel.localVoice ? qsTr("Audiobook") : qsTr("Offline")
+                }
+                Note {
+                    visible: panel.offlineApplies && !panel.downloadingThisBook
+                    text: panel.localVoice
+                          ? qsTr("Render the narration ahead on this computer so you can save it as an M4B audiobook with chapters.")
+                          : qsTr("Download the narration to listen without a connection. It's made at Gemini's slower Flex tier, for half the price.")
+                }
+                RowLayout {
+                    visible: panel.offlineApplies && !panel.downloadingThisBook
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Action {
+                        text: qsTr("This chapter")
+                        enabled: (panel.chapterEstimate.chapters || 0) > 0
+                        onClicked: download.start(reader.chapter, reader.chapter)
+                    }
+                    Note {
+                        Layout.fillWidth: true
+                        text: (panel.chapterEstimate.chapters || 0) > 0 && translator.language !== ""
+                              ? Format.duration(panel.chapterEstimate.minutes)
+                                + (panel.chapterEstimate.local ? "" : " · " + panel.money(panel.chapterEstimate.cost))
+                              : ""
+                    }
+                }
+                RowLayout {
+                    visible: panel.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.chapters || 0) > 1
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Action {
+                        text: qsTr("To the end")
+                        onClicked: download.start(reader.chapter, panel.lastChapter)
+                    }
+                    Note {
+                        Layout.fillWidth: true
+                        text: translator.language !== ""
+                              ? qsTr("%n chapters", "", panel.restEstimate.chapters || 0) + " · " + Format.duration(panel.restEstimate.minutes || 0)
+                                + (panel.restEstimate.local ? "" : " · " + panel.money(panel.restEstimate.cost || 0))
+                              : ""
+                    }
+                }
+                Note {
+                    visible: panel.offlineApplies && !panel.downloadingThisBook && !panel.restEstimate.local && (panel.restEstimate.cost || 0) > 0
+                             && !ai.fitsBudget(panel.restEstimate.cost)
+                    text: qsTr("Downloading to the end would pass your monthly budget; it stops there.")
+                    color: theme.colors.orange || "#e5a050"
+                }
+
+                // A download under way, or done.
+                ColumnLayout {
+                    visible: panel.downloadingThisBook
+                    Layout.fillWidth: true
+                    spacing: 8
+                    ProgressBar {
+                        Layout.fillWidth: true
+                        value: download.fraction
+                        indeterminate: download.running && download.fraction === 0
+                    }
+                    Note {
+                        text: download.finished ? (download.firstChapter === download.lastChapter
+                                                   ? qsTr("This chapter is ready to listen offline.")
+                                                   : qsTr("Ready to listen offline, to the end of the book."))
+                            : translator.language === "" ? ""
+                            : qsTr("%1 of %2 ready").arg(Format.duration(download.minutesReady)).arg(Format.duration(download.minutesTotal))
+                              + (download.running && download.secondsLeft > 0
+                                 ? " · " + qsTr("about %1 left").arg(Format.duration(download.secondsLeft / 60)) : "")
+                              + (!download.running ? " · " + qsTr("paused") : "")
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: download.problem !== ""
+                        text: download.problem
+                        color: theme.colors.orange || "#e5a050"
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    RowLayout {
+                        spacing: 8
+                        Action {
+                            visible: !download.finished
+                            text: download.running ? qsTr("Pause") : qsTr("Go on")
+                            onClicked: download.running ? download.pause() : download.resume()
+                        }
+                        Action {
+                            visible: download.finished
+                            enabled: !audiobook.busy
+                            text: audiobook.busy ? qsTr("Saving… %1%").arg(Math.round(audiobook.progress * 100))
+                                                 : qsTr("Save as an audiobook")
+                            onClicked: audiobook.save()
+                        }
+                        Action {
+                            visible: audiobook.busy
+                            text: qsTr("Cancel")
+                            onClicked: audiobook.cancel()
+                        }
+                        Action {
+                            enabled: !audiobook.busy
+                            text: download.finished ? qsTr("Done") : qsTr("Stop")
+                            onClicked: download.cancel()
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: audiobook.saved !== "" || audiobook.problem !== ""
+                        text: audiobook.problem !== "" ? audiobook.problem
+                            : qsTr("Saved as %1, with its chapters, for any audiobook player.").arg(audiobook.saved.replace(/^.*\/(Music\/)/, "$1"))
+                        color: audiobook.problem !== "" ? (theme.colors.orange || "#e5a050") : panel.look.muted
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                }
+            }
+
             // The Studio server's voices.
             ColumnLayout {
                 Layout.fillWidth: true
                 visible: panel.source === "studio"
                 spacing: 2
+                Label {
+                    Layout.fillWidth: true
+                    visible: voices.problem !== ""
+                    text: voices.problem
+                    color: theme.colors.orange || "#e5a050"
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                }
                 Repeater {
                     model: voices.studioVoices
                     delegate: VoiceRow {
@@ -664,7 +835,7 @@ FocusScope {
                     }
                 }
                 Note {
-                    visible: voices.studioVoices.length === 0
+                    visible: voices.studioVoices.length === 0 && voices.problem === ""
                     text: qsTr("The server lists no voices. It may need a moment, or a voice name set up on its side.")
                 }
             }
@@ -714,21 +885,6 @@ FocusScope {
                     }
                 }
 
-                Heading { text: qsTr("Style") }
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Choice { text: qsTr("Plain"); selected: panel.builtinVoice || narration.performance === "plain"; onClicked: narration.performance = "plain" }
-                    Choice { text: qsTr("Natural"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "natural"; onClicked: narration.performance = "natural" }
-                    Choice { text: qsTr("Dramatic"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "dramatic"; onClicked: narration.performance = "dramatic" }
-                }
-                Note {
-                    text: panel.builtinVoice ? qsTr("Built-in voices read evenly; the other styles need a Gemini voice.")
-                        : narration.performance === "plain" ? qsTr("An even, clear reading with no direction. Good for study and reference.")
-                        : narration.performance === "dramatic" ? qsTr("A fuller performance, for adventure, horror and genre fiction.")
-                        : qsTr("A storyteller's reading: the mood follows the scene, never acted.")
-                }
-
                 // Casting: a narrator designed for this book.
                 Rectangle {
                     Layout.fillWidth: true
@@ -749,8 +905,8 @@ FocusScope {
                         RowLayout {
                             spacing: 8
                             Glyph {
-                                width: 18
-                                height: 18
+                                Layout.preferredWidth: 18
+                                Layout.preferredHeight: 18
                                 path: Icons.sparkle
                                 color: panel.look.link
                             }
@@ -874,112 +1030,6 @@ FocusScope {
                             text: qsTr("Try again")
                             onClicked: voices.cast(reader.passageFrom(reader.chapter, 4000))
                         }
-                    }
-                }
-
-                // Gemini's narration, downloaded to hear offline (built-in voices
-                // are offline already).
-                readonly property bool offlineApplies: !panel.builtinVoice && ai.canSpeak
-                Heading {
-                    visible: parent.offlineApplies || panel.downloadingThisBook
-                    text: qsTr("Offline")
-                }
-                Note {
-                    visible: parent.offlineApplies && !panel.downloadingThisBook
-                    text: qsTr("Download the narration to listen without a connection. It's made at Gemini's slower Flex tier, for half the price.")
-                }
-                RowLayout {
-                    visible: parent.offlineApplies && !panel.downloadingThisBook
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Action {
-                        text: qsTr("This chapter")
-                        enabled: (panel.chapterEstimate.chapters || 0) > 0
-                        onClicked: download.start(reader.chapter, reader.chapter)
-                    }
-                    Note {
-                        Layout.fillWidth: true
-                        text: (panel.chapterEstimate.chapters || 0) > 0 && translator.language !== ""
-                              ? Format.duration(panel.chapterEstimate.minutes) + " · " + panel.money(panel.chapterEstimate.cost) : ""
-                    }
-                }
-                RowLayout {
-                    visible: parent.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.chapters || 0) > 1
-                    Layout.fillWidth: true
-                    spacing: 8
-                    Action {
-                        text: qsTr("To the end")
-                        onClicked: download.start(reader.chapter, panel.lastChapter)
-                    }
-                    Note {
-                        Layout.fillWidth: true
-                        text: translator.language !== ""
-                              ? qsTr("%n chapters", "", panel.restEstimate.chapters || 0) + " · " + Format.duration(panel.restEstimate.minutes || 0)
-                                + " · " + panel.money(panel.restEstimate.cost || 0) : ""
-                    }
-                }
-                Note {
-                    visible: parent.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.cost || 0) > 0
-                             && !ai.fitsBudget(panel.restEstimate.cost)
-                    text: qsTr("Downloading to the end would pass your monthly budget; it stops there.")
-                    color: theme.colors.orange || "#e5a050"
-                }
-
-                // A download under way, or done.
-                ColumnLayout {
-                    visible: panel.downloadingThisBook
-                    Layout.fillWidth: true
-                    spacing: 8
-                    ProgressBar {
-                        Layout.fillWidth: true
-                        value: download.fraction
-                        indeterminate: download.running && download.fraction === 0
-                    }
-                    Note {
-                        text: download.finished ? (download.firstChapter === download.lastChapter
-                                                   ? qsTr("This chapter is ready to listen offline.")
-                                                   : qsTr("Ready to listen offline, to the end of the book."))
-                            : translator.language === "" ? ""
-                            : qsTr("%1 of %2 ready").arg(Format.duration(download.minutesReady)).arg(Format.duration(download.minutesTotal))
-                              + (download.running && download.secondsLeft > 0
-                                 ? " · " + qsTr("about %1 left").arg(Format.duration(download.secondsLeft / 60)) : "")
-                              + (!download.running ? " · " + qsTr("paused") : "")
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        visible: download.problem !== ""
-                        text: download.problem
-                        color: theme.colors.orange || "#e5a050"
-                        font.pixelSize: 12
-                        wrapMode: Text.Wrap
-                    }
-                    RowLayout {
-                        spacing: 8
-                        Action {
-                            visible: !download.finished
-                            text: download.running ? qsTr("Pause") : qsTr("Go on")
-                            onClicked: download.running ? download.pause() : download.resume()
-                        }
-                        Action {
-                            visible: download.finished
-                            enabled: !audiobook.busy
-                            text: audiobook.busy ? qsTr("Saving… %1%").arg(Math.round(audiobook.progress * 100))
-                                                 : qsTr("Save as an audiobook")
-                            onClicked: audiobook.save()
-                        }
-                        Action {
-                            text: download.finished ? qsTr("Done") : qsTr("Stop")
-                            onClicked: download.cancel()
-                        }
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        visible: audiobook.saved !== "" || audiobook.problem !== ""
-                        text: audiobook.problem !== "" ? audiobook.problem
-                            : qsTr("Saved as %1, with its chapters, for any audiobook player.").arg(audiobook.saved.replace(/^.*\/(Music\/)/, "$1"))
-                        color: audiobook.problem !== "" ? (theme.colors.orange || "#e5a050") : panel.look.muted
-                        font.pixelSize: 12
-                        wrapMode: Text.Wrap
                     }
                 }
 
