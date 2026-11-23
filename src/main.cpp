@@ -14,6 +14,8 @@
 #include "download.h"
 #include "booksearch.h"
 #include "marks.h"
+#include "localspeech.h"
+#include "voicepacks.h"
 #include "portalfilepicker.h"
 #include "reader.h"
 #include "theme.h"
@@ -159,6 +161,10 @@ int main(int argc, char *argv[]) {
     GeminiProvider gemini;
     SecretKeyStore keys;
     AiServices ai(&gemini, &keys, library.database().connectionName());
+    // Built-in voices: made on this computer, from voices downloaded on request.
+    VoicePacks voicePacks(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/voices"));
+    LocalSpeech localSpeech(&voicePacks);
+    ai.setLocalSpeech(&localSpeech);
     AudioCache audioCache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/audio"),
                           library.database().connectionName());
     Narration narration(&ai, &audioCache, &reader, &library);
@@ -195,6 +201,8 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("download", &download);
     engine.rootContext()->setContextProperty("bookSearch", &bookSearch);
     engine.rootContext()->setContextProperty("marks", &marks);
+    engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
+    engine.rootContext()->setContextProperty("localSpeech", &localSpeech);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);
     engine.rootContext()->setContextProperty("debugMode", qEnvironmentVariableIsSet("DOGEAR_DEBUG"));

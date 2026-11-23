@@ -8,11 +8,16 @@
 #include "epubbook.h"
 #include "library.h"
 #include "marks.h"
+#include "localspeech.h"
+#include "speech.h"
+#include "voicepacks.h"
 #include "pdfbook.h"
 
 #include <QCommandLineParser>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
+#include <QStandardPaths>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -293,6 +298,108 @@ int notes(const QStringList &arguments) {
     return 0;
 }
 
+// dogear voices: the built-in voices (made on this computer): which there
+// are, installing one, and how fast one speaks here.
+int voices(const QStringList &arguments) {
+    Command command("voices", "Built-in voices, made on this computer: list, install, remove, bench.");
+    command.parser.addPositionalArgument("action", "list (default), install <voice>, remove <pack>, or bench <voice>",
+                                         "[action]");
+    command.parser.addPositionalArgument("voice", "A voice id, such as builtin:kokoro:af_heart", "[voice]");
+    command.parser.addOption({"language", "Only voices that speak this language (en, en-GB, de…)", "language"});
+    command.json();
+    command.parser.process(arguments);
+    const QString action = command.argument(1).isEmpty() ? QStringLiteral("list") : command.argument(1);
+    const QString target = command.argument(2);
+    VoicePacks packs(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/voices"));
+
+    if (action == "list") {
+        const QVariantList found = packs.voices(command.parser.value("language"));
+        if (command.asJson()) {
+            QJsonArray array;
+            for (const QVariant &voice : found)
+                array.append(QJsonObject::fromVariantMap(voice.toMap()));
+            print(array);
+            return 0;
+        }
+        for (const QVariant &value : found) {
+            const QVariantMap voice = value.toMap();
+            print(stdout, QStringLiteral("%1  %2 (%3, %4%5)%6")
+                              .arg(voice.value("id").toString(), voice.value("name").toString(),
+                                   voice.value("language").toString(), voice.value("engine").toString(),
+                                   voice.value("grade").toString().isEmpty() ? QString() : ", grade " + voice.value("grade").toString(),
+                                   voice.value("installed").toBool() ? QStringLiteral("  installed")
+                                       : QStringLiteral("  %1 MB to download").arg(voice.value("bytes").toLongLong() / 1000000)));
+        }
+        return 0;
+    }
+    if (action == "install") {
+        if (packs.voice(target).isEmpty())
+            return fail("No built-in voice is called " + target + ". See: dogear voices list");
+        QEventLoop loop;
+        int result = 0;
+        QObject::connect(&packs, &VoicePacks::ready, &loop, [&loop] { loop.quit(); });
+        QObject::connect(&packs, &VoicePacks::failed, &loop, [&loop, &result](const QString &message) {
+            print(stderr, message);
+            result = 1;
+            loop.quit();
+        });
+        int shown = -1;
+        QObject::connect(&packs, &VoicePacks::progressChanged, &loop, [&packs, &shown] {
+            const int percent = int(packs.progress() * 100);
+            if (!packs.installing().isEmpty() && percent != shown) {
+                shown = percent;
+                fprintf(stderr, "\r%s %3d%%", qPrintable(packs.installing()), percent);
+            }
+        });
+        packs.installVoice(target);
+        if (!packs.busy())
+            return packs.model(target) ? 0 : fail(packs.problem());
+        loop.exec();
+        fprintf(stderr, "\n");
+        return result;
+    }
+    if (action == "remove") {
+        if (!packs.isInstalled(target))
+            return fail(target + " isn't installed.");
+        packs.remove(target);
+        return 0;
+    }
+    if (action == "bench") {
+        const auto model = packs.model(target);
+        if (!model)
+            return fail(target + " isn't installed. Install it with: dogear voices install " + target);
+        SherpaEngine engine(packs.engineLibrary());
+        QElapsedTimer clock;
+        clock.start();
+        const QString problem = engine.prepare(*model);
+        if (!problem.isEmpty())
+            return fail(problem);
+        const qint64 loading = clock.elapsed();
+        const QStringList sentences{
+            QStringLiteral("The Time Traveller, for so it will be convenient to speak of him, was expounding a recondite matter to us."),
+            QStringLiteral("His grey eyes shone and twinkled, and his usually pale face was flushed and animated."),
+            QStringLiteral("The fire burned brightly, and the soft radiance of the incandescent lights caught the bubbles that flashed and passed in our glasses.")};
+        std::atomic_bool stop{false};
+        engine.speak(sentences.first(), model->speaker, stop);  // warm up
+        double seconds = 0;
+        clock.restart();
+        for (const QString &sentence : sentences)
+            seconds += engine.speak(sentence, model->speaker, stop).size() / double(qMax(1, engine.sampleRate()));
+        const double took = clock.elapsed() / 1000.0;
+        const double speed = took > 0 ? seconds / took : 0;
+        if (command.asJson()) {
+            print(QJsonObject{{"voice", target}, {"threads", SherpaEngine::threads()}, {"loadSeconds", loading / 1000.0},
+                              {"audioSeconds", seconds}, {"seconds", took}, {"speed", speed}});
+            return 0;
+        }
+        print(stdout, QStringLiteral("%1: %2× real time (%3 s of speech in %4 s, %5 threads; loaded in %6 s)")
+                          .arg(target).arg(speed, 0, 'f', 2).arg(seconds, 0, 'f', 1).arg(took, 0, 'f', 1)
+                          .arg(SherpaEngine::threads()).arg(loading / 1000.0, 0, 'f', 1));
+        return 0;
+    }
+    return fail("Unknown action " + action + ". See: dogear help voices");
+}
+
 // dogear ai: the reader's Gemini key and what it has cost. The key is read
 // from standard input, so it never appears in the shell's history.
 int ai(const QStringList &arguments) {
@@ -423,12 +530,13 @@ QString cliSummary() {
            "  list                            The books in the library, with reading progress\n"
            "  info <book>                     Metadata and table of contents of an EPUB or PDF\n"
            "  notes <book>                    A book's highlights, notes and bookmarks, as Markdown\n"
+           "  voices [list|install|bench]     Built-in voices, made on this computer, and their speed\n"
            "  ai [status|key|forget]          Gemini for listening and the companion: key and costs\n"
            "  skill [install]                 Print the skill for coding agents, or install it";
 }
 
 bool isCliCommand(const QString &word) {
-    return QStringList{"add", "list", "info", "notes", "ai", "skill", "help"}.contains(word);
+    return QStringList{"add", "list", "info", "notes", "voices", "ai", "skill", "help"}.contains(word);
 }
 
 int runCli(const QStringList &arguments) {
@@ -437,6 +545,7 @@ int runCli(const QStringList &arguments) {
            : command == "list"  ? list(arguments)
            : command == "info"  ? info(arguments)
            : command == "notes" ? notes(arguments)
+           : command == "voices" ? voices(arguments)
            : command == "ai"    ? ai(arguments)
            : command == "skill" ? skill(arguments)
                                 : help(arguments);

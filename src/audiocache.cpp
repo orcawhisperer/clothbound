@@ -24,7 +24,29 @@ bool AudioCache::migrate() {
     return query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS audio_clips (key TEXT PRIMARY KEY, file TEXT NOT NULL,"
                                      " bytes INTEGER NOT NULL, seconds REAL NOT NULL, used_at INTEGER NOT NULL)")) &&
            query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS narration_directions (key TEXT PRIMARY KEY,"
-                                     " json TEXT NOT NULL, made_at INTEGER NOT NULL)"));
+                                     " json TEXT NOT NULL, made_at INTEGER NOT NULL)")) &&
+           // Added later: where each sentence of a clip ends, when known.
+           (hasBoundaries() || query.exec(QStringLiteral("ALTER TABLE audio_clips ADD COLUMN boundaries TEXT NOT NULL DEFAULT ''")));
+}
+
+bool AudioCache::hasBoundaries() const {
+    QSqlQuery query(QSqlDatabase::database(m_connection));
+    query.exec(QStringLiteral("PRAGMA table_info(audio_clips)"));
+    while (query.next())
+        if (query.value(1).toString() == QStringLiteral("boundaries"))
+            return true;
+    return false;
+}
+
+QList<qint64> AudioCache::boundaries(const QString &key) {
+    QSqlQuery query(QSqlDatabase::database(m_connection));
+    query.prepare(QStringLiteral("SELECT boundaries FROM audio_clips WHERE key = ?"));
+    query.addBindValue(key);
+    QList<qint64> result;
+    if (query.exec() && query.next())
+        for (const QString &part : query.value(0).toString().split(',', Qt::SkipEmptyParts))
+            result.append(part.toLongLong());
+    return result;
 }
 
 QString AudioCache::directions(const QString &key) {
@@ -72,19 +94,25 @@ QString AudioCache::lookup(const QString &key) {
     return file;
 }
 
-void AudioCache::store(const QString &key, const QByteArray &pcm, int sampleRate) {
+void AudioCache::store(const QString &key, const QByteArray &pcm, int sampleRate, const QList<qint64> &boundaries) {
     if (pcm.isEmpty())
         return;
     const double seconds = double(pcm.size()) / 2.0 / sampleRate;
-    auto index = [this, key, seconds](const QString &name) {
+    QStringList marks;
+    for (qint64 boundary : boundaries)
+        marks.append(QString::number(boundary));
+    const QString joined = marks.isEmpty() ? QStringLiteral("") : marks.join(',');
+    auto index = [this, key, seconds, joined](const QString &name) {
         const QString path = QDir(m_directory).filePath(name);
         QSqlQuery query(QSqlDatabase::database(m_connection));
-        query.prepare(QStringLiteral("INSERT OR REPLACE INTO audio_clips (key, file, bytes, seconds, used_at) VALUES (?, ?, ?, ?, ?)"));
+        query.prepare(QStringLiteral("INSERT OR REPLACE INTO audio_clips (key, file, bytes, seconds, used_at, boundaries)"
+                                     " VALUES (?, ?, ?, ?, ?, ?)"));
         query.addBindValue(key);
         query.addBindValue(name);
         query.addBindValue(QFileInfo(path).size());
         query.addBindValue(seconds);
         query.addBindValue(QDateTime::currentSecsSinceEpoch());
+        query.addBindValue(joined);
         query.exec();
         evict();
         emit stored(key);

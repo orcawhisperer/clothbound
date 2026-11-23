@@ -15,6 +15,9 @@ HEADERS += \
     ../src/audiocache.h \
     ../src/speech.h \
     ../src/speechplayer.h \
+    ../src/sherpaonnx.h \
+    ../src/localspeech.h \
+    ../src/voicepacks.h \
     ../src/gemini.h \
     ../src/keystore.h \
     ../src/sseparser.h \
@@ -45,6 +48,8 @@ SOURCES += \
     ../src/audiocache.cpp \
     ../src/speech.cpp \
     ../src/speechplayer.cpp \
+    ../src/localspeech.cpp \
+    ../src/voicepacks.cpp \
     ../src/gemini.cpp \
     ../src/keystore.cpp \
     ../src/sseparser.cpp \

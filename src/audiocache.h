@@ -19,7 +19,9 @@ public:
     bool migrate();
     // The file holding this narration, or "" when it hasn't been made.
     QString lookup(const QString &key);
-    void store(const QString &key, const QByteArray &pcm, int sampleRate);
+    // `boundaries`: where each sentence ends, in samples, when the voice said.
+    void store(const QString &key, const QByteArray &pcm, int sampleRate, const QList<qint64> &boundaries = {});
+    QList<qint64> boundaries(const QString &key);
     // A director's answer for a chapter, kept with the audio it shapes: a
     // chapter heard again is read the same way, and found in the cache.
     QString directions(const QString &key);
@@ -42,6 +44,7 @@ signals:
 
 private:
     void evict();
+    bool hasBoundaries() const;
 
     QString m_directory;
     QString m_connection;

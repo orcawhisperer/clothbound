@@ -7,6 +7,8 @@
 #include <QHash>
 #include <QSet>
 #include <QtEndian>
+#include <algorithm>
+#include <cmath>
 
 namespace {
 bool closing(QChar c) {
@@ -344,6 +346,32 @@ QByteArray wav(const QByteArray &pcm, int sampleRate) {
     out.append("data");
     put32(quint32(pcm.size()));
     out.append(pcm);
+    return out;
+}
+
+QVector<float> resample(const QVector<float> &samples, int from, int to) {
+    if (from == to || from <= 0 || to <= 0 || samples.isEmpty())
+        return samples;
+    const qsizetype count = qsizetype(double(samples.size()) * to / from);
+    QVector<float> out(count);
+    const double step = double(from) / to;
+    auto at = [&samples](qsizetype i) { return samples[qBound<qsizetype>(0, i, samples.size() - 1)]; };
+    for (qsizetype n = 0; n < count; ++n) {
+        const double position = n * step;
+        const qsizetype i = qsizetype(position);
+        const float t = float(position - double(i));
+        // Catmull-Rom through the four samples around the point.
+        const float p0 = at(i - 1), p1 = at(i), p2 = at(i + 1), p3 = at(i + 2);
+        out[n] = p1 + 0.5f * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+    }
+    return out;
+}
+
+QByteArray pcm16(const QVector<float> &samples) {
+    QByteArray out(samples.size() * 2, Qt::Uninitialized);
+    auto *to = reinterpret_cast<qint16 *>(out.data());
+    for (qsizetype n = 0; n < samples.size(); ++n)
+        to[n] = qToLittleEndian(qint16(std::clamp(std::lround(samples[n] * 32767.0f), -32768L, 32767L)));
     return out;
 }
 }

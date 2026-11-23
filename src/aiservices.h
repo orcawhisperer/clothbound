@@ -37,6 +37,23 @@ public:
     Ai::Provider *provider() const { return m_provider; }
     Ai::TextModel *text() const { return m_provider->hasKey() ? m_provider->text() : nullptr; }
     Ai::SpeechSynthesizer *speech() const { return m_provider->hasKey() ? m_provider->speech() : nullptr; }
+
+    // Built-in voices (made on this computer) beside the cloud provider.
+    void setLocalSpeech(Ai::Provider *local) { m_local = local; }
+    static bool isBuiltinVoice(const QString &voice) { return voice.startsWith(QStringLiteral("builtin:")); }
+    // Who speaks in a voice: the built-in voices for theirs, the cloud for the rest.
+    Ai::Provider *providerFor(const QString &voice) const {
+        return isBuiltinVoice(voice) && m_local ? m_local : m_provider;
+    }
+    Ai::SpeechSynthesizer *speechFor(const QString &voice) const {
+        if (isBuiltinVoice(voice))
+            return m_local ? m_local->speech() : nullptr;
+        return speech();
+    }
+    Q_INVOKABLE bool canSpeakWith(const QString &voice) const {
+        const Ai::SpeechSynthesizer *speaker = speechFor(voice);
+        return speaker && speaker->canSpeak(voice);
+    }
     Ai::VoiceDesigner *voiceDesigner() const { return m_provider->hasKey() ? m_provider->voiceDesigner() : nullptr; }
 
     bool hasKey() const { return m_provider->hasKey(); }
@@ -76,6 +93,7 @@ signals:
 
 private:
     Ai::Provider *m_provider;
+    Ai::Provider *m_local = nullptr;
     KeyStore *m_keys;
     AiUsageLedger m_ledger;
     bool m_checking = false;

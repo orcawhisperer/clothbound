@@ -309,6 +309,61 @@ FocusScope {
                     wrapMode: Text.Wrap
                     lineHeight: 1.3
                 }
+
+                // Voices made on this computer, and what they take up.
+                Heading {
+                    visible: voicePacks.supported
+                    text: qsTr("Built-in voices")
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: voicePacks.supported
+                    text: qsTr("Voices made on this computer: free, private, and offline, without a key. They're plainer than Gemini's and read without styles.")
+                    color: theme.textSecondary
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.3
+                }
+                Repeater {
+                    model: voicePacks.megabytes >= 0 ? voicePacks.installedPacks() : []
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData.title
+                            color: theme.text
+                            font.pixelSize: 13
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            text: qsTr("%1 MB").arg(Math.round(modelData.megabytes).toLocaleString(Qt.locale(), 'f', 0))
+                            color: theme.textTertiary
+                            font.pixelSize: 12
+                        }
+                        TextButton {
+                            text: qsTr("Remove")
+                            onClicked: voicePacks.remove(modelData.id)
+                        }
+                    }
+                }
+                Label {
+                    visible: voicePacks.supported && voicePacks.megabytes < 1
+                    text: qsTr("None yet. Choose one in the Narrator panel while reading (V).")
+                    color: theme.textTertiary
+                    font.pixelSize: 13
+                }
+
+                Heading { text: qsTr("Credits") }
+                Label {
+                    Layout.fillWidth: true
+                    textFormat: Text.StyledText
+                    text: qsTr("Built-in voices use <b>sherpa-onnx</b> (Apache 2.0) with <b>ONNX Runtime</b> (MIT) and <b>espeak-ng</b> (GPL 3.0), downloaded with the voices; <b>Kokoro-82M</b> (Apache 2.0); and <b>Piper</b> voices (MIT, each voice under its recording's own license, in its folder). The reading face is <b>Literata</b> (OFL).")
+                    color: theme.textSecondary
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.3
+                }
             }
         }
     }

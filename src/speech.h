@@ -7,6 +7,7 @@
 #include <QSet>
 #include <QString>
 #include <QVariantList>
+#include <QVector>
 
 // One sentence as narrated: where it is in the chapter's text (the reader's
 // offsets, so its highlight lands exactly) and the words actually said.
@@ -70,4 +71,9 @@ QString moodAt(const QMap<int, QString> &changes, int block);
 // (by characters, with a little weight for the pause after punctuation).
 QList<QPair<double, double>> timeline(const SpeechClip &clip);
 QByteArray wav(const QByteArray &pcm, int sampleRate);
+// Samples at another rate (cubic interpolation, which is clean enough for
+// speech between 16 and 24 kHz).
+QVector<float> resample(const QVector<float> &samples, int from, int to);
+// Samples between -1 and 1 as 16-bit PCM.
+QByteArray pcm16(const QVector<float> &samples);
 }

@@ -6,6 +6,7 @@
 #include <QList>
 #include <QObject>
 #include <QString>
+#include <QStringList>
 
 // Dogear's intelligence features (narration, the companion, illustration)
 // talk to these interfaces only. A provider (Gemini today; an
@@ -76,6 +77,9 @@ struct SpeechRequest {
     bool economy = false;
     // Not needed now (an offline download): cheaper, and may take longer.
     bool background = false;
+    // The text's sentences, for a synthesizer that can say where each one
+    // ends in the audio (see Reply::boundaries). Others read `text`.
+    QStringList sentences;
 };
 
 struct VoiceDesign {
@@ -103,6 +107,9 @@ public:
     QString model() const { return m_model; }
     QString feature() const { return m_feature; }
     bool isFinished() const { return m_finished; }
+    // Where each sentence of a SpeechRequest's `sentences` ends in the audio,
+    // in samples; empty when the synthesizer can't tell.
+    QList<qint64> boundaries() const { return m_boundaries; }
 
     virtual void abort() = 0;
 
@@ -137,6 +144,7 @@ protected:
     Error m_error;
     QString m_model;
     QString m_feature;
+    QList<qint64> m_boundaries;
     bool m_finished = false;
 };
 
@@ -157,6 +165,17 @@ public:
     virtual QString speechModelName(bool economy) const = 0;
     virtual bool supportsStyle() const { return false; }
     virtual bool supportsStreaming() const { return false; }
+    // Seconds of speech a voice makes per second here; 0 when unknown (or
+    // when it isn't made here at all).
+    virtual double speedOf(const QString &voice) const {
+        Q_UNUSED(voice);
+        return 0;
+    }
+    // Whether a voice can speak now (a built-in one has to be downloaded).
+    virtual bool canSpeak(const QString &voice) const {
+        Q_UNUSED(voice);
+        return true;
+    }
 };
 
 class VoiceDesigner {

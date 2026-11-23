@@ -66,9 +66,11 @@ QVariantMap Download::estimate(int first, int last) const {
     const QList<int> chapters = chaptersBetween(first, last);
     for (int chapter : chapters)
         minutes += estimatedMinutes(chapter);
+    const bool local = AiServices::isBuiltinVoice(m_narration->voice());
     return {{"chapters", chapters.size()},
             {"minutes", minutes},
-            {"cost", m_ai->listeningCost(minutes, m_narration->economy(), true)}};
+            {"local", local},
+            {"cost", local ? 0.0 : m_ai->listeningCost(minutes, m_narration->economy(), true)}};
 }
 
 void Download::setProblem(const QString &problem) {
@@ -80,8 +82,9 @@ void Download::setProblem(const QString &problem) {
 
 void Download::start(int first, int last) {
     cancel();
-    if (!m_ai->speech()) {
-        setProblem(m_ai->describe(int(Ai::Error::NoKey)));
+    if (!m_ai->canSpeakWith(m_narration->voice())) {
+        setProblem(AiServices::isBuiltinVoice(m_narration->voice()) ? tr("This built-in voice isn't downloaded yet.")
+                                                                    : m_ai->describe(int(Ai::Error::NoKey)));
         return;
     }
     m_chapters = chaptersBetween(first, last);
@@ -91,7 +94,8 @@ void Download::start(int first, int last) {
     m_voice = m_narration->voice();
     m_performance = m_narration->performance();
     m_economy = m_narration->economy();
-    m_flex = true;
+    m_local = AiServices::isBuiltinVoice(m_voice);
+    m_flex = !m_local;
     m_active = true;
     m_paused = false;
     m_finished = false;
@@ -124,7 +128,8 @@ void Download::addBlocks(int chapter, const QString &json) {
     if (!m_active || !m_waiting.contains(chapter))
         return;
     const QList<SpeechBlock> blocks = Speech::parseBlocks(json);
-    if (m_performance == QStringLiteral("plain") || !m_director->canDirect(blocks)) {
+    const Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
+    if (m_performance == QStringLiteral("plain") || !speaker || !speaker->supportsStyle() || !m_director->canDirect(blocks)) {
         plan(chapter, blocks, {});
         return;
     }
@@ -140,17 +145,22 @@ void Download::addBlocks(int chapter, const QString &json) {
 
 void Download::plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<int, QString> &moods) {
     m_waiting.remove(chapter);
-    const QString provider = m_ai->provider()->id();
-    const QString model = m_ai->speech()->speechModelName(m_economy);
+    const QString provider = m_ai->providerFor(m_voice)->id();
+    Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
+    if (!speaker)
+        return;
+    const QString model = speaker->speechModelName(m_economy);
     const bool dramatic = m_performance == QStringLiteral("dramatic");
+    const bool styled = m_performance != QStringLiteral("plain") && speaker->supportsStyle();
     double planned = 0;
     for (const SpeechClip &clip : Speech::clips(chapter, blocks, Director::breaks(moods))) {
         if (clip.text.isEmpty())
             continue;
         Job job;
         job.text = clip.text;
-        job.style = m_performance == QStringLiteral("plain") ? QString()
-                                                               : Speech::styleFor(Speech::moodAt(moods, clip.block), dramatic);
+        job.style = styled ? Speech::styleFor(Speech::moodAt(moods, clip.block), dramatic) : QString();
+        for (const SpeechSentence &sentence : clip.sentences)
+            job.sentences.append(sentence.text);
         job.key = AudioCache::keyFor(provider, model, m_voice, job.style, job.text);
         job.minutes = job.text.size() / charsPerMinute;
         planned += job.minutes;
@@ -170,10 +180,10 @@ void Download::pump() {
     if (!running() || m_retry.isActive())
         return;
     m_replies.removeAll(nullptr);
-    while (m_replies.size() < parallel && !m_queue.isEmpty()) {
+    while (m_replies.size() < (m_local ? 1 : parallel) && !m_queue.isEmpty()) {
         Job job = m_queue.takeFirst();
-        const double cost = m_ai->listeningCost(job.minutes, m_economy, m_flex);
-        if (!m_ai->fitsBudget(cost)) {
+        const double cost = m_local ? 0.0 : m_ai->listeningCost(job.minutes, m_economy, m_flex);
+        if (!m_local && !m_ai->fitsBudget(cost)) {
             m_queue.prepend(job);
             stopWith(m_ai->describe(int(Ai::Error::Budget)));
             return;
@@ -186,7 +196,14 @@ void Download::pump() {
         request.economy = m_economy;
         request.stream = false;
         request.background = m_flex;
-        Ai::Reply *reply = m_ai->speech()->synthesize(request);
+        request.sentences = job.sentences;
+        Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
+        if (!speaker) {
+            m_queue.prepend(job);
+            stopWith(m_ai->describe(int(Ai::Error::NoKey)));
+            return;
+        }
+        Ai::Reply *reply = speaker->synthesize(request);
         m_ai->track(reply, m_flex);
         m_replies.append(reply);
         connect(reply, &Ai::Reply::finished, this, [this, reply, job] {
@@ -202,7 +219,7 @@ void Download::pump() {
 }
 
 void Download::made(const Job &job, Ai::Reply *reply) {
-    m_cache->store(job.key, reply->audio(), reply->sampleRate());
+    m_cache->store(job.key, reply->audio(), reply->sampleRate(), reply->boundaries());
     m_audioSeconds += reply->audio().size() / 2.0 / reply->sampleRate();
     m_minutesReady += job.minutes;
     emit progressChanged();

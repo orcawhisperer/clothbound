@@ -40,6 +40,9 @@ HEADERS += \
     src/scanner.h \
     src/speech.h \
     src/speechplayer.h \
+    src/sherpaonnx.h \
+    src/localspeech.h \
+    src/voicepacks.h \
     src/sseparser.h \
     src/theme.h \
     src/translator.h \
@@ -73,6 +76,8 @@ SOURCES += \
     src/scanner.cpp \
     src/speech.cpp \
     src/speechplayer.cpp \
+    src/localspeech.cpp \
+    src/voicepacks.cpp \
     src/sseparser.cpp \
     src/theme.cpp \
     src/translator.cpp \

@@ -290,16 +290,18 @@ int VoiceCatalog::startPreview(const QString &voiceId) {
 }
 
 void VoiceCatalog::preview(const QString &voiceId, const QString &text) {
-    if (!m_ai->speech()) {
-        setProblem(m_ai->describe(int(Ai::Error::NoKey)));
+    if (!m_ai->canSpeakWith(voiceId)) {
+        setProblem(AiServices::isBuiltinVoice(voiceId) ? tr("This built-in voice isn't downloaded yet.")
+                                                       : m_ai->describe(int(Ai::Error::NoKey)));
         return;
     }
     QString words = text.simplified();
     if (voiceId.isEmpty() || words.isEmpty())
         return;
     const int track = startPreview(voiceId);
-    const QString model = m_ai->speech()->speechModelName(false);
-    const QString key = AudioCache::keyFor(m_ai->provider()->id(), model, voiceId, {}, words);
+    Ai::SpeechSynthesizer *speaker = m_ai->speechFor(voiceId);
+    const QString model = speaker->speechModelName(false);
+    const QString key = AudioCache::keyFor(m_ai->providerFor(voiceId)->id(), model, voiceId, {}, words);
     const QString file = m_cache->lookup(key);
     if (!file.isEmpty()) {
         m_cache->decode(file, sampleRate, this, [this, track](const QByteArray &pcm, bool ok) {
@@ -316,7 +318,7 @@ void VoiceCatalog::preview(const QString &voiceId, const QString &text) {
     request.text = words;
     request.voice = voiceId;
     request.stream = true;
-    Ai::Reply *reply = m_ai->speech()->synthesize(request);
+    Ai::Reply *reply = speaker->synthesize(request);
     m_ai->track(reply);
     m_previewReply = reply;
     auto pcm = std::make_shared<QByteArray>();

@@ -218,15 +218,20 @@ int Narration::nextChapterAfter(int chapter) const {
 void Narration::start(int chapter, qint64 offset) {
     stop();
     setProblem({});
-    if (!m_ai->canSpeak()) {
-        setProblem(m_ai->describe(int(Ai::Error::NoKey)));
-        emit needsKey();
-        return;
-    }
     m_bookId = m_reader->bookId();
     if (m_bookId <= 0)
         return;
     loadVoice();
+    if (!m_ai->canSpeakWith(m_voice)) {
+        if (AiServices::isBuiltinVoice(m_voice)) {
+            setProblem(tr("This built-in voice isn't downloaded yet. Choose it again in the Narrator panel (V)."));
+            emit voiceMissing();
+        } else {
+            setProblem(m_ai->describe(int(Ai::Error::NoKey)));
+            emit needsKey();
+        }
+        return;
+    }
     m_active = true;
     m_wanted = true;
     m_following = true;
@@ -268,13 +273,62 @@ void Narration::addBlocks(int chapter, const QString &json) {
         requestDirections(chapter);
     if (m_current < 0 && !m_clips.isEmpty())
         m_current = 0;
+    // A voice made more slowly than it's heard needs a head start:
+    // enough that, made while it plays, it never runs out.
+    if (firstOfSession && !made.isEmpty()) {
+        const double speed = speaker() ? speaker()->speedOf(m_voice) : 0;
+        if (speed > 0 && speed < 1.2 * m_rate) {
+            qint64 characters = 0;
+            for (const SpeechClip &clip : made)
+                characters += clip.text.size();
+            const double seconds = characters * m_samplesPerChar / sampleRate;
+            const double head = seconds * qMax(0.0, 1.0 - speed / m_rate) * 1.1 + 2.0;
+            m_holdSamples = qint64(head * sampleRate);
+            trace(QStringLiteral("head start: %1 s of audio at %2x").arg(head, 0, 'f', 1).arg(speed, 0, 'f', 2));
+            m_player->pause();
+            emit stateChanged();
+        }
+    }
     pump();
+}
+
+int Narration::preparedPercent() const {
+    if (m_holdSamples <= 0)
+        return 100;
+    qint64 have = 0;
+    for (int i = qMax(0, m_current); i < m_clips.size(); ++i)
+        have += m_clips[i].pcm.size() / 2;
+    return int(qMin<qint64>(100, have * 100 / m_holdSamples));
+}
+
+// Plays once the head start is made.
+void Narration::checkHeadStart() {
+    if (m_holdSamples <= 0)
+        return;
+    emit positionChanged();
+    if (preparedPercent() < 100)
+        return;
+    trace(QStringLiteral("head start made"));
+    m_holdSamples = 0;
+    if (m_wanted)
+        m_player->play();
+    emit stateChanged();
 }
 
 bool Narration::waitingForDirections(const Clip &clip) const {
     if (clip.immediate || !directed() || m_moods.contains(clip.chapter) || !m_directionsAsked.contains(clip.chapter))
         return false;
     return nowMs() - m_directionsAsked.value(clip.chapter) < directionsPatienceMs;
+}
+
+// The voice speaks through its own provider: built-in voices here, the rest
+// in the cloud.
+Ai::SpeechSynthesizer *Narration::speaker() const { return m_ai->speechFor(m_voice); }
+
+// Moods need a voice that can take direction; built-in voices read plainly.
+bool Narration::directed() const {
+    const Ai::SpeechSynthesizer *voice = speaker();
+    return m_performance != QStringLiteral("plain") && voice && voice->supportsStyle();
 }
 
 QString Narration::styleFor(const Clip &clip) const {
@@ -303,7 +357,9 @@ void Narration::pump() {
         working += clip.state == Clip::Working && clip.reply ? 1 : 0;
     const int from = qMax(0, m_current);
     qint64 wait = -1;
-    for (int i = from; i < m_clips.size() && i < from + 4; ++i) {
+    const bool local = AiServices::isBuiltinVoice(m_voice);
+    const int ahead = local ? (m_holdSamples > 0 ? 64 : 8) : 4;
+    for (int i = from; i < m_clips.size() && i < from + ahead; ++i) {
         Clip &clip = m_clips[i];
         if (clip.state != Clip::Waiting)
             continue;
@@ -318,16 +374,16 @@ void Narration::pump() {
             continue;
         }
         clip.style = styleFor(clip);
-        const QString model = m_ai->speech()->speechModelName(m_economy);
-        clip.key = AudioCache::keyFor(m_ai->provider()->id(), model, m_voice, clip.style, clip.text);
+        const QString model = speaker()->speechModelName(m_economy);
+        clip.key = AudioCache::keyFor(m_ai->providerFor(m_voice)->id(), model, m_voice, clip.style, clip.text);
         const QString file = m_cache->lookup(clip.key);
         if (!file.isEmpty()) {
             decode(i, file);
             continue;
         }
         // Two requests at a time: enough to stay ahead of the voice, gentle
-        // on the key's rate limits.
-        if (working >= 2)
+        // on the key's rate limits. Built-in voices take their turns.
+        if (working >= (local ? ahead : 2))
             continue;
         fetch(i);
         ++working;
@@ -375,7 +431,9 @@ void Narration::fetch(int index) {
     request.voice = m_voice;
     request.economy = m_economy;
     request.stream = true;
-    Ai::Reply *reply = m_ai->speech()->synthesize(request);
+    for (const SpeechSentence &sentence : std::as_const(clip.sentences))
+        request.sentences.append(sentence.text);
+    Ai::Reply *reply = speaker()->synthesize(request);
     m_ai->track(reply);
     clip.reply = reply;
     clip.state = Clip::Working;
@@ -395,10 +453,13 @@ void Narration::fetch(int index) {
         if (clip.pcm.isEmpty())
             trace(QStringLiteral("first audio #%1").arg(i));
         clip.pcm += pcm;
+        if (const Ai::Reply *from = clip.reply)
+            clip.boundaries = from->boundaries();
         if (clip.queued)
             m_player->appendAudio(i, pcm);
         else
             queue();
+        checkHeadStart();
     });
     connect(reply, &Ai::Reply::finished, this, [this, reply, find] {
         reply->deleteLater();
@@ -423,12 +484,13 @@ void Narration::fetch(int index) {
         }
         clip.state = Clip::Complete;
         clip.samples = clip.pcm.size() / 2;
+        clip.boundaries = reply->boundaries();
         if (!clip.text.isEmpty() && clip.samples > 0)
             m_samplesPerChar = 0.8 * m_samplesPerChar + 0.2 * double(clip.samples) / clip.text.size();
         trace(QStringLiteral("complete #%1 (%2 s)").arg(i).arg(clip.samples / double(sampleRate), 0, 'f', 1));
         if (clip.queued)
             m_player->finishTrack(i);
-        m_cache->store(clip.key, clip.pcm, reply->sampleRate());
+        m_cache->store(clip.key, clip.pcm, reply->sampleRate(), clip.boundaries);
         pump();
     });
 }
@@ -457,11 +519,13 @@ void Narration::decode(int index, const QString &file) {
         }
         clip.pcm = pcm;
         clip.samples = clip.pcm.size() / 2;
+        clip.boundaries = m_cache->boundaries(key);
         clip.state = Clip::Complete;
         if (clip.queued) {
             m_player->appendAudio(i, clip.pcm);
             m_player->finishTrack(i);
         }
+        checkHeadStart();
         pump();
     });
 }
@@ -498,8 +562,30 @@ void Narration::heard(int track, qint64 sample) {
         pump();
     }
     const Clip &clip = m_clips[track];
+    // Where the voice said each sentence ends, when it did; otherwise by
+    // the sentences' share of the clip.
+    if (!clip.boundaries.isEmpty() && clip.boundaries.size() <= clip.sentences.size()) {
+        int at = 0;
+        while (at < clip.boundaries.size() && sample >= clip.boundaries[at])
+            ++at;
+        showSentenceAt(qMin(at, int(clip.sentences.size()) - 1));
+        return;
+    }
     const qint64 total = expectedSamples(clip);
     showSentence(total > 0 ? double(sample) / double(total) : 0);
+}
+
+void Narration::showSentenceAt(int at) {
+    if (m_current < 0 || m_current >= m_clips.size())
+        return;
+    const Clip &clip = m_clips[m_current];
+    if (at < 0 || at >= clip.sentences.size() || at == m_sentence)
+        return;
+    m_sentence = at;
+    m_sentenceStart = clip.sentences[at].start;
+    m_sentenceEnd = clip.sentences[at].end;
+    emit positionChanged();
+    emit speaking(clip.chapter, m_sentenceStart, m_sentenceEnd);
 }
 
 void Narration::showSentence(double fraction) {
@@ -515,13 +601,7 @@ void Narration::showSentence(double fraction) {
             at = i;
             break;
         }
-    if (at < 0 || at == m_sentence)
-        return;
-    m_sentence = at;
-    m_sentenceStart = clip.sentences[at].start;
-    m_sentenceEnd = clip.sentences[at].end;
-    emit positionChanged();
-    emit speaking(clip.chapter, m_sentenceStart, m_sentenceEnd);
+    showSentenceAt(at);
 }
 
 void Narration::jumpTo(int index) {
@@ -592,7 +672,8 @@ void Narration::resume() {
             retry = true;
         }
     m_wanted = true;
-    m_player->play();
+    if (m_holdSamples <= 0)
+        m_player->play();
     emit stateChanged();
     if (retry)
         pump();
@@ -615,6 +696,7 @@ void Narration::stop() {
     m_blocks.clear();
     m_moods.clear();
     m_lastChapter = -1;
+    m_holdSamples = 0;
     m_sentence = -1;
     m_sentenceStart = m_sentenceEnd = -1;
     const bool was = m_active;

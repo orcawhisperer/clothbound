@@ -58,10 +58,29 @@ FocusScope {
     }
     function choose(voice) {
         voices.stopPreview()
+        if (voice.kind === "builtin" && !voice.installed) {
+            pendingVoice = voice.id
+            voicePacks.installVoice(voice.id)
+            return
+        }
         narration.setVoice(voice.id, voice.title || voice.name)
     }
     function details(voice) {
         const parts = []
+        if (voice.kind === "builtin") {
+            parts.push(voice.engine, voice.languageName)
+            if (voice.grade)
+                parts.push(qsTr("grade %1").arg(voice.grade))
+            else if (voice.quality)
+                parts.push(voice.quality === "high" ? qsTr("high quality") : voice.quality === "medium" ? qsTr("medium quality")
+                                                                                                       : qsTr("low quality"))
+            const speed = voice.installed ? localSpeech.speedOf(voice.id) : 0
+            if (!voice.installed)
+                parts.push(qsTr("%1 MB to download").arg(Math.round(voice.bytes / 1e6).toLocaleString(Qt.locale(), 'f', 0)))
+            else if (speed > 0 && translator.language !== "")
+                parts.push(qsTr("%1× real time here").arg(speed.toLocaleString(Qt.locale(), 'f', 1)))
+            return parts.join(" · ")
+        }
         if (voice.kind === "designed") {
             parts.push(qsTr("Designed"))
             if (voice.expires && !isNaN(voice.expires.getTime()) && translator.language !== "")
@@ -94,7 +113,30 @@ FocusScope {
     readonly property var classics: suggestions.filter(voice => voice.kind === "classic")
     readonly property var yours: voices.count >= 0 ? voices.designedVoices() : []
     readonly property var results: query.trim() !== "" && voices.count >= 0 ? voices.search(query, "", 80) : []
-    readonly property var current: voices.count >= 0 && narration.voice ? voices.voice(narration.voice) : ({})
+    readonly property var current: voices.count >= 0 && narration.voice
+        ? (narration.voice.startsWith("builtin:") ? voicePacks.voice(narration.voice) : voices.voice(narration.voice)) : ({})
+
+    // Built-in voices: made on this computer, downloaded on request.
+    readonly property bool builtinVoice: (narration.voice || "").startsWith("builtin:")
+    readonly property var builtins: open && voicePacks.megabytes >= 0 ? voicePacks.voices(language) : []
+    readonly property var builtinInstalled: builtins.filter(voice => voice.installed)
+    // The best few that are here (and the one reading), until asked for more.
+    readonly property var builtinShown: allBuiltins ? builtins
+        : builtinInstalled.filter(voice => voice.recommended || voice.id === narration.voice)
+    readonly property var builtinOffer: open && voicePacks.megabytes >= 0 ? voicePacks.offer(language) : ({})
+    property bool allBuiltins: false
+    // Chosen while it downloads: it becomes the voice when it's ready.
+    property string pendingVoice: ""
+    Connections {
+        target: voicePacks
+        function onReady(voiceId) {
+            if (voiceId !== panel.pendingVoice)
+                return
+            panel.pendingVoice = ""
+            const voice = voicePacks.voice(voiceId)
+            narration.setVoice(voice.id, voice.name)
+        }
+    }
 
     Connections {
         target: voices
@@ -238,6 +280,104 @@ FocusScope {
         ToolTip.delay: 600
     }
 
+    component BuiltinVoices: ColumnLayout {
+        Layout.fillWidth: true
+        visible: voicePacks.supported
+        spacing: 6
+
+        Heading { text: qsTr("Built-in voices") }
+        Note { text: qsTr("Free and offline, made on this computer. Plainer than Gemini's voices, and without styles.") }
+
+        // None yet for this book's language: the best one, ready to download.
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.topMargin: 4
+            visible: panel.builtinInstalled.length === 0 && !!panel.builtinOffer.voice
+            radius: Math.min(10, theme.radius)
+            color: Ui.tint(panel.look.fg, 0.04)
+            border.color: panel.look.border
+            implicitHeight: offerColumn.implicitHeight + 24
+            ColumnLayout {
+                id: offerColumn
+                x: 12
+                y: 12
+                width: parent.width - 24
+                spacing: 8
+                Label {
+                    Layout.fillWidth: true
+                    text: panel.builtinOffer.voice
+                          ? qsTr("Read this book offline with %1 (%2, %3).").arg(panel.builtinOffer.voice.name)
+                                .arg(panel.builtinOffer.voice.engine).arg(panel.builtinOffer.voice.languageName) : ""
+                    color: panel.look.fg
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                }
+                Note {
+                    visible: !voicePacks.busy
+                    text: panel.builtinOffer.voice
+                          ? qsTr("It downloads %1 MB once.").arg(Math.round(panel.builtinOffer.bytes / 1e6).toLocaleString(Qt.locale(), 'f', 0)) : ""
+                }
+                Action {
+                    visible: !voicePacks.busy
+                    primary: true
+                    text: qsTr("Download")
+                    onClicked: panel.choose(panel.builtinOffer.voice)
+                }
+            }
+        }
+
+        // A download under way.
+        ColumnLayout {
+            Layout.fillWidth: true
+            visible: voicePacks.busy
+            spacing: 6
+            ProgressBar {
+                Layout.fillWidth: true
+                value: voicePacks.progress
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Note {
+                    Layout.fillWidth: true
+                    text: qsTr("Downloading %1…").arg(voicePacks.installing)
+                }
+                Action {
+                    text: qsTr("Cancel")
+                    onClicked: {
+                        panel.pendingVoice = ""
+                        voicePacks.cancel()
+                    }
+                }
+            }
+        }
+        Label {
+            Layout.fillWidth: true
+            visible: voicePacks.problem !== ""
+            text: voicePacks.problem
+            color: theme.colors.orange || "#e5a050"
+            font.pixelSize: 12
+            wrapMode: Text.Wrap
+        }
+        Note {
+            visible: panel.builtins.length === 0
+            text: qsTr("No built-in voice speaks this book's language yet.")
+        }
+
+        Repeater {
+            model: panel.builtinShown
+            delegate: VoiceRow {
+                required property var modelData
+                voice: modelData
+            }
+        }
+        Action {
+            visible: panel.builtins.length > panel.builtinShown.length || panel.allBuiltins
+            text: panel.allBuiltins ? qsTr("Fewer")
+                : qsTr("More built-in voices (%1)").arg(panel.builtins.length - panel.builtinShown.length)
+            onClicked: panel.allBuiltins = !panel.allBuiltins
+        }
+    }
+
     component VoiceRow: AbstractButton {
         id: row
         property var voice: ({})
@@ -341,6 +481,7 @@ FocusScope {
                 ToolTip.delay: 600
             }
             Listen {
+                visible: !(row.voice.kind === "builtin" && !row.voice.installed)
                 voiceId: row.voice.id || ""
                 Layout.rightMargin: 8
             }
@@ -392,14 +533,20 @@ FocusScope {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
-                Choice { text: qsTr("Plain"); selected: narration.performance === "plain"; onClicked: narration.performance = "plain" }
-                Choice { text: qsTr("Natural"); selected: narration.performance === "natural"; onClicked: narration.performance = "natural" }
-                Choice { text: qsTr("Dramatic"); selected: narration.performance === "dramatic"; onClicked: narration.performance = "dramatic" }
+                Choice { text: qsTr("Plain"); selected: panel.builtinVoice || narration.performance === "plain"; onClicked: narration.performance = "plain" }
+                Choice { text: qsTr("Natural"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "natural"; onClicked: narration.performance = "natural" }
+                Choice { text: qsTr("Dramatic"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "dramatic"; onClicked: narration.performance = "dramatic" }
             }
             Note {
-                text: narration.performance === "plain" ? qsTr("An even, clear reading with no direction. Good for study and reference.")
+                text: panel.builtinVoice ? qsTr("Built-in voices read evenly; the other styles need a Gemini voice.")
+                    : narration.performance === "plain" ? qsTr("An even, clear reading with no direction. Good for study and reference.")
                     : narration.performance === "dramatic" ? qsTr("A fuller performance, for adventure, horror and genre fiction.")
                     : qsTr("A storyteller's reading: the mood follows the scene, never acted.")
+            }
+
+            BuiltinVoices {
+                Layout.topMargin: 10
+                visible: voicePacks.supported && !ai.hasKey
             }
 
             // Casting: a narrator designed for this book.
@@ -550,13 +697,19 @@ FocusScope {
                 }
             }
 
-            Heading { text: qsTr("Offline") }
+            // Gemini's narration, downloaded to hear offline (built-in voices
+            // are offline already).
+            readonly property bool offlineApplies: !panel.builtinVoice && ai.canSpeak
+            Heading {
+                visible: parent.offlineApplies || panel.downloadingThisBook
+                text: qsTr("Offline")
+            }
             Note {
-                visible: !panel.downloadingThisBook
+                visible: parent.offlineApplies && !panel.downloadingThisBook
                 text: qsTr("Download the narration to listen without a connection. It's made at Gemini's slower Flex tier, for half the price.")
             }
             RowLayout {
-                visible: !panel.downloadingThisBook && ai.canSpeak
+                visible: parent.offlineApplies && !panel.downloadingThisBook
                 Layout.fillWidth: true
                 spacing: 8
                 Action {
@@ -571,7 +724,7 @@ FocusScope {
                 }
             }
             RowLayout {
-                visible: !panel.downloadingThisBook && ai.canSpeak && (panel.restEstimate.chapters || 0) > 1
+                visible: parent.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.chapters || 0) > 1
                 Layout.fillWidth: true
                 spacing: 8
                 Action {
@@ -586,7 +739,8 @@ FocusScope {
                 }
             }
             Note {
-                visible: !panel.downloadingThisBook && (panel.restEstimate.cost || 0) > 0 && !ai.fitsBudget(panel.restEstimate.cost)
+                visible: parent.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.cost || 0) > 0
+                         && !ai.fitsBudget(panel.restEstimate.cost)
                 text: qsTr("Downloading to the end would pass your monthly budget; it stops there.")
                 color: theme.colors.orange || "#e5a050"
             }
@@ -752,6 +906,12 @@ FocusScope {
                         voice: modelData
                     }
                 }
+            }
+
+            // With a key, the built-in voices come after Gemini's.
+            BuiltinVoices {
+                Layout.topMargin: 10
+                visible: voicePacks.supported && ai.hasKey && panel.query.trim() === ""
             }
         }
     }

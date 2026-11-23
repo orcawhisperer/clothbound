@@ -46,6 +46,10 @@ class Narration : public QObject {
     Q_PROPERTY(int sleepMinutes READ sleepMinutes NOTIFY sleepChanged)
     Q_PROPERTY(bool sleepAtChapterEnd READ sleepAtChapterEnd NOTIFY sleepChanged)
     Q_PROPERTY(QString problem READ problem NOTIFY problemChanged)
+    // A voice slower than listening (built-in, on a slow computer) gets a
+    // head start first, so it then plays through without pausing.
+    Q_PROPERTY(bool preparing READ preparing NOTIFY stateChanged)
+    Q_PROPERTY(int preparedPercent READ preparedPercent NOTIFY positionChanged)
 
 public:
     Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, QObject *parent = nullptr);
@@ -71,6 +75,8 @@ public:
     int sleepMinutes() const;
     bool sleepAtChapterEnd() const { return m_sleepAtChapterEnd; }
     QString problem() const { return m_problem; }
+    bool preparing() const { return m_holdSamples > 0; }
+    int preparedPercent() const;
 
     // Starts reading the open book at a chapter and offset.
     Q_INVOKABLE void start(int chapter, qint64 offset);
@@ -100,6 +106,8 @@ signals:
     void blocksWanted(int chapter);
     void speaking(int chapter, qint64 start, qint64 end);
     void needsKey();
+    // The chosen built-in voice has to be downloaded first.
+    void voiceMissing();
 
 private:
     struct Clip : SpeechClip {
@@ -114,6 +122,7 @@ private:
         QByteArray pcm;
         qint64 samples = 0;
         QList<QPair<double, double>> spans;  // its sentences' share of its length
+        QList<qint64> boundaries;            // where each sentence ends, when the voice said
         QPointer<Ai::Reply> reply;
     };
 
@@ -125,7 +134,9 @@ private:
     void heard(int track, qint64 sample);
     void jumpTo(int index);
     void showSentence(double fraction);
+    void showSentenceAt(int sentence);
     qint64 expectedSamples(const Clip &clip) const;
+    void checkHeadStart();
     void setBuffering(bool buffering);
     void setProblem(const QString &problem);
     bool keptDirections(int chapter);
@@ -134,7 +145,8 @@ private:
     void applyMoods(int chapter, const QMap<int, QString> &moods);
     bool waitingForDirections(const Clip &clip) const;
     QString styleFor(const Clip &clip) const;
-    bool directed() const { return m_performance != QStringLiteral("plain"); }
+    bool directed() const;
+    Ai::SpeechSynthesizer *speaker() const;
     int nextChapterAfter(int chapter) const;
     void loadVoice();
 
@@ -149,6 +161,7 @@ private:
     int m_current = -1;
     int m_queued = -1;
     double m_samplesPerChar = 24000.0 / 15.0;
+    qint64 m_holdSamples = 0;
     int m_sentence = -1;
     qint64 m_sentenceStart = -1;
     qint64 m_sentenceEnd = -1;

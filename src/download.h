@@ -76,6 +76,7 @@ private:
     struct Job {
         QString key;
         QString text;
+        QStringList sentences;
         QString style;
         double minutes = 0;
         int tries = 0;
@@ -106,6 +107,8 @@ private:
     QString m_performance;
     bool m_economy = false;
     bool m_flex = true;
+    // Built-in voices: made on this computer, one at a time, and free.
+    bool m_local = false;
     QList<int> m_chapters;
     int m_nextChapter = 0;
     QSet<int> m_waiting;  // chapters whose blocks or direction are on their way

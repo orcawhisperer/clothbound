@@ -5,6 +5,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QNetworkReply>
+#include <QCryptographicHash>
+#include <QProcess>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -18,6 +20,8 @@
 #include "fakeserver.h"
 #include "gemini.h"
 #include "keystore.h"
+#include "localspeech.h"
+#include "voicepacks.h"
 #include "sseparser.h"
 #include "bookname.h"
 #include "bookscheme.h"
@@ -111,6 +115,69 @@ private:
             cache = std::make_unique<AudioCache>(dir.filePath("audio"), library.database().connectionName());
             catalog = std::make_unique<VoiceCatalog>(services.get(), cache.get(), &reader,
                                                      library.database().connectionName(), dir.filePath("voices.json"));
+        }
+    };
+
+
+    // A small manifest in the shape of src/voices/packs.json, pointing at `base`.
+    static QByteArray packsManifest(const QString &base, const QByteArray &engineSha = "00",
+                                    const QByteArray &piperSha = "00", qint64 engineSize = 10, qint64 piperSize = 10) {
+        const QJsonObject engine{{"version", "1.13.8"},
+                                 {"license", "Apache-2.0"},
+                                 {"x86_64", QJsonObject{{"url", base + "/engine-x64.tar.bz2"}, {"size", engineSize},
+                                                        {"sha256", QString(engineSha)}, {"dir", "engine-x64"}}},
+                                 {"aarch64", QJsonObject{{"url", base + "/engine-arm.tar.bz2"}, {"size", engineSize},
+                                                         {"sha256", QString(engineSha)}, {"dir", "engine-arm"}}}};
+        const QJsonObject kokoro{
+            {"id", "kokoro-v1.0"}, {"title", "Kokoro"}, {"license", "Apache-2.0"},
+            {"variants", QJsonObject{{"x86_64", QJsonObject{{"url", base + "/k-int8.tar.bz2"}, {"size", 132},
+                                                            {"sha256", "11"}, {"dir", "kokoro-int8"}, {"model", "model.int8.onnx"}}},
+                                     {"aarch64", QJsonObject{{"url", base + "/k-fp32.tar.bz2"}, {"size", 350},
+                                                             {"sha256", "22"}, {"dir", "kokoro-fp32"}, {"model", "model.onnx"}}}}},
+            {"languages", QJsonObject{{"en-US", QJsonObject{{"lexicon", "lexicon-us-en.txt"}, {"lang", "en"}}},
+                                      {"en-GB", QJsonObject{{"lexicon", "lexicon-gb-en.txt"}, {"lang", "en"}}}}},
+            {"voices", QJsonArray{QJsonObject{{"id", "af_heart"}, {"speaker", 3}, {"name", "Heart"}, {"language", "en-US"},
+                                              {"gender", "female"}, {"grade", "A"}, {"recommended", true}},
+                                  QJsonObject{{"id", "bm_george"}, {"speaker", 26}, {"name", "George"}, {"language", "en-GB"},
+                                              {"gender", "male"}, {"grade", "C"}, {"recommended", true}},
+                                  QJsonObject{{"id", "bm_lewis"}, {"speaker", 27}, {"name", "Lewis"}, {"language", "en-GB"},
+                                              {"gender", "male"}, {"grade", "D+"}, {"recommended", false}}}}};
+        const QJsonObject piper{
+            {"license", "MIT"},
+            {"voices", QJsonArray{QJsonObject{{"id", "de_DE-thorsten-high"}, {"dir", "vits-piper-de_DE-thorsten-high"},
+                                              {"model", "de_DE-thorsten-high.onnx"}, {"language", "de-DE"}, {"name", "Thorsten"},
+                                              {"quality", "high"}, {"recommended", true}, {"url", base + "/thorsten.tar.bz2"},
+                                              {"size", piperSize}, {"sha256", QString(piperSha)}},
+                                  QJsonObject{{"id", "de_DE-eva_k-x_low"}, {"dir", "vits-piper-de_DE-eva_k-x_low"},
+                                              {"model", "de_DE-eva_k-x_low.onnx"}, {"language", "de-DE"}, {"name", "Eva K"},
+                                              {"quality", "x_low"}, {"recommended", false}, {"url", base + "/eva.tar.bz2"},
+                                              {"size", 5}, {"sha256", "33"}}}}};
+        return QJsonDocument(QJsonObject{{"engine", engine}, {"kokoro", kokoro}, {"piper", piper}}).toJson();
+    }
+
+    // A pack's folder, as if it had been downloaded and unpacked.
+    static void fakeInstall(const QString &root, const QString &dir) {
+        QDir().mkpath(root + "/" + dir);
+        QFile marker(root + "/" + dir + "/.dogear-installed");
+        QVERIFY(marker.open(QIODevice::WriteOnly));
+    }
+
+    // An engine that makes a tone: half a second per sentence at 16 kHz.
+    class ToneEngine : public TtsEngine {
+    public:
+        std::shared_ptr<QStringList> spoken = std::make_shared<QStringList>();
+        QString prepare(const VoicePacks::Model &) override { return {}; }
+        int sampleRate() const override { return 16000; }
+        QVector<float> speak(const QString &text, int, const std::atomic_bool &stop) override {
+            spoken->append(text);
+            if (text.contains("slowly"))
+                QThread::msleep(400);
+            if (stop)
+                return {};
+            QVector<float> samples(8000);
+            for (int n = 0; n < samples.size(); ++n)
+                samples[n] = 0.5f * std::sin(2 * M_PI * 300 * n / 16000.0);
+            return samples;
         }
     };
 
@@ -819,6 +886,211 @@ private slots:
         QVERIFY(notes.contains("## Chapter One"));
         QVERIFY(notes.contains("> an earlier one\n\nRemember this."));
         QVERIFY(notes.indexOf("## Chapter One") < notes.indexOf("## Notes"));
+    }
+
+
+    // --- Built-in voices ---------------------------------------------------
+
+    void voicePacksOfferTheRightVoices() {
+        QTemporaryDir dir;
+        VoicePacks arm(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        QVERIFY(arm.supported());
+        QVERIFY(!arm.engineInstalled());
+        // Kokoro comes in the build that's quick on the processor.
+        QCOMPARE(arm.pack("kokoro-v1.0")->dir, QString("kokoro-fp32"));
+        VoicePacks intel(dir.filePath("voices"), nullptr, "x86_64", packsManifest("http://x"));
+        QCOMPARE(intel.pack("kokoro-v1.0")->dir, QString("kokoro-int8"));
+        VoicePacks other(dir.filePath("voices"), nullptr, "riscv64", packsManifest("http://x"));
+        QVERIFY(!other.supported());
+
+        // English: the region asked for first, then the recommended.
+        QVariantList voices = arm.voices("en-GB");
+        QCOMPARE(voices.size(), 3);
+        QCOMPARE(voices[0].toMap().value("id").toString(), QString("builtin:kokoro:bm_george"));
+        QCOMPARE(voices[2].toMap().value("id").toString(), QString("builtin:kokoro:af_heart"));
+        QCOMPARE(arm.voices("fr").size(), 0);
+        // German: the recommended Piper voice, with what it takes to get it.
+        const QVariantMap offer = arm.offer("de");
+        QCOMPARE(offer.value("voice").toMap().value("id").toString(), QString("builtin:piper:de_DE-thorsten-high"));
+        QCOMPARE(offer.value("bytes").toLongLong(), 20);  // engine and voice
+        QCOMPARE(offer.value("titles").toStringList().size(), 2);
+        QVERIFY(!arm.model("builtin:piper:de_DE-thorsten-high"));
+
+        // Once installed, a voice knows its files; English voices share a
+        // model by accent.
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        QVERIFY(arm.engineInstalled());
+        QVERIFY(arm.engineLibrary().endsWith("engine-arm/lib/libsherpa-onnx-c-api.so"));
+        const auto george = arm.model("builtin:kokoro:bm_george");
+        QVERIFY(george);
+        QCOMPARE(george->speaker, 26);
+        QVERIFY(george->model.endsWith("kokoro-fp32/model.onnx"));
+        QVERIFY(george->lexicon.endsWith("lexicon-gb-en.txt"));
+        QCOMPARE(george->key, arm.model("builtin:kokoro:bm_lewis")->key);
+        QVERIFY(george->key != arm.model("builtin:kokoro:af_heart")->key);
+        QVERIFY(arm.voice("builtin:kokoro:af_heart").value("installed").toBool());
+        QCOMPARE(arm.offer("en").value("bytes").toLongLong(), 0);
+    }
+
+    void voicePacksInstallFromTheNetwork() {
+        QTemporaryDir dir;
+        // Two packs as real archives, served by a fake server.
+        auto archive = [&dir](const QString &folder, const QString &file) {
+            QDir().mkpath(dir.filePath("src/" + folder + "/lib"));
+            write(dir.filePath("src/" + folder + "/lib/" + file), "voice data");
+            QProcess tar;
+            tar.start("tar", {"-cjf", dir.filePath(folder + ".tar.bz2"), "-C", dir.filePath("src"), folder});
+            tar.waitForFinished();
+            QFile made(dir.filePath(folder + ".tar.bz2"));
+            made.open(QIODevice::ReadOnly);
+            return made.readAll();
+        };
+        const QByteArray engine = archive("engine-arm", "libsherpa-onnx-c-api.so");
+        const QByteArray thorsten = archive("vits-piper-de_DE-thorsten-high", "de_DE-thorsten-high.onnx");
+        auto sha = [](const QByteArray &bytes) { return QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex(); };
+
+        FakeServer server;
+        // The engine arrives whole; the voice resumes from half way.
+        const qint64 half = thorsten.size() / 2;
+        server.responses = {{200, "application/octet-stream", engine}, {206, "application/octet-stream", thorsten.mid(half)}};
+        const QString root = dir.filePath("voices");
+        VoicePacks packs(root, nullptr, "aarch64",
+                         packsManifest(server.endpoint(), sha(engine), sha(thorsten), engine.size(), thorsten.size()));
+        QDir().mkpath(root + "/.downloads");
+        write(root + "/.downloads/thorsten.tar.bz2.part", thorsten.left(half));
+
+        QSignalSpy ready(&packs, &VoicePacks::ready);
+        packs.installVoice("builtin:piper:de_DE-thorsten-high");
+        QVERIFY(packs.busy());
+        QTRY_COMPARE_WITH_TIMEOUT(ready.count(), 1, 10000);
+        QCOMPARE(ready[0][0].toString(), QString("builtin:piper:de_DE-thorsten-high"));
+        QVERIFY(!packs.busy());
+        QVERIFY(packs.engineInstalled());
+        QVERIFY(QFile::exists(root + "/vits-piper-de_DE-thorsten-high/lib/de_DE-thorsten-high.onnx"));
+        QVERIFY(packs.model("builtin:piper:de_DE-thorsten-high"));
+        QCOMPARE(server.requests[1].headers.value("range"), QByteArray("bytes=") + QByteArray::number(half) + "-");
+        QVERIFY(!QFile::exists(root + "/.downloads/thorsten.tar.bz2"));
+        QCOMPARE(packs.installedPacks().size(), 2);
+
+        // Removing takes the files away.
+        packs.remove("piper:de_DE-thorsten-high");
+        QVERIFY(!packs.model("builtin:piper:de_DE-thorsten-high"));
+        QVERIFY(!QFile::exists(root + "/vits-piper-de_DE-thorsten-high"));
+
+        // A download that doesn't match its checksum is refused (one that
+        // comes up short is only interrupted, and picks up later).
+        server.responses = {{200, "application/octet-stream", QByteArray(thorsten.size(), 'x')}};
+        QSignalSpy failed(&packs, &VoicePacks::failed);
+        packs.installVoice("builtin:piper:de_DE-thorsten-high");
+        QTRY_COMPARE_WITH_TIMEOUT(failed.count(), 1, 10000);
+        QVERIFY(failed[0][0].toString().contains("checksum"));
+        QVERIFY(!packs.model("builtin:piper:de_DE-thorsten-high"));
+    }
+
+    void resamplingKeepsPitchAndLength() {
+        QVector<float> tone(22050);
+        for (int n = 0; n < tone.size(); ++n)
+            tone[n] = float(std::sin(2 * M_PI * 440 * n / 22050.0));
+        const QVector<float> out = Speech::resample(tone, 22050, 24000);
+        QVERIFY(std::abs(out.size() - 24000) <= 1);
+        int crossings = 0;
+        for (int n = 1; n < out.size(); ++n)
+            crossings += (out[n - 1] < 0) != (out[n] < 0) ? 1 : 0;
+        QVERIFY2(std::abs(crossings - 880) <= 4, qPrintable(QString::number(crossings)));
+        QCOMPARE(Speech::resample(tone, 24000, 24000).size(), tone.size());
+        const QByteArray pcm = Speech::pcm16({0.0f, 1.0f, -1.0f, 2.0f});
+        const auto *samples = reinterpret_cast<const qint16 *>(pcm.constData());
+        QCOMPARE(samples[1], qint16(32767));
+        QCOMPARE(samples[2], qint16(-32767));
+        QCOMPARE(samples[3], qint16(32767));  // clipped, not wrapped
+    }
+
+    void builtinVoicesSpeakASentenceAtATime() {
+        QTemporaryDir dir;
+        VoicePacks packs(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        auto engine = std::make_shared<QStringList>();
+        LocalSpeech local(&packs, nullptr, [engine](const QString &) {
+            auto tone = std::make_unique<ToneEngine>();
+            tone->spoken = engine;
+            return tone;
+        });
+        QVERIFY(local.canSpeak("builtin:kokoro:bm_george"));
+        QVERIFY(!local.canSpeak("builtin:piper:de_DE-thorsten-high"));
+        QVERIFY(!local.supportsStyle());
+
+        Ai::SpeechRequest request;
+        request.voice = "builtin:kokoro:bm_george";
+        request.sentences = {"One.", "Two.", "Three."};
+        Ai::Reply *reply = local.synthesize(request);
+        QSignalSpy audio(reply, &Ai::Reply::audioReceived);
+        QTRY_VERIFY(reply->isFinished());
+        QVERIFY(!reply->error());
+        QCOMPARE(audio.count(), 3);
+        QCOMPARE(*engine, QStringList({"One.", "Two.", "Three."}));
+        // Each sentence: half a second at 24 kHz, and a beat after it (a
+        // longer one at the end); its end is where the next begins.
+        const QList<qint64> ends = reply->boundaries();
+        QCOMPARE(ends.size(), 3);
+        QCOMPARE(ends[0], 12000 + qint64(0.14 * 24000));
+        QCOMPARE(ends[2], reply->audio().size() / 2);
+        QCOMPARE(reply->sampleRate(), 24000);
+
+        // Text without sentences is split here.
+        engine->clear();
+        request.sentences.clear();
+        request.text = "It rained. Then it stopped.";
+        reply = local.synthesize(request);
+        QTRY_VERIFY(reply->isFinished());
+        QCOMPARE(engine->size(), 2);
+
+        // Stopping is immediate, and the rest isn't made.
+        engine->clear();
+        request.sentences = {"Said slowly.", "Never said."};
+        reply = local.synthesize(request);
+        QTRY_COMPARE(engine->size(), 1);
+        reply->abort();
+        QVERIFY(reply->isFinished());
+        QCOMPARE(reply->error().kind, Ai::Error::Cancelled);
+        QTest::qWait(600);
+        QCOMPARE(engine->size(), 1);
+
+        // A voice that isn't here says so.
+        request.voice = "builtin:piper:de_DE-thorsten-high";
+        reply = local.synthesize(request);
+        QTRY_VERIFY(reply->isFinished());
+        QCOMPARE(reply->error().kind, Ai::Error::Unsupported);
+
+        // Its pace here is kept.
+        local.noteSpeed(packs.model("builtin:kokoro:bm_george")->key, 3.0);
+        QCOMPARE(local.speedOf("builtin:kokoro:bm_george"), 3.0);
+    }
+
+    void voicesAreSpokenByTheirOwnProvider() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath("voices"), nullptr, "aarch64", packsManifest("http://x"));
+        LocalSpeech local(&packs);
+        services.setLocalSpeech(&local);
+        // No key: cloud voices can't speak; built-in ones can, once here.
+        QVERIFY(!services.canSpeakWith("sulafat"));
+        QVERIFY(!services.canSpeakWith("builtin:kokoro:af_heart"));
+        fakeInstall(dir.filePath("voices"), "engine-arm");
+        fakeInstall(dir.filePath("voices"), "kokoro-fp32");
+        QVERIFY(services.canSpeakWith("builtin:kokoro:af_heart"));
+        QCOMPARE(services.providerFor("builtin:kokoro:af_heart")->id(), QString("builtin"));
+        QCOMPARE(services.providerFor("sulafat")->id(), QString("gemini"));
+        keys.save("gemini", "k");
+        gemini.setKey("k");
+        QVERIFY(services.canSpeakWith("sulafat"));
+        QVERIFY(services.speechFor("sulafat") != services.speechFor("builtin:kokoro:af_heart"));
     }
 
     // --- Search --------------------------------------------------------

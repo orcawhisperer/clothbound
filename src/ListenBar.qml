@@ -62,14 +62,14 @@ Rectangle {
                     anchors.horizontalCenterOffset: narration.playing ? 0 : 1
                     width: 18
                     height: 18
-                    visible: !narration.buffering
+                    visible: !narration.buffering && !narration.preparing
                     path: narration.playing ? Icons.pause : Icons.play
                     stroke: 2.2
                     color: Ui.readableOn(bar.look.link)
                 }
                 BusyIndicator {
                     anchors.centerIn: parent
-                    visible: narration.buffering && narration.playing
+                    visible: (narration.buffering || narration.preparing) && narration.playing
                     running: visible
                     implicitWidth: 28
                     implicitHeight: 28
@@ -151,6 +151,7 @@ Rectangle {
             leftPadding: 6
             rightPadding: 6
             text: narration.problem !== "" ? narration.problem
+                : narration.preparing ? qsTr("Preparing ahead · %1%").arg(narration.preparedPercent)
                 : narration.minutesLeftInChapter > 0 && translator.language !== ""
                   ? qsTr("%1 left in chapter").arg(Format.duration(narration.minutesLeftInChapter)) : ""
             color: narration.problem !== "" ? (theme.colors.orange || "#e5a050") : bar.look.muted
