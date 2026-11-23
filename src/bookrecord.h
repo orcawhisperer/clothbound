@@ -37,6 +37,9 @@ struct BookRecord {
     bool missing = false;
     bool hidden = false;
     bool loose = false;
+    // When it was put on the Want to read shelf, and first listened to (0 = never).
+    qint64 wantAt = 0;
+    qint64 listenedAt = 0;
 
     bool visible() const { return !missing && !hidden; }
     // "ed. Parrinder · Penguin · 2005"

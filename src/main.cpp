@@ -16,6 +16,7 @@
 #include "keystore.h"
 #include "cli.h"
 #include "library.h"
+#include "libraryfinder.h"
 #include "narration.h"
 #include "voicecatalog.h"
 #include "mpris.h"
@@ -364,6 +365,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    LibraryFinder libraryFinder;
     QQmlApplicationEngine engine;
     engine.addImportPath(QStringLiteral("qrc:/style"));
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
@@ -374,6 +376,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("translator", &translator);
     engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("library", &library);
+    engine.rootContext()->setContextProperty("libraryFinder", &libraryFinder);
     engine.rootContext()->setContextProperty("picker", &picker);
     engine.rootContext()->setContextProperty("reader", &reader);
     engine.rootContext()->setContextProperty("ai", &ai);

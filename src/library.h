@@ -25,6 +25,8 @@ class Library : public QObject {
     Q_PROPERTY(int bookCount READ bookCount NOTIFY booksChanged)
     Q_PROPERTY(QStringList folders READ folders NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList collections READ collections NOTIFY collectionsChanged)
+    // {all, reading, want, finished, listening}: how many books each sidebar shelf holds.
+    Q_PROPERTY(QVariantMap shelfCounts READ shelfCounts NOTIFY booksChanged)
     Q_PROPERTY(QVariantMap readingStats READ readingStats NOTIFY readingStatsChanged)
     Q_PROPERTY(bool scanning READ scanning NOTIFY scanningChanged)
     Q_PROPERTY(int scanDone READ scanDone NOTIFY scanProgressChanged)
@@ -62,6 +64,11 @@ public:
     Q_INVOKABLE QVariantList allBooks() const;
     Q_INVOKABLE QVariantList editions(const QString &workKey) const;
     Q_INVOKABLE void setFinished(int id, bool finished);
+    Q_INVOKABLE void setWantToRead(int id, bool want);
+    // Narration started for this book: it joins the Listening shelf.
+    void markListened(int id);
+    QVariantMap shelfCounts() const;
+    static QString chapterTitleOf(const BookRecord &record);
     Q_INVOKABLE void setHidden(int id, bool hidden);
     Q_INVOKABLE void showInFolder(int id) const;
     Q_INVOKABLE QString coverUrl(int id) const;

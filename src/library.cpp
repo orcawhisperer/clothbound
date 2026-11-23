@@ -5,6 +5,8 @@
 
 #include <QCoreApplication>
 #include <QDate>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <algorithm>
 #include <cmath>
 #include <QDBusConnection>
@@ -18,6 +20,7 @@
 #include <QFileInfo>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSqlRecord>
 #include <QStandardPaths>
 #include <QUuid>
 #include <QVariant>
@@ -68,7 +71,7 @@ struct Savepoint {
 const QString bookColumns = QStringLiteral(
     "id, path, format, size, mtime, title, sort_title, author, sort_author, editor, publisher, year, language, "
     "description, subjects, isbn, series, series_index, work_key, chapters, pages, length, cover, problem, "
-    "added_at, opened_at, finished_at, progress, position, seconds_read, missing, hidden, loose");
+    "added_at, opened_at, finished_at, progress, position, seconds_read, missing, hidden, loose, want_at, listened_at");
 
 bool isUnder(const QString &path, const QString &folder) {
     return path.startsWith(folder.endsWith('/') ? folder : folder + '/');
@@ -198,7 +201,8 @@ int Library::schemaVersion() const {
 
 bool Library::migrate() {
     QSqlDatabase db = database();
-    constexpr int kLatestVersion = 3;
+    // Raise with every new migration below, or existing libraries skip it.
+    constexpr int kLatestVersion = 4;
 
     int version = 0;
     {
@@ -343,6 +347,20 @@ bool Library::migrate() {
             return false;
     }
 
+    // Migration 4: the Want to read shelf, and books that have been listened to.
+    if (version < 4) {
+        for (const char *column : {"want_at", "listened_at"}) {
+            bool has = false;
+            if (!hasColumn(QStringLiteral("books"), QString::fromLatin1(column), &has))
+                return false;
+            if (!has && !execList({QStringLiteral("ALTER TABLE books ADD COLUMN %1 INTEGER NOT NULL DEFAULT 0")
+                                       .arg(QString::fromLatin1(column))}))
+                return false;
+        }
+        if (!setVersion(4))
+            return false;
+    }
+
     if (!sp.commit()) {
         m_error = db.lastError().text();
         return false;
@@ -423,6 +441,8 @@ BookRecord Library::readRecord(const QSqlQuery &query) const {
     r.missing = query.value(i++).toBool();
     r.hidden = query.value(i++).toBool();
     r.loose = query.value(i++).toBool();
+    r.wantAt = query.value(i++).toLongLong();
+    r.listenedAt = query.value(i++).toLongLong();
     return r;
 }
 
@@ -436,7 +456,8 @@ void Library::loadBooks() {
         const BookRecord record = readRecord(query);
         m_books.insert(record.id, record);
         m_pathToId.insert(record.path, record.id);
-        const QString fp = query.value(33).toString();
+        // The fingerprint comes after every column readRecord() reads.
+        const QString fp = query.value(query.record().count() - 1).toString();
         if (!fp.isEmpty())
             m_fingerprints.insert(record.id, fp);
     }
@@ -850,7 +871,67 @@ QVariantMap Library::toMap(const BookRecord &r) const {
         {"minutesLeft", minutesLeft(r.id)},
         {"missing", r.missing},
         {"collectionIds", colIds},
+        {"wantToRead", r.wantAt > 0 && r.finishedAt == 0},
+        {"listening", r.listenedAt > 0},
+        {"chapterTitle", chapterTitleOf(r)},
     };
+}
+
+// The chapter the reader was last in, saved with the position.
+QString Library::chapterTitleOf(const BookRecord &r) {
+    if (r.position.isEmpty())
+        return {};
+    return QJsonDocument::fromJson(r.position.toUtf8()).object().value(QStringLiteral("title")).toString();
+}
+
+void Library::setWantToRead(int id, bool want) {
+    if (!m_books.contains(id) || (m_books[id].wantAt > 0) == want)
+        return;
+    QSqlQuery query(database());
+    query.prepare(QStringLiteral("UPDATE books SET want_at = ? WHERE id = ?"));
+    const qint64 when = want ? now() : 0;
+    query.addBindValue(when);
+    query.addBindValue(id);
+    if (!exec(query))
+        return;
+    m_books[id].wantAt = when;
+    emit bookChanged(id);
+    changed();
+}
+
+void Library::markListened(int id) {
+    if (!m_books.contains(id) || m_books[id].listenedAt > 0)
+        return;
+    QSqlQuery query(database());
+    query.prepare(QStringLiteral("UPDATE books SET listened_at = ? WHERE id = ?"));
+    const qint64 when = now();
+    query.addBindValue(when);
+    query.addBindValue(id);
+    if (!exec(query))
+        return;
+    m_books[id].listenedAt = when;
+    emit bookChanged(id);
+    changed();
+}
+
+// How many books each shelf of the sidebar holds: visible books only, a
+// work's editions counted once each as the grid shows them ungrouped.
+QVariantMap Library::shelfCounts() const {
+    int all = 0, reading = 0, want = 0, finished = 0, listening = 0;
+    for (const auto &r : std::as_const(m_books)) {
+        if (!r.visible())
+            continue;
+        ++all;
+        if (r.finishedAt > 0)
+            ++finished;
+        else if (r.openedAt > 0)
+            ++reading;
+        if (r.wantAt > 0 && r.finishedAt == 0)
+            ++want;
+        if (r.listenedAt > 0)
+            ++listening;
+    }
+    return {{"all", all}, {"reading", reading}, {"want", want}, {"finished", finished}, {"listening", listening}};
 }
 
 QVariantMap Library::book(int id) const {
