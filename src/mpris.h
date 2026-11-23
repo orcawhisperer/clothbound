@@ -41,6 +41,7 @@ private:
     QString m_status;
     QVariantMap m_metadata;
     double m_rate = 1.0;
+    double m_volume = 1.0;
 };
 
 class MprisRoot : public QDBusAbstractAdaptor {
@@ -93,9 +94,9 @@ public:
     double rate() const;
     void setRate(double rate);
     QVariantMap metadata() const { return m_mpris->metadata(); }
-    double volume() const { return 1.0; }
-    void setVolume(double) {}
-    qlonglong position() const { return 0; }
+    double volume() const;
+    void setVolume(double volume);
+    qlonglong position() const;
     double minimumRate() const { return 0.75; }
     double maximumRate() const { return 2.0; }
     bool yes() const { return true; }

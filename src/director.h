@@ -3,8 +3,10 @@
 #include "ai.h"
 #include "speech.h"
 
+#include <QList>
 #include <QMap>
 #include <QObject>
+#include <QPointer>
 #include <QSet>
 #include <functional>
 #include <optional>
@@ -22,6 +24,7 @@ class Director : public QObject {
 
 public:
     Director(AiServices *ai, AudioCache *cache, Reader *reader, QObject *parent = nullptr);
+    ~Director() override;
 
     static QString prompt();
     // Where the mood changes (a paragraph's index), from the director's answer.
@@ -36,6 +39,8 @@ public:
     // director failed (which means the ordinary reading, never a wait).
     void ask(int chapter, const QList<SpeechBlock> &blocks, const QString &performance, QObject *context,
              std::function<void(const QMap<int, QString> &moods)> done);
+    // Aborts any in-flight direction requests.
+    void cancel();
 
 private:
     Ai::TextRequest request(int chapter, const QList<SpeechBlock> &blocks, const QString &performance) const;
@@ -44,4 +49,5 @@ private:
     AiServices *m_ai;
     AudioCache *m_cache;
     Reader *m_reader;
+    QList<QPointer<Ai::Reply>> m_replies;
 };

@@ -4,8 +4,10 @@
 #include "speech.h"
 
 #include <QHash>
+#include <QList>
 #include <QMap>
 #include <QObject>
+#include <QPointer>
 #include <QSet>
 #include <QVariantList>
 #include <functional>
@@ -41,13 +43,14 @@ public:
 
     Cast(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, VoiceCatalog *catalog,
          VoicePacks *packs, QObject *parent = nullptr);
+    ~Cast() override;
 
     bool enabled() const { return m_enabled; }
     void setEnabled(bool enabled);
     bool available() const;
     QVariantList members() const;
 
-    void setNarrator(const QString &voice) { m_narrator = voice; emit changed(); }
+    void setNarrator(const QString &voice);
 
     static QString prompt();
     // Who speaks which paragraph, from the model's answer.
@@ -59,6 +62,8 @@ public:
 
     std::optional<QMap<int, Line>> kept(int chapter, const QList<SpeechBlock> &blocks) const;
     void ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context, std::function<void(const QMap<int, Line> &)> done);
+    // Aborts any in-flight casting requests.
+    void cancel();
     // What's known of a chapter's speakers (asked, or kept).
     void learn(int chapter, const QMap<int, Line> &lines);
     bool knows(int chapter) const { return m_lines.contains(chapter); }
@@ -79,10 +84,16 @@ private:
         QString gender;
         bool home = true;  // in the narrator's accent
     };
+    QString family() const;
+    static bool voiceMatchesFamily(const QString &voice, const QString &family);
+    static QString formatParagraphs(const QList<SpeechBlock> &blocks);
     QList<Choice> pool() const;
     QString voiceFor(const QString &speaker) const;
+    bool assignVoice(const QString &speaker, const QString &gender, const QList<Choice> &choices,
+                     QMap<QString, QString> &familyMap, QSet<QString> &used);
+    void assignMissing();
     Ai::TextRequest request(int chapter, const QList<SpeechBlock> &blocks) const;
-    QString key(const Ai::TextRequest &request) const;
+    QString key(const QList<SpeechBlock> &blocks) const;
     void load();
     void save() const;
 
@@ -94,10 +105,14 @@ private:
     VoicePacks *m_packs;
     bool m_enabled = false;
     QString m_narrator;
+    quint64 m_generation = 0;
+    QList<QPointer<Ai::Reply>> m_replies;
     // chapter → paragraph → who
     QHash<int, QMap<int, Line>> m_lines;
-    // speaker → voice, as given (by hand, or assigned once and kept).
-    QMap<QString, QString> m_voices;
+    QSet<int> m_countedChapters;
+    // voice family ("kokoro" / "gemini") → speaker → voice, kept separately so
+    // switching to offline Kokoro never leaks a paid cloud voice.
+    QHash<QString, QMap<QString, QString>> m_familyVoices;
     QMap<QString, QString> m_genders;
     QMap<QString, int> m_counts;
 };

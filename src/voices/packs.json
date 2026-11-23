@@ -2604,6 +2604,7 @@
     "name": "Bria",
     "language": "en-US",
     "gender": "",
+    "recommended": true,
     "reference": "test_wavs/bria.wav"
    },
    {
@@ -2611,6 +2612,7 @@
     "name": "Loona",
     "language": "en-US",
     "gender": "",
+    "recommended": true,
     "reference": "test_wavs/loona.wav"
    }
   ]

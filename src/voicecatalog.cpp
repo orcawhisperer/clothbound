@@ -3,6 +3,7 @@
 #include "aiservices.h"
 #include "audiocache.h"
 #include "reader.h"
+#include "speech.h"
 #include "speechplayer.h"
 
 #include <QDir>
@@ -21,6 +22,8 @@
 
 namespace {
 constexpr int sampleRate = 24000;
+constexpr double estimatedCastCost = 0.005;
+constexpr double estimatedDesignCost = 0.03;
 
 // The kept list is Dogear's own record of the voices, whatever provider
 // they came from.
@@ -52,14 +55,19 @@ Ai::Voice fromJson(const QJsonObject &json) {
 
 bool isNarrator(const Ai::Voice &voice) { return voice.persona.startsWith(QStringLiteral("Storyteller")); }
 bool isClassic(const Ai::Voice &voice) { return !voice.designed && !voice.id.contains('-'); }
-QString baseOf(const QString &language) { return language.section('-', 0, 0).toLower(); }
-QString regionOf(const QString &language) { return language.section('-', 1, 1).toUpper(); }
+QString baseOf(const QString &language) { return language.section('-', 0, 0).section('_', 0, 0).toLower(); }
+QString regionOf(const QString &language) {
+    const QString norm = QString(language).replace('_', '-');
+    return norm.section('-', 1, 1).toUpper();
+}
 }
 
 VoiceCatalog::VoiceCatalog(AiServices *ai, AudioCache *cache, Reader *reader, const QString &databaseConnection,
                            const QString &cacheFile, QObject *parent)
     : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_connection(databaseConnection),
       m_cacheFile(cacheFile), m_player(new SpeechPlayer(sampleRate, this)) {
+    if (m_reader)
+        connect(m_reader, &Reader::bookChanged, this, &VoiceCatalog::resetCasting);
     connect(m_player, &SpeechPlayer::position, this, [this] {
         if (m_previewBuffering) {
             m_previewBuffering = false;
@@ -81,6 +89,10 @@ VoiceCatalog::VoiceCatalog(AiServices *ai, AudioCache *cache, Reader *reader, co
 }
 
 VoiceCatalog::~VoiceCatalog() {
+    if (m_refreshReply)
+        m_refreshReply->abort();
+    if (m_studioReply)
+        m_studioReply->abort();
     if (m_previewReply)
         m_previewReply->abort();
     if (m_castingReply)
@@ -140,15 +152,22 @@ void VoiceCatalog::refresh(bool force) {
         setProblem(m_ai->describe(int(Ai::Error::NoKey)));
         return;
     }
+    if (m_refreshReply)
+        m_refreshReply->abort();
     m_loading = true;
     setProblem({});
     emit changed();
     Ai::Reply *reply = m_ai->speech()->listVoices({});
+    m_refreshReply = reply;
     connect(reply, &Ai::Reply::finished, this, [this, reply] {
         reply->deleteLater();
+        if (reply != m_refreshReply)
+            return;
+        m_refreshReply = nullptr;
         m_loading = false;
         if (reply->error()) {
-            setProblem(m_ai->describe(int(reply->error().kind), reply->error().message));
+            if (reply->error().kind != Ai::Error::Cancelled)
+                setProblem(m_ai->describe(int(reply->error().kind), reply->error().message));
             emit changed();
             return;
         }
@@ -161,6 +180,7 @@ void VoiceCatalog::refresh(bool force) {
 QVariantMap VoiceCatalog::toMap(const Ai::Voice &voice) {
     static const QRegularExpression role(QStringLiteral("\\(([^)]+)\\)"));
     static const QRegularExpression age(QStringLiteral("^(\\d+)-year-old"));
+    static const QRegularExpression sentenceSplit(QStringLiteral("(?<=\\.)\\s+"));
     QVariantMap map;
     map["id"] = voice.id;
     map["name"] = voice.name.isEmpty() ? voice.id : voice.name;
@@ -186,7 +206,7 @@ QVariantMap VoiceCatalog::toMap(const Ai::Voice &voice) {
         // The catalog sets a scene for each voice ("Currently in a
         // bookstore.") and suggests uses for it ("Recommended for onboarding
         // screens"), which say nothing about how it sounds.
-        QStringList sentences = summary.split(QRegularExpression(QStringLiteral("(?<=\\.)\\s+")), Qt::SkipEmptyParts);
+        QStringList sentences = summary.split(sentenceSplit, Qt::SkipEmptyParts);
         sentences.removeIf([&](const QString &sentence) {
             return age.match(sentence).hasMatch() || sentence.startsWith(QStringLiteral("Speaks with")) ||
                    sentence.startsWith(QStringLiteral("Currently")) || sentence.startsWith(QStringLiteral("Recommended"));
@@ -198,7 +218,9 @@ QVariantMap VoiceCatalog::toMap(const Ai::Voice &voice) {
 }
 
 QVariantList VoiceCatalog::suggestions(const QString &language) const {
-    const QString base = baseOf(language);
+    QString base = baseOf(language);
+    if (base.isEmpty())
+        base = baseOf(QLocale::system().bcp47Name());
     // Narrators who speak the language, by region; within a region, the
     // ones made to tell stories first.
     QMap<QString, QList<const Ai::Voice *>> regions;
@@ -296,6 +318,10 @@ QVariantList VoiceCatalog::studioVoices() const {
 }
 
 void VoiceCatalog::loadStudioVoices() {
+    if (m_studioReply) {
+        m_studioReply->abort();
+        m_studioReply = nullptr;
+    }
     Ai::SpeechSynthesizer *studio = m_ai->speechFor(QStringLiteral("studio:"));
     if (!studio) {
         m_studioVoices.clear();
@@ -303,9 +329,20 @@ void VoiceCatalog::loadStudioVoices() {
         return;
     }
     Ai::Reply *reply = studio->listVoices(QString());
+    m_studioReply = reply;
     connect(reply, &Ai::Reply::finished, this, [this, reply] {
         reply->deleteLater();
+        if (reply != m_studioReply)
+            return;
+        m_studioReply = nullptr;
         m_studioVoices.clear();
+        if (reply->error()) {
+            if (reply->error().kind != Ai::Error::Cancelled)
+                setProblem(m_ai->describe(int(reply->error().kind), reply->error().message));
+            emit studioChanged();
+            return;
+        }
+        setProblem({});
         for (Ai::Voice voice : reply->voices()) {
             voice.id = QStringLiteral("studio:") + voice.id;
             if (voice.description.isEmpty())
@@ -328,28 +365,19 @@ int VoiceCatalog::startPreview(const QString &voiceId) {
     return track;
 }
 
-void VoiceCatalog::preview(const QString &voiceId, const QString &text) {
-    if (!m_ai->canSpeakWith(voiceId)) {
+void VoiceCatalog::synthesizePreview(int track, const QString &voiceId, const QString &words, const QString &key) {
+    Ai::SpeechSynthesizer *speaker = m_ai->speechFor(voiceId);
+    if (!speaker) {
+        stopPreview();
         setProblem(AiServices::isBuiltinVoice(voiceId) ? tr("This built-in voice isn't downloaded yet.")
-                                                       : m_ai->describe(int(Ai::Error::NoKey)));
+                   : AiServices::isStudioVoice(voiceId) ? tr("This Studio voice needs its model server running.")
+                   : m_ai->describe(int(Ai::Error::NoKey)));
         return;
     }
-    QString words = text.simplified();
-    if (voiceId.isEmpty() || words.isEmpty())
-        return;
-    const int track = startPreview(voiceId);
-    Ai::SpeechSynthesizer *speaker = m_ai->speechFor(voiceId);
-    const QString model = speaker->speechModelName(false);
-    const QString key = AudioCache::keyFor(m_ai->providerFor(voiceId)->id(), model, voiceId, {}, words);
-    const QString file = m_cache->lookup(key);
-    if (!file.isEmpty()) {
-        m_cache->decode(file, sampleRate, this, [this, track](const QByteArray &pcm, bool ok) {
-            if (track != m_previewTrack)
-                return;
-            if (ok)
-                m_player->appendAudio(track, pcm);
-            m_player->finishTrack(track);
-        });
+    const bool local = AiServices::isOnThisComputer(voiceId);
+    if (!local && !m_ai->fitsBudget(m_ai->listeningCost(qMax(0.1, words.size() / 900.0), false, false))) {
+        stopPreview();
+        setProblem(m_ai->describe(int(Ai::Error::Budget)));
         return;
     }
     Ai::SpeechRequest request;
@@ -377,8 +405,49 @@ void VoiceCatalog::preview(const QString &voiceId, const QString &text) {
                 setProblem(m_ai->describe(int(reply->error().kind), reply->error().message));
             return;
         }
-        m_cache->store(key, *pcm, reply->sampleRate());
+        if (!pcm->isEmpty() && reply->sampleRate() > 0)
+            m_cache->store(key, *pcm, reply->sampleRate());
     });
+}
+
+void VoiceCatalog::preview(const QString &voiceId, const QString &text) {
+    if (voiceId.isEmpty())
+        return;
+    if (!m_ai->canSpeakWith(voiceId)) {
+        setProblem(AiServices::isBuiltinVoice(voiceId) ? tr("This built-in voice isn't downloaded yet.")
+                   : AiServices::isStudioVoice(voiceId) ? tr("This Studio voice needs its model server running.")
+                   : m_ai->describe(int(Ai::Error::NoKey)));
+        return;
+    }
+    QString words = Speech::speakable(text).simplified();
+    if (words.isEmpty())
+        words = tr("This is how the book will sound when read aloud.");
+    Ai::SpeechSynthesizer *speaker = m_ai->speechFor(voiceId);
+    Ai::Provider *provider = m_ai->providerFor(voiceId);
+    if (!speaker || !provider) {
+        setProblem(m_ai->describe(int(Ai::Error::NoKey)));
+        return;
+    }
+    setProblem({});
+    const int track = startPreview(voiceId);
+    const QString model = speaker->speechModelName(false);
+    const QString key = AudioCache::keyFor(provider->id(), model, voiceId, {}, words);
+    const QString file = m_cache->lookup(key);
+    if (!file.isEmpty()) {
+        m_cache->decode(file, sampleRate, this, [this, track, voiceId, words, key](const QByteArray &pcm, bool ok) {
+            if (track != m_previewTrack)
+                return;
+            if (!ok) {
+                m_cache->remove(key);
+                synthesizePreview(track, voiceId, words, key);
+                return;
+            }
+            m_player->appendAudio(track, pcm);
+            m_player->finishTrack(track);
+        });
+        return;
+    }
+    synthesizePreview(track, voiceId, words, key);
 }
 
 void VoiceCatalog::stopPreview() {
@@ -412,8 +481,14 @@ void VoiceCatalog::resetCasting() {
 }
 
 void VoiceCatalog::cast(const QString &passage) {
-    if (!m_ai->textFor(QStringLiteral("casting")) || !m_ai->voiceDesigner()) {
+    Ai::TextModel *model = m_ai->textFor(QStringLiteral("casting"));
+    Ai::Provider *provider = m_ai->textProviderFor(QStringLiteral("casting"));
+    if (!model || !m_ai->voiceDesigner()) {
         setCasting(QStringLiteral("failed"), m_ai->describe(int(Ai::Error::NoKey)));
+        return;
+    }
+    if (provider && !provider->isLocal() && !m_ai->fitsBudget(estimatedCastCost)) {
+        setCasting(QStringLiteral("failed"), m_ai->describe(int(Ai::Error::Budget)));
         return;
     }
     if (m_castingReply)
@@ -437,7 +512,7 @@ void VoiceCatalog::cast(const QString &passage) {
         {"required", QJsonArray{"name", "description", "gender", "language"}},
     };
     setCasting(QStringLiteral("thinking"));
-    Ai::Reply *reply = m_ai->textFor(QStringLiteral("casting"))->generate(request);
+    Ai::Reply *reply = model->generate(request);
     m_ai->track(reply);
     m_castingReply = reply;
     connect(reply, &Ai::Reply::finished, this, [this, reply] {
@@ -449,7 +524,9 @@ void VoiceCatalog::cast(const QString &passage) {
                 setCasting(QStringLiteral("failed"), m_ai->describe(int(reply->error().kind), reply->error().message));
             return;
         }
-        const QJsonObject json = QJsonDocument::fromJson(reply->text().toUtf8()).object();
+        const QJsonObject json = reply->result().isEmpty()
+                                     ? QJsonDocument::fromJson(reply->text().toUtf8()).object()
+                                     : reply->result();
         QVariantMap proposal{{"name", json.value("name").toString().simplified().left(60)},
                              {"description", json.value("description").toString().simplified()},
                              {"gender", json.value("gender").toString()},
@@ -467,6 +544,10 @@ void VoiceCatalog::cast(const QString &passage) {
 void VoiceCatalog::design(const QVariantMap &proposal) {
     if (!m_ai->voiceDesigner()) {
         setCasting(QStringLiteral("failed"), m_ai->describe(int(Ai::Error::NoKey)));
+        return;
+    }
+    if (!m_ai->fitsBudget(estimatedDesignCost)) {
+        setCasting(QStringLiteral("failed"), m_ai->describe(int(Ai::Error::Budget)));
         return;
     }
     Ai::VoiceDesign design;
@@ -492,8 +573,12 @@ void VoiceCatalog::design(const QVariantMap &proposal) {
             return;
         const Ai::Voice voice = reply->voices().value(0);
         if (reply->error() || voice.id.isEmpty()) {
-            if (reply->error().kind != Ai::Error::Cancelled)
-                setCasting(QStringLiteral("failed"), m_ai->describe(int(reply->error().kind), reply->error().message));
+            if (reply->error().kind != Ai::Error::Cancelled) {
+                const QString message = reply->error()
+                                            ? m_ai->describe(int(reply->error().kind), reply->error().message)
+                                            : tr("No voice came back from the server. Try again.");
+                setCasting(QStringLiteral("failed"), message);
+            }
             return;
         }
         Ai::Voice kept = voice;
@@ -564,7 +649,15 @@ void VoiceCatalog::playSample() {
     if (m_sample.isEmpty() || m_designed.isEmpty())
         return;
     const int track = startPreview(m_designed.value("id").toString());
-    // The sample is 24 kHz, as speech is; anything else plays at its own pace.
-    m_player->appendAudio(track, m_sample);
+    QByteArray pcm = m_sample;
+    if (m_sampleRate > 0 && m_sampleRate != sampleRate) {
+        const qsizetype count = m_sample.size() / 2;
+        const auto *src = reinterpret_cast<const qint16 *>(m_sample.constData());
+        QVector<float> floats(count);
+        for (qsizetype i = 0; i < count; ++i)
+            floats[i] = src[i] / 32768.0f;
+        pcm = Speech::pcm16(Speech::resample(floats, m_sampleRate, sampleRate));
+    }
+    m_player->appendAudio(track, pcm);
     m_player->finishTrack(track);
 }

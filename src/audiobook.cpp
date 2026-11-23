@@ -12,6 +12,7 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <cstdio>
 
 namespace {
 
@@ -20,6 +21,8 @@ QString escaped(const QString &value) {
     QString out;
     out.reserve(value.size() + 8);
     for (const QChar c : value) {
+        if (c == QLatin1Char('\r'))
+            continue;
         if (c == QLatin1Char('=') || c == QLatin1Char(';') || c == QLatin1Char('#') || c == QLatin1Char('\\') ||
             c == QLatin1Char('\n'))
             out += QLatin1Char('\\');
@@ -28,10 +31,52 @@ QString escaped(const QString &value) {
     return out;
 }
 
+bool atomicReplace(const QString &source, const QString &target) {
+    const QByteArray src = QFile::encodeName(source);
+    const QByteArray dst = QFile::encodeName(target);
+    if (std::rename(src.constData(), dst.constData()) == 0)
+        return true;
+    QFile::remove(target);
+    return QFile::rename(source, target);
+}
+
 }  // namespace
 
 Audiobook::Audiobook(AudioCache *cache, Download *download, Reader *reader, Library *library, QObject *parent)
-    : QObject(parent), m_cache(cache), m_download(download), m_reader(reader), m_library(library) {}
+    : QObject(parent), m_cache(cache), m_download(download), m_reader(reader), m_library(library) {
+    if (m_reader) {
+        connect(m_reader, &Reader::bookChanged, this, [this] {
+            if (m_busy)
+                return;
+            if (!m_saved.isEmpty() || !m_problem.isEmpty() || m_progress != 0) {
+                m_saved.clear();
+                m_problem.clear();
+                m_progress = 0;
+                emit changed();
+            }
+        });
+    }
+}
+
+Audiobook::~Audiobook() {
+    if (m_ffmpeg) {
+        m_ffmpeg->disconnect(this);
+        if (m_ffmpeg->state() != QProcess::NotRunning) {
+            m_ffmpeg->kill();
+            m_ffmpeg->waitForFinished(1000);
+        }
+    }
+    cleanupWork();
+}
+
+void Audiobook::cleanupWork() {
+    m_work.reset();
+    if (!m_partial.isEmpty()) {
+        QFile::remove(m_partial);
+        m_partial.clear();
+    }
+    m_stdoutBuf.clear();
+}
 
 QString Audiobook::metadata(const QString &title, const QString &author, const QList<Chapter> &chapters) {
     QString out = QStringLiteral(";FFMETADATA1\ntitle=%1\nalbum=%1\nartist=%2\nalbum_artist=%2\ngenre=Audiobook\n")
@@ -46,12 +91,16 @@ QString Audiobook::metadata(const QString &title, const QString &author, const Q
 
 QString Audiobook::concatList(const QStringList &files) {
     QString out = QStringLiteral("ffconcat version 1.0\n");
-    for (QString file : files)
+    for (QString file : files) {
+        file.remove(QLatin1Char('\r'));
+        file.remove(QLatin1Char('\n'));
         out += QStringLiteral("file '%1'\n").arg(file.replace(QLatin1String("'"), QLatin1String("'\\''")));
+    }
     return out;
 }
 
 void Audiobook::fail(const QString &problem) {
+    cleanupWork();
     m_problem = problem;
     m_busy = false;
     emit changed();
@@ -72,8 +121,14 @@ void Audiobook::save() {
         fail(tr("Saving an audiobook needs ffmpeg: install it with omarchy-pkg-add ffmpeg."));
         return;
     }
-    // The clips in order, and where each chapter begins.
+    // The clips in order, and where each chapter begins — looked up in one
+    // read-only batch query with zero per-clip database writes.
     const QMap<int, QStringList> planned = m_download->plannedKeys();
+    QStringList allKeys;
+    for (auto it = planned.cbegin(); it != planned.cend(); ++it)
+        allKeys.append(it.value());
+    const auto clipInfo = m_cache->clipInfoBatch(allKeys);
+
     QStringList files;
     QList<Chapter> chapters;
     qint64 at = 0;
@@ -84,13 +139,13 @@ void Audiobook::save() {
             chapter.title = tr("Chapter %1").arg(it.key() + 1);
         chapter.startMs = at;
         for (const QString &key : it.value()) {
-            const QString file = m_cache->lookup(key);
-            if (file.isEmpty()) {
+            const auto found = clipInfo.constFind(key);
+            if (found == clipInfo.constEnd() || found->first.isEmpty()) {
                 fail(tr("Some of the narration is no longer kept. Download it again, then save."));
                 return;
             }
-            files.append(file);
-            at += qint64(m_cache->seconds(key) * 1000);
+            files.append(found->first);
+            at += qint64(found->second * 1000);
         }
         chapter.endMs = at;
         // Chapters the same as the one before (the contents point twice) are one.
@@ -105,29 +160,49 @@ void Audiobook::save() {
     }
     m_totalMs = at;
 
-    auto *work = new QTemporaryDir();
-    QFile list(work->filePath(QStringLiteral("clips.txt")));
-    QFile meta(work->filePath(QStringLiteral("metadata.txt")));
-    if (!list.open(QIODevice::WriteOnly) || !meta.open(QIODevice::WriteOnly)) {
-        delete work;
+    m_work = std::make_unique<QTemporaryDir>();
+    if (!m_work->isValid()) {
         fail(tr("The audiobook couldn't be prepared."));
         return;
     }
-    list.write(concatList(files).toUtf8());
+    QFile list(m_work->filePath(QStringLiteral("clips.txt")));
+    QFile meta(m_work->filePath(QStringLiteral("metadata.txt")));
+    const QByteArray listData = concatList(files).toUtf8();
+    const QByteArray metaData = metadata(m_reader->title(), m_reader->author(), chapters).toUtf8();
+    if (!list.open(QIODevice::WriteOnly) || list.write(listData) != listData.size() || !list.flush() ||
+        !meta.open(QIODevice::WriteOnly) || meta.write(metaData) != metaData.size() || !meta.flush()) {
+        fail(tr("The audiobook couldn't be prepared."));
+        return;
+    }
     list.close();
-    meta.write(metadata(m_reader->title(), m_reader->author(), chapters).toUtf8());
     meta.close();
 
-    const QString folder = QStandardPaths::writableLocation(QStandardPaths::MusicLocation) + QStringLiteral("/Dogear");
-    QDir().mkpath(folder);
+    QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    if (music.isEmpty())
+        music = QDir::homePath() + QStringLiteral("/Music");
+    const QString folder = music + QStringLiteral("/Dogear");
+    if (!QDir().mkpath(folder)) {
+        fail(tr("Couldn't create the folder %1.").arg(folder));
+        return;
+    }
+    static const QRegularExpression badChars(QStringLiteral("[/\\\\:*?\"<>|\\x00-\\x1f\\x7f]"));
     QString name = m_reader->title().left(80);
-    name.replace(QRegularExpression(QStringLiteral("[/\\\\:*?\"<>|]")), QStringLiteral(" "));
-    const QString target = QDir(folder).filePath(name.simplified() + QStringLiteral(".m4b"));
+    name.replace(badChars, QStringLiteral(" "));
+    name = name.simplified();
+    while (name.startsWith(QLatin1Char('.')))
+        name.remove(0, 1);
+    name = name.simplified();
+    if (name.isEmpty())
+        name = tr("Audiobook");
+    const QString target = QDir(folder).filePath(name + QStringLiteral(".m4b"));
     const QString partial = target + QStringLiteral(".part.m4b");
+    m_partial = partial;
+    m_stdoutBuf.clear();
 
     QStringList arguments{"-hide_banner", "-loglevel", "error", "-nostats", "-progress", "pipe:1",
                           "-f", "concat", "-safe", "0", "-i", list.fileName(), "-i", meta.fileName()};
-    const QString cover = m_library->record(m_reader->bookId()).cover;
+    const QString coverName = m_library->record(m_reader->bookId()).cover;
+    const QString cover = coverName.isEmpty() ? QString() : QDir(m_library->coverDirectory()).filePath(coverName);
     const bool hasCover = !cover.isEmpty() && QFileInfo::exists(cover);
     if (hasCover)
         arguments << "-i" << cover;
@@ -144,28 +219,58 @@ void Audiobook::save() {
     process->setProgram(ffmpeg);
     process->setArguments(arguments);
     connect(process, &QProcess::readyReadStandardOutput, this, [this, process] {
-        // "out_time_ms=12345678" lines (microseconds, despite the name).
-        const QString text = QString::fromUtf8(process->readAllStandardOutput());
-        static const QRegularExpression time(QStringLiteral("out_time_us=(\\d+)"));
-        auto it = time.globalMatch(text);
-        while (it.hasNext()) {
-            const double ms = it.next().captured(1).toDouble() / 1000.0;
-            m_progress = m_totalMs > 0 ? qBound(0.0, ms / double(m_totalMs), 1.0) : 0;
+        // Line-buffer stdout so partial "out_time_us=" lines are never split.
+        m_stdoutBuf += process->readAllStandardOutput();
+        bool updated = false;
+        int nl = -1;
+        while ((nl = m_stdoutBuf.indexOf('\n')) >= 0) {
+            const QByteArray line = m_stdoutBuf.left(nl).trimmed();
+            m_stdoutBuf.remove(0, nl + 1);
+            if (line.startsWith("out_time_us=")) {
+                bool ok = false;
+                const qint64 us = line.mid(12).toLongLong(&ok);
+                if (ok && us >= 0 && m_totalMs > 0) {
+                    const double next = qBound(0.0, (us / 1000.0) / double(m_totalMs), 1.0);
+                    if (next > m_progress) {
+                        m_progress = next;
+                        updated = true;
+                    }
+                }
+            }
         }
-        emit changed();
+        if (updated)
+            emit changed();
     });
-    connect(process, &QProcess::finished, this, [this, process, work, partial, target](int code, QProcess::ExitStatus status) {
+    auto handled = std::make_shared<bool>(false);
+    connect(process, &QProcess::errorOccurred, this, [this, process, handled](QProcess::ProcessError error) {
+        if (error != QProcess::FailedToStart || *handled)
+            return;
+        *handled = true;
         process->deleteLater();
-        delete work;
+        if (m_ffmpeg == process)
+            m_ffmpeg = nullptr;
+        fail(tr("ffmpeg couldn't be started."));
+    });
+    connect(process, &QProcess::finished, this, [this, process, partial, target, handled](int code, QProcess::ExitStatus status) {
+        if (*handled)
+            return;
+        *handled = true;
+        process->deleteLater();
+        if (m_ffmpeg == process)
+            m_ffmpeg = nullptr;
         if (code != 0 || status != QProcess::NormalExit) {
-            QFile::remove(partial);
             fail(status == QProcess::CrashExit ? tr("Saving the audiobook was stopped.")
                                                : tr("ffmpeg couldn't make the audiobook: %1")
                                                      .arg(QString::fromUtf8(process->readAllStandardError()).trimmed().left(200)));
             return;
         }
-        QFile::remove(target);
-        QFile::rename(partial, target);
+        if (!atomicReplace(partial, target)) {
+            fail(tr("Couldn't move the audiobook into %1.").arg(target));
+            return;
+        }
+        m_partial.clear();
+        m_work.reset();
+        m_stdoutBuf.clear();
         m_saved = target;
         m_progress = 1;
         m_busy = false;

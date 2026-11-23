@@ -12,6 +12,7 @@
 class QFile;
 class QNetworkAccessManager;
 class QNetworkReply;
+class QProcess;
 
 // Built-in voices as packages: the speech engine for this computer, Kokoro
 // (49 voices in 8 languages) and Piper (173 voices in 42), from a pinned
@@ -101,6 +102,8 @@ signals:
     // A voice can speak now.
     void ready(const QString &voiceId);
     void failed(const QString &message);
+    // Emitted right before a pack directory is removed so LocalSpeech can unload it.
+    void aboutToRemove(const QString &packId);
 
 private:
     struct Voice {
@@ -143,8 +146,10 @@ private:
     QList<Pack> m_queue;
     QString m_waitingVoice;
     QPointer<QNetworkReply> m_download;
+    QPointer<QProcess> m_tar;
     QFile *m_part = nullptr;
     bool m_unpacking = false;
+    quint64 m_generation = 0;
     QString m_currentTitle;
     qint64 m_batchBytes = 0;
     qint64 m_doneBytes = 0;

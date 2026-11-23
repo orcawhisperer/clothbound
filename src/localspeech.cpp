@@ -15,6 +15,7 @@
 
 namespace {
 constexpr int outputRate = 24000;
+constexpr int idleUnloadMs = 180000;
 
 QSettings settings() {
     return QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini"),
@@ -40,8 +41,10 @@ public:
     void deliver(const QByteArray &pcm, qint64 boundary) {
         if (isFinished())
             return;
-        addAudio(pcm);
+        // Record the boundary before emitting audioReady so listeners reading
+        // reply->boundaries() inside that signal see the sentence that arrived.
         m_boundaries.append(boundary);
+        addAudio(pcm);
     }
     void complete(Ai::Error::Kind kind = Ai::Error::None, const QString &problem = {}) { finish({kind, problem}); }
     void setVoices(const QList<Ai::Voice> &voices) { m_voices = voices; }
@@ -77,6 +80,15 @@ class LocalWorker : public QObject {
 public:
     explicit LocalWorker(LocalSpeech::Engines engines) : m_engines(std::move(engines)) {}
 
+    void unload(bool dropEngine) {
+        if (m_engine)
+            m_engine->unload();
+        if (dropEngine) {
+            m_engine.reset();
+            m_library.clear();
+        }
+    }
+
     void run(const Job &job) {
         if (*job.stop)
             return;
@@ -90,15 +102,21 @@ public:
             return;
         }
         qint64 total = 0;
+        qint64 speechSamples = 0;
+        int nonEmptySentences = 0;
         for (int i = 0; i < job.sentences.size(); ++i) {
             if (*job.stop)
                 return;
+            if (!job.sentences[i].trimmed().isEmpty())
+                ++nonEmptySentences;
             QElapsedTimer clock;
             clock.start();
             QVector<float> samples = m_engine->speak(job.sentences[i], job.model.speaker, *job.stop);
             if (*job.stop)
                 return;
-            const double seconds = samples.size() / double(qMax(1, m_engine->sampleRate()));
+            speechSamples += samples.size();
+            const int engineRate = m_engine->sampleRate() > 0 ? m_engine->sampleRate() : outputRate;
+            const double seconds = samples.size() / double(engineRate);
             const qint64 ms = clock.elapsed();
             if (seconds > 0.5 && ms > 0) {
                 const double speed = seconds / (ms / 1000.0);
@@ -110,13 +128,20 @@ public:
                     },
                     Qt::QueuedConnection);
             }
-            samples = Speech::resample(samples, m_engine->sampleRate(), outputRate);
+            samples = Speech::resample(samples, engineRate, outputRate);
             // A beat after each sentence, and a longer one at the end, where
             // a paragraph ends.
             samples.resize(samples.size() + qsizetype((i + 1 < job.sentences.size() ? 0.14 : 0.32) * outputRate));
             total += samples.size();
             const QByteArray pcm = Speech::pcm16(samples);
             post(job, [pcm, total](LocalReply *reply) { reply->deliver(pcm, total); });
+        }
+        if (nonEmptySentences > 0 && speechSamples == 0) {
+            post(job, [](LocalReply *reply) {
+                reply->complete(Ai::Error::Invalid,
+                                QCoreApplication::translate("LocalSpeech", "The built-in voice produced no audio."));
+            });
+            return;
         }
         post(job, [](LocalReply *reply) { reply->complete(); });
     }
@@ -138,9 +163,16 @@ int SherpaEngine::threads() {
     return qBound(1, QThread::idealThreadCount() / 2, 4);
 }
 
-SherpaEngine::~SherpaEngine() {
+SherpaEngine::~SherpaEngine() { unload(); }
+
+void SherpaEngine::unload() {
     if (m_tts && m_destroy)
         reinterpret_cast<SherpaOnnx::DestroyOfflineTts>(m_destroy)(m_tts);
+    m_tts = nullptr;
+    m_key.clear();
+    m_rate = 0;
+    m_reference.clear();
+    m_referencePath.clear();
 }
 
 QString SherpaEngine::load() {
@@ -151,16 +183,22 @@ QString SherpaEngine::load() {
     // The declarations Dogear uses are this version's; another one is refused
     // rather than trusted.
     const auto version = reinterpret_cast<SherpaOnnx::VersionString>(m_library.resolve("SherpaOnnxGetVersionStr"));
-    if (!version || QLatin1String(version()) != QLatin1String(SherpaOnnx::version))
+    if (!version || QLatin1String(version()) != QLatin1String(SherpaOnnx::version)) {
+        const QString found = version ? QString::fromLatin1(version()) : QStringLiteral("?");
+        m_library.unload();
         return QCoreApplication::translate("LocalSpeech", "The speech engine is a version Dogear doesn't know (%1). Download the built-in voices again.")
-            .arg(version ? QString::fromLatin1(version()) : QStringLiteral("?"));
+            .arg(found);
+    }
     m_create = reinterpret_cast<void *>(m_library.resolve("SherpaOnnxCreateOfflineTts"));
     m_destroy = reinterpret_cast<void *>(m_library.resolve("SherpaOnnxDestroyOfflineTts"));
     m_generate = reinterpret_cast<void *>(m_library.resolve("SherpaOnnxOfflineTtsGenerateWithConfig"));
     m_free = reinterpret_cast<void *>(m_library.resolve("SherpaOnnxDestroyOfflineTtsGeneratedAudio"));
     m_rateOf = reinterpret_cast<void *>(m_library.resolve("SherpaOnnxOfflineTtsSampleRate"));
-    if (!m_create || !m_destroy || !m_generate || !m_free || !m_rateOf)
+    if (!m_create || !m_destroy || !m_generate || !m_free || !m_rateOf) {
+        m_create = m_destroy = m_generate = m_free = m_rateOf = nullptr;
+        m_library.unload();
         return QCoreApplication::translate("LocalSpeech", "The speech engine is incomplete. Download the built-in voices again.");
+    }
     m_loaded = true;
     return {};
 }
@@ -190,6 +228,7 @@ QString SherpaEngine::prepare(const VoicePacks::Model &model) {
     if (m_tts) {
         reinterpret_cast<SherpaOnnx::DestroyOfflineTts>(m_destroy)(m_tts);
         m_tts = nullptr;
+        m_key.clear();
     }
     // The strings live until the engine has read them.
     const QByteArray file = model.model.toUtf8(), voices = model.voices.toUtf8(), tokens = model.tokens.toUtf8(),
@@ -277,6 +316,16 @@ LocalSpeech::LocalSpeech(VoicePacks *packs, QObject *parent, Engines engines) : 
     m_worker->moveToThread(&m_thread);
     m_thread.setObjectName(QStringLiteral("Built-in voices"));
     m_thread.start();
+
+    m_idleTimer.setSingleShot(true);
+    m_idleTimer.setInterval(idleUnloadMs);
+    connect(&m_idleTimer, &QTimer::timeout, this, [this] {
+        if (m_activeJobs == 0 && m_thread.isRunning())
+            QMetaObject::invokeMethod(m_worker, [worker = m_worker] { worker->unload(false); }, Qt::QueuedConnection);
+    });
+    if (m_packs)
+        connect(m_packs, &VoicePacks::aboutToRemove, this, &LocalSpeech::unloadEngine);
+
     QSettings s = settings();
     s.beginGroup(QStringLiteral("builtinSpeed"));
     for (const QString &key : s.childKeys())
@@ -284,11 +333,22 @@ LocalSpeech::LocalSpeech(VoicePacks *packs, QObject *parent, Engines engines) : 
 }
 
 LocalSpeech::~LocalSpeech() {
+    m_idleTimer.stop();
     // Replies (our children) stop their work as they go.
     qDeleteAll(findChildren<Ai::Reply *>());
     m_thread.quit();
     m_thread.wait();
     delete m_worker;
+}
+
+void LocalSpeech::unloadEngine() {
+    m_idleTimer.stop();
+    for (Ai::Reply *reply : findChildren<Ai::Reply *>())
+        if (!reply->isFinished())
+            reply->abort();
+    if (m_thread.isRunning())
+        QMetaObject::invokeMethod(m_worker, [worker = m_worker] { worker->unload(true); },
+                                  Qt::BlockingQueuedConnection);
 }
 
 QString LocalSpeech::speechModelName(bool) const { return QStringLiteral("sherpa-onnx-") + QLatin1String(SherpaOnnx::version); }
@@ -323,6 +383,19 @@ Ai::Reply *LocalSpeech::synthesize(const Ai::SpeechRequest &request) {
         for (const SpeechSentence &sentence : Speech::sentences(block))
             sentences.append(sentence.text);
     }
+    m_idleTimer.stop();
+    ++m_activeJobs;
+    auto tracked = std::make_shared<bool>(true);
+    auto done = [this, tracked] {
+        if (!*tracked)
+            return;
+        *tracked = false;
+        m_activeJobs = qMax(0, m_activeJobs - 1);
+        if (m_activeJobs == 0)
+            m_idleTimer.start();
+    };
+    connect(reply, &Ai::Reply::finished, this, done);
+    connect(reply, &QObject::destroyed, this, done);
     const Job job{reply, this, stop, *model, m_packs->engineLibrary(), sentences};
     QMetaObject::invokeMethod(m_worker, [worker = m_worker, job] { worker->run(job); }, Qt::QueuedConnection);
     return reply;

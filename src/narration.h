@@ -65,6 +65,8 @@ public:
     QString voiceName() const { return m_voiceName; }
     double rate() const { return m_rate; }
     void setRate(double rate);
+    double volume() const;
+    void setVolume(double volume);
     QString performance() const { return m_performance; }
     void setPerformance(const QString &performance);
     bool economy() const { return m_economy; }
@@ -73,6 +75,8 @@ public:
     qint64 sentenceStart() const { return m_sentenceStart; }
     qint64 sentenceEnd() const { return m_sentenceEnd; }
     int minutesLeftInChapter() const;
+    qint64 positionUs() const;
+    qint64 durationUs() const;
     int sleepMinutes() const;
     bool sleepAtChapterEnd() const { return m_sleepAtChapterEnd; }
     QString problem() const { return m_problem; }
@@ -101,6 +105,7 @@ signals:
     void stateChanged();
     void voiceChanged();
     void rateChanged();
+    void volumeChanged();
     void settingsChanged();
     void positionChanged();
     void sleepChanged();
@@ -118,9 +123,11 @@ private:
         // network, or being decoded from the cache). Complete: all of it is
         // here. Failed: it couldn't be made.
         enum State { Waiting, Working, Complete, Failed };
+        int id = 0;  // stable monotonic track ID for SpeechPlayer
         State state = Waiting;
         bool immediate = false;
         bool queued = false;
+        int tries = 0;
         QString key;
         QByteArray pcm;
         qint64 samples = 0;
@@ -136,10 +143,11 @@ private:
     void decode(int index, const QString &file);
     void queue();
     void stallIfFailed();
-    void heard(int track, qint64 sample);
+    void heard(int trackId, qint64 sample);
     void jumpTo(int index);
     void showSentence(double fraction);
     void showSentenceAt(int sentence);
+    int indexOfClip(int trackId) const;
     qint64 expectedSamples(const Clip &clip) const;
     void checkHeadStart();
     void setBuffering(bool buffering);
@@ -147,7 +155,7 @@ private:
     bool keptDirections(int chapter);
     QSet<int> breaksFor(int chapter) const;
     // A clip of the chapter's, with its reader.
-    Clip clipFrom(const SpeechClip &spoken) const;
+    Clip clipFrom(const SpeechClip &spoken);
     QString voiceOf(const Clip &clip) const;
     // The chapter's clips not yet begun, cut again (after new direction or casting).
     void recut(int chapter);
@@ -155,6 +163,7 @@ private:
     void requestDirections(int chapter);
     void applyMoods(int chapter, const QMap<int, QString> &moods);
     bool waitingForDirections(const Clip &clip) const;
+    qint64 directionWaitLeft(const Clip &clip) const;
     QString styleFor(const Clip &clip) const;
     bool directed() const;
     Ai::SpeechSynthesizer *speaker() const;
@@ -167,11 +176,14 @@ private:
     Library *m_library;
 
     Director *m_director;
-    Cast *m_cast = nullptr;
+    QPointer<Cast> m_cast;
     SpeechPlayer *m_player;
     QList<Clip> m_clips;
+    int m_nextClipId = 1;
+    quint64 m_session = 0;
     int m_current = -1;
     int m_queued = -1;
+    qint64 m_currentSample = 0;
     double m_samplesPerChar = 24000.0 / 15.0;
     qint64 m_holdSamples = 0;
     int m_sentence = -1;
@@ -191,6 +203,7 @@ private:
     QHash<int, QList<SpeechBlock>> m_blocks;
     QHash<int, QMap<int, QString>> m_moods;
     QHash<int, qint64> m_directionsAsked;
+    QHash<int, qint64> m_castAsked;
 
     QString m_voice;
     QString m_voiceName;
@@ -200,7 +213,9 @@ private:
     QString m_problem;
 
     QTimer m_directionsTimer;
+    QTimer m_retryTimer;
     QTimer m_sleepTimer;
+    QTimer m_sleepTick;
     QDateTime m_sleepAt;
     bool m_sleepAtChapterEnd = false;
 };
