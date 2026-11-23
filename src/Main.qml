@@ -42,6 +42,8 @@ ApplicationWindow {
 
     property bool geometryReady: false
     property var pendingJump: null
+    property bool pendingListen: false
+    property string pendingCompanionQuestion: ""
 
     function saveWindowGeometry() {
         if (!geometryReady)
@@ -173,11 +175,78 @@ ApplicationWindow {
     }
     function closeBook() {
         pendingJump = null
+        pendingListen = false
+        pendingCompanionQuestion = ""
         const id = reader.bookId
         if (readerLoader.item)
             readerLoader.item.closeBook()
         reader.close()
         libraryView.select(id)
+    }
+    function startReaderListening() {
+        if (!readerLoader.item)
+            return
+        if (typeof readerLoader.item.startListening === "function")
+            readerLoader.item.startListening()
+        else if (typeof readerLoader.item.listen === "function")
+            readerLoader.item.listen()
+    }
+    function openBookAndListen(bookId) {
+        if (readerOpen && reader.bookId === bookId && readerLoader.item) {
+            startReaderListening()
+            return
+        }
+        pendingListen = true
+        openBook(bookId)
+        if (!reader.open || reader.bookId !== bookId) {
+            pendingListen = false
+            return
+        }
+        if (reader.format === "pdf")
+            Qt.callLater(flushPendingReaderActions)
+    }
+    function askCompanion(question) {
+        const q = (question || "").trim()
+        if (q === "")
+            return
+        const targetId = readerOpen ? reader.bookId : library.lastOpenedBook()
+        if (targetId <= 0)
+            return
+        if (readerOpen && reader.bookId === targetId && readerLoader.item) {
+            if (typeof readerLoader.item.askCompanion === "function") {
+                readerLoader.item.askCompanion(q)
+            } else {
+                readerLoader.item.showCompanion("ask")
+                companion.ask(q)
+            }
+            return
+        }
+        pendingCompanionQuestion = q
+        openBook(targetId)
+        if (!reader.open || reader.bookId !== targetId) {
+            pendingCompanionQuestion = ""
+            return
+        }
+        if (reader.format === "pdf")
+            Qt.callLater(flushPendingReaderActions)
+    }
+    function flushPendingReaderActions() {
+        if (!reader.open || !readerLoader.item)
+            return
+        if (pendingListen) {
+            pendingListen = false
+            startReaderListening()
+        }
+        if (pendingCompanionQuestion !== "") {
+            const q = pendingCompanionQuestion
+            pendingCompanionQuestion = ""
+            if (typeof readerLoader.item.askCompanion === "function") {
+                readerLoader.item.askCompanion(q)
+            } else {
+                readerLoader.item.showCompanion("ask")
+                companion.ask(q)
+            }
+        }
     }
     function toggleFullScreen() {
         visibility = visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
@@ -229,6 +298,14 @@ ApplicationWindow {
             const last = library.lastOpenedBook()
             if (last > 0)
                 openBook(last)
+        } else if (actionId === "listen") {
+            if (readerOpen && readerLoader.item) {
+                readerLoader.item.listen()
+            } else {
+                const last = library.lastOpenedBook()
+                if (last > 0)
+                    openBookAndListen(last)
+            }
         } else if (actionId === "toggle-theme") {
             if (readerOpen && readerLoader.item) {
                 readerLoader.item.cycleTheme()
@@ -270,8 +347,6 @@ ApplicationWindow {
                 companion.whosWho()
             } else if (actionId === "voices") {
                 readerLoader.item.showVoices()
-            } else if (actionId === "listen") {
-                readerLoader.item.listen()
             } else if (actionId === "export-notes-file") {
                 const saved = marks.exportMarkdownToFile("", reader.title, reader.author, "obsidian")
                 if (saved !== "")
@@ -292,6 +367,8 @@ ApplicationWindow {
         function onLocationChanged() {
             if (win.pendingJump && reader.relocationSeq > 0)
                 win.flushPendingJump()
+            if ((win.pendingListen || win.pendingCompanionQuestion !== "") && reader.relocationSeq > 0)
+                win.flushPendingReaderActions()
         }
     }
 
@@ -390,6 +467,8 @@ ApplicationWindow {
             visible: !win.readerOpen
             focus: !win.readerOpen
             onOpenBook: (bookId) => win.openBook(bookId)
+            onListenBook: (bookId) => win.openBookAndListen(bookId)
+            onPaletteRequested: (text) => text !== "" ? commandPalette.search(text) : commandPalette.show()
         }
 
         Loader {
@@ -481,6 +560,7 @@ ApplicationWindow {
                     readerLoader.item.goTo(target)
             }
             onTriggerAction: (actionId) => win.runPaletteAction(actionId)
+            onAskCompanion: (question) => win.askCompanion(question)
             onClosed: {
                 if (win.readerOpen && readerLoader.item)
                     readerLoader.item.focusPage()
@@ -540,11 +620,14 @@ ApplicationWindow {
         property var tips: []
     }
     // A tip, the first time something happens, and never again.
-    function tip(id, text) {
+    function tip(id, text, hint) {
         if (onboarding.tips.indexOf(id) >= 0 || welcome.open)
             return
         onboarding.tips = onboarding.tips.concat([id])
-        toast.show(text, qsTr("Got it"), () => {})
+        if (hint && hint !== "")
+            toast.show(text, "", hint)
+        else
+            toast.show(text, qsTr("Got it"), () => {})
     }
     // A first launch is welcomed; a new version (for someone who has read
     // with Dogear before) gets What's new. Never pop over a CLI-opened book.
@@ -570,7 +653,7 @@ ApplicationWindow {
         id: readingSettings
         location: settingsUrl
         category: "reading"
-        property string theme: "omarchy"
+        property string theme: "paper"
         property string font: "Literata"
         property real fontScale: 1.15
         property real lineHeight: 1.62
@@ -588,6 +671,10 @@ ApplicationWindow {
     Connections {
         target: library
         function onProblem(message) { toast.show(message) }
+        function onBooksChanged() {
+            if (library.scanning && library.bookCount > 0 && !win.readerOpen)
+                win.tip("books-arriving", qsTr("Open any book while the rest arrive."), qsTr("Enter"))
+        }
         function onScanFinished(added, updated) {
             if (added > 0)
                 toast.show(qsTr("Added %n books", "", added))

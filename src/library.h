@@ -56,6 +56,7 @@ public:
     Q_INVOKABLE void addUrls(const QList<QUrl> &urls);
     Q_INVOKABLE void removeFolder(const QString &path);
     Q_INVOKABLE void rescan();
+    Q_INVOKABLE void cancelScan();
     // Reads one file now and stores it, for books opened from outside the
     // library; returns its id, or 0 with errorString() set.
     int addBookFile(const QString &path);
@@ -69,6 +70,7 @@ public:
     void markListened(int id);
     QVariantMap shelfCounts() const;
     static QString chapterTitleOf(const BookRecord &record);
+    static QString snippetOf(const BookRecord &record);
     Q_INVOKABLE void setHidden(int id, bool hidden);
     Q_INVOKABLE void showInFolder(int id) const;
     Q_INVOKABLE QString coverUrl(int id) const;
@@ -144,7 +146,9 @@ private:
     void loadBooks();
     void loadFolders();
     void loadCollections();
+    void loadAudioBadges();
     void syncWorksCollections();
+    void enrichBookMap(QVariantMap &map, int id) const;
     bool storeInDb(const ScannedBook &book, QList<StagedBook> &staged);
     void applyStaged(const QList<StagedBook> &staged);
     bool writeChapterLengths(QSqlDatabase &db, int id, const QList<int> &lengths, qint64 *totalOut = nullptr);
@@ -164,6 +168,8 @@ private:
     QHash<int, CollectionRecord> m_collections;
     QHash<int, QSet<int>> m_collectionBooks;
     QHash<int, QSet<int>> m_bookCollections;
+    QSet<int> m_downloadedBooks;
+    QSet<int> m_audiobookBooks;
     QStringList m_folders;
     QStringList m_queuedFiles;
     Scanner *m_scanner = nullptr;

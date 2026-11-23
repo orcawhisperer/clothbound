@@ -27,7 +27,12 @@ QHash<int, QByteArray> WorksModel::roleNames() const {
             {SeriesIndexRole, "seriesIndex"},
             {MinutesLeftRole, "minutesLeft"},
             {SecondsReadRole, "secondsRead"},
-            {AddedAtRole, "addedAt"}};
+            {AddedAtRole, "addedAt"},
+            {PagesRole, "pages"},
+            {WantToReadRole, "wantToRead"},
+            {ListeningRole, "listening"},
+            {DownloadedRole, "downloaded"},
+            {AudiobookRole, "audiobook"}};
 }
 
 QVariant WorksModel::data(const QModelIndex &index, int role) const {
@@ -72,6 +77,16 @@ QVariant WorksModel::data(const QModelIndex &index, int role) const {
         return double(book.secondsRead);
     case AddedAtRole:
         return double(book.addedAt);
+    case PagesRole:
+        return book.pages;
+    case WantToReadRole:
+        return book.wantAt > 0 && book.finishedAt == 0;
+    case ListeningRole:
+        return book.listenedAt > 0;
+    case DownloadedRole:
+        return m_downloaded.contains(book.id);
+    case AudiobookRole:
+        return m_audiobooks.contains(book.id);
     }
     return {};
 }
@@ -197,6 +212,17 @@ void WorksModel::setCollections(const QHash<int, QSet<int>> &collectionBooks) {
         rebuild();
 }
 
+void WorksModel::setAudioSets(const QSet<int> &downloaded, const QSet<int> &audiobooks) {
+    if (m_downloaded == downloaded && m_audiobooks == audiobooks)
+        return;
+    m_downloaded = downloaded;
+    m_audiobooks = audiobooks;
+    if (m_statusFilter == QLatin1String("downloaded") || m_statusFilter == QLatin1String("audiobooks"))
+        rebuild();
+    else if (!m_works.isEmpty())
+        emit dataChanged(index(0), index(int(m_works.size()) - 1), {DownloadedRole, AudiobookRole});
+}
+
 void WorksModel::updateBook(const BookRecord &book) {
     const auto oldIt = m_books.constFind(book.id);
     const bool existed = oldIt != m_books.cend();
@@ -251,6 +277,12 @@ bool WorksModel::passesFilters(const BookRecord &book) const {
                 return false;
         } else if (m_statusFilter == QLatin1String("listening")) {
             if (book.listenedAt <= 0)
+                return false;
+        } else if (m_statusFilter == QLatin1String("downloaded")) {
+            if (!m_downloaded.contains(book.id))
+                return false;
+        } else if (m_statusFilter == QLatin1String("audiobooks")) {
+            if (!m_audiobooks.contains(book.id))
                 return false;
         }
     }

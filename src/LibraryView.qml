@@ -6,8 +6,10 @@ import "Format.js" as Format
 import "Icons.js" as Icons
 import "Ui.js" as Ui
 
-// The library: books under way on top, filter chips & shelves, grid or compact
-// list view, watched-folder manager, and reading stats & insights.
+// The library: 52 px calm toolbar, Continue shelf on Reading now & All books,
+// 6-column cover grid or compact list view, J2 inline arriving skeletons and
+// stoppable scan pill, watched-folder manager, and reading stats (01_library,
+// 10_j1_empty_library, 11_j2_books_arriving).
 FocusScope {
     id: view
 
@@ -37,18 +39,30 @@ FocusScope {
         return works.statusFilter === "reading" ? qsTr("Reading now")
              : works.statusFilter === "want" ? qsTr("Want to read")
              : works.statusFilter === "finished" ? qsTr("Finished")
+             : works.statusFilter === "downloaded" ? qsTr("Downloaded")
+             : works.statusFilter === "audiobooks" ? qsTr("Audiobooks")
              : works.statusFilter === "listening" ? qsTr("Listening")
              : works.statusFilter === "unread" ? qsTr("Not started")
              : qsTr("All books")
     }
     readonly property int currentRow: viewMode === "list" ? listView.currentIndex : grid.currentIndex
+    readonly property string booksCountSummary: {
+        const _lang = translator.language
+        const works = library.works
+        const pdfs = library.shelfCounts.pdf || 0
+        const showPdfs = !works.hasActiveFilters && works.searchText === "" && pdfs > 0
+        const base = works.grouped && !works.hasActiveFilters && works.searchText === ""
+                     ? qsTr("%n books", "", library.bookCount)
+                     : qsTr("%n books", "", works.count)
+        return showPdfs ? (base + " · " + qsTr("%n PDFs", "", pdfs)) : base
+    }
 
-    readonly property string listIcon: "M8 6.5 H20 M8 12 H20 M8 17.5 H20 M4 6.5 H5 M4 12 H5 M4 17.5 H5"
-    readonly property string gridIcon: "M4.5 4.5 H10.5 V10.5 H4.5 Z M13.5 4.5 H19.5 V10.5 H13.5 Z M4.5 13.5 H10.5 V19.5 H4.5 Z M13.5 13.5 H19.5 V19.5 H13.5 Z"
-    readonly property string statsIcon: "M5 19.5 V13 M10 19.5 V8.5 M15 19.5 V11 M20 19.5 V5.5"
+    readonly property string statsIcon: Icons.stats
     readonly property string refreshIcon: "M19 12 A7 7 0 1 1 16.95 7.05 M19 4.5 V8.5 H15"
 
     signal openBook(int bookId)
+    signal listenBook(int bookId)
+    signal paletteRequested(string text)
 
     Connections {
         target: library
@@ -205,108 +219,152 @@ FocusScope {
         anchors.right: parent.right
     }
 
-    // --- Toolbar ---------------------------------------------------------
+    // --- Toolbar (52 px, persistent hairline, J2 scan pill) --------------
     Item {
         id: bar
         anchors.top: parent.top
         anchors.left: sidebar.right
         anchors.right: parent.right
-        height: 56
+        height: 52
 
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 28
-            anchors.rightMargin: 16
-            spacing: 6
+            anchors.rightMargin: 20
+            spacing: 10
 
             Label {
                 text: view.sectionTitle
                 color: theme.ink1
-                font.pixelSize: 20
+                font.pixelSize: 15
                 font.weight: Font.DemiBold
+                font.letterSpacing: -0.15
                 elide: Text.ElideRight
                 Layout.maximumWidth: Math.max(120, bar.width * 0.3)
             }
-            Label {
-                Layout.leftMargin: 4
-                Layout.alignment: Qt.AlignBaseline
-                visible: library.bookCount > 0 && !library.scanning
-                text: library.works.grouped && !library.works.hasActiveFilters && library.works.searchText === ""
-                      ? qsTr("%n works", "", library.works.count) : qsTr("%n books", "", library.works.count)
-                color: theme.ink3
-                font.pixelSize: 13
-            }
-            // While books arrive, their count takes the place of the total.
-            Row {
-                visible: library.scanning
-                Layout.leftMargin: 6
-                spacing: 8
-                BusyIndicator {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 16
-                    height: 16
-                    padding: 0
-                    running: parent.visible
-                }
-                Label {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: library.scanTotal > 0
-                          ? qsTr("Adding books · %1 of %2").arg(library.scanDone.toLocaleString(Qt.locale(), 'f', 0))
-                                                            .arg(library.scanTotal.toLocaleString(Qt.locale(), 'f', 0))
-                          : qsTr("Looking for books…")
-                    color: theme.ink3
-                    font.pixelSize: 13
-                    font.features: { "tnum": 1 }
-                }
-            }
+
             Item { Layout.fillWidth: true }
 
-            SearchBox {
-                id: search
-                Layout.preferredWidth: Math.min(280, view.width * 0.24)
-                visible: library.bookCount > 0
-                placeholder: qsTr("Search title, author…")
-                onTextChanged: library.works.searchText = text
-                onAccepted: {
-                    const activeView = view.viewMode === "list" ? listView : grid
-                    if (activeView.count > 0)
-                        activeView.currentIndex = 0
-                    view.focusGrid()
+            // J2 right-aligned scanning progress pill with Stop action.
+            Rectangle {
+                visible: library.scanning
+                Layout.preferredHeight: 30
+                Layout.preferredWidth: scanRow.implicitWidth + 18
+                radius: 15
+                color: Ui.tint(theme.ink1, 0.06)
+                Accessible.role: Accessible.StatusBar
+
+                Row {
+                    id: scanRow
+                    anchors.verticalCenter: parent.verticalCenter
+                    anchors.left: parent.left
+                    anchors.leftMargin: 12
+                    spacing: 10
+
+                    Item {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 14
+                        height: 14
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 7
+                            color: "transparent"
+                            border.width: 2
+                            border.color: Ui.tint(theme.ink1, 0.15)
+                        }
+                        BusyIndicator {
+                            anchors.fill: parent
+                            padding: 0
+                            running: library.scanning
+                        }
+                    }
+
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: library.scanTotal > 0
+                              ? qsTr("Adding books · %1 of %2")
+                                    .arg(library.scanDone.toLocaleString(Qt.locale(), "f", 0))
+                                    .arg(library.scanTotal.toLocaleString(Qt.locale(), "f", 0))
+                              : qsTr("Looking for books…")
+                        color: theme.ink1
+                        font.pixelSize: 12
+                        font.features: ({ "tnum": 1 })
+                    }
+
+                    AbstractButton {
+                        id: stopScanBtn
+                        anchors.verticalCenter: parent.verticalCenter
+                        implicitHeight: 22
+                        implicitWidth: stopLbl.implicitWidth + 16
+                        hoverEnabled: true
+                        focusPolicy: Qt.TabFocus
+                        Accessible.name: qsTr("Stop scanning")
+                        onClicked: library.cancelScan()
+
+                        background: Rectangle {
+                            radius: 11
+                            color: stopScanBtn.pressed ? Ui.tint(theme.ink1, 0.14)
+                                 : stopScanBtn.hovered ? Ui.tint(theme.ink1, 0.09) : "transparent"
+                            border.width: stopScanBtn.visualFocus ? 2 : 0
+                            border.color: theme.accent
+                        }
+                        contentItem: Label {
+                            id: stopLbl
+                            text: qsTr("Stop")
+                            color: stopScanBtn.hovered ? theme.ink1 : theme.ink3
+                            font.pixelSize: 12
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                    }
                 }
-                onEscaped: view.focusGrid()
             }
+
+            // Covers | List toggle
             Segmented {
                 visible: library.bookCount > 0
-                Layout.leftMargin: 4
                 compact: true
                 model: [{ value: "grid", label: qsTr("Covers (V)"), glyph: Icons.grid },
                         { value: "list", label: qsTr("List (V)"), glyph: Icons.list }]
                 current: view.viewMode
                 onActivated: view.toggleViewMode()
             }
+
+            // Sort dropdown (Recent ▾)
             AbstractButton {
                 id: sortButton
                 visible: library.bookCount > 0
-                Layout.preferredHeight: 30
+                Layout.preferredHeight: 28
                 implicitWidth: sortRow.implicitWidth + 20
                 hoverEnabled: true
-                focusPolicy: Qt.NoFocus
+                focusPolicy: Qt.TabFocus
+                Accessible.name: qsTr("Sort order: %1").arg(view.sortLabel(library.works.sortOrder))
                 background: Rectangle {
-                    radius: Math.min(7, theme.radius)
-                    color: sortButton.pressed || sortMenu.opened ? theme.fillPressed : sortButton.hovered ? theme.fill : "transparent"
+                    radius: Ui.radius(7, theme.radius)
+                    color: sortButton.pressed || sortMenu.opened ? theme.fillPressed
+                         : sortButton.hovered ? theme.fill : "transparent"
+                    border.width: sortButton.visualFocus ? 2 : 0
+                    border.color: theme.accent
                 }
                 contentItem: Item {
                     Row {
                         id: sortRow
                         anchors.centerIn: parent
-                        spacing: 5
+                        spacing: 6
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
                             text: view.sortLabel(library.works.sortOrder)
                             color: theme.ink2
                             font.pixelSize: 13
                         }
-                        Glyph { anchors.verticalCenter: parent.verticalCenter; width: 12; height: 12; stroke: 2; path: Icons.chevronDown; color: theme.ink3 }
+                        Glyph {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 10
+                            height: 10
+                            stroke: 2.2
+                            path: Icons.chevronDown
+                            color: theme.ink3
+                        }
                     }
                 }
                 onClicked: sortMenu.opened ? sortMenu.close() : sortMenu.open()
@@ -343,6 +401,8 @@ FocusScope {
                     }
                 }
             }
+
+            // Format / series filter menu (preserved Dogear power feature)
             IconButton {
                 id: filterButton
                 visible: library.bookCount > 0
@@ -384,6 +444,26 @@ FocusScope {
                     }
                 }
             }
+
+            // 260×30 Search box with clickable Ctrl K badge
+            SearchBox {
+                id: search
+                Layout.preferredWidth: Math.min(260, Math.max(180, view.width * 0.24))
+                visible: library.bookCount > 0
+                placeholder: qsTr("Search books, authors, text")
+                shortcutHint: "Ctrl K"
+                onTextChanged: library.works.searchText = text
+                onPaletteRequested: view.paletteRequested(search.text)
+                onAccepted: {
+                    const activeView = view.viewMode === "list" ? listView : grid
+                    if (activeView.count > 0)
+                        activeView.currentIndex = 0
+                    view.focusGrid()
+                }
+                onEscaped: view.focusGrid()
+            }
+
+            // More actions (Reading stats, Watched folders, Rescan, Add single books)
             IconButton {
                 id: moreButton
                 glyph: Icons.more
@@ -408,14 +488,15 @@ FocusScope {
                     }
                 }
             }
+
             IconButton {
                 glyph: Icons.plus
-                tip: qsTr("Add a folder of books (A)")
+                tip: qsTr("Add books or folders (A)")
                 onClicked: picker.chooseFolders()
             }
         }
 
-        // Reading new books in: a thin line along the bar.
+        // Thin scan progress accent hairline along the toolbar bottom.
         Rectangle {
             visible: library.scanning && library.scanTotal > 0
             anchors.bottom: parent.bottom
@@ -424,18 +505,14 @@ FocusScope {
             color: theme.accent
             Behavior on width { NumberAnimation { duration: 200 } }
         }
+        // Persistent hairline separator (01_library.html).
         Rectangle {
             anchors.bottom: parent.bottom
             width: parent.width
             height: 1
-            readonly property real scrollY: view.viewMode === "list"
-                ? (listView.contentY - listView.originY) : (grid.contentY - grid.originY)
             color: theme.hairline
-            opacity: scrollY > 4 ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 120 } }
         }
     }
-
 
     // Series picker popup
     Popup {
@@ -474,7 +551,7 @@ FocusScope {
                 visible: library.works.seriesFilter !== ""
                 width: parent.width
                 height: 1
-                color: Ui.tint(theme.ink1, 0.08)
+                color: theme.hairline
             }
             MenuRow {
                 visible: library.works.seriesFilter !== ""
@@ -488,15 +565,15 @@ FocusScope {
         }
     }
 
-    // --- Cover grid view -------------------------------------------------
+    // --- Cover grid view (6 cols @ 1280 px, 24 px col gap, 28 px outer) --
     GridView {
         id: grid
         anchors.top: bar.bottom
         anchors.left: sidebar.right
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        anchors.leftMargin: 18
-        anchors.rightMargin: 18
+        anchors.leftMargin: 16
+        anchors.rightMargin: 16
         visible: library.bookCount > 0 && view.viewMode === "grid"
         clip: true
         focus: view.viewMode === "grid"
@@ -506,9 +583,12 @@ FocusScope {
         cacheBuffer: 1200
         currentIndex: -1
 
-        readonly property int columns: Math.max(2, Math.floor(width / 190))
+        readonly property int columns: Math.max(2, Math.floor((width + 24) / 172))
+        readonly property int pendingSlots: (library.scanning && library.scanTotal > library.scanDone
+                                             && !library.works.hasActiveFilters && library.works.searchText === "")
+                                            ? Math.min(columns * 2, library.scanTotal - library.scanDone) : 0
         cellWidth: Math.floor(width / columns)
-        cellHeight: Math.round((cellWidth - 28) * 1.5) + 14 + 64
+        cellHeight: Math.round((cellWidth - 24) * 1.5) + 12 + 56
 
         model: library.works
 
@@ -516,29 +596,48 @@ FocusScope {
 
         header: Column {
             width: grid.width
-            topPadding: 12
+            topPadding: 28
             spacing: 0
-            readonly property bool showShelf: library.continueReading.length > 0 && library.works.searchText === "" && !library.works.hasActiveFilters
+            readonly property bool showShelf: library.continueReading.length > 0
+                                              && library.works.searchText === ""
+                                              && library.works.collectionId === 0
+                                              && library.works.formatFilter === ""
+                                              && library.works.seriesFilter === ""
+                                              && (library.works.statusFilter === "" || library.works.statusFilter === "reading")
 
             ContinueShelf {
-                x: 14
-                width: grid.width - 28
+                x: 12
+                width: grid.width - 24
                 visible: parent.showShelf
                 height: visible ? implicitHeight : 0
                 books: library.continueReading
                 onOpen: (bookId) => view.openBook(bookId)
+                onListen: (bookId) => view.listenBook(bookId)
                 onLeaveDown: view.focusGrid()
             }
-            Item { width: 1; height: parent.showShelf ? 28 : 4 }
-            // Under the Continue card, the rest of the shelf gets a heading.
-            Label {
-                x: 14
+            Item { width: 1; height: parent.showShelf ? 32 : 0 }
+
+            // Under the Continue shelf, "All books" + right-aligned "N books · M PDFs".
+            RowLayout {
+                x: 12
+                width: grid.width - 24
                 visible: parent.showShelf
-                text: view.sectionTitle
-                color: theme.ink1
-                font.pixelSize: 15
-                font.weight: Font.DemiBold
-                bottomPadding: 6
+                height: visible ? implicitHeight + 8 : 0
+                spacing: 12
+
+                Label {
+                    Layout.fillWidth: true
+                    text: qsTr("All books")
+                    color: theme.ink1
+                    font.pixelSize: 15
+                    font.weight: Font.DemiBold
+                }
+                Label {
+                    text: view.booksCountSummary
+                    color: theme.ink4
+                    font.pixelSize: 12
+                    font.features: ({ "tnum": 1 })
+                }
             }
         }
 
@@ -546,14 +645,30 @@ FocusScope {
             onActivated: view.activate(index)
             onDetailsRequested: view.showDetails(index)
         }
-        // More books still arriving: a row of placeholders after the last.
-        footer: Flow {
+
+        // Reserve scroll height for any extra skeleton rows below arrived books.
+        footer: Item {
             width: grid.width
-            visible: library.scanning && library.scanTotal > library.scanDone
-            height: visible ? implicitHeight : 0
+            readonly property int existingRows: grid.columns > 0 ? Math.ceil(grid.count / grid.columns) : 0
+            readonly property int totalRows: grid.columns > 0 ? Math.ceil((grid.count + grid.pendingSlots) / grid.columns) : 0
+            height: Math.max(24, (totalRows - existingRows) * grid.cellHeight + 24)
+        }
+
+        // J2 inline trailing skeletons: placed directly in the slots after the
+        // last arrived book on the SAME grid row, without polluting WorksModel.
+        Item {
+            parent: grid.contentItem
+            visible: grid.pendingSlots > 0
+            z: 1
             Repeater {
-                model: parent.visible ? Math.min(grid.columns, library.scanTotal - library.scanDone) : 0
-                delegate: SkeletonCard { width: grid.cellWidth }
+                model: grid.pendingSlots
+                delegate: SkeletonCard {
+                    required property int index
+                    readonly property int slot: grid.count + index
+                    x: (slot % grid.columns) * grid.cellWidth
+                    y: (grid.headerItem ? grid.headerItem.height : 0) + Math.floor(slot / grid.columns) * grid.cellHeight
+                    width: grid.cellWidth
+                }
             }
         }
 
@@ -585,30 +700,46 @@ FocusScope {
 
         header: Column {
             width: listView.width
-            topPadding: 12
+            topPadding: 24
             bottomPadding: 8
             spacing: 0
-            readonly property bool showShelf: library.continueReading.length > 0 && library.works.searchText === "" && !library.works.hasActiveFilters
+            readonly property bool showShelf: library.continueReading.length > 0
+                                              && library.works.searchText === ""
+                                              && library.works.collectionId === 0
+                                              && library.works.formatFilter === ""
+                                              && library.works.seriesFilter === ""
+                                              && (library.works.statusFilter === "" || library.works.statusFilter === "reading")
 
             ContinueShelf {
-                x: 8
-                width: listView.width - 16
+                x: 4
+                width: listView.width - 8
                 visible: parent.showShelf
                 height: visible ? implicitHeight : 0
                 books: library.continueReading
                 onOpen: (bookId) => view.openBook(bookId)
+                onListen: (bookId) => view.listenBook(bookId)
                 onLeaveDown: view.focusGrid()
             }
-            Item { width: 1; height: parent.showShelf ? 24 : 0 }
-            Label {
-                x: 8
-                text: (library.works.searchText !== "" || library.works.hasActiveFilters)
-                      ? qsTr("%n matches", "", library.works.count)
-                      : library.works.grouped ? qsTr("All books · %n works", "", library.works.count) : qsTr("All books")
-                color: theme.ink1
-                font.pixelSize: 15
-                font.weight: Font.DemiBold
-                bottomPadding: 4
+            Item { width: 1; height: parent.showShelf ? 28 : 0 }
+            RowLayout {
+                x: 4
+                width: listView.width - 8
+                spacing: 12
+                Label {
+                    Layout.fillWidth: true
+                    text: (library.works.searchText !== "" || library.works.hasActiveFilters)
+                          ? qsTr("%n matches", "", library.works.count)
+                          : qsTr("All books")
+                    color: theme.ink1
+                    font.pixelSize: 15
+                    font.weight: Font.DemiBold
+                }
+                Label {
+                    text: view.booksCountSummary
+                    color: theme.ink4
+                    font.pixelSize: 12
+                    font.features: ({ "tnum": 1 })
+                }
             }
         }
 
@@ -637,7 +768,7 @@ FocusScope {
 
             Rectangle {
                 anchors.fill: parent
-                radius: Math.min(8, theme.radius)
+                radius: Ui.radius(8, theme.radius)
                 color: listRow.selected ? Ui.tint(theme.accent, theme.light ? 0.14 : 0.2)
                      : rowHover.hovered ? Ui.tint(theme.ink1, 0.05) : "transparent"
                 border.width: listRow.selected ? 1 : 0
@@ -671,7 +802,7 @@ FocusScope {
                             textFormat: Text.PlainText
                             color: listRow.problem !== "" ? theme.ink3 : theme.ink1
                             font.pixelSize: 14
-                            font.weight: Font.DemiBold
+                            font.weight: Font.Medium
                             elide: Text.ElideRight
                         }
                         Label {
@@ -687,7 +818,7 @@ FocusScope {
                             topPadding: 2
                             bottomPadding: 2
                             background: Rectangle {
-                                radius: 10
+                                radius: Ui.radius(10, theme.radius)
                                 color: Ui.tint(theme.accent, 0.14)
                             }
                         }
@@ -708,7 +839,7 @@ FocusScope {
                             return parts.join(" · ")
                         }
                         textFormat: Text.PlainText
-                        color: listRow.problem !== "" ? (theme.colors.red || "#e06c75") : theme.ink2
+                        color: listRow.problem !== "" ? theme.danger : theme.ink3
                         font.pixelSize: 12
                         elide: Text.ElideRight
                     }
@@ -726,7 +857,7 @@ FocusScope {
                     topPadding: 3
                     bottomPadding: 3
                     background: Rectangle {
-                        radius: 4
+                        radius: Ui.radius(4, theme.radius)
                         color: Ui.tint(theme.ink1, 0.06)
                     }
                 }
@@ -759,6 +890,7 @@ FocusScope {
                             color: listRow.finished ? theme.accentInk : theme.ink2
                             font.pixelSize: 12
                             font.weight: listRow.finished ? Font.DemiBold : Font.Normal
+                            font.features: ({ "tnum": 1 })
                         }
                     }
 
@@ -767,7 +899,7 @@ FocusScope {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 4
                         radius: 2
-                        color: Ui.tint(theme.ink1, 0.12)
+                        color: Ui.tint(theme.ink1, 0.10)
                         Rectangle {
                             width: parent.width * listRow.progress
                             height: parent.height
@@ -780,8 +912,9 @@ FocusScope {
                         visible: listRow.progress > 0.005 && !listRow.finished && listRow.minutesLeft > 0
                         Layout.alignment: Qt.AlignRight
                         text: Format.duration(listRow.minutesLeft)
-                        color: theme.ink3
+                        color: theme.ink4
                         font.pixelSize: 11
+                        font.features: ({ "tnum": 1 })
                     }
                 }
             }
@@ -839,43 +972,46 @@ FocusScope {
         onAddBooks: picker.chooseBooks()
     }
 
-    // The first books on their way: placeholders where their covers will be.
+    // The first books on their way before any arrive: 6-col skeleton grid.
     Flow {
         id: firstArrivals
         anchors.fill: contentArea
-        anchors.margins: 18
+        anchors.leftMargin: 16
+        anchors.rightMargin: 16
         anchors.topMargin: 16
         visible: library.bookCount === 0 && library.scanning
         clip: true
-        readonly property int columns: Math.max(2, Math.floor(width / 190))
+        readonly property int columns: Math.max(2, Math.floor((width + 24) / 172))
         readonly property real cell: Math.floor(width / columns)
         Repeater {
-            model: firstArrivals.visible ? Math.min(18, Math.max(firstArrivals.columns, library.scanTotal)) : 0
+            model: firstArrivals.visible ? Math.min(18, Math.max(firstArrivals.columns * 2, library.scanTotal)) : 0
             delegate: SkeletonCard { width: firstArrivals.cell }
         }
     }
 
     component SkeletonCard: Item {
-        height: Math.round((width - 28) * 1.5) + 14 + 64
+        height: Math.round((width - 24) * 1.5) + 12 + 56
         Skeleton {
-            x: 14
-            y: 14
-            width: parent.width - 28
-            height: (parent.width - 28) * 1.5
-            radius: Math.min(4, theme.radius)
+            x: 12
+            y: 12
+            width: parent.width - 24
+            height: (parent.width - 24) * 1.5
+            radius: Ui.radius(5, theme.radius)
         }
         Skeleton {
-            x: 14
-            y: (parent.width - 28) * 1.5 + 26
-            width: (parent.width - 28) * 0.8
+            x: 12
+            y: (parent.width - 24) * 1.5 + 22
+            width: (parent.width - 24) * 0.78
             height: 12
+            radius: Ui.radius(4, theme.radius)
             shimmer: false
         }
         Skeleton {
-            x: 14
-            y: (parent.width - 28) * 1.5 + 46
-            width: (parent.width - 28) * 0.5
+            x: 12
+            y: (parent.width - 24) * 1.5 + 40
+            width: (parent.width - 24) * 0.48
             height: 10
+            radius: Ui.radius(4, theme.radius)
             shimmer: false
         }
     }
@@ -885,6 +1021,7 @@ FocusScope {
         anchors.fill: parent
         z: 10
         onRead: (bookId) => { details.close(); view.openBook(bookId) }
+        onListen: (bookId) => { details.close(); view.listenBook(bookId) }
         onClosed: view.focusGrid()
     }
 
@@ -911,7 +1048,7 @@ FocusScope {
 
         Rectangle {
             anchors.fill: parent
-            color: Ui.tint("black", theme.light ? 0.22 : 0.5)
+            color: theme.scrim
             MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.AllButtons
@@ -924,9 +1061,9 @@ FocusScope {
             anchors.centerIn: parent
             width: Math.min(parent.width - 48, 540)
             height: Math.min(parent.height - 64, foldersCol.implicitHeight + 48)
-            radius: Math.min(12, theme.radius)
-            color: theme.ground
-            border.color: Ui.tint(theme.ink1, 0.12)
+            radius: Ui.radius(14, theme.radius)
+            color: theme.raised
+            border.color: Ui.tint(theme.ink1, 0.10)
 
             MouseArea {
                 anchors.fill: parent
@@ -949,7 +1086,7 @@ FocusScope {
                         color: theme.ink1
                         font.family: "Literata"
                         font.pixelSize: 20
-                        font.weight: Font.DemiBold
+                        font.weight: Font.Medium
                     }
                     IconButton {
                         glyph: Icons.close
@@ -961,7 +1098,7 @@ FocusScope {
                 Label {
                     Layout.fillWidth: true
                     text: qsTr("Dogear scans these folders for EPUB and PDF books automatically. Book files are never modified.")
-                    color: theme.ink2
+                    color: theme.ink3
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
                 }
@@ -992,7 +1129,7 @@ FocusScope {
                         required property string modelData
                         width: ListView.view.width
                         height: 54
-                        radius: Math.min(8, theme.radius)
+                        radius: Ui.radius(8, theme.radius)
                         color: Ui.tint(theme.ink1, 0.04)
                         border.color: Ui.tint(theme.ink1, 0.08)
 
@@ -1013,7 +1150,7 @@ FocusScope {
                                     textFormat: Text.PlainText
                                     color: theme.ink1
                                     font.pixelSize: 13
-                                    font.weight: Font.DemiBold
+                                    font.weight: Font.Medium
                                     elide: Text.ElideRight
                                 }
                                 Label {
@@ -1101,7 +1238,7 @@ FocusScope {
 
         Rectangle {
             anchors.fill: parent
-            color: Ui.tint("black", theme.light ? 0.22 : 0.5)
+            color: theme.scrim
             MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.AllButtons
@@ -1114,9 +1251,9 @@ FocusScope {
             anchors.centerIn: parent
             width: Math.min(parent.width - 48, 580)
             height: Math.min(parent.height - 64, statsCol.implicitHeight + 48)
-            radius: Math.min(12, theme.radius)
-            color: theme.ground
-            border.color: Ui.tint(theme.ink1, 0.12)
+            radius: Ui.radius(14, theme.radius)
+            color: theme.raised
+            border.color: Ui.tint(theme.ink1, 0.10)
 
             MouseArea {
                 anchors.fill: parent
@@ -1139,7 +1276,7 @@ FocusScope {
                         color: theme.ink1
                         font.family: "Literata"
                         font.pixelSize: 20
-                        font.weight: Font.DemiBold
+                        font.weight: Font.Medium
                     }
                     IconButton {
                         glyph: Icons.close
@@ -1162,7 +1299,7 @@ FocusScope {
                         property string detail
                         Layout.fillWidth: true
                         Layout.preferredHeight: 82
-                        radius: Math.min(10, theme.radius)
+                        radius: Ui.radius(10, theme.radius)
                         color: Ui.tint(theme.ink1, 0.04)
                         border.color: Ui.tint(theme.ink1, 0.07)
 
@@ -1180,13 +1317,15 @@ FocusScope {
                                 color: theme.ink1
                                 font.family: "Literata"
                                 font.pixelSize: 21
-                                font.weight: Font.DemiBold
+                                font.weight: Font.Medium
+                                font.features: ({ "tnum": 1 })
                             }
                             Label {
                                 visible: text !== ""
                                 text: tile.detail
-                                color: theme.ink2
+                                color: theme.ink3
                                 font.pixelSize: 11
+                                font.features: ({ "tnum": 1 })
                             }
                         }
                     }
@@ -1234,15 +1373,16 @@ FocusScope {
 
                     Label {
                         text: qsTr("Last 14 days")
-                        color: theme.ink2
-                        font.pixelSize: 13
+                        color: theme.ink3
+                        font.pixelSize: 11
                         font.weight: Font.DemiBold
+                        font.letterSpacing: 0.22
                     }
 
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 116
-                        radius: Math.min(10, theme.radius)
+                        radius: Ui.radius(10, theme.radius)
                         color: Ui.tint(theme.ink1, 0.03)
                         border.color: Ui.tint(theme.ink1, 0.07)
 
@@ -1272,7 +1412,7 @@ FocusScope {
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         width: Math.min(20, parent.width - 2)
                                         height: dayBar.secs > 0 ? Math.max(5, (parent.height - 24) * dayBar.ratio) : 3
-                                        radius: 3
+                                        radius: Ui.radius(3, theme.radius)
                                         color: dayBar.secs > 0 ? theme.accent : Ui.tint(theme.ink1, 0.12)
                                         opacity: barHover.hovered ? 1.0 : (dayBar.secs > 0 ? 0.85 : 0.5)
                                     }
@@ -1299,7 +1439,7 @@ FocusScope {
         }
     }
 
-    // --- Create / Rename Shelf Dialog ------------------------------------
+    // --- Create / Rename Collection Dialog -------------------------------
     FocusScope {
         id: collectionDialog
         property bool open: false
@@ -1347,7 +1487,7 @@ FocusScope {
 
         Rectangle {
             anchors.fill: parent
-            color: Ui.tint("black", theme.light ? 0.22 : 0.5)
+            color: theme.scrim
             MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.AllButtons
@@ -1360,9 +1500,9 @@ FocusScope {
             anchors.centerIn: parent
             width: Math.min(parent.width - 48, 380)
             height: dialogCol.implicitHeight + 40
-            radius: Math.min(12, theme.radius)
-            color: theme.ground
-            border.color: Ui.tint(theme.ink1, 0.12)
+            radius: Ui.radius(14, theme.radius)
+            color: theme.raised
+            border.color: Ui.tint(theme.ink1, 0.10)
 
             ColumnLayout {
                 id: dialogCol
@@ -1373,14 +1513,14 @@ FocusScope {
                 Label {
                     text: collectionDialog.editingId > 0 ? qsTr("Rename collection") : qsTr("New collection")
                     color: theme.ink1
-                    font.pixelSize: 16
+                    font.pixelSize: 15
                     font.weight: Font.DemiBold
                 }
 
                 Rectangle {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 38
-                    radius: Math.min(8, theme.radius)
+                    Layout.preferredHeight: 36
+                    radius: Ui.radius(7, theme.radius)
                     color: Ui.tint(theme.ink1, 0.06)
                     border.width: 1.5
                     border.color: theme.accent
@@ -1392,7 +1532,7 @@ FocusScope {
                         anchors.rightMargin: 12
                         verticalAlignment: TextInput.AlignVCenter
                         color: theme.ink1
-                        font.pixelSize: 14
+                        font.pixelSize: 13
                         selectByMouse: true
                         Keys.onReturnPressed: collectionDialog.submit()
                         Keys.onEnterPressed: collectionDialog.submit()
@@ -1402,7 +1542,7 @@ FocusScope {
                             verticalAlignment: Text.AlignVCenter
                             visible: colNameInput.text === ""
                             text: qsTr("e.g. Favorites, Science Fiction…")
-                            color: theme.ink3
+                            color: theme.ink4
                             font: colNameInput.font
                         }
                     }
@@ -1412,6 +1552,7 @@ FocusScope {
                     Layout.fillWidth: true
                     Item { Layout.fillWidth: true }
                     TextButton {
+                        ghost: true
                         text: qsTr("Cancel")
                         onClicked: collectionDialog.close()
                     }

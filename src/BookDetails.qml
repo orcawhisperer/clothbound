@@ -7,8 +7,8 @@ import "Icons.js" as Icons
 import "Ui.js" as Ui
 
 // Everything about one book, beside the grid: its cover, description, how
-// long it takes to read, and, for a work with several editions, the
-// editions to choose between.
+// long it takes to read, collections, and, for a work with several editions,
+// the editions to choose between.
 FocusScope {
     id: details
 
@@ -24,6 +24,7 @@ FocusScope {
     property bool addingShelf: false
 
     signal read(int bookId)
+    signal listen(int bookId)
     signal closed()
 
     function show(id, key) {
@@ -102,8 +103,8 @@ FocusScope {
     // A scrim over the grid; clicking it closes the panel.
     Rectangle {
         anchors.fill: parent
-        color: "black"
-        opacity: details.open ? (theme.light ? 0.18 : 0.35) : 0
+        color: theme.scrim
+        opacity: details.open ? 1 : 0
         Behavior on opacity { NumberAnimation { duration: 180 } }
         TapHandler { onTapped: details.close() }
     }
@@ -113,9 +114,13 @@ FocusScope {
         width: Math.min(480, details.width - 40)
         height: details.height
         x: details.open ? details.width - width : details.width
-        Behavior on x { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
-        color: theme.ground
-        border.color: Ui.tint(theme.ink1, 0.08)
+        Behavior on x {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: 350; easing.type: Easing.OutQuart }
+        }
+        color: theme.raised
+        border.width: 1
+        border.color: theme.hairline
 
         // Clicks inside the panel stay inside it.
         TapHandler {}
@@ -128,7 +133,7 @@ FocusScope {
             anchors.right: parent.right
             height: 52
             z: 3
-            color: theme.ground
+            color: theme.raised
 
             Label {
                 anchors.left: parent.left
@@ -141,7 +146,7 @@ FocusScope {
                 color: theme.ink1
                 font.family: "Literata"
                 font.pixelSize: 15
-                font.weight: Font.DemiBold
+                font.weight: Font.Medium
                 elide: Text.ElideRight
                 opacity: flick.contentY > 280 ? 1 : 0
                 Behavior on opacity { NumberAnimation { duration: 150 } }
@@ -162,8 +167,9 @@ FocusScope {
                 anchors.left: parent.left
                 anchors.right: parent.right
                 height: 1
-                color: Ui.tint(theme.ink1, flick.contentY > 4 ? 0.08 : 0)
-                Behavior on color { ColorAnimation { duration: 140 } }
+                color: theme.hairline
+                opacity: flick.contentY > 4 ? 1 : 0
+                Behavior on opacity { NumberAnimation { duration: 140 } }
             }
         }
 
@@ -190,12 +196,12 @@ FocusScope {
                     Layout.preferredHeight: 300
                     Rectangle {
                         x: cover.x + cover.box.x
-                        y: cover.y + cover.box.y + 6
+                        y: cover.y + cover.box.y + 8
                         width: cover.box.width
                         height: cover.box.height
                         radius: cover.radius
                         color: "black"
-                        opacity: theme.light ? 0.16 : 0.38
+                        opacity: theme.light ? 0.16 : 0.42
                     }
                     CoverImage {
                         id: cover
@@ -217,9 +223,9 @@ FocusScope {
                     color: theme.ink1
                     font.family: "Literata"
                     font.pixelSize: 24
-                    font.weight: Font.DemiBold
+                    font.weight: Font.Medium
                     wrapMode: Text.Wrap
-                    lineHeight: 1.1
+                    lineHeight: 1.12
                 }
                 Label {
                     Layout.fillWidth: true
@@ -227,7 +233,7 @@ FocusScope {
                     text: details.book.author || ""
                     textFormat: Text.PlainText
                     color: theme.ink2
-                    font.pixelSize: 16
+                    font.pixelSize: 15
                     wrapMode: Text.Wrap
                 }
                 Label {
@@ -246,26 +252,40 @@ FocusScope {
                     visible: (details.book.problem || "") !== ""
                     text: details.book.problem || ""
                     textFormat: Text.PlainText
-                    color: theme.colors.red || "#ff6b6b"
+                    color: theme.danger
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
                 }
 
-                TextButton {
+                RowLayout {
                     Layout.topMargin: 16
                     Layout.fillWidth: true
-                    primary: true
-                    enabled: (details.book.problem || "") === ""
-                    glyph: Icons.book
-                    hint: "↵"
-                    text: {
-                        const _lang = translator.language
-                        return details.book.finished ? qsTr("Read again")
-                            : (details.book.progress || 0) > 0.005
-                              ? qsTr("Continue reading · %1%").arg(Math.round(details.book.progress * 100).toLocaleString(Qt.locale(), 'f', 0))
-                              : qsTr("Read")
+                    spacing: 8
+
+                    TextButton {
+                        Layout.fillWidth: true
+                        primary: true
+                        size: "large"
+                        enabled: (details.book.problem || "") === ""
+                        glyph: Icons.book
+                        hint: "↵"
+                        text: {
+                            const _lang = translator.language
+                            return details.book.finished ? qsTr("Read again")
+                                : (details.book.progress || 0) > 0.005
+                                  ? qsTr("Continue · %1%").arg(Math.round(details.book.progress * 100).toLocaleString(Qt.locale(), "f", 0))
+                                  : qsTr("Read")
+                        }
+                        onClicked: details.read(details.bookId)
                     }
-                    onClicked: details.read(details.bookId)
+
+                    TextButton {
+                        size: "large"
+                        enabled: (details.book.problem || "") === ""
+                        glyph: Icons.headphones
+                        text: qsTr("Listen")
+                        onClicked: details.listen(details.bookId)
+                    }
                 }
 
                 // Facts, in a quiet two-column table.
@@ -285,6 +305,7 @@ FocusScope {
                         textFormat: Text.PlainText
                         color: theme.ink1
                         font.pixelSize: 13
+                        font.features: ({ "tnum": 1 })
                         wrapMode: Text.Wrap
                     }
 
@@ -371,13 +392,14 @@ FocusScope {
                     }
                 }
 
-                // Collections / shelves membership
+                // Collections membership with color swatches.
                 Label {
                     Layout.topMargin: 18
                     text: qsTr("Collections")
-                    color: theme.ink1
-                    font.pixelSize: 15
+                    color: theme.ink4
+                    font.pixelSize: 11
                     font.weight: Font.DemiBold
+                    font.letterSpacing: 0.22
                 }
                 Flow {
                     Layout.fillWidth: true
@@ -392,7 +414,7 @@ FocusScope {
                             implicitHeight: 30
                             implicitWidth: shelfPillRow.implicitWidth + 20
                             hoverEnabled: true
-                            focusPolicy: Qt.NoFocus
+                            focusPolicy: Qt.TabFocus
                             onClicked: {
                                 if (member)
                                     library.removeFromCollection(details.bookId, modelData.id)
@@ -400,25 +422,23 @@ FocusScope {
                                     library.addToCollection(details.bookId, modelData.id)
                             }
                             background: Rectangle {
-                                radius: Math.min(15, theme.radius + 6)
-                                color: shelfPill.member ? Ui.tint(theme.accent, 0.2)
+                                radius: Ui.radius(15, theme.radius)
+                                color: shelfPill.member ? theme.accentSoft
                                      : shelfPill.hovered ? Ui.tint(theme.ink1, 0.08) : Ui.tint(theme.ink1, 0.04)
-                                border.width: 1
-                                border.color: shelfPill.member ? theme.accent : Ui.tint(theme.ink1, 0.1)
+                                border.width: shelfPill.visualFocus ? 2 : 1
+                                border.color: shelfPill.visualFocus || shelfPill.member ? theme.accent : Ui.tint(theme.ink1, 0.10)
                             }
                             contentItem: Item {
                                 Row {
                                     id: shelfPillRow
                                     anchors.centerIn: parent
-                                    spacing: 5
-                                    Glyph {
-                                        visible: shelfPill.member
+                                    spacing: 6
+                                    Rectangle {
                                         anchors.verticalCenter: parent.verticalCenter
-                                        width: 13
-                                        height: 13
-                                        stroke: 2.3
-                                        path: Icons.check
-                                        color: theme.accentInk
+                                        width: 8
+                                        height: 8
+                                        radius: Ui.radius(2, theme.radius)
+                                        color: Ui.collectionColor(shelfPill.modelData.name)
                                     }
                                     Label {
                                         anchors.verticalCenter: parent.verticalCenter
@@ -426,6 +446,16 @@ FocusScope {
                                         textFormat: Text.PlainText
                                         color: theme.ink1
                                         font.pixelSize: 12
+                                        font.weight: shelfPill.member ? Font.Medium : Font.Normal
+                                    }
+                                    Glyph {
+                                        visible: shelfPill.member
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 12
+                                        height: 12
+                                        stroke: 2.3
+                                        path: Icons.check
+                                        color: theme.accentInk
                                     }
                                 }
                             }
@@ -438,21 +468,21 @@ FocusScope {
                         implicitHeight: 30
                         implicitWidth: addShelfLabel.implicitWidth + 20
                         hoverEnabled: true
-                        focusPolicy: Qt.NoFocus
+                        focusPolicy: Qt.TabFocus
                         onClicked: {
                             details.addingShelf = true
                             newShelfInput.forceActiveFocus()
                         }
                         background: Rectangle {
-                            radius: Math.min(15, theme.radius + 6)
+                            radius: Ui.radius(15, theme.radius)
                             color: addShelfBtn.hovered ? Ui.tint(theme.ink1, 0.08) : "transparent"
-                            border.width: 1
-                            border.color: Ui.tint(theme.ink1, 0.14)
+                            border.width: addShelfBtn.visualFocus ? 2 : 1
+                            border.color: addShelfBtn.visualFocus ? theme.accent : Ui.tint(theme.ink1, 0.14)
                         }
                         contentItem: Label {
                             id: addShelfLabel
                             text: qsTr("+ New collection")
-                            color: theme.ink2
+                            color: theme.ink3
                             font.pixelSize: 12
                             horizontalAlignment: Text.AlignHCenter
                             verticalAlignment: Text.AlignVCenter
@@ -465,8 +495,8 @@ FocusScope {
                     spacing: 6
                     Rectangle {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 34
-                        radius: Math.min(8, theme.radius)
+                        Layout.preferredHeight: 32
+                        radius: Ui.radius(7, theme.radius)
                         color: Ui.tint(theme.ink1, 0.06)
                         border.width: 1.5
                         border.color: theme.accent
@@ -490,7 +520,7 @@ FocusScope {
                                 verticalAlignment: Text.AlignVCenter
                                 visible: newShelfInput.text === ""
                                 text: qsTr("Collection name…")
-                                color: theme.ink3
+                                color: theme.ink4
                                 font: newShelfInput.font
                             }
                         }
@@ -527,8 +557,8 @@ FocusScope {
                         readonly property bool chosen: modelData.id === details.bookId
                         Layout.fillWidth: true
                         Layout.preferredHeight: 76
-                        radius: Math.min(8, theme.radius)
-                        color: chosen ? Ui.tint(theme.accent, 0.16) : editionHover.hovered ? Ui.tint(theme.ink1, 0.06) : "transparent"
+                        radius: Ui.radius(8, theme.radius)
+                        color: chosen ? theme.accentSoft : editionHover.hovered ? Ui.tint(theme.ink1, 0.06) : "transparent"
                         border.width: chosen ? 1.5 : 0
                         border.color: theme.accent
 
@@ -555,7 +585,7 @@ FocusScope {
                                 textFormat: Text.PlainText
                                 color: theme.ink1
                                 font.pixelSize: 13
-                                font.weight: Font.DemiBold
+                                font.weight: Font.Medium
                                 elide: Text.ElideRight
                             }
                             Label {
@@ -571,8 +601,9 @@ FocusScope {
                                     return parts.join(" · ")
                                 }
                                 textFormat: Text.PlainText
-                                color: theme.ink2
+                                color: theme.ink3
                                 font.pixelSize: 12
+                                font.features: ({ "tnum": 1 })
                                 elide: Text.ElideRight
                             }
                         }
@@ -600,13 +631,13 @@ FocusScope {
                     visible: text !== ""
                     text: details.book.description || ""
                     color: theme.ink2
-                    font.pixelSize: 14
+                    font.pixelSize: 13
                     wrapMode: Text.Wrap
-                    lineHeight: 1.35
+                    lineHeight: 1.45
                     textFormat: Text.PlainText
                 }
 
-                // The actions wrap onto a second line in a narrow panel.
+                // Actions wrap onto a second line in a narrow panel.
                 Flow {
                     Layout.topMargin: 24
                     Layout.fillWidth: true
@@ -614,7 +645,7 @@ FocusScope {
                     TextButton {
                         visible: !details.book.finished
                         text: details.book.wantToRead ? qsTr("On Want to read") : qsTr("Want to read")
-                        glyph: Icons.star
+                        glyph: Icons.bookmark
                         onClicked: library.setWantToRead(details.bookId, !details.book.wantToRead)
                     }
                     TextButton {
@@ -630,7 +661,7 @@ FocusScope {
                     IconButton {
                         glyph: Icons.trash
                         tip: qsTr("Remove from the library (the file stays)")
-                        tone: theme.ink2
+                        tone: theme.ink3
                         onClicked: {
                             const id = details.bookId
                             library.setHidden(id, true)
@@ -645,7 +676,7 @@ FocusScope {
                     Layout.topMargin: 10
                     text: details.book.path || ""
                     textFormat: Text.PlainText
-                    color: theme.ink3
+                    color: theme.ink4
                     font.pixelSize: 11
                     wrapMode: Text.WrapAnywhere
                 }
