@@ -6,6 +6,12 @@
 
 #include <QBuffer>
 #include <QCoreApplication>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusObjectPath>
+#include <QDBusPendingCall>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -13,6 +19,7 @@
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QSqlDatabase>
@@ -23,6 +30,38 @@
 
 namespace {
 constexpr qint64 maxImageBytes = 20 * 1024 * 1024;
+
+QByteArray portalPathBytes(const QString &path) {
+    QByteArray bytes = path.toUtf8();
+    bytes.append('\0');
+    return bytes;
+}
+
+QJsonObject extractJsonObject(const QString &raw) {
+    const QString trimmed = raw.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(trimmed.toUtf8(), &err);
+    if (err.error == QJsonParseError::NoError && doc.isObject())
+        return doc.object();
+    static const QRegularExpression fence(QStringLiteral("```(?:json)?\\s*([\\s\\S]*?)\\s*```"),
+                                          QRegularExpression::CaseInsensitiveOption);
+    const auto match = fence.match(trimmed);
+    if (match.hasMatch()) {
+        doc = QJsonDocument::fromJson(match.captured(1).trimmed().toUtf8(), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject())
+            return doc.object();
+    }
+    const qsizetype open = trimmed.indexOf(QLatin1Char('{'));
+    const qsizetype close = trimmed.lastIndexOf(QLatin1Char('}'));
+    if (open >= 0 && close > open) {
+        doc = QJsonDocument::fromJson(trimmed.mid(open, close - open + 1).toUtf8(), &err);
+        if (err.error == QJsonParseError::NoError && doc.isObject())
+            return doc.object();
+    }
+    return {};
+}
 
 QSettings illustratorSettings() {
     return QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini"),
@@ -95,14 +134,37 @@ Illustrator::Illustrator(AiServices *ai, Reader *reader, const QString &database
     connect(reader, &Reader::bookChanged, this, [this] {
         stop();
         m_problem.clear();
+        m_problemIsConfig = false;
+        m_hasLastRequest = false;
         emit changed();
         emit picturesChanged();
     });
     connect(ai, &AiServices::changed, this, &Illustrator::changed);
     connect(ai, &AiServices::routingChanged, this, &Illustrator::changed);
+    connect(ai, &AiServices::usageChanged, this, &Illustrator::changed);
+}
+
+Illustrator::~Illustrator() {
+    clearPendingSave();
+    stop();
 }
 
 bool Illustrator::available() const { return m_ai->images() && m_ai->textFor(QStringLiteral("illustrate")); }
+
+bool Illustrator::budgetOk() const { return !available() || m_ai->fitsBudget(cost()); }
+
+QString Illustrator::unavailableReason() const {
+    if (!m_ai->hasKey())
+        return tr("Pictures are made with Gemini: add your key in Intelligence settings.");
+    if (!available())
+        return tr("Pictures need Gemini: switch to Hybrid or Cloud in Intelligence settings.");
+    if (!m_ai->fitsBudget(cost())) {
+        if (!m_ai->unlimitedBudget() && m_ai->budget() <= 0)
+            return tr("Cloud spending is paused ($0 monthly limit). Raise it in Intelligence settings to draw pictures.");
+        return tr("This would go past your monthly budget. Raise it in Intelligence settings to draw pictures.");
+    }
+    return {};
+}
 
 double Illustrator::cost() const { return m_ai->images() ? m_ai->images()->imageCost() + 0.002 : 0; }
 
@@ -188,10 +250,25 @@ QString Illustrator::promptInstructions(const QString &styleId) {
     return base;
 }
 
-void Illustrator::fail(const QString &problem) {
+void Illustrator::fail(const QString &problem, bool isConfig) {
     m_problem = problem;
+    m_problemIsConfig = isConfig;
     m_busy = false;
     emit changed();
+}
+
+void Illustrator::clearProblem() {
+    if (m_problem.isEmpty() && !m_problemIsConfig)
+        return;
+    m_problem.clear();
+    m_problemIsConfig = false;
+    emit changed();
+}
+
+void Illustrator::retryLast() {
+    if (m_busy || !m_hasLastRequest)
+        return;
+    illustrate(m_lastText, m_lastChapter, m_lastEnd);
 }
 
 void Illustrator::stop() {
@@ -200,8 +277,12 @@ void Illustrator::stop() {
         *m_readCancel = true;
         m_readCancel.reset();
     }
-    if (m_reply)
-        m_reply->abort();
+    if (m_reply) {
+        QPointer<Ai::Reply> active = m_reply;
+        m_reply.clear();
+        if (active)
+            active->abort();
+    }
     if (m_busy) {
         m_busy = false;
         emit changed();
@@ -224,13 +305,19 @@ void Illustrator::regenerate(int id) {
 void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
     stop();
     m_problem.clear();
+    m_problemIsConfig = false;
+    m_hasLastRequest = true;
+    m_lastText = text;
+    m_lastChapter = chapter;
+    m_lastEnd = end;
     if (!m_ai->images() || !m_ai->textFor(QStringLiteral("illustrate"))) {
         fail(m_ai->hasKey() ? tr("Pictures need Gemini: switch to Hybrid or Cloud in Intelligence settings.")
-                            : tr("Pictures are made with Gemini: add your key in Intelligence settings."));
+                            : tr("Pictures are made with Gemini: add your key in Intelligence settings."),
+             true);
         return;
     }
     if (!m_ai->fitsBudget(cost())) {
-        fail(m_ai->describe(int(Ai::Error::Budget)));
+        fail(m_ai->describe(int(Ai::Error::Budget)), true);
         return;
     }
     m_busy = true;
@@ -241,8 +328,10 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
     const QString title = m_reader->title(), author = m_reader->author();
     const QString styleId = m_style;
     const int generation = m_generation;
-    qint64 upTo = end >= 0 ? end : m_reader->pageEnd();
-    if (chapter == m_reader->chapter() && m_reader->pageEnd() > 0)
+    qint64 upTo = end > 0 ? end : m_reader->pageEnd();
+    if (upTo <= 0)
+        upTo = (format == QLatin1String("pdf")) ? -1 : 2500;
+    else if (chapter == m_reader->chapter() && m_reader->pageEnd() > 0)
         upTo = qMin(upTo, m_reader->pageEnd());
     auto cancel = std::make_shared<std::atomic_bool>(false);
     m_readCancel = cancel;
@@ -261,7 +350,16 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
                 if (!self->m_ai->images() || !writer) {
                     self->fail(self->m_ai->hasKey()
                                    ? tr("Pictures need Gemini: switch to Hybrid or Cloud in Intelligence settings.")
-                                   : tr("Pictures are made with Gemini: add your key in Intelligence settings."));
+                                   : tr("Pictures are made with Gemini: add your key in Intelligence settings."),
+                               true);
+                    return;
+                }
+                const QString selectedText = text.trimmed();
+                QString passage = selectedText;
+                if (passage.isEmpty() && !chapters.isEmpty())
+                    passage = chapters.last().text.right(2500);
+                if (passage.trimmed().isEmpty()) {
+                    self->fail(tr("There isn't enough text on this page to picture yet. Try another page or select a passage."));
                     return;
                 }
                 Ai::TextRequest request;
@@ -273,10 +371,6 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
                                                                         {"caption", QJsonObject{{"type", "string"}}}}},
                                              {"required", QJsonArray{"prompt", "caption"}},
                                              {"additionalProperties", false}};
-                const QString selectedText = text.trimmed();
-                QString passage = selectedText;
-                if (passage.isEmpty() && !chapters.isEmpty())
-                    passage = chapters.last().text.right(2500);
                 request.messages = {{true, QStringLiteral("Book: %1, by %2.\n\nWhat came before (for who is who):\n%3\n\nThe passage to illustrate:\n%4")
                                                .arg(title, author, Companion::joined(chapters, 12000), passage)}};
                 self->m_status = tr("Imagining the picture…");
@@ -290,16 +384,22 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
                             reply->deleteLater();
                             if (!self || generation != self->m_generation)
                                 return;
+                            self->m_reply.clear();
                             if (reply->error()) {
-                                if (reply->error().kind != Ai::Error::Cancelled)
-                                    self->fail(self->m_ai->describeFor(providerGuard, int(reply->error().kind),
-                                                                       reply->error().message));
+                                if (reply->error().kind != Ai::Error::Cancelled) {
+                                    const auto kind = reply->error().kind;
+                                    const bool isConfig = (kind == Ai::Error::NoKey || kind == Ai::Error::BadKey ||
+                                                           kind == Ai::Error::Budget);
+                                    self->fail(self->m_ai->describeFor(providerGuard, int(kind),
+                                                                       reply->error().message),
+                                               isConfig);
+                                }
                                 return;
                             }
                             QJsonObject result = reply->result();
                             if (result.isEmpty())
-                                result = QJsonDocument::fromJson(reply->text().toUtf8()).object();
-                            QString prompt = result.value("prompt").toString();
+                                result = extractJsonObject(reply->text());
+                            QString prompt = result.value("prompt").toString().trimmed();
                             if (prompt.isEmpty()) {
                                 self->fail(tr("The picture couldn't be described. Try again, or choose a passage."));
                                 return;
@@ -307,7 +407,7 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
                             const QString guidance = styleGuidance(styleId);
                             if (!guidance.isEmpty() && !prompt.contains(labelForStyle(styleId), Qt::CaseInsensitive))
                                 prompt += QStringLiteral(" ") + guidance;
-                            self->draw(prompt, result.value("caption").toString(), chapter, upTo, styleId, selectedText);
+                            self->draw(prompt, result.value("caption").toString().trimmed(), chapter, upTo, styleId, selectedText);
                         });
             },
             Qt::QueuedConnection);
@@ -318,7 +418,7 @@ void Illustrator::draw(const QString &prompt, const QString &caption, int chapte
                        const QString &styleId, const QString &passage) {
     Ai::ImageGenerator *images = m_ai->images();
     if (!images) {
-        fail(tr("Pictures are made with Gemini: add your key in Intelligence settings."));
+        fail(tr("Pictures are made with Gemini: add your key in Intelligence settings."), true);
         return;
     }
     m_status = tr("Drawing…");
@@ -335,11 +435,19 @@ void Illustrator::draw(const QString &prompt, const QString &caption, int chapte
                 reply->deleteLater();
                 if (generation != m_generation)
                     return;
+                m_reply.clear();
                 if (reply->error()) {
-                    if (reply->error().kind != Ai::Error::Cancelled)
-                        fail(reply->error().kind == Ai::Error::Refused
-                                 ? tr("Gemini wouldn't draw this one: %1").arg(reply->error().message)
-                                 : m_ai->describe(int(reply->error().kind), reply->error().message));
+                    if (reply->error().kind != Ai::Error::Cancelled) {
+                        const auto kind = reply->error().kind;
+                        const bool isConfig = (kind == Ai::Error::NoKey || kind == Ai::Error::BadKey ||
+                                               kind == Ai::Error::Budget);
+                        const QString msg = reply->error().message.trimmed();
+                        fail(kind == Ai::Error::Refused
+                                 ? (msg.isEmpty() ? tr("Gemini wouldn't draw this scene.")
+                                                  : tr("Gemini wouldn't draw this one: %1").arg(msg))
+                                 : m_ai->describe(int(kind), msg),
+                             isConfig);
+                    }
                     return;
                 }
                 const QByteArray bytes = reply->image();
@@ -409,24 +517,179 @@ void Illustrator::remove(int id) {
     emit picturesChanged();
 }
 
-QString Illustrator::saveCopy(int id) {
+QString Illustrator::suggestedFileName(int id, QString *sourceOut) const {
     QSqlQuery find(QSqlDatabase::database(m_connection));
-    find.prepare(QStringLiteral("SELECT file, caption FROM illustrations WHERE id = ?"));
+    find.prepare(QStringLiteral("SELECT file FROM illustrations WHERE id = ?"));
     find.addBindValue(id);
-    find.exec();
-    if (!find.next())
+    if (!find.exec() || !find.next())
         return {};
     const QString source = find.value(0).toString();
+    if (sourceOut)
+        *sourceOut = source;
     const QString ext = QFileInfo(source).suffix().isEmpty() ? QStringLiteral("png") : QFileInfo(source).suffix().toLower();
-    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Dogear");
-    QDir().mkpath(folder);
-    QString name = m_reader->title().left(60);
+    QString name = m_reader ? m_reader->title().left(60) : QString();
     name.replace(QRegularExpression(QStringLiteral("[/\\\\:*?\"<>|]")), QStringLiteral(" "));
     name = name.simplified();
     if (name.isEmpty() || name == QLatin1String(".") || name == QLatin1String(".."))
         name = QStringLiteral("Illustration");
-    QString target = QDir(folder).filePath(QStringLiteral("%1.%2").arg(name, ext));
-    for (int n = 2; QFile::exists(target); ++n)
-        target = QDir(folder).filePath(QStringLiteral("%1 %2.%3").arg(name).arg(n).arg(ext));
+    return QStringLiteral("%1.%2").arg(name, ext);
+}
+
+QString Illustrator::saveCopyTo(int id, const QString &destinationPath) {
+    QString source;
+    const QString fallbackName = suggestedFileName(id, &source);
+    if (source.isEmpty() || !QFileInfo::exists(source))
+        return {};
+    QString target = destinationPath.trimmed();
+    if (target.isEmpty())
+        return {};
+    const QFileInfo targetInfo(target);
+    if (targetInfo.isDir())
+        target = QDir(target).filePath(fallbackName);
+    QDir().mkpath(QFileInfo(target).absolutePath());
+    if (QFileInfo::exists(target) && QFileInfo(source).canonicalFilePath() != QFileInfo(target).canonicalFilePath())
+        QFile::remove(target);
     return QFile::copy(source, target) ? target : QString();
+}
+
+QString Illustrator::saveCopy(int id) {
+    QString source;
+    const QString fileName = suggestedFileName(id, &source);
+    if (source.isEmpty() || !QFileInfo::exists(source))
+        return {};
+    const QFileInfo fi(fileName);
+    const QString base = fi.completeBaseName();
+    const QString ext = fi.suffix().isEmpty() ? QStringLiteral("png") : fi.suffix();
+    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Dogear");
+    QDir().mkpath(folder);
+    QString target = QDir(folder).filePath(QStringLiteral("%1.%2").arg(base, ext));
+    for (int n = 2; QFile::exists(target); ++n)
+        target = QDir(folder).filePath(QStringLiteral("%1 %2.%3").arg(base).arg(n).arg(ext));
+    return QFile::copy(source, target) ? target : QString();
+}
+
+void Illustrator::clearPendingSave() {
+    if (m_saveWatcher) {
+        m_saveWatcher->deleteLater();
+        m_saveWatcher = nullptr;
+    }
+    if (!m_pendingSavePath.isEmpty()) {
+        QDBusConnection::sessionBus().disconnect(
+            QStringLiteral("org.freedesktop.portal.Desktop"), m_pendingSavePath,
+            QStringLiteral("org.freedesktop.portal.Request"), QStringLiteral("Response"),
+            this, SLOT(handleSaveResponse(uint,QVariantMap)));
+        m_pendingSavePath.clear();
+    }
+    m_pendingSaveId = 0;
+}
+
+void Illustrator::chooseSaveCopy(int id) {
+    QString source;
+    const QString fileName = suggestedFileName(id, &source);
+    if (source.isEmpty() || !QFileInfo::exists(source)) {
+        emit saveFailed(tr("Couldn't save a copy of this picture"));
+        return;
+    }
+
+    auto fallbackDirect = [this, id] {
+        const QString saved = saveCopy(id);
+        if (!saved.isEmpty())
+            emit savedCopy(saved);
+        else
+            emit saveFailed(tr("Couldn't save a copy of this picture"));
+    };
+
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected()) {
+        fallbackDirect();
+        return;
+    }
+
+    clearPendingSave();
+    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Dogear");
+    QDir().mkpath(folder);
+    const QString token = QStringLiteral("dogear_save_%1").arg(QRandomGenerator::global()->generate());
+    QString sender = bus.baseService().mid(1);
+    sender.replace(QLatin1Char('.'), QLatin1Char('_'));
+    const QString predictedPath = QStringLiteral("/org/freedesktop/portal/desktop/request/%1/%2").arg(sender, token);
+
+    m_pendingSaveId = id;
+    m_pendingSavePath = predictedPath;
+    if (!bus.connect(QStringLiteral("org.freedesktop.portal.Desktop"), m_pendingSavePath,
+                     QStringLiteral("org.freedesktop.portal.Request"), QStringLiteral("Response"),
+                     this, SLOT(handleSaveResponse(uint,QVariantMap)))) {
+        clearPendingSave();
+        fallbackDirect();
+        return;
+    }
+
+    QVariantMap options;
+    options.insert(QStringLiteral("handle_token"), token);
+    options.insert(QStringLiteral("accept_label"), tr("Save"));
+    options.insert(QStringLiteral("modal"), true);
+    options.insert(QStringLiteral("current_name"), fileName);
+    options.insert(QStringLiteral("current_folder"), portalPathBytes(folder));
+
+    QDBusMessage message = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
+        QStringLiteral("org.freedesktop.portal.FileChooser"),
+        QStringLiteral("SaveFile"));
+    message << QString() << tr("Save Illustration") << options;
+
+    const int generation = ++m_saveGeneration;
+    auto *watcher = new QDBusPendingCallWatcher(bus.asyncCall(message), this);
+    m_saveWatcher = watcher;
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher, generation, id] {
+        QDBusPendingReply<QDBusObjectPath> reply = *watcher;
+        watcher->deleteLater();
+        if (m_saveWatcher == watcher)
+            m_saveWatcher = nullptr;
+        if (generation != m_saveGeneration || m_pendingSaveId == 0)
+            return;
+        if (reply.isError()) {
+            clearPendingSave();
+            const QString saved = saveCopy(id);
+            if (!saved.isEmpty())
+                emit savedCopy(saved);
+            else
+                emit saveFailed(tr("Couldn't save a copy of this picture"));
+            return;
+        }
+        const QString actualPath = reply.value().path();
+        if (actualPath != m_pendingSavePath) {
+            QDBusConnection::sessionBus().disconnect(
+                QStringLiteral("org.freedesktop.portal.Desktop"), m_pendingSavePath,
+                QStringLiteral("org.freedesktop.portal.Request"), QStringLiteral("Response"),
+                this, SLOT(handleSaveResponse(uint,QVariantMap)));
+            m_pendingSavePath = actualPath;
+            QDBusConnection::sessionBus().connect(
+                QStringLiteral("org.freedesktop.portal.Desktop"), m_pendingSavePath,
+                QStringLiteral("org.freedesktop.portal.Request"), QStringLiteral("Response"),
+                this, SLOT(handleSaveResponse(uint,QVariantMap)));
+        }
+    });
+}
+
+void Illustrator::handleSaveResponse(uint response, const QVariantMap &results) {
+    const int id = m_pendingSaveId;
+    clearPendingSave();
+    if (response == 1 || id <= 0)
+        return;  // user cancelled
+    if (response != 0) {
+        emit saveFailed(tr("Couldn't save a copy of this picture"));
+        return;
+    }
+    const QStringList uris = results.value(QStringLiteral("uris")).toStringList();
+    if (uris.isEmpty())
+        return;
+    QUrl url = QUrl::fromEncoded(uris.first().toUtf8(), QUrl::StrictMode);
+    if (!url.isValid())
+        url = QUrl(uris.first());
+    const QString localPath = url.isLocalFile() ? url.toLocalFile() : QString();
+    const QString saved = localPath.isEmpty() ? QString() : saveCopyTo(id, localPath);
+    if (!saved.isEmpty())
+        emit savedCopy(saved);
+    else
+        emit saveFailed(tr("Couldn't save a copy of this picture"));
 }

@@ -10,11 +10,31 @@
 #include <QJsonObject>
 #include <QLocale>
 #include <QRegularExpression>
+#include <QSettings>
+#include <QStandardPaths>
+
+namespace {
+QSettings translatorSettings() {
+    return QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini"),
+                     QSettings::IniFormat);
+}
+
+QString sanitizeLanguageCode(QString code) {
+    code = code.trimmed();
+    code.replace(QLatin1Char('_'), QLatin1Char('-'));
+    static const QRegularExpression valid(QStringLiteral("^[a-z]{2,3}(-[A-Za-z]{2,4})*$"));
+    return valid.match(code).hasMatch() ? code : QString();
+}
+}  // namespace
 
 Translator::Translator(const QString &languageFile, const QString &catalogDirectory, QObject *parent)
     : QTranslator(parent),
       m_languageFile(languageFile.isEmpty() ? QDir::homePath() + "/.config/omarchy/language" : languageFile),
-      m_catalogDirectory(catalogDirectory) {
+      m_catalogDirectory(catalogDirectory),
+      m_useSettings(languageFile.isEmpty()) {
+    if (m_useSettings)
+        m_languageOverride = sanitizeLanguageCode(
+            translatorSettings().value(QStringLiteral("appearance/language")).toString());
     m_debounce.setSingleShot(true);
     m_debounce.setInterval(80);
     connect(&m_watcher, &QFileSystemWatcher::directoryChanged, this, [this] { m_debounce.start(); });
@@ -26,6 +46,34 @@ Translator::Translator(const QString &languageFile, const QString &catalogDirect
 QString Translator::language() const {
     QReadLocker locker(&m_lock);
     return m_language;
+}
+
+QString Translator::languageOverride() const {
+    QReadLocker locker(&m_lock);
+    return m_languageOverride;
+}
+
+void Translator::setLanguage(const QString &code) {
+    const QString cleaned = code.trimmed().isEmpty() ? QString() : sanitizeLanguageCode(code);
+    if (!code.trimmed().isEmpty() && cleaned.isEmpty())
+        return;
+    {
+        QWriteLocker locker(&m_lock);
+        if (m_languageOverride == cleaned)
+            return;
+        m_languageOverride = cleaned;
+    }
+    if (m_useSettings) {
+        QSettings s = translatorSettings();
+        if (cleaned.isEmpty())
+            s.remove(QStringLiteral("appearance/language"));
+        else
+            s.setValue(QStringLiteral("appearance/language"), cleaned);
+    }
+    const QString before = language();
+    reload();
+    if (before == language())
+        emit changed();
 }
 
 bool Translator::isEmpty() const {
@@ -138,7 +186,8 @@ void Translator::reload() {
         m_watcher.addPath(m_languageFile);
 
     // Catalogs are compiled in, so only a different language needs a reload.
-    const QString language = readLanguage(m_languageFile);
+    const QString overrideCode = languageOverride();
+    const QString language = overrideCode.isEmpty() ? readLanguage(m_languageFile) : overrideCode;
     if (language == this->language())
         return;
 

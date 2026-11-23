@@ -20,16 +20,34 @@
 namespace {
 
 QStringList wordsOf(const QString &text) {
-    static const QRegularExpression word(QStringLiteral("[\\p{L}\\p{N}']{3,}"));
+    QString normalized = text.toLower();
+    normalized.replace(QChar(0x2019), QLatin1Char('\''));
+    normalized.replace(QChar(0x2018), QLatin1Char('\''));
+    static const QRegularExpression word(QStringLiteral("[\\p{L}\\p{N}']{2,}"));
     QStringList out;
-    auto it = word.globalMatch(text.toLower());
-    while (it.hasNext())
-        out.append(it.next().captured());
+    auto it = word.globalMatch(normalized);
+    while (it.hasNext()) {
+        QString tok = it.next().captured();
+        while (tok.startsWith(QLatin1Char('\'')))
+            tok.remove(0, 1);
+        while (tok.endsWith(QLatin1Char('\'')))
+            tok.chop(1);
+        if (tok.size() > 3 && tok.endsWith(QLatin1String("'s")))
+            tok.chop(2);
+        if (tok.size() >= 2)
+            out.append(tok);
+    }
     return out;
 }
 
 const QSet<QString> &stopWords() {
     static const QSet<QString> words = {
+        QStringLiteral("am"),   QStringLiteral("an"),   QStringLiteral("as"),   QStringLiteral("at"),
+        QStringLiteral("be"),   QStringLiteral("by"),   QStringLiteral("do"),   QStringLiteral("go"),
+        QStringLiteral("he"),   QStringLiteral("if"),   QStringLiteral("in"),   QStringLiteral("is"),
+        QStringLiteral("it"),   QStringLiteral("me"),   QStringLiteral("my"),   QStringLiteral("no"),
+        QStringLiteral("of"),   QStringLiteral("on"),   QStringLiteral("or"),   QStringLiteral("so"),
+        QStringLiteral("to"),   QStringLiteral("up"),   QStringLiteral("us"),   QStringLiteral("we"),
         QStringLiteral("the"),  QStringLiteral("and"),  QStringLiteral("that"), QStringLiteral("was"),
         QStringLiteral("for"),  QStringLiteral("with"), QStringLiteral("his"),  QStringLiteral("her"),
         QStringLiteral("had"),  QStringLiteral("but"),  QStringLiteral("not"),  QStringLiteral("you"),
@@ -762,11 +780,21 @@ int PassageIndex::booksPrepared() const {
 }
 
 void PassageIndex::searchLibrary(const QString &query, int count, std::function<void(const QList<LibraryHit> &)> done) {
+    Ai::Provider *provider = m_ai->embedderProvider();
     Ai::Embedder *embedder = m_ai->embedder();
     const QString name = model();
-    if (!embedder || name.isEmpty() || query.trimmed().isEmpty() || booksPrepared() == 0) {
+    if (!provider || !embedder || name.isEmpty() || query.trimmed().isEmpty() || booksPrepared() == 0) {
         done({});
         return;
+    }
+    if (provider->id() != QLatin1String("local")) {
+        Ai::Usage est;
+        est.inputTokens = qMax<qint64>(1, query.size() / 4);
+        const double cost = AiUsageLedger::cost(embedder->embeddingModelName(), est, QDate::currentDate(), false);
+        if (!m_ai->fitsBudget(cost)) {
+            done({});
+            return;
+        }
     }
     Ai::Reply *reply = embedder->embed({query}, true);
     m_ai->track(reply);

@@ -17,6 +17,7 @@
 class Translator : public QTranslator {
     Q_OBJECT
     Q_PROPERTY(QString language READ language NOTIFY changed)
+    Q_PROPERTY(QString languageOverride READ languageOverride WRITE setLanguage NOTIFY changed)
 
 public:
     explicit Translator(const QString &languageFile = {}, const QString &catalogDirectory = ":/i18n",
@@ -24,6 +25,8 @@ public:
     ~Translator() override;
 
     QString language() const;
+    QString languageOverride() const;
+    Q_INVOKABLE void setLanguage(const QString &code);
     bool isEmpty() const override;
     QString translate(const char *context, const char *sourceText, const char *disambiguation = nullptr,
                       int n = -1) const override;
@@ -40,6 +43,7 @@ private:
 
     QString m_languageFile;
     QString m_catalogDirectory;
+    bool m_useSettings = false;
     // A translation, and the language whose catalog it came from, so a
     // counted string falling back to English takes English plural rules.
     struct Entry {
@@ -51,6 +55,7 @@ private:
     // while a language switch replaces the catalog on the GUI thread.
     mutable QReadWriteLock m_lock;
     QString m_language;
+    QString m_languageOverride;
     QHash<QString, Entry> m_strings;
     QFileSystemWatcher m_watcher;
     QTimer m_debounce;

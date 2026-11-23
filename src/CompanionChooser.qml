@@ -14,9 +14,13 @@ ColumnLayout {
 
     // Kept for caller compatibility; inherits app-chrome palette from CompanionPanel.
     property var look
-    property string pick: localSetup.textModel.model !== undefined ? "local" : "gemini"
+    property bool userPicked: false
+    property string pick: "gemini"
+    property string keyError: ""
+    property bool showKey: false
 
-    readonly property bool haveModel: localSetup.textModel.model !== undefined && ai.localServers.some(
+    readonly property bool localOffered: localSetup.textModel.model !== undefined
+    readonly property bool haveModel: localOffered && ai.localServers.some(
         s => s.kind === "ollama" && s.textModels.indexOf(localSetup.textModel.model) >= 0)
     readonly property string downloadSize: {
         const textBytes = Number(localSetup.textModel.bytes) || 0
@@ -27,7 +31,65 @@ ColumnLayout {
 
     signal notNow()
 
+    function selectPick(choice) {
+        userPicked = true
+        pick = choice
+        if (choice === "gemini")
+            Qt.callLater(() => { if (chooser.visible && chooser.pick === "gemini") keyField.forceActiveFocus() })
+    }
+
+    onLocalOfferedChanged: {
+        if (!userPicked)
+            pick = localOffered ? "local" : "gemini"
+    }
+
+    Connections {
+        target: ai
+        function onKeyChecked(ok, message) {
+            chooser.keyError = ok ? "" : (message || qsTr("Couldn't verify this key."))
+            if (ok) {
+                keyField.text = ""
+                chooser.showKey = false
+            }
+        }
+    }
+
     spacing: 14
+
+    // Reassure the reader when they invoked Companion with a specific question or selection.
+    Rectangle {
+        Layout.fillWidth: true
+        visible: companion.hasPendingSetup && companion.pendingSetupLabel !== ""
+        implicitHeight: pendingRow.implicitHeight + 16
+        radius: Ui.radius(9, theme.radius)
+        color: theme.accentSoft
+        border.width: 1
+        border.color: Ui.tint(theme.accent, 0.28)
+        RowLayout {
+            id: pendingRow
+            anchors.fill: parent
+            anchors.leftMargin: 10
+            anchors.rightMargin: 10
+            anchors.topMargin: 8
+            anchors.bottomMargin: 8
+            spacing: 8
+            Glyph {
+                Layout.preferredWidth: 13
+                Layout.preferredHeight: 13
+                stroke: 1.9
+                path: Icons.sparkle
+                color: theme.accentInk
+            }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Up next once ready: %1").arg(companion.pendingSetupLabel)
+                color: theme.accentInk
+                font.pixelSize: 12
+                font.weight: Font.Medium
+                elide: Text.ElideRight
+            }
+        }
+    }
 
     ColumnLayout {
         Layout.fillWidth: true
@@ -62,17 +124,17 @@ ColumnLayout {
             description: qsTr("The best answers, including the whole book so far. Costs a little; you set the budget.")
             tone: theme.cloud
             checked: chooser.pick === "gemini"
-            onClicked: chooser.pick = "gemini"
+            onClicked: chooser.selectPick("gemini")
         }
         OptionCard {
             Layout.fillWidth: true
             ButtonGroup.group: picks
-            visible: localSetup.textModel.model !== undefined
+            visible: chooser.localOffered
             title: qsTr("This computer")
             description: qsTr("Free and private. Short answers are quick here; long ones are better with Gemini.")
             tone: theme.positive
             checked: chooser.pick === "local"
-            onClicked: chooser.pick = "local"
+            onClicked: chooser.selectPick("local")
         }
         OptionCard {
             Layout.fillWidth: true
@@ -81,7 +143,7 @@ ColumnLayout {
             description: qsTr("Keep reading without it.")
             tone: theme.ink4
             checked: chooser.pick === "later"
-            onClicked: chooser.pick = "later"
+            onClicked: chooser.selectPick("later")
         }
     }
 
@@ -92,21 +154,47 @@ ColumnLayout {
         Layout.topMargin: 4
         spacing: 8
 
-        Label {
+        RowLayout {
             Layout.fillWidth: true
-            text: qsTr("Your Gemini API key")
-            color: theme.ink1
-            font.pixelSize: 12
-            font.weight: Font.Medium
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Your Gemini API key")
+                color: theme.ink1
+                font.pixelSize: 12
+                font.weight: Font.Medium
+            }
+            AbstractButton {
+                visible: keyField.text.length > 0
+                implicitHeight: 20
+                implicitWidth: revealLabel.implicitWidth + 8
+                hoverEnabled: true
+                focusPolicy: Qt.TabFocus
+                onClicked: chooser.showKey = !chooser.showKey
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                background: Rectangle {
+                    radius: Ui.radius(4, theme.radius)
+                    color: parent.hovered ? theme.fillHover : "transparent"
+                }
+                contentItem: Label {
+                    id: revealLabel
+                    text: chooser.showKey ? qsTr("Hide") : qsTr("Show")
+                    color: theme.ink3
+                    font.pixelSize: 11
+                    font.weight: Font.Medium
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
         }
         TextField {
             id: keyField
             Layout.fillWidth: true
             Layout.preferredHeight: 34
-            echoMode: TextInput.Password
+            echoMode: chooser.showKey ? TextInput.Normal : TextInput.Password
             placeholderText: qsTr("Paste it here")
-            Keys.onReturnPressed: connectBtn.clicked()
-            Keys.onEnterPressed: connectBtn.clicked()
+            onTextEdited: chooser.keyError = ""
+            Keys.onReturnPressed: if (connectBtn.enabled) connectBtn.clicked()
+            Keys.onEnterPressed: if (connectBtn.enabled) connectBtn.clicked()
         }
         Label {
             Layout.fillWidth: true
@@ -135,15 +223,42 @@ ColumnLayout {
             size: "large"
             text: ai.checking ? qsTr("Checking…") : qsTr("Connect")
             enabled: keyField.text.trim() !== "" && !ai.checking
-            onClicked: ai.setKey(keyField.text.trim())
+            onClicked: {
+                chooser.keyError = ""
+                ai.setKey(keyField.text.trim())
+            }
         }
-        Label {
+        RowLayout {
             Layout.fillWidth: true
-            visible: !ai.hasKey && ai.status !== "" && keyField.text !== ""
-            text: ai.status
-            color: theme.danger
-            font.pixelSize: 12
-            wrapMode: Text.Wrap
+            visible: ai.checking
+            spacing: 8
+            BusyIndicator { running: parent.visible; implicitWidth: 16; implicitHeight: 16 }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Checking your key with Gemini…")
+                color: theme.ink3
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+        }
+        Rectangle {
+            Layout.fillWidth: true
+            visible: !ai.checking && chooser.keyError !== ""
+            implicitHeight: keyErrLabel.implicitHeight + 16
+            radius: Ui.radius(8, theme.radius)
+            color: Ui.tint(theme.danger, 0.08)
+            border.width: 1
+            border.color: Ui.tint(theme.danger, 0.25)
+            Label {
+                id: keyErrLabel
+                anchors.fill: parent
+                anchors.margins: 8
+                text: chooser.keyError
+                color: theme.danger
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+                lineHeight: 1.4
+            }
         }
     }
 
@@ -238,10 +353,20 @@ ColumnLayout {
             }
         }
 
-        ProgressBar {
+        ColumnLayout {
             Layout.fillWidth: true
             visible: localSetup.pulling
-            value: localSetup.progress
+            spacing: 4
+            ProgressBar {
+                Layout.fillWidth: true
+                value: localSetup.progress
+            }
+            Label {
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("%1%").arg(Math.round(localSetup.progress * 100))
+                color: theme.ink4
+                font.pixelSize: 11
+            }
         }
 
         Label {
@@ -302,5 +427,8 @@ ColumnLayout {
         }
     }
 
-    Component.onCompleted: localSetup.refresh()
+    Component.onCompleted: {
+        pick = localOffered ? "local" : "gemini"
+        localSetup.refresh()
+    }
 }

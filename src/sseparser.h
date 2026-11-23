@@ -22,4 +22,5 @@ private:
     QList<Event> takeEvents(bool all);
 
     QByteArray m_buffer;
+    bool m_started = false;
 };

@@ -36,18 +36,21 @@ public:
         m_aborted = true;
         if (m_reply && m_reply->isRunning())
             m_reply->abort();
+        finish({Ai::Error::Cancelled, QStringLiteral("Cancelled."), 0});
     }
 
     // Voice listing can take several pages; the provider chains them here.
     std::function<void(const QString &token)> nextPage;
 
 private:
-    int status() const { return m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt(); }
+    int status() const { return m_reply ? m_reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() : 0; }
     bool streaming() const {
-        return m_reply->header(QNetworkRequest::ContentTypeHeader).toString().contains(QStringLiteral("event-stream"));
+        return m_reply && m_reply->header(QNetworkRequest::ContentTypeHeader).toString().contains(QStringLiteral("event-stream"));
     }
 
     void onReadyRead() {
+        if (m_aborted || isFinished() || !m_reply)
+            return;
         // Errors arrive as a JSON body, read whole at the end.
         if (status() >= 400 || !streaming())
             return;
@@ -56,12 +59,13 @@ private:
     }
 
     void handle(const SseParser::Event &event) {
-        if (event.data == "[DONE]") {
+        if (event.data.trimmed() == "[DONE]") {
             m_streamDone = true;
             return;
         }
         const QJsonObject data = QJsonDocument::fromJson(event.data).object();
-        if (event.name == "step.delta") {
+        const QByteArray name = !event.name.isEmpty() ? event.name : data.value(QStringLiteral("event_type")).toString().toUtf8();
+        if (name == "step.delta") {
             const QJsonObject delta = data.value("delta").toObject();
             const QString type = delta.value("type").toString();
             if (type == "text") {
@@ -74,12 +78,31 @@ private:
                     bytes = GeminiProvider::pcmFromWav(bytes, &m_sampleRate);
                 addAudio(bytes);
             }
-        } else if (event.name == "interaction.completed") {
+        } else if (name == "interaction.completed") {
             m_streamDone = true;
             m_usage = GeminiProvider::parseUsage(data.value("interaction").toObject().value("usage").toObject());
-        } else if (event.name == "error") {
-            m_streamError.kind = Ai::Error::Server;
-            m_streamError.message = data.value("error").toObject().value("message").toString();
+        } else if (name == "error" || name == "interaction.failed") {
+            const QJsonObject err = data.value("error").isObject()
+                                        ? data.value("error").toObject()
+                                        : data.value("interaction").toObject().value("error").toObject();
+            const int errCode = err.value("code").toInt();
+            const QString errStatus = err.value("status").toString().toUpper();
+            const QString errMsg = err.value("message").toString();
+            if (errCode >= 400) {
+                m_streamError = GeminiProvider::parseError(errCode, event.data, 0);
+            } else if (errStatus == QLatin1String("RESOURCE_EXHAUSTED")) {
+                m_streamError = {Ai::Error::Limited, errMsg, 0};
+            } else if (errStatus == QLatin1String("UNAUTHENTICATED") || errMsg.contains(QStringLiteral("API key"), Qt::CaseInsensitive)) {
+                m_streamError = {Ai::Error::BadKey, errMsg, 0};
+            } else if (errStatus == QLatin1String("PERMISSION_DENIED")) {
+                m_streamError = {Ai::Error::Refused, errMsg, 0};
+            } else if (errStatus == QLatin1String("NOT_FOUND")) {
+                m_streamError = {Ai::Error::NotFound, errMsg, 0};
+            } else if (errStatus == QLatin1String("INVALID_ARGUMENT")) {
+                m_streamError = {Ai::Error::Invalid, errMsg, 0};
+            } else {
+                m_streamError = {Ai::Error::Server, errMsg, 0};
+            }
         }
     }
 
@@ -106,24 +129,46 @@ private:
     }
 
     void onFinished() {
-        if (m_aborted) {
+        if (isFinished())
+            return;
+        if (m_aborted || !m_reply) {
             finish({Ai::Error::Cancelled, QStringLiteral("Cancelled."), 0});
             return;
         }
         const int code = status();
-        const QByteArray body = streaming() && code < 400 ? QByteArray() : m_reply->readAll();
-        if (code >= 400 || m_reply->error() != QNetworkReply::NoError) {
-            finish(GeminiProvider::parseError(code >= 400 ? code : 0, body, int(m_reply->error())));
-            return;
-        }
-        if (streaming()) {
+        const bool isStream = streaming();
+        if (isStream && code > 0 && code < 400) {
             for (const auto &event : m_sse.feed(m_reply->readAll()))
                 handle(event);
-            for (const auto &event : m_sse.finish())
-                handle(event);
-            if (!m_streamError && !m_streamDone)
-                m_streamError = {Ai::Error::Offline, QStringLiteral("The connection ended before the answer finished."), 0};
-            finish(m_streamError);
+            if (m_reply->error() == QNetworkReply::NoError) {
+                for (const auto &event : m_sse.finish())
+                    handle(event);
+            }
+            if (m_streamError) {
+                finish(m_streamError);
+                return;
+            }
+            if (m_streamDone) {
+                finish();
+                return;
+            }
+            if (m_reply->error() != QNetworkReply::NoError) {
+                finish(GeminiProvider::parseError(0, {}, int(m_reply->error())));
+                return;
+            }
+            finish({Ai::Error::Offline, QStringLiteral("The connection ended before the answer finished."), 0});
+            return;
+        }
+        const QByteArray body = m_reply->readAll();
+        if (code >= 400 || m_reply->error() != QNetworkReply::NoError) {
+            Ai::Error err = GeminiProvider::parseError(code >= 400 ? code : 0, body, int(m_reply->error()));
+            if (code == 429) {
+                bool ok = false;
+                const int retrySecs = m_reply->rawHeader("Retry-After").trimmed().toInt(&ok);
+                if (ok && retrySecs > 0)
+                    err.retryAfterSeconds = retrySecs;
+            }
+            finish(err);
             return;
         }
         QJsonParseError parseError;
