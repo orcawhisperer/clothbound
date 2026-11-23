@@ -2,6 +2,7 @@ import QtCore
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Controls.Material
+import Qt.labs.platform as Platform
 import QtQuick.Layouts
 
 import "Icons.js" as Icons
@@ -20,6 +21,68 @@ ApplicationWindow {
     Material.theme: theme.light ? Material.Light : Material.Dark
     Material.accent: theme.accent
     Material.roundedScale: theme.radius
+
+    // Closing the window while a book is read aloud leaves the voice reading:
+    // Dogear waits in the bar's tray until it's shown again, or the reading
+    // ends. Closed otherwise, it quits.
+    onClosing: (close) => {
+        if (narration.active) {
+            close.accepted = false
+            win.listenInBackground()
+        } else {
+            Qt.quit()
+        }
+    }
+    property bool backgroundTold: false
+    function listenInBackground() {
+        win.hide()
+        if (!backgroundTold) {
+            backgroundTold = true
+            desktop.notify(qsTr("Dogear reads on"),
+                           qsTr("Its controls are in the bar's tray and media panel, and the media keys work."))
+        }
+    }
+    function showAgain() {
+        win.show()
+        win.raise()
+        win.requestActivate()
+    }
+    Connections {
+        target: narration
+        function onStateChanged() {
+            if (!narration.active && !win.visible)
+                Qt.quit()
+        }
+    }
+    Platform.SystemTrayIcon {
+        visible: !win.visible && narration.active
+        icon.source: "qrc:/dogear.svg"
+        tooltip: narration.active ? qsTr("Dogear is reading %1").arg(reader.title) : "Dogear"
+        onActivated: win.showAgain()
+        menu: Platform.Menu {
+            Platform.MenuItem {
+                text: narration.playing ? qsTr("Pause") : qsTr("Play")
+                onTriggered: narration.toggle()
+            }
+            Platform.MenuItem {
+                text: qsTr("Next paragraph")
+                onTriggered: narration.nextParagraph()
+            }
+            Platform.MenuItem {
+                text: qsTr("Previous paragraph")
+                onTriggered: narration.previousParagraph()
+            }
+            Platform.MenuSeparator {}
+            Platform.MenuItem {
+                text: qsTr("Show Dogear")
+                onTriggered: win.showAgain()
+            }
+            Platform.MenuItem {
+                text: qsTr("Stop and quit")
+                onTriggered: Qt.quit()
+            }
+        }
+    }
 
     property bool helpVisible: false
     readonly property bool readerOpen: reader.open

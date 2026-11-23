@@ -17,6 +17,7 @@
 #include "localspeech.h"
 #include "voicepacks.h"
 #include "pointerdriver.h"
+#include "notifier.h"
 #include "portalfilepicker.h"
 #include "reader.h"
 #include "theme.h"
@@ -107,6 +108,9 @@ int main(int argc, char *argv[]) {
     }
 
     QGuiApplication app(argc, argv);
+    // The window can hide while a book is read aloud; Dogear quits itself
+    // when it's closed otherwise, or the reading ends.
+    app.setQuitOnLastWindowClosed(false);
     app.setApplicationName("dogear");
     app.setApplicationVersion(DOGEAR_VERSION);
     // Matches the window to dogear.desktop, so the compositor (Wayland app_id)
@@ -212,6 +216,8 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("bookSearch", &bookSearch);
     engine.rootContext()->setContextProperty("marks", &marks);
     engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
+    Notifier notifier;
+    engine.rootContext()->setContextProperty("desktop", &notifier);
     engine.rootContext()->setContextProperty("localSpeech", &localSpeech);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);

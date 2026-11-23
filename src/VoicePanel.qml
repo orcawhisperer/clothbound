@@ -27,9 +27,13 @@ FocusScope {
     signal closed()
     signal sampleWanted()
 
+    // Which voices the panel shows: "builtin" or "gemini".
+    property string source: "gemini"
+
     function show() {
         open = true
         query = ""
+        source = builtinVoice || (!ai.hasKey && voicePacks.supported) ? "builtin" : "gemini"
         voices.refresh()
         sampleWanted()
         forceActiveFocus()
@@ -291,8 +295,6 @@ FocusScope {
         visible: voicePacks.supported
         spacing: 6
 
-        Heading { text: qsTr("Built-in voices") }
-        Note { text: qsTr("Free and offline, made on this computer. Plainer than Gemini's voices, and without styles.") }
 
         // None yet for this book's language: the best one, ready to download.
         Rectangle {
@@ -535,389 +537,449 @@ FocusScope {
                 text: narration.voiceName
             }
 
-            Heading { text: qsTr("Style") }
+            // Where the voice comes from: made here, or Gemini's.
             RowLayout {
                 Layout.fillWidth: true
+                Layout.topMargin: 6
                 spacing: 8
-                Choice { text: qsTr("Plain"); selected: panel.builtinVoice || narration.performance === "plain"; onClicked: narration.performance = "plain" }
-                Choice { text: qsTr("Natural"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "natural"; onClicked: narration.performance = "natural" }
-                Choice { text: qsTr("Dramatic"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "dramatic"; onClicked: narration.performance = "dramatic" }
+                visible: voicePacks.supported
+                Choice {
+                    Layout.preferredWidth: 1
+                    text: qsTr("On this computer")
+                    selected: panel.source === "builtin"
+                    onClicked: panel.source = "builtin"
+                }
+                Choice {
+                    Layout.preferredWidth: 1
+                    text: qsTr("Gemini")
+                    selected: panel.source === "gemini"
+                    onClicked: panel.source = "gemini"
+                }
             }
             Note {
-                text: panel.builtinVoice ? qsTr("Built-in voices read evenly; the other styles need a Gemini voice.")
-                    : narration.performance === "plain" ? qsTr("An even, clear reading with no direction. Good for study and reference.")
-                    : narration.performance === "dramatic" ? qsTr("A fuller performance, for adventure, horror and genre fiction.")
-                    : qsTr("A storyteller's reading: the mood follows the scene, never acted.")
+                visible: voicePacks.supported
+                text: panel.source === "builtin" ? qsTr("Free, private, and offline. Plainer than Gemini's voices, and without styles.")
+                    : qsTr("The most natural voices, with styles; they use your own Gemini key.")
             }
 
+            // The voices made here.
             BuiltinVoices {
-                Layout.topMargin: 10
-                visible: voicePacks.supported && !ai.hasKey
+                visible: voicePacks.supported && panel.source === "builtin"
             }
 
-            // Casting: a narrator designed for this book.
-            Rectangle {
+            // Gemini's voices.
+            ColumnLayout {
+                id: geminiSide
                 Layout.fillWidth: true
-                Layout.topMargin: 14
-                visible: ai.canDesignVoices
-                radius: Math.min(10, theme.radius)
-                color: Ui.tint(panel.look.link, 0.07)
-                border.color: Ui.tint(panel.look.link, 0.28)
-                implicitHeight: cast.implicitHeight + 28
+                visible: panel.source === "gemini" || !voicePacks.supported
+                spacing: 6
 
-                ColumnLayout {
-                    id: cast
-                    x: 14
-                    y: 14
-                    width: parent.width - 28
-                    spacing: 8
-
-                    RowLayout {
+                // Without a key, a way to add one.
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    visible: !ai.hasKey
+                    radius: Math.min(10, theme.radius)
+                    color: Ui.tint(panel.look.fg, 0.04)
+                    border.color: panel.look.border
+                    implicitHeight: keyColumn.implicitHeight + 24
+                    ColumnLayout {
+                        id: keyColumn
+                        x: 12
+                        y: 12
+                        width: parent.width - 24
                         spacing: 8
-                        Glyph {
-                            width: 18
-                            height: 18
-                            path: Icons.sparkle
-                            color: panel.look.link
-                        }
                         Label {
                             Layout.fillWidth: true
-                            text: voices.casting === "designed" ? (voices.designed.name || "") : qsTr("A narrator for this book")
+                            text: qsTr("Gemini's voices need your own key. It's free to get, and you choose what it costs.")
                             color: panel.look.fg
-                            font.pixelSize: 14
-                            font.weight: Font.DemiBold
-                            elide: Text.ElideRight
+                            font.pixelSize: 13
+                            wrapMode: Text.Wrap
                         }
-                        Listen {
-                            visible: voices.casting === "designed"
-                            voiceId: voices.designed.id || ""
-                            press: () => voices.previewing === voiceId ? voices.stopPreview() : voices.playSample()
-                        }
-                    }
-
-                    Note {
-                        visible: voices.casting === ""
-                        text: qsTr("Gemini reads a passage, describes a narrator to suit the book, and designs the voice. About $0.03, and half a minute.")
-                    }
-                    Action {
-                        visible: voices.casting === ""
-                        primary: true
-                        text: qsTr("Design a narrator")
-                        onClicked: voices.cast(reader.passageFrom(reader.chapter, 4000))
-                    }
-
-                    RowLayout {
-                        visible: voices.casting === "thinking" || voices.casting === "designing"
-                        spacing: 10
-                        BusyIndicator {
-                            implicitWidth: 28
-                            implicitHeight: 28
-                            running: parent.visible
-                        }
-                        Note {
-                            text: voices.casting === "thinking" ? qsTr("Reading the book…")
-                                : qsTr("Designing “%1”. This takes about half a minute.").arg(panel.draftName)
-                        }
-                    }
-
-                    TextField {
-                        Layout.fillWidth: true
-                        visible: voices.casting === "proposed"
-                        text: panel.draftName
-                        placeholderText: qsTr("Name")
-                        color: panel.look.fg
-                        font.pixelSize: 14
-                        onTextEdited: panel.draftName = text
-                    }
-                    TextArea {
-                        Layout.fillWidth: true
-                        visible: voices.casting === "proposed"
-                        text: panel.draftDescription
-                        placeholderText: qsTr("How the voice sounds")
-                        wrapMode: TextArea.Wrap
-                        color: panel.look.fg
-                        font.pixelSize: 13
-                        onTextChanged: if (activeFocus) panel.draftDescription = text
-                    }
-                    Note {
-                        visible: voices.casting === "proposed"
-                        text: [voices.proposal.gender === "male" ? qsTr("Male voice") : voices.proposal.gender === "female" ? qsTr("Female voice") : "",
-                               voices.proposal.language ? Qt.locale(voices.proposal.language).nativeLanguageName + " (" + voices.proposal.language + ")" : ""]
-                              .filter(part => part).join(" · ")
-                    }
-                    RowLayout {
-                        visible: voices.casting === "proposed"
-                        spacing: 8
                         Action {
                             primary: true
-                            text: qsTr("Design this voice")
-                            enabled: panel.draftDescription.trim() !== ""
-                            onClicked: voices.design({ name: panel.draftName, description: panel.draftDescription,
-                                                       gender: voices.proposal.gender, language: voices.proposal.language })
+                            text: qsTr("Add your key")
+                            onClicked: {
+                                panel.close()
+                                win.showAiSettings()
+                            }
+                        }
+                    }
+                }
+
+                Heading { text: qsTr("Style") }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Choice { text: qsTr("Plain"); selected: panel.builtinVoice || narration.performance === "plain"; onClicked: narration.performance = "plain" }
+                    Choice { text: qsTr("Natural"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "natural"; onClicked: narration.performance = "natural" }
+                    Choice { text: qsTr("Dramatic"); enabled: !panel.builtinVoice; selected: !panel.builtinVoice && narration.performance === "dramatic"; onClicked: narration.performance = "dramatic" }
+                }
+                Note {
+                    text: panel.builtinVoice ? qsTr("Built-in voices read evenly; the other styles need a Gemini voice.")
+                        : narration.performance === "plain" ? qsTr("An even, clear reading with no direction. Good for study and reference.")
+                        : narration.performance === "dramatic" ? qsTr("A fuller performance, for adventure, horror and genre fiction.")
+                        : qsTr("A storyteller's reading: the mood follows the scene, never acted.")
+                }
+
+                // Casting: a narrator designed for this book.
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 14
+                    visible: ai.canDesignVoices
+                    radius: Math.min(10, theme.radius)
+                    color: Ui.tint(panel.look.link, 0.07)
+                    border.color: Ui.tint(panel.look.link, 0.28)
+                    implicitHeight: cast.implicitHeight + 28
+
+                    ColumnLayout {
+                        id: cast
+                        x: 14
+                        y: 14
+                        width: parent.width - 28
+                        spacing: 8
+
+                        RowLayout {
+                            spacing: 8
+                            Glyph {
+                                width: 18
+                                height: 18
+                                path: Icons.sparkle
+                                color: panel.look.link
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: voices.casting === "designed" ? (voices.designed.name || "") : qsTr("A narrator for this book")
+                                color: panel.look.fg
+                                font.pixelSize: 14
+                                font.weight: Font.DemiBold
+                                elide: Text.ElideRight
+                            }
+                            Listen {
+                                visible: voices.casting === "designed"
+                                voiceId: voices.designed.id || ""
+                                press: () => voices.previewing === voiceId ? voices.stopPreview() : voices.playSample()
+                            }
+                        }
+
+                        Note {
+                            visible: voices.casting === ""
+                            text: qsTr("Gemini reads a passage, describes a narrator to suit the book, and designs the voice. About $0.03, and half a minute.")
                         }
                         Action {
-                            text: qsTr("Suggest another")
+                            visible: voices.casting === ""
+                            primary: true
+                            text: qsTr("Design a narrator")
+                            onClicked: voices.cast(reader.passageFrom(reader.chapter, 4000))
+                        }
+
+                        RowLayout {
+                            visible: voices.casting === "thinking" || voices.casting === "designing"
+                            spacing: 10
+                            BusyIndicator {
+                                implicitWidth: 28
+                                implicitHeight: 28
+                                running: parent.visible
+                            }
+                            Note {
+                                text: voices.casting === "thinking" ? qsTr("Reading the book…")
+                                    : qsTr("Designing “%1”. This takes about half a minute.").arg(panel.draftName)
+                            }
+                        }
+
+                        TextField {
+                            Layout.fillWidth: true
+                            visible: voices.casting === "proposed"
+                            text: panel.draftName
+                            placeholderText: qsTr("Name")
+                            color: panel.look.fg
+                            font.pixelSize: 14
+                            onTextEdited: panel.draftName = text
+                        }
+                        TextArea {
+                            Layout.fillWidth: true
+                            visible: voices.casting === "proposed"
+                            text: panel.draftDescription
+                            placeholderText: qsTr("How the voice sounds")
+                            wrapMode: TextArea.Wrap
+                            color: panel.look.fg
+                            font.pixelSize: 13
+                            onTextChanged: if (activeFocus) panel.draftDescription = text
+                        }
+                        Note {
+                            visible: voices.casting === "proposed"
+                            text: [voices.proposal.gender === "male" ? qsTr("Male voice") : voices.proposal.gender === "female" ? qsTr("Female voice") : "",
+                                   voices.proposal.language ? Qt.locale(voices.proposal.language).nativeLanguageName + " (" + voices.proposal.language + ")" : ""]
+                                  .filter(part => part).join(" · ")
+                        }
+                        RowLayout {
+                            visible: voices.casting === "proposed"
+                            spacing: 8
+                            Action {
+                                primary: true
+                                text: qsTr("Design this voice")
+                                enabled: panel.draftDescription.trim() !== ""
+                                onClicked: voices.design({ name: panel.draftName, description: panel.draftDescription,
+                                                           gender: voices.proposal.gender, language: voices.proposal.language })
+                            }
+                            Action {
+                                text: qsTr("Suggest another")
+                                onClicked: voices.cast(reader.passageFrom(reader.chapter, 4000))
+                            }
+                        }
+
+                        Note {
+                            visible: voices.casting === "designed"
+                            text: voices.designed.summary || ""
+                            maximumLineCount: 3
+                            elide: Text.ElideRight
+                        }
+                        RowLayout {
+                            visible: voices.casting === "designed"
+                            spacing: 8
+                            Action {
+                                primary: true
+                                text: narration.voice === voices.designed.id ? qsTr("Reading the book") : qsTr("Use this voice")
+                                enabled: narration.voice !== voices.designed.id
+                                onClicked: panel.choose(voices.designed)
+                            }
+                            Action {
+                                text: qsTr("Try again")
+                                onClicked: voices.design({ name: panel.draftName, description: panel.draftDescription,
+                                                           gender: voices.proposal.gender, language: voices.proposal.language })
+                            }
+                            Action {
+                                text: qsTr("Change it")
+                                onClicked: voices.revise()
+                            }
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            visible: voices.casting === "failed"
+                            text: voices.castingProblem
+                            color: theme.colors.orange || "#e5a050"
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                        }
+                        Action {
+                            visible: voices.casting === "failed"
+                            text: qsTr("Try again")
                             onClicked: voices.cast(reader.passageFrom(reader.chapter, 4000))
                         }
                     }
+                }
 
+                // Gemini's narration, downloaded to hear offline (built-in voices
+                // are offline already).
+                readonly property bool offlineApplies: !panel.builtinVoice && ai.canSpeak
+                Heading {
+                    visible: parent.offlineApplies || panel.downloadingThisBook
+                    text: qsTr("Offline")
+                }
+                Note {
+                    visible: parent.offlineApplies && !panel.downloadingThisBook
+                    text: qsTr("Download the narration to listen without a connection. It's made at Gemini's slower Flex tier, for half the price.")
+                }
+                RowLayout {
+                    visible: parent.offlineApplies && !panel.downloadingThisBook
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Action {
+                        text: qsTr("This chapter")
+                        enabled: (panel.chapterEstimate.chapters || 0) > 0
+                        onClicked: download.start(reader.chapter, reader.chapter)
+                    }
                     Note {
-                        visible: voices.casting === "designed"
-                        text: voices.designed.summary || ""
-                        maximumLineCount: 3
-                        elide: Text.ElideRight
+                        Layout.fillWidth: true
+                        text: (panel.chapterEstimate.chapters || 0) > 0 && translator.language !== ""
+                              ? Format.duration(panel.chapterEstimate.minutes) + " · " + panel.money(panel.chapterEstimate.cost) : ""
                     }
-                    RowLayout {
-                        visible: voices.casting === "designed"
-                        spacing: 8
-                        Action {
-                            primary: true
-                            text: narration.voice === voices.designed.id ? qsTr("Reading the book") : qsTr("Use this voice")
-                            enabled: narration.voice !== voices.designed.id
-                            onClicked: panel.choose(voices.designed)
-                        }
-                        Action {
-                            text: qsTr("Try again")
-                            onClicked: voices.design({ name: panel.draftName, description: panel.draftDescription,
-                                                       gender: voices.proposal.gender, language: voices.proposal.language })
-                        }
-                        Action {
-                            text: qsTr("Change it")
-                            onClicked: voices.revise()
-                        }
+                }
+                RowLayout {
+                    visible: parent.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.chapters || 0) > 1
+                    Layout.fillWidth: true
+                    spacing: 8
+                    Action {
+                        text: qsTr("To the end")
+                        onClicked: download.start(reader.chapter, panel.lastChapter)
                     }
+                    Note {
+                        Layout.fillWidth: true
+                        text: translator.language !== ""
+                              ? qsTr("%n chapters", "", panel.restEstimate.chapters || 0) + " · " + Format.duration(panel.restEstimate.minutes || 0)
+                                + " · " + panel.money(panel.restEstimate.cost || 0) : ""
+                    }
+                }
+                Note {
+                    visible: parent.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.cost || 0) > 0
+                             && !ai.fitsBudget(panel.restEstimate.cost)
+                    text: qsTr("Downloading to the end would pass your monthly budget; it stops there.")
+                    color: theme.colors.orange || "#e5a050"
+                }
 
+                // A download under way, or done.
+                ColumnLayout {
+                    visible: panel.downloadingThisBook
+                    Layout.fillWidth: true
+                    spacing: 8
+                    ProgressBar {
+                        Layout.fillWidth: true
+                        value: download.fraction
+                        indeterminate: download.running && download.fraction === 0
+                    }
+                    Note {
+                        text: download.finished ? (download.firstChapter === download.lastChapter
+                                                   ? qsTr("This chapter is ready to listen offline.")
+                                                   : qsTr("Ready to listen offline, to the end of the book."))
+                            : translator.language === "" ? ""
+                            : qsTr("%1 of %2 ready").arg(Format.duration(download.minutesReady)).arg(Format.duration(download.minutesTotal))
+                              + (download.running && download.secondsLeft > 0
+                                 ? " · " + qsTr("about %1 left").arg(Format.duration(download.secondsLeft / 60)) : "")
+                              + (!download.running ? " · " + qsTr("paused") : "")
+                    }
                     Label {
                         Layout.fillWidth: true
-                        visible: voices.casting === "failed"
-                        text: voices.castingProblem
+                        visible: download.problem !== ""
+                        text: download.problem
                         color: theme.colors.orange || "#e5a050"
                         font.pixelSize: 12
                         wrapMode: Text.Wrap
                     }
-                    Action {
-                        visible: voices.casting === "failed"
-                        text: qsTr("Try again")
-                        onClicked: voices.cast(reader.passageFrom(reader.chapter, 4000))
-                    }
-                }
-            }
-
-            // Gemini's narration, downloaded to hear offline (built-in voices
-            // are offline already).
-            readonly property bool offlineApplies: !panel.builtinVoice && ai.canSpeak
-            Heading {
-                visible: parent.offlineApplies || panel.downloadingThisBook
-                text: qsTr("Offline")
-            }
-            Note {
-                visible: parent.offlineApplies && !panel.downloadingThisBook
-                text: qsTr("Download the narration to listen without a connection. It's made at Gemini's slower Flex tier, for half the price.")
-            }
-            RowLayout {
-                visible: parent.offlineApplies && !panel.downloadingThisBook
-                Layout.fillWidth: true
-                spacing: 8
-                Action {
-                    text: qsTr("This chapter")
-                    enabled: (panel.chapterEstimate.chapters || 0) > 0
-                    onClicked: download.start(reader.chapter, reader.chapter)
-                }
-                Note {
-                    Layout.fillWidth: true
-                    text: (panel.chapterEstimate.chapters || 0) > 0 && translator.language !== ""
-                          ? Format.duration(panel.chapterEstimate.minutes) + " · " + panel.money(panel.chapterEstimate.cost) : ""
-                }
-            }
-            RowLayout {
-                visible: parent.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.chapters || 0) > 1
-                Layout.fillWidth: true
-                spacing: 8
-                Action {
-                    text: qsTr("To the end")
-                    onClicked: download.start(reader.chapter, panel.lastChapter)
-                }
-                Note {
-                    Layout.fillWidth: true
-                    text: translator.language !== ""
-                          ? qsTr("%n chapters", "", panel.restEstimate.chapters || 0) + " · " + Format.duration(panel.restEstimate.minutes || 0)
-                            + " · " + panel.money(panel.restEstimate.cost || 0) : ""
-                }
-            }
-            Note {
-                visible: parent.offlineApplies && !panel.downloadingThisBook && (panel.restEstimate.cost || 0) > 0
-                         && !ai.fitsBudget(panel.restEstimate.cost)
-                text: qsTr("Downloading to the end would pass your monthly budget; it stops there.")
-                color: theme.colors.orange || "#e5a050"
-            }
-
-            // A download under way, or done.
-            ColumnLayout {
-                visible: panel.downloadingThisBook
-                Layout.fillWidth: true
-                spacing: 8
-                ProgressBar {
-                    Layout.fillWidth: true
-                    value: download.fraction
-                    indeterminate: download.running && download.fraction === 0
-                }
-                Note {
-                    text: download.finished ? (download.firstChapter === download.lastChapter
-                                               ? qsTr("This chapter is ready to listen offline.")
-                                               : qsTr("Ready to listen offline, to the end of the book."))
-                        : translator.language === "" ? ""
-                        : qsTr("%1 of %2 ready").arg(Format.duration(download.minutesReady)).arg(Format.duration(download.minutesTotal))
-                          + (download.running && download.secondsLeft > 0
-                             ? " · " + qsTr("about %1 left").arg(Format.duration(download.secondsLeft / 60)) : "")
-                          + (!download.running ? " · " + qsTr("paused") : "")
-                }
-                Label {
-                    Layout.fillWidth: true
-                    visible: download.problem !== ""
-                    text: download.problem
-                    color: theme.colors.orange || "#e5a050"
-                    font.pixelSize: 12
-                    wrapMode: Text.Wrap
-                }
-                RowLayout {
-                    spacing: 8
-                    Action {
-                        visible: !download.finished
-                        text: download.running ? qsTr("Pause") : qsTr("Go on")
-                        onClicked: download.running ? download.pause() : download.resume()
-                    }
-                    Action {
-                        text: download.finished ? qsTr("Done") : qsTr("Stop")
-                        onClicked: download.cancel()
-                    }
-                }
-            }
-
-            // Every voice, by any word about it: a name, an accent, a manner.
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.topMargin: 16
-                implicitHeight: 36
-                radius: Math.min(8, theme.radius)
-                color: Ui.tint(panel.look.fg, searchInput.activeFocus ? 0.09 : 0.05)
-                border.width: searchInput.activeFocus ? 1.5 : 0
-                border.color: panel.look.link
-                Glyph {
-                    id: searchIcon
-                    anchors.left: parent.left
-                    anchors.leftMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 16
-                    height: 16
-                    path: Icons.search
-                    color: panel.look.muted
-                }
-                TextInput {
-                    id: searchInput
-                    anchors.left: searchIcon.right
-                    anchors.right: parent.right
-                    anchors.leftMargin: 8
-                    anchors.rightMargin: 10
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: panel.look.fg
-                    selectionColor: Ui.tint(panel.look.link, 0.4)
-                    font.pixelSize: 14
-                    clip: true
-                    text: panel.query
-                    onTextEdited: panel.query = text
-                    Keys.onEscapePressed: (event) => {
-                        if (text !== "") {
-                            panel.query = ""
-                            event.accepted = true
-                        } else {
-                            event.accepted = false
+                    RowLayout {
+                        spacing: 8
+                        Action {
+                            visible: !download.finished
+                            text: download.running ? qsTr("Pause") : qsTr("Go on")
+                            onClicked: download.running ? download.pause() : download.resume()
+                        }
+                        Action {
+                            text: download.finished ? qsTr("Done") : qsTr("Stop")
+                            onClicked: download.cancel()
                         }
                     }
-                    Label {
+                }
+
+                // Every voice, by any word about it: a name, an accent, a manner.
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 16
+                    implicitHeight: 36
+                    radius: Math.min(8, theme.radius)
+                    color: Ui.tint(panel.look.fg, searchInput.activeFocus ? 0.09 : 0.05)
+                    border.width: searchInput.activeFocus ? 1.5 : 0
+                    border.color: panel.look.link
+                    Glyph {
+                        id: searchIcon
+                        anchors.left: parent.left
+                        anchors.leftMargin: 10
                         anchors.verticalCenter: parent.verticalCenter
-                        visible: !parent.text && !parent.activeFocus
-                        text: voices.count > 0 ? qsTr("Search %Ln voices", "", voices.count) : qsTr("Search voices")
+                        width: 16
+                        height: 16
+                        path: Icons.search
                         color: panel.look.muted
+                    }
+                    TextInput {
+                        id: searchInput
+                        anchors.left: searchIcon.right
+                        anchors.right: parent.right
+                        anchors.leftMargin: 8
+                        anchors.rightMargin: 10
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: panel.look.fg
+                        selectionColor: Ui.tint(panel.look.link, 0.4)
                         font.pixelSize: 14
+                        clip: true
+                        text: panel.query
+                        onTextEdited: panel.query = text
+                        Keys.onEscapePressed: (event) => {
+                            if (text !== "") {
+                                panel.query = ""
+                                event.accepted = true
+                            } else {
+                                event.accepted = false
+                            }
+                        }
+                        Label {
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: !parent.text && !parent.activeFocus
+                            text: voices.count > 0 ? qsTr("Search %Ln voices", "", voices.count) : qsTr("Search voices")
+                            color: panel.look.muted
+                            font.pixelSize: 14
+                        }
                     }
                 }
-            }
 
-            Note {
-                visible: voices.loading || voices.problem !== ""
-                text: voices.loading ? qsTr("Fetching the voices…") : voices.problem
-                color: voices.problem !== "" ? (theme.colors.orange || "#e5a050") : panel.look.muted
-            }
-
-            // Search results take the place of the lists.
-            ColumnLayout {
-                Layout.fillWidth: true
-                visible: panel.query.trim() !== ""
-                spacing: 2
                 Note {
-                    visible: panel.results.length === 0 && !voices.loading
-                    Layout.topMargin: 6
-                    text: qsTr("No voice matches.")
+                    visible: voices.loading || voices.problem !== ""
+                    text: voices.loading ? qsTr("Fetching the voices…") : voices.problem
+                    color: voices.problem !== "" ? (theme.colors.orange || "#e5a050") : panel.look.muted
                 }
-                Repeater {
-                    model: panel.results
-                    delegate: VoiceRow {
-                        required property var modelData
-                        voice: modelData
+
+                // Search results take the place of the lists.
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: panel.query.trim() !== ""
+                    spacing: 2
+                    Note {
+                        visible: panel.results.length === 0 && !voices.loading
+                        Layout.topMargin: 6
+                        text: qsTr("No voice matches.")
                     }
-                }
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                visible: panel.query.trim() === ""
-                spacing: 2
-
-                Heading {
-                    visible: panel.yours.length > 0
-                    text: qsTr("Your voices")
-                }
-                Repeater {
-                    model: panel.yours
-                    delegate: VoiceRow {
-                        required property var modelData
-                        voice: modelData
+                    Repeater {
+                        model: panel.results
+                        delegate: VoiceRow {
+                            required property var modelData
+                            voice: modelData
+                        }
                     }
                 }
 
-                Heading {
-                    visible: panel.narrators.length > 0
-                    text: qsTr("Narrators for this book")
-                }
-                Repeater {
-                    model: panel.narrators
-                    delegate: VoiceRow {
-                        required property var modelData
-                        voice: modelData
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: panel.query.trim() === ""
+                    spacing: 2
+
+                    Heading {
+                        visible: panel.yours.length > 0
+                        text: qsTr("Your voices")
+                    }
+                    Repeater {
+                        model: panel.yours
+                        delegate: VoiceRow {
+                            required property var modelData
+                            voice: modelData
+                        }
+                    }
+
+                    Heading {
+                        visible: panel.narrators.length > 0
+                        text: qsTr("Narrators for this book")
+                    }
+                    Repeater {
+                        model: panel.narrators
+                        delegate: VoiceRow {
+                            required property var modelData
+                            voice: modelData
+                        }
+                    }
+
+                    Heading {
+                        visible: panel.classics.length > 0
+                        text: qsTr("Classic voices")
+                    }
+                    Note {
+                        visible: panel.classics.length > 0
+                        text: qsTr("They read any language.")
+                    }
+                    Repeater {
+                        model: panel.classics
+                        delegate: VoiceRow {
+                            required property var modelData
+                            voice: modelData
+                        }
                     }
                 }
-
-                Heading {
-                    visible: panel.classics.length > 0
-                    text: qsTr("Classic voices")
-                }
-                Note {
-                    visible: panel.classics.length > 0
-                    text: qsTr("They read any language.")
-                }
-                Repeater {
-                    model: panel.classics
-                    delegate: VoiceRow {
-                        required property var modelData
-                        voice: modelData
-                    }
-                }
-            }
-
-            // With a key, the built-in voices come after Gemini's.
-            BuiltinVoices {
-                Layout.topMargin: 10
-                visible: voicePacks.supported && ai.hasKey && panel.query.trim() === ""
             }
         }
     }

@@ -20,6 +20,9 @@ FocusScope {
     // For driving the panel from outside (and from tests).
     readonly property alias voicePanel: voicePanel
     readonly property alias searchBar: searchBar
+    readonly property alias pageMenu: pageMenu
+    // The words selected on the page, as the page last said ({} for none).
+    property var selection: ({})
     readonly property alias marksPanel: marksPanel
     readonly property alias noteEditor: noteEditor
     readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
@@ -57,7 +60,8 @@ FocusScope {
             // Room for the listen bar under the text while listening.
             marginBottom: narration.active ? 84 : 54,
             radius: theme.radius,
-            strings: { goToNote: qsTr("Go to note") },
+            listening: narration.active,
+            strings: { goToNote: qsTr("Go to note"), listenFromHere: qsTr("Listen from here") },
         }
     }
     function openBook() {
@@ -179,7 +183,12 @@ FocusScope {
             }
         }
         function onBookChanged() { view.decoratedChapter = -1 }
+        function onListenRequested(chapter, offset) {
+            view.leaveVoice()
+            narration.start(chapter, offset)
+        }
         function onSelected(selection) {
+            view.selection = selection && selection.text ? selection : ({})
             if (selection && selection.text) {
                 selectionBar.forMark = false
                 selectionBar.target = selection
@@ -356,7 +365,19 @@ FocusScope {
         settings.errorPageEnabled: false
         settings.spatialNavigationEnabled: false
         settings.linksIncludedInFocusChain: false
-        onContextMenuRequested: (request) => request.accepted = true
+        // Dogear's own menu for the page: listening from the place clicked,
+        // and the selection's highlight, note and copy.
+        onContextMenuRequested: (request) => {
+            request.accepted = true
+            const at = Qt.point(request.position.x, request.position.y)
+            view.js("JSON.stringify(dogear.placeAt(" + at.x + "," + at.y + "))", function(result) {
+                const place = JSON.parse(result || "null")
+                if (!place)
+                    return
+                pageMenu.place = place
+                pageMenu.popup(web, at.x, at.y)
+            })
+        }
         onNewWindowRequested: (request) => {}
         onNavigationRequested: (request) => {
             if (!request.url.toString().startsWith("dogear://"))
@@ -746,6 +767,64 @@ FocusScope {
             marks.remove(target.id)
             visible = false
             toast.show(qsTr("Highlight removed"), qsTr("Undo"), () => marks.undo())
+        }
+    }
+
+    Menu {
+        id: pageMenu
+        property var place: ({})
+        readonly property bool hasSelection: !!view.selection.text
+        Material.theme: view.look.dark ? Material.Dark : Material.Light
+        Material.accent: view.look.link
+        Material.foreground: view.look.fg
+        topPadding: 6
+        bottomPadding: 6
+        background: Rectangle {
+            implicitWidth: 230
+            radius: Math.min(10, theme.radius)
+            color: view.look.popover
+            border.color: view.look.border
+            Rectangle {
+                z: -1
+                anchors.fill: parent
+                anchors.topMargin: 4
+                anchors.bottomMargin: -4
+                radius: parent.radius
+                color: "black"
+                opacity: view.look.dark ? 0.35 : 0.12
+            }
+        }
+
+        MenuItem {
+            text: narration.active ? qsTr("Listen from here instead") : qsTr("Listen from here")
+            onTriggered: {
+                view.leaveVoice()
+                narration.start(pageMenu.place.chapter, pageMenu.place.offset)
+            }
+        }
+        MenuSeparator { visible: pageMenu.hasSelection }
+        MenuItem {
+            visible: pageMenu.hasSelection
+            height: visible ? implicitHeight : 0
+            text: qsTr("Highlight")
+            onTriggered: selectionBar.highlight("yellow")
+        }
+        MenuItem {
+            visible: pageMenu.hasSelection
+            height: visible ? implicitHeight : 0
+            text: qsTr("Add a note")
+            onTriggered: selectionBar.note()
+        }
+        MenuItem {
+            visible: pageMenu.hasSelection
+            height: visible ? implicitHeight : 0
+            text: qsTr("Copy")
+            onTriggered: selectionBar.copy()
+        }
+        MenuSeparator {}
+        MenuItem {
+            text: view.pageBookmark ? qsTr("Remove the bookmark") : qsTr("Bookmark this page")
+            onTriggered: view.toggleBookmark()
         }
     }
 

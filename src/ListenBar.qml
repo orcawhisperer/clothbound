@@ -214,6 +214,13 @@ Rectangle {
 
         IconButton {
             anchors.verticalCenter: parent.verticalCenter
+            glyph: Icons.tray
+            tone: bar.look.fg
+            tip: qsTr("Keep listening in the background")
+            onClicked: win.listenInBackground()
+        }
+        IconButton {
+            anchors.verticalCenter: parent.verticalCenter
             glyph: Icons.close
             tone: bar.look.muted
             tip: qsTr("Stop listening (⇧P)")

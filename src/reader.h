@@ -106,6 +106,8 @@ public:
     // What the reader has selected on the page ({} when nothing is).
     Q_INVOKABLE void selectionChanged(const QVariantMap &selection) { emit selected(selection); }
     Q_INVOKABLE void markClicked(int id, const QVariantMap &rect) { emit markChosen(id, rect); }
+    // The reader asked to listen from a paragraph.
+    Q_INVOKABLE void listenFrom(int chapter, qint64 offset) { emit listenRequested(chapter, offset); }
 
     // Progress through the whole book at a chapter and an offset in it.
     double fractionAt(int chapter, qint64 offset) const;
@@ -122,6 +124,7 @@ signals:
     void speakable(int chapter, const QString &blocks);
     void selected(const QVariantMap &selection);
     void markChosen(int id, const QVariantMap &rect);
+    void listenRequested(int chapter, qint64 offset);
 
 private:
     void savePosition();

@@ -225,6 +225,114 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
         doc.addEventListener('keydown', onKey, true)
         doc.addEventListener('dragstart', event => event.preventDefault())
         doc.addEventListener('selectionchange', onSelection)
+        doc.addEventListener('mousemove', onHover, { passive: true })
+        doc.addEventListener('mouseleave', () => hideFromHere(400))
+    }
+
+    // --- Listening from a paragraph -------------------------------------------
+
+    // While the book is read aloud, a play button waits in the margin beside
+    // the paragraph under the pointer: a click moves the voice there.
+    let fromHere = null, fromHereBlock = null, fromHereTimer = 0
+    function fromHereButton() {
+        if (!fromHere) {
+            fromHere = document.createElement('button')
+            fromHere.className = 'from-here'
+            fromHere.title = state.style.strings.listenFromHere || ''
+            fromHere.innerHTML = '<svg viewBox="0 0 16 16" width="12" height="12"><path d="M5 3.5v9l7-4.5z" fill="currentColor"/></svg>'
+            fromHere.addEventListener('mouseenter', () => clearTimeout(fromHereTimer))
+            fromHere.addEventListener('mouseleave', () => hideFromHere(300))
+            fromHere.addEventListener('click', event => {
+                event.preventDefault()
+                if (fromHereBlock && state.bridge) {
+                    const start = blockStart(fromHereBlock)
+                    if (start !== null)
+                        state.bridge.listenFrom(state.chapter, start)
+                }
+                hideFromHere(0)
+            })
+            document.getElementById('overlay').appendChild(fromHere)
+        }
+        return fromHere
+    }
+    function hideFromHere(delay) {
+        clearTimeout(fromHereTimer)
+        fromHereTimer = setTimeout(() => {
+            if (fromHere)
+                fromHere.classList.remove('shown')
+            fromHereBlock = null
+        }, delay)
+    }
+    // Where a paragraph's words begin, as an offset.
+    function blockStart(block) {
+        const walker = block.ownerDocument.createTreeWalker(block, NodeFilter.SHOW_TEXT)
+        for (let node = walker.nextNode(); node; node = walker.nextNode())
+            if (node.data.trim()) {
+                const at = offsetOf(node, node.data.search(/\S/))
+                if (at !== null)
+                    return at
+            }
+        return null
+    }
+    function onHover(event) {
+        if (!state.style || !state.style.listening || !state.index)
+            return
+        const block = event.target.closest && event.target.closest('p, h1, h2, h3, h4, h5, h6, li, blockquote, dd, figcaption')
+        if (!block || !block.textContent.trim()) {
+            hideFromHere(400)
+            return
+        }
+        clearTimeout(fromHereTimer)
+        if (block === fromHereBlock)
+            return
+        fromHereBlock = block
+        // Beside the paragraph's first line, in the margin or the gutter.
+        const range = block.ownerDocument.createRange()
+        range.selectNodeContents(block)
+        const line = range.getClientRects()[0]
+        if (!line)
+            return
+        const frameRect = frame().getBoundingClientRect()
+        const button = fromHereButton()
+        button.style.left = Math.max(4, frameRect.left + line.left - 34) + 'px'
+        button.style.top = (frameRect.top + line.top + line.height / 2 - 13) + 'px'
+        button.classList.add('shown')
+    }
+
+    // What's at a point of the page (in the window's terms): its chapter and
+    // offset, and the words selected, if any, for the right-click menu.
+    function placeAt(x, y) {
+        if (!state.index)
+            return null
+        const frameRect = frame().getBoundingClientRect()
+        const doc = chapterDocument()
+        let node = null, index = 0
+        const fx = x - frameRect.left, fy = y - frameRect.top
+        if (doc.caretPositionFromPoint) {
+            const position = doc.caretPositionFromPoint(fx, fy)
+            if (position) {
+                node = position.offsetNode
+                index = position.offset
+            }
+        } else if (doc.caretRangeFromPoint) {
+            const range = doc.caretRangeFromPoint(fx, fy)
+            if (range) {
+                node = range.startContainer
+                index = range.startOffset
+            }
+        }
+        const offset = node ? offsetOf(node, index) : null
+        if (offset === null)
+            return null
+        // From the start of the sentence the click was in.
+        const text = state.index.text
+        let start = offset
+        while (start > 0 && !/[.!?\u2026]\s/.test(text.substr(start - 2, 2)) && text[start - 1] !== '\n')
+            --start
+        while (start < text.length && /\s/.test(text[start]))
+            ++start
+        const selection = doc.getSelection()
+        return { chapter: state.chapter, offset: start, selected: selection ? selection.toString().split(SHY).join('') : '' }
     }
 
     // --- The text model ------------------------------------------------------
@@ -579,6 +687,7 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
     }
 
     function report() {
+        hideFromHere(0)
         if (!state.index)
             return
         const offset = firstVisibleOffset()
@@ -1321,6 +1430,8 @@ ${own ? `p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !impo
             }
             return end > 60 ? text.slice(0, end) : text.slice(0, text.lastIndexOf(' ', 320)) + '\u2026'
         },
+
+        placeAt(x, y) { return placeAt(x, y) },
 
         // The selected text, for copying from the window.
         selectedText() {

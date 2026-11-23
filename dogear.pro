@@ -35,6 +35,7 @@ HEADERS += \
     src/download.h \
     src/mpris.h \
     src/pointerdriver.h \
+    src/notifier.h \
     src/pdfbook.h \
     src/portalfilepicker.h \
     src/reader.h \
