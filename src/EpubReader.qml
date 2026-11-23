@@ -1,7 +1,6 @@
 import QtCore
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Controls.Material
 import QtWebChannel
 import QtWebEngine
 
@@ -72,8 +71,27 @@ FocusScope {
 
     signal closeRequested()
 
-    Material.theme: look.dark ? Material.Dark : Material.Light
-    Material.accent: look.link
+    // The reading theme as the palette of every panel, menu and control in
+    // the reader (the roles are in src/style/Dogear/README.md).
+    palette.window: look.bg
+    palette.windowText: look.fg
+    palette.base: Ui.tint(look.fg, 0.06)
+    palette.alternateBase: Ui.tint(look.fg, 0.10)
+    palette.text: look.fg
+    palette.placeholderText: Ui.mix(look.fg, look.bg, 0.45)
+    palette.button: Ui.tint(look.fg, 0.06)
+    palette.buttonText: look.fg
+    palette.mid: look.muted
+    palette.midlight: Ui.tint(look.fg, 0.10)
+    palette.dark: Ui.tint(look.fg, 0.14)
+    palette.light: look.popover
+    palette.shadow: look.dark ? "#73000000" : "#26000000"
+    palette.highlight: look.link
+    palette.highlightedText: Ui.readableOn(look.link)
+    palette.link: look.link
+    palette.linkVisited: Ui.tint(look.link, 0.16)
+    palette.toolTipBase: look.popover
+    palette.toolTipText: look.fg
 
     readonly property bool pdf: reader.format === "pdf"
     readonly property bool epubLoading: !pdf && reader.open && (!surfaceReady || reader.relocationSeq === 0)
@@ -1383,9 +1401,6 @@ FocusScope {
         id: pageMenu
         property var place: ({})
         readonly property bool hasSelection: !!view.selection.text
-        Material.theme: view.look.dark ? Material.Dark : Material.Light
-        Material.accent: view.look.link
-        Material.foreground: view.look.fg
         topPadding: 6
         bottomPadding: 6
         background: Rectangle {

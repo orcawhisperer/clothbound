@@ -26,8 +26,8 @@ function palette(id, theme) {
     else if (id === "night")
         p = { bg: "#000000", fg: "#b6b3ad", link: "#c99b4f", muted: "#78756f", popover: "#151515", dark: true }
     else
-        p = { bg: theme.background, fg: theme.text, link: theme.accent, muted: theme.textSecondary,
-              popover: theme.surface, dark: !theme.light }
+        p = { bg: theme.ground, fg: theme.ink2, link: theme.accentInk, muted: theme.ink3,
+              popover: theme.raised, dark: !theme.light }
     p.id = order.indexOf(id) >= 0 ? id : "omarchy"
     p.selection = css(tint(p.link, p.dark ? 0.38 : 0.26))
     p.search = css(tint(p.dark ? "#f5c542" : "#ffcc00", p.dark ? 0.32 : 0.4))

@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Controls.Material
 import QtQuick.Layouts
 
 import "Format.js" as Format
@@ -12,7 +11,6 @@ ColumnLayout {
     id: section
 
     spacing: 8
-    Material.roundedScale: theme.radius
 
     // The server picked from those found, before it's used.
     property var picked: null
@@ -20,7 +18,7 @@ ColumnLayout {
 
     component Heading: Label {
         Layout.topMargin: 16
-        color: theme.textTertiary
+        color: theme.ink3
         font.pixelSize: 12
         font.weight: Font.DemiBold
         font.capitalization: Font.AllUppercase
@@ -28,7 +26,7 @@ ColumnLayout {
     }
     component Note: Label {
         Layout.fillWidth: true
-        color: theme.textSecondary
+        color: theme.ink2
         font.pixelSize: 13
         wrapMode: Text.Wrap
         lineHeight: 1.25
@@ -43,7 +41,7 @@ ColumnLayout {
         focusPolicy: Qt.NoFocus
         background: Rectangle {
             radius: Math.min(8, theme.radius)
-            color: choice.selected ? Ui.tint(theme.accent, 0.22) : choice.hovered ? Ui.tint(theme.text, 0.1) : Ui.tint(theme.text, 0.05)
+            color: choice.selected ? Ui.tint(theme.accent, 0.22) : choice.hovered ? Ui.tint(theme.ink1, 0.1) : Ui.tint(theme.ink1, 0.05)
             border.width: choice.selected ? 1.5 : 0
             border.color: theme.accent
         }
@@ -51,7 +49,7 @@ ColumnLayout {
             text: choice.text
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
-            color: theme.text
+            color: theme.ink1
             font.pixelSize: 13
             elide: Text.ElideRight
         }
@@ -76,8 +74,8 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.topMargin: 4
         radius: Math.min(10, theme.radius)
-        color: Ui.tint(theme.text, 0.04)
-        border.color: Ui.tint(theme.text, 0.1)
+        color: Ui.tint(theme.ink1, 0.04)
+        border.color: Ui.tint(theme.ink1, 0.1)
         implicitHeight: local.implicitHeight + 24
 
         ColumnLayout {
@@ -93,10 +91,10 @@ ColumnLayout {
                     s => s.url.replace(/\/+$/, "") === ai.localUrl.replace(/\/+$/, ""))
                 Rectangle {
                     width: 10; height: 10; radius: 5
-                    color: ai.localUrl === "" ? theme.textTertiary
+                    color: ai.localUrl === "" ? theme.ink3
                          : parent.reachable ? theme.colors.green
                          : ai.findingLocal ? theme.colors.yellow
-                         : (theme.colors.red || theme.textTertiary)
+                         : (theme.colors.red || theme.ink3)
                 }
                 Label {
                     Layout.fillWidth: true
@@ -106,7 +104,7 @@ ColumnLayout {
                              : qsTr("%1 at %2 (not running)").arg(ai.localName).arg(ai.localUrl.replace(/^https?:\/\//, "")))
                           : ai.findingLocal ? qsTr("Looking for model servers on this computer…")
                           : qsTr("No model on this computer yet")
-                    color: theme.text
+                    color: theme.ink1
                     font.pixelSize: 14
                     elide: Text.ElideRight
                 }
@@ -131,12 +129,12 @@ ColumnLayout {
                             return s
                     return null
                 }
-                Label { text: qsTr("Text"); color: theme.textSecondary; font.pixelSize: 13 }
+                Label { text: qsTr("Text"); color: theme.ink2; font.pixelSize: 13 }
                 Label {
                     Layout.fillWidth: true
                     visible: !parent.server
                     text: ai.localTextModel || qsTr("None")
-                    color: ai.localTextModel ? theme.text : theme.textTertiary
+                    color: ai.localTextModel ? theme.ink1 : theme.ink3
                     font.pixelSize: 13
                 }
                 ComboBox {
@@ -149,13 +147,13 @@ ColumnLayout {
                 }
                 Label {
                     visible: !parent.server || parent.server.speechModels.length > 0 || ai.localSpeechModel !== ""
-                    text: qsTr("Voices"); color: theme.textSecondary; font.pixelSize: 13
+                    text: qsTr("Voices"); color: theme.ink2; font.pixelSize: 13
                 }
                 Label {
                     Layout.fillWidth: true
                     visible: !parent.server || (parent.server.speechModels.length === 0 && ai.localSpeechModel !== "")
                     text: ai.localSpeechModel || qsTr("None")
-                    color: ai.localSpeechModel ? theme.text : theme.textTertiary
+                    color: ai.localSpeechModel ? theme.ink1 : theme.ink3
                     font.pixelSize: 13
                 }
                 ComboBox {
@@ -166,12 +164,12 @@ ColumnLayout {
                     onActivated: (index) => ai.useLocal(parent.server.kind, ai.localUrl, ai.localTextModel,
                                                          ai.localEmbeddingModel, index === 0 ? "" : model[index])
                 }
-                Label { text: qsTr("Search"); color: theme.textSecondary; font.pixelSize: 13 }
+                Label { text: qsTr("Search"); color: theme.ink2; font.pixelSize: 13 }
                 Label {
                     Layout.fillWidth: true
                     visible: !parent.server
                     text: ai.localEmbeddingModel || qsTr("None")
-                    color: ai.localEmbeddingModel ? theme.text : theme.textTertiary
+                    color: ai.localEmbeddingModel ? theme.ink1 : theme.ink3
                     font.pixelSize: 13
                 }
                 ComboBox {
@@ -187,7 +185,7 @@ ColumnLayout {
                 Layout.fillWidth: true
                 visible: ai.localUrl !== "" && ai.localContextWindow > 0
                 text: qsTr("Context window: %1 tokens").arg(ai.localContextWindow.toLocaleString(Qt.locale(), 'f', 0))
-                color: theme.textTertiary
+                color: theme.ink3
                 font.pixelSize: 12
             }
             // Servers found, not yet in use.
@@ -202,7 +200,7 @@ ColumnLayout {
                         text: parent.totalModels > 0
                               ? qsTr("%1 at %2 · %n models", "", parent.totalModels).arg(modelData.name).arg(modelData.url.replace(/^https?:\/\//, ""))
                               : qsTr("%1 at %2 · no models yet").arg(modelData.name).arg(modelData.url.replace(/^https?:\/\//, ""))
-                        color: theme.textSecondary
+                        color: theme.ink2
                         font.pixelSize: 13
                         elide: Text.ElideRight
                     }
@@ -273,7 +271,7 @@ ColumnLayout {
                 }
                 Note {
                     visible: !localSetup.running && !localSetup.waiting
-                    color: theme.textTertiary
+                    color: theme.ink3
                     font.pixelSize: 12
                     text: qsTr("Already run llama.cpp, LM Studio, MLX or vLLM? Start it, then Find, or give its address below.")
                 }
@@ -286,7 +284,7 @@ ColumnLayout {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 36
                     radius: Math.min(8, theme.radius)
-                    color: Ui.tint(theme.text, 0.06)
+                    color: Ui.tint(theme.ink1, 0.06)
                     border.width: addressInput.activeFocus ? 1.5 : 0
                     border.color: theme.accent
                     TextInput {
@@ -295,7 +293,7 @@ ColumnLayout {
                         anchors.leftMargin: 10
                         anchors.rightMargin: 10
                         verticalAlignment: TextInput.AlignVCenter
-                        color: theme.text
+                        color: theme.ink1
                         font.pixelSize: 13
                         selectByMouse: true
                         onTextChanged: section.address = text
@@ -306,7 +304,7 @@ ColumnLayout {
                             verticalAlignment: Text.AlignVCenter
                             visible: addressInput.text === ""
                             text: qsTr("Another address, as localhost:5000")
-                            color: theme.textTertiary
+                            color: theme.ink3
                             font: addressInput.font
                         }
                     }
@@ -346,7 +344,7 @@ ColumnLayout {
                     parts.push(m.graphicsMemoryGb > 0 ? qsTr("%1 (%2 GB)").arg(m.graphics).arg(Math.round(m.graphicsMemoryGb)) : m.graphics)
                 return parts.join(" · ")
             }
-            color: theme.textTertiary
+            color: theme.ink3
             font.pixelSize: 12
             elide: Text.ElideRight
             horizontalAlignment: Text.AlignRight
@@ -362,7 +360,7 @@ ColumnLayout {
                 Layout.alignment: Qt.AlignTop
                 Layout.topMargin: 5
                 width: 8; height: 8; radius: 4
-                color: modelData.level === "good" ? theme.colors.green : modelData.level === "slow" ? theme.colors.yellow : theme.textTertiary
+                color: modelData.level === "good" ? theme.colors.green : modelData.level === "slow" ? theme.colors.yellow : theme.ink3
             }
             ColumnLayout {
                 Layout.fillWidth: true
@@ -370,7 +368,7 @@ ColumnLayout {
                 Label {
                     Layout.fillWidth: true
                     text: modelData.feature + " · " + modelData.verdict
-                    color: theme.text
+                    color: theme.ink1
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
                 }
@@ -378,7 +376,7 @@ ColumnLayout {
                     Layout.fillWidth: true
                     visible: modelData.detail !== ""
                     text: modelData.detail
-                    color: theme.textTertiary
+                    color: theme.ink3
                     font.pixelSize: 12
                     wrapMode: Text.Wrap
                 }
@@ -388,6 +386,6 @@ ColumnLayout {
     Note {
         visible: systemCheck.recommendation !== ""
         text: qsTr("This computer: %1. %2").arg(systemCheck.tier).arg(systemCheck.recommendation)
-        color: theme.text
+        color: theme.ink1
     }
 }

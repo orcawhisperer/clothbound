@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Controls.Material
 import QtQuick.Layouts
 
 import "Icons.js" as Icons
@@ -85,7 +84,6 @@ FocusScope {
     Keys.onSpacePressed: next()
     Keys.onRightPressed: next()
     Keys.onLeftPressed: if (page > 0) page--
-    Material.roundedScale: theme.radius
 
     Rectangle {
         anchors.fill: parent
@@ -99,8 +97,8 @@ FocusScope {
         width: Math.min(560, parent.width - 48)
         height: Math.min(parent.height - 48, body.implicitHeight + footer.implicitHeight + 70)
         radius: Math.min(14, theme.radius + 4)
-        color: theme.surface
-        border.color: Ui.tint(theme.text, 0.1)
+        color: theme.raised
+        border.color: Ui.tint(theme.ink1, 0.1)
 
         readonly property var current: welcome.mode === "welcome" ? welcome.pages[welcome.page] : null
 
@@ -129,12 +127,12 @@ FocusScope {
                         Layout.preferredWidth: 28
                         Layout.preferredHeight: 28
                         path: card.current ? card.current.glyph : Icons.sparkle
-                        color: theme.accent
+                        color: theme.accentInk
                     }
                     Label {
                         Layout.fillWidth: true
                         text: card.current ? card.current.title : qsTr("What's new in Dogear %1").arg(Qt.application.version)
-                        color: theme.text
+                        color: theme.ink1
                         font.pixelSize: 22
                         font.weight: Font.DemiBold
                         wrapMode: Text.Wrap
@@ -144,7 +142,7 @@ FocusScope {
                     Layout.fillWidth: true
                     visible: !!card.current
                     text: card.current ? card.current.text : ""
-                    color: theme.textSecondary
+                    color: theme.ink2
                     font.pixelSize: 15
                     wrapMode: Text.Wrap
                     lineHeight: 1.3
@@ -164,7 +162,7 @@ FocusScope {
                         Label {
                             Layout.fillWidth: true
                             text: modelData
-                            color: theme.text
+                            color: theme.ink1
                             font.pixelSize: 14
                             wrapMode: Text.Wrap
                             lineHeight: 1.3
@@ -194,7 +192,7 @@ FocusScope {
                         width: index === welcome.page ? 18 : 6
                         height: 6
                         radius: 3
-                        color: index === welcome.page ? theme.accent : Ui.tint(theme.text, 0.25)
+                        color: index === welcome.page ? theme.accent : Ui.tint(theme.ink1, 0.25)
                         Behavior on width { NumberAnimation { duration: 150 } }
                     }
                 }

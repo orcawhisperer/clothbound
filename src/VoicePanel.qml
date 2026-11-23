@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Controls.Material
 import QtQuick.Layouts
 
 import "Format.js" as Format
@@ -312,9 +311,6 @@ FocusScope {
     Behavior on x { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
     visible: x < parent.width + 20
 
-    Material.theme: look.dark ? Material.Dark : Material.Light
-    Material.accent: look.link
-    Material.roundedScale: theme.radius
 
     Rectangle {
         anchors.fill: parent

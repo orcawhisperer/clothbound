@@ -289,7 +289,8 @@ int main(int argc, char *argv[]) {
         inter.setHintingPreference(QFont::PreferNoHinting);
         QGuiApplication::setFont(inter);
     }
-    QQuickStyle::setStyle("Material");
+    // Dogear's own Controls style (src/style/Dogear), on top of Basic.
+    QQuickStyle::setStyle(QStringLiteral("Dogear"));
 
     Theme theme;
     theme.setAppearance(appearance.value(QStringLiteral("appearance/mode"), QStringLiteral("match")).toString());
@@ -364,6 +365,7 @@ int main(int argc, char *argv[]) {
     }
 
     QQmlApplicationEngine engine;
+    engine.addImportPath(QStringLiteral("qrc:/style"));
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
     QObject::connect(&engine, &QQmlEngine::warnings, [](const QList<QQmlError> &errors) {
         for (const auto &error : errors)

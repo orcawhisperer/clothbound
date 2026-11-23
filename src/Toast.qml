@@ -42,8 +42,8 @@ Rectangle {
     width: Math.min(row.implicitWidth + 36, parent.width - 48)
     height: 48
     radius: Math.min(10, theme.radius)
-    color: theme.surface
-    border.color: Ui.tint(theme.text, 0.1)
+    color: theme.raised
+    border.color: Ui.tint(theme.ink1, 0.1)
 
     Timer {
         id: timer
@@ -59,7 +59,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             width: Math.min(implicitWidth, toast.parent.width - 200)
             text: toast.message
-            color: theme.text
+            color: theme.ink1
             font.pixelSize: 14
             elide: Text.ElideMiddle
         }
@@ -70,7 +70,7 @@ Rectangle {
             focusPolicy: Qt.NoFocus
             contentItem: Label {
                 text: toast.actionText
-                color: theme.accent
+                color: theme.accentInk
                 font.pixelSize: 14
                 font.weight: Font.DemiBold
             }

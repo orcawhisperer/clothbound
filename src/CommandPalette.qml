@@ -426,9 +426,9 @@ FocusScope {
             ? Math.min(Math.max(list.contentHeight, 56), Math.max(200, cmdPalette.height * 0.52))
             : 84
         radius: Math.min(14, theme.radius + 2)
-        color: theme.surface
+        color: theme.raised
         border.width: 1
-        border.color: Ui.tint(theme.text, theme.light ? 0.14 : 0.16)
+        border.color: Ui.tint(theme.ink1, theme.light ? 0.14 : 0.16)
         clip: true
         scale: cmdPalette.open ? 1.0 : 0.97
         Behavior on scale { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
@@ -454,16 +454,16 @@ FocusScope {
                 Layout.preferredWidth: 19
                 Layout.preferredHeight: 19
                 path: Icons.search
-                color: theme.accent
+                color: theme.accentInk
             }
 
             TextInput {
                 id: input
                 Layout.fillWidth: true
                 Layout.alignment: Qt.AlignVCenter
-                color: theme.text
+                color: theme.ink1
                 selectionColor: Ui.tint(theme.accent, 0.35)
-                selectedTextColor: theme.text
+                selectedTextColor: theme.ink1
                 font.pixelSize: 16
                 clip: true
                 selectByMouse: true
@@ -476,7 +476,7 @@ FocusScope {
                     text: cmdPalette.reading
                         ? qsTr("Jump to book, chapter, note, or action…")
                         : qsTr("Search books, notes, or actions…")
-                    color: theme.textTertiary
+                    color: theme.ink3
                     font.pixelSize: 16
                     elide: Text.ElideRight
                 }
@@ -487,7 +487,7 @@ FocusScope {
                 Layout.preferredWidth: 30
                 Layout.preferredHeight: 30
                 glyph: Icons.close
-                tone: theme.textSecondary
+                tone: theme.ink2
                 onClicked: {
                     input.text = ""
                     cmdPalette.rebuild()
@@ -498,7 +498,7 @@ FocusScope {
             Label {
                 Layout.rightMargin: 16
                 text: "Esc"
-                color: theme.textTertiary
+                color: theme.ink3
                 font.pixelSize: 11
                 font.family: "monospace"
                 leftPadding: 6
@@ -507,9 +507,9 @@ FocusScope {
                 bottomPadding: 3
                 background: Rectangle {
                     radius: 4
-                    color: Ui.tint(theme.text, 0.06)
+                    color: Ui.tint(theme.ink1, 0.06)
                     border.width: 1
-                    border.color: Ui.tint(theme.text, 0.1)
+                    border.color: Ui.tint(theme.ink1, 0.1)
                 }
             }
         }
@@ -520,7 +520,7 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             height: 1
-            color: Ui.tint(theme.text, 0.08)
+            color: Ui.tint(theme.ink1, 0.08)
         }
 
         // Empty query-no-match state
@@ -533,7 +533,7 @@ FocusScope {
             verticalAlignment: Text.AlignVCenter
             visible: cmdPalette.results.length === 0
             text: qsTr("No matching books, notes, or commands")
-            color: theme.textSecondary
+            color: theme.ink2
             font.pixelSize: 14
         }
 
@@ -571,7 +571,7 @@ FocusScope {
                     topPadding: rowItem.index === 0 ? 4 : 10
                     bottomPadding: 4
                     text: rowItem.modelData.section
-                    color: theme.textTertiary
+                    color: theme.ink3
                     font.pixelSize: 11
                     font.weight: Font.DemiBold
                     font.capitalization: Font.AllUppercase
@@ -584,7 +584,7 @@ FocusScope {
                     height: 46
                     radius: Math.min(8, theme.radius)
                     color: rowItem.selected ? Ui.tint(theme.accent, theme.light ? 0.16 : 0.22)
-                         : rowHover.hovered ? Ui.tint(theme.text, 0.06) : "transparent"
+                         : rowHover.hovered ? Ui.tint(theme.ink1, 0.06) : "transparent"
 
                     RowLayout {
                         anchors.fill: parent
@@ -624,7 +624,7 @@ FocusScope {
                                 width: 18
                                 height: 18
                                 path: rowItem.modelData.glyph || Icons.book
-                                color: rowItem.selected ? theme.accent : theme.textSecondary
+                                color: rowItem.selected ? theme.accentInk : theme.ink2
                             }
                         }
 
@@ -637,7 +637,7 @@ FocusScope {
                                 Layout.fillWidth: true
                                 text: rowItem.modelData.title || ""
                                 textFormat: Text.PlainText
-                                color: theme.text
+                                color: theme.ink1
                                 font.pixelSize: 14
                                 font.weight: rowItem.selected ? Font.DemiBold : Font.Normal
                                 elide: Text.ElideRight
@@ -647,7 +647,7 @@ FocusScope {
                                 visible: (rowItem.modelData.subtitle || "") !== ""
                                 text: rowItem.modelData.subtitle || ""
                                 textFormat: Text.PlainText
-                                color: theme.textSecondary
+                                color: theme.ink2
                                 font.pixelSize: 12
                                 elide: Text.ElideRight
                             }
@@ -657,7 +657,7 @@ FocusScope {
                             visible: (rowItem.modelData.hint || "") !== ""
                             Layout.alignment: Qt.AlignVCenter
                             text: rowItem.modelData.hint || ""
-                            color: rowItem.selected ? theme.accent : theme.textTertiary
+                            color: rowItem.selected ? theme.accentInk : theme.ink3
                             font.pixelSize: 11
                             font.family: "monospace"
                         }
@@ -681,7 +681,7 @@ FocusScope {
             anchors.left: parent.left
             anchors.right: parent.right
             height: 1
-            color: Ui.tint(theme.text, 0.08)
+            color: Ui.tint(theme.ink1, 0.08)
         }
 
         // Footer hints
@@ -697,14 +697,14 @@ FocusScope {
                 Layout.leftMargin: 16
                 Layout.fillWidth: true
                 text: qsTr("↑ ↓ navigate · ↵ select · > actions · @ notes")
-                color: theme.textTertiary
+                color: theme.ink3
                 font.pixelSize: 11
                 elide: Text.ElideRight
             }
             Label {
                 Layout.rightMargin: 16
                 text: "Ctrl+K"
-                color: theme.textTertiary
+                color: theme.ink3
                 font.pixelSize: 11
                 font.family: "monospace"
             }

@@ -13,8 +13,8 @@ AbstractButton {
     property string hint
     property var look: null
 
-    readonly property color inkColor: look ? (look.fg || look.ink || theme.text) : theme.text
-    readonly property color mutedColor: look ? (look.muted || theme.textTertiary) : theme.textTertiary
+    readonly property color inkColor: look ? (look.fg || look.ink || theme.ink1) : theme.ink1
+    readonly property color mutedColor: look ? (look.muted || theme.ink3) : theme.ink3
     readonly property color accentColor: look ? (look.link || theme.accent) : theme.accent
     readonly property color accentFgColor: look ? Ui.readableOn(accentColor) : theme.accentForeground
 

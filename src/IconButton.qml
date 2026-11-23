@@ -11,8 +11,8 @@ AbstractButton {
     property string tip
     property bool active: false
     property var look: null
-    property color tone: look ? (look.fg || look.ink || theme.text) : theme.text
-    readonly property color accentColor: look ? (look.link || theme.accent) : theme.accent
+    property color tone: look ? (look.fg || look.ink || theme.ink1) : theme.ink1
+    readonly property color accentColor: look ? (look.link || theme.accentInk) : theme.accentInk
 
     implicitWidth: 36
     implicitHeight: 36

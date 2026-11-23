@@ -1,7 +1,6 @@
 import QtCore
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Controls.Material
 import Qt.labs.platform as Platform
 import QtQuick.Layouts
 
@@ -17,11 +16,29 @@ ApplicationWindow {
     minimumHeight: 480
     visible: true
     title: readerOpen ? reader.title + " — Dogear" : "Dogear"
-    color: theme.background
+    color: theme.ground
 
-    Material.theme: theme.light ? Material.Light : Material.Dark
-    Material.accent: theme.accent
-    Material.roundedScale: theme.radius
+    // The Dogear style reads these roles (see src/style/Dogear/README.md);
+    // every control and popup in the window inherits them.
+    palette.window: theme.ground
+    palette.windowText: theme.ink1
+    palette.base: theme.fill
+    palette.alternateBase: theme.fillHover
+    palette.text: theme.ink1
+    palette.placeholderText: theme.ink4
+    palette.button: theme.fill
+    palette.buttonText: theme.ink1
+    palette.mid: theme.ink3
+    palette.midlight: theme.hairline
+    palette.dark: theme.separator
+    palette.light: theme.overlay
+    palette.shadow: theme.shadow
+    palette.highlight: theme.accent
+    palette.highlightedText: theme.accentForeground
+    palette.link: theme.accentInk
+    palette.linkVisited: theme.accentSoft
+    palette.toolTipBase: theme.overlay
+    palette.toolTipText: theme.ink1
 
     property bool geometryReady: false
     property var pendingJump: null
@@ -393,17 +410,17 @@ ApplicationWindow {
         Rectangle {
             anchors.fill: parent
             visible: drop.containsDrag
-            color: Ui.tint(theme.background, 0.88)
+            color: Ui.tint(theme.ground, 0.88)
             border.width: 3
             border.color: theme.accent
             z: 40
             Column {
                 anchors.centerIn: parent
                 spacing: 12
-                Glyph { anchors.horizontalCenter: parent.horizontalCenter; width: 48; height: 48; path: Icons.plus; color: theme.accent; stroke: 1.6 }
+                Glyph { anchors.horizontalCenter: parent.horizontalCenter; width: 48; height: 48; path: Icons.plus; color: theme.accentInk; stroke: 1.6 }
                 Label {
                     text: qsTr("Drop books or folders to add them")
-                    color: theme.text
+                    color: theme.ink1
                     font.pixelSize: 18
                 }
             }

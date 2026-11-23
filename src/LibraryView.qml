@@ -177,9 +177,9 @@ FocusScope {
         background: Rectangle {
             radius: Math.min(15, theme.radius + 6)
             color: chip.active ? Ui.tint(theme.accent, theme.light ? 0.16 : 0.24)
-                 : chip.hovered ? Ui.tint(theme.text, 0.08) : Ui.tint(theme.text, 0.04)
+                 : chip.hovered ? Ui.tint(theme.ink1, 0.08) : Ui.tint(theme.ink1, 0.04)
             border.width: 1
-            border.color: chip.active ? theme.accent : Ui.tint(theme.text, 0.08)
+            border.color: chip.active ? theme.accent : Ui.tint(theme.ink1, 0.08)
             Behavior on color { ColorAnimation { duration: 110 } }
         }
         contentItem: Item {
@@ -191,7 +191,7 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     text: chip.text
                     textFormat: Text.PlainText
-                    color: chip.active ? theme.accent : theme.text
+                    color: chip.active ? theme.accentInk : theme.ink1
                     font.pixelSize: 12
                     font.weight: chip.active ? Font.DemiBold : Font.Normal
                 }
@@ -200,7 +200,7 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     text: chip.badge
                     textFormat: Text.PlainText
-                    color: chip.active ? theme.accent : theme.textTertiary
+                    color: chip.active ? theme.accentInk : theme.ink3
                     font.pixelSize: 11
                 }
             }
@@ -227,7 +227,7 @@ FocusScope {
 
             Label {
                 text: qsTr("Library")
-                color: theme.text
+                color: theme.ink1
                 font.family: "Literata"
                 font.pixelSize: 24
                 font.weight: Font.DemiBold
@@ -237,7 +237,7 @@ FocusScope {
                 Layout.alignment: Qt.AlignBaseline
                 visible: library.bookCount > 0
                 text: qsTr("%n books", "", library.bookCount)
-                color: theme.textTertiary
+                color: theme.ink3
                 font.pixelSize: 13
             }
             Item { Layout.fillWidth: true }
@@ -266,21 +266,21 @@ FocusScope {
                 focusPolicy: Qt.NoFocus
                 background: Rectangle {
                     radius: Math.min(8, theme.radius)
-                    color: sortButton.hovered || sortMenu.opened ? Ui.tint(theme.text, 0.08) : "transparent"
+                    color: sortButton.hovered || sortMenu.opened ? Ui.tint(theme.ink1, 0.08) : "transparent"
                 }
                 contentItem: Item {
                     Row {
                         id: sortRow
                         anchors.centerIn: parent
                         spacing: 6
-                        Glyph { anchors.verticalCenter: parent.verticalCenter; width: 18; height: 18; path: Icons.sort; color: theme.textSecondary }
+                        Glyph { anchors.verticalCenter: parent.verticalCenter; width: 18; height: 18; path: Icons.sort; color: theme.ink2 }
                         Label {
                             anchors.verticalCenter: parent.verticalCenter
                             text: view.sortLabel(library.works.sortOrder)
-                            color: theme.text
+                            color: theme.ink1
                             font.pixelSize: 13
                         }
-                        Glyph { anchors.verticalCenter: parent.verticalCenter; width: 14; height: 14; path: Icons.chevronDown; color: theme.textTertiary }
+                        Glyph { anchors.verticalCenter: parent.verticalCenter; width: 14; height: 14; path: Icons.chevronDown; color: theme.ink3 }
                     }
                 }
                 onClicked: sortMenu.opened ? sortMenu.close() : sortMenu.open()
@@ -298,8 +298,8 @@ FocusScope {
                     onClosed: view.focusGrid()
                     background: Rectangle {
                         radius: Math.min(10, theme.radius)
-                        color: theme.surface
-                        border.color: Ui.tint(theme.text, 0.1)
+                        color: theme.raised
+                        border.color: Ui.tint(theme.ink1, 0.1)
                     }
                     contentItem: Column {
                         spacing: 2
@@ -312,7 +312,7 @@ FocusScope {
                                 onClicked: { library.works.sortOrder = modelData; sortMenu.close() }
                             }
                         }
-                        Rectangle { width: parent.width; height: 1; color: Ui.tint(theme.text, 0.08) }
+                        Rectangle { width: parent.width; height: 1; color: Ui.tint(theme.ink1, 0.08) }
                         MenuRow {
                             text: qsTr("Group editions")
                             hint: "G"
@@ -431,7 +431,7 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 1
                     height: 16
-                    color: Ui.tint(theme.text, 0.14)
+                    color: Ui.tint(theme.ink1, 0.14)
                 }
 
                 FilterChip {
@@ -468,7 +468,7 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     width: 1
                     height: 16
-                    color: Ui.tint(theme.text, 0.14)
+                    color: Ui.tint(theme.ink1, 0.14)
                 }
 
                 Repeater {
@@ -512,7 +512,7 @@ FocusScope {
             height: 1
             readonly property real scrollY: view.viewMode === "list"
                 ? (listView.contentY - listView.originY) : (grid.contentY - grid.originY)
-            color: Ui.tint(theme.text, scrollY > 4 ? 0.08 : 0.04)
+            color: Ui.tint(theme.ink1, scrollY > 4 ? 0.08 : 0.04)
         }
     }
 
@@ -525,8 +525,8 @@ FocusScope {
         onClosed: view.focusGrid()
         background: Rectangle {
             radius: Math.min(10, theme.radius)
-            color: theme.surface
-            border.color: Ui.tint(theme.text, 0.1)
+            color: theme.raised
+            border.color: Ui.tint(theme.ink1, 0.1)
         }
         contentItem: Column {
             spacing: 2
@@ -540,7 +540,7 @@ FocusScope {
                     seriesMenu.close()
                 }
             }
-            Rectangle { width: parent.width; height: 1; color: Ui.tint(theme.text, 0.08) }
+            Rectangle { width: parent.width; height: 1; color: Ui.tint(theme.ink1, 0.08) }
             Repeater {
                 model: library.works.seriesList
                 delegate: MenuRow {
@@ -558,7 +558,7 @@ FocusScope {
                 visible: library.works.seriesFilter !== ""
                 width: parent.width
                 height: 1
-                color: Ui.tint(theme.text, 0.08)
+                color: Ui.tint(theme.ink1, 0.08)
             }
             MenuRow {
                 visible: library.works.seriesFilter !== ""
@@ -582,8 +582,8 @@ FocusScope {
         onClosed: view.focusGrid()
         background: Rectangle {
             radius: Math.min(10, theme.radius)
-            color: theme.surface
-            border.color: Ui.tint(theme.text, 0.1)
+            color: theme.raised
+            border.color: Ui.tint(theme.ink1, 0.1)
         }
         contentItem: Column {
             spacing: 2
@@ -619,7 +619,7 @@ FocusScope {
         z: 2
         text: library.scanTotal > 0 ? qsTr("Reading %1 of %2 books…").arg(library.scanDone).arg(library.scanTotal)
                                     : qsTr("Looking for books…")
-        color: theme.textTertiary
+        color: theme.ink3
         font.pixelSize: 12
     }
 
@@ -670,7 +670,7 @@ FocusScope {
                 text: (library.works.searchText !== "" || library.works.hasActiveFilters)
                       ? qsTr("%n matches", "", library.works.count)
                       : library.works.grouped ? qsTr("All books · %n works", "", library.works.count) : qsTr("All books")
-                color: theme.text
+                color: theme.ink1
                 font.pixelSize: 15
                 font.weight: Font.DemiBold
                 bottomPadding: 4
@@ -730,7 +730,7 @@ FocusScope {
                 text: (library.works.searchText !== "" || library.works.hasActiveFilters)
                       ? qsTr("%n matches", "", library.works.count)
                       : library.works.grouped ? qsTr("All books · %n works", "", library.works.count) : qsTr("All books")
-                color: theme.text
+                color: theme.ink1
                 font.pixelSize: 15
                 font.weight: Font.DemiBold
                 bottomPadding: 4
@@ -764,7 +764,7 @@ FocusScope {
                 anchors.fill: parent
                 radius: Math.min(8, theme.radius)
                 color: listRow.selected ? Ui.tint(theme.accent, theme.light ? 0.14 : 0.2)
-                     : rowHover.hovered ? Ui.tint(theme.text, 0.05) : "transparent"
+                     : rowHover.hovered ? Ui.tint(theme.ink1, 0.05) : "transparent"
                 border.width: listRow.selected ? 1 : 0
                 border.color: theme.accent
             }
@@ -794,7 +794,7 @@ FocusScope {
                             Layout.fillWidth: true
                             text: listRow.title
                             textFormat: Text.PlainText
-                            color: listRow.problem !== "" ? theme.textTertiary : theme.text
+                            color: listRow.problem !== "" ? theme.ink3 : theme.ink1
                             font.pixelSize: 14
                             font.weight: Font.DemiBold
                             elide: Text.ElideRight
@@ -805,7 +805,7 @@ FocusScope {
                                 ? (listRow.series + " #" + (Math.floor(listRow.seriesIndex) === listRow.seriesIndex ? Math.floor(listRow.seriesIndex) : listRow.seriesIndex))
                                 : listRow.series
                             textFormat: Text.PlainText
-                            color: theme.accent
+                            color: theme.accentInk
                             font.pixelSize: 11
                             leftPadding: 7
                             rightPadding: 7
@@ -833,7 +833,7 @@ FocusScope {
                             return parts.join(" · ")
                         }
                         textFormat: Text.PlainText
-                        color: listRow.problem !== "" ? (theme.colors.red || "#e06c75") : theme.textSecondary
+                        color: listRow.problem !== "" ? (theme.colors.red || "#e06c75") : theme.ink2
                         font.pixelSize: 12
                         elide: Text.ElideRight
                     }
@@ -842,7 +842,7 @@ FocusScope {
                 // Format badge
                 Label {
                     text: listRow.format.toUpperCase()
-                    color: theme.textTertiary
+                    color: theme.ink3
                     font.pixelSize: 10
                     font.weight: Font.Bold
                     font.letterSpacing: 0.5
@@ -852,7 +852,7 @@ FocusScope {
                     bottomPadding: 3
                     background: Rectangle {
                         radius: 4
-                        color: Ui.tint(theme.text, 0.06)
+                        color: Ui.tint(theme.ink1, 0.06)
                     }
                 }
 
@@ -870,7 +870,7 @@ FocusScope {
                             Layout.preferredHeight: 14
                             stroke: 2.3
                             path: Icons.check
-                            color: theme.accent
+                            color: theme.accentInk
                         }
                         Label {
                             text: {
@@ -881,7 +881,7 @@ FocusScope {
                                     return qsTr("%1%").arg(Math.round(listRow.progress * 100).toLocaleString(Qt.locale(), "f", 0))
                                 return qsTr("Unread")
                             }
-                            color: listRow.finished ? theme.accent : theme.textSecondary
+                            color: listRow.finished ? theme.accentInk : theme.ink2
                             font.pixelSize: 12
                             font.weight: listRow.finished ? Font.DemiBold : Font.Normal
                         }
@@ -892,7 +892,7 @@ FocusScope {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 4
                         radius: 2
-                        color: Ui.tint(theme.text, 0.12)
+                        color: Ui.tint(theme.ink1, 0.12)
                         Rectangle {
                             width: parent.width * listRow.progress
                             height: parent.height
@@ -905,7 +905,7 @@ FocusScope {
                         visible: listRow.progress > 0.005 && !listRow.finished && listRow.minutesLeft > 0
                         Layout.alignment: Qt.AlignRight
                         text: Format.duration(listRow.minutesLeft)
-                        color: theme.textTertiary
+                        color: theme.ink3
                         font.pixelSize: 11
                     }
                 }
@@ -946,7 +946,7 @@ FocusScope {
             text: library.works.searchText !== ""
                 ? qsTr("No books match “%1”").arg(library.works.searchText)
                 : qsTr("No books match these filters")
-            color: theme.textSecondary
+            color: theme.ink2
             font.pixelSize: 15
         }
         TextButton {
@@ -1015,8 +1015,8 @@ FocusScope {
             width: Math.min(parent.width - 48, 540)
             height: Math.min(parent.height - 64, foldersCol.implicitHeight + 48)
             radius: Math.min(12, theme.radius)
-            color: theme.background
-            border.color: Ui.tint(theme.text, 0.12)
+            color: theme.ground
+            border.color: Ui.tint(theme.ink1, 0.12)
 
             MouseArea {
                 anchors.fill: parent
@@ -1032,11 +1032,11 @@ FocusScope {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: Icons.folder; color: theme.accent }
+                    Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: Icons.folder; color: theme.accentInk }
                     Label {
                         Layout.fillWidth: true
                         text: qsTr("Watched folders")
-                        color: theme.text
+                        color: theme.ink1
                         font.family: "Literata"
                         font.pixelSize: 20
                         font.weight: Font.DemiBold
@@ -1051,7 +1051,7 @@ FocusScope {
                 Label {
                     Layout.fillWidth: true
                     text: qsTr("Dogear scans these folders for EPUB and PDF books automatically. Book files are never modified.")
-                    color: theme.textSecondary
+                    color: theme.ink2
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
                 }
@@ -1062,7 +1062,7 @@ FocusScope {
                     Layout.bottomMargin: 8
                     visible: library.folders.length === 0
                     text: qsTr("No watched folders yet. Add a folder to keep your library in sync automatically.")
-                    color: theme.textTertiary
+                    color: theme.ink3
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
                 }
@@ -1083,8 +1083,8 @@ FocusScope {
                         width: ListView.view.width
                         height: 54
                         radius: Math.min(8, theme.radius)
-                        color: Ui.tint(theme.text, 0.04)
-                        border.color: Ui.tint(theme.text, 0.08)
+                        color: Ui.tint(theme.ink1, 0.04)
+                        border.color: Ui.tint(theme.ink1, 0.08)
 
                         RowLayout {
                             anchors.fill: parent
@@ -1092,7 +1092,7 @@ FocusScope {
                             anchors.rightMargin: 8
                             spacing: 10
 
-                            Glyph { Layout.preferredWidth: 18; Layout.preferredHeight: 18; path: Icons.folder; color: theme.textSecondary }
+                            Glyph { Layout.preferredWidth: 18; Layout.preferredHeight: 18; path: Icons.folder; color: theme.ink2 }
 
                             ColumnLayout {
                                 Layout.fillWidth: true
@@ -1101,7 +1101,7 @@ FocusScope {
                                     Layout.fillWidth: true
                                     text: view.folderBasename(folderRow.modelData)
                                     textFormat: Text.PlainText
-                                    color: theme.text
+                                    color: theme.ink1
                                     font.pixelSize: 13
                                     font.weight: Font.DemiBold
                                     elide: Text.ElideRight
@@ -1110,7 +1110,7 @@ FocusScope {
                                     Layout.fillWidth: true
                                     text: folderRow.modelData
                                     textFormat: Text.PlainText
-                                    color: theme.textTertiary
+                                    color: theme.ink3
                                     font.pixelSize: 11
                                     elide: Text.ElideMiddle
                                 }
@@ -1118,7 +1118,7 @@ FocusScope {
 
                             IconButton {
                                 glyph: Icons.trash
-                                tone: theme.textSecondary
+                                tone: theme.ink2
                                 tip: qsTr("Stop watching folder (files stay on disk)")
                                 onClicked: {
                                     const p = folderRow.modelData
@@ -1205,8 +1205,8 @@ FocusScope {
             width: Math.min(parent.width - 48, 580)
             height: Math.min(parent.height - 64, statsCol.implicitHeight + 48)
             radius: Math.min(12, theme.radius)
-            color: theme.background
-            border.color: Ui.tint(theme.text, 0.12)
+            color: theme.ground
+            border.color: Ui.tint(theme.ink1, 0.12)
 
             MouseArea {
                 anchors.fill: parent
@@ -1222,11 +1222,11 @@ FocusScope {
 
                 RowLayout {
                     Layout.fillWidth: true
-                    Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: view.statsIcon; color: theme.accent }
+                    Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: view.statsIcon; color: theme.accentInk }
                     Label {
                         Layout.fillWidth: true
                         text: qsTr("Reading stats")
-                        color: theme.text
+                        color: theme.ink1
                         font.family: "Literata"
                         font.pixelSize: 20
                         font.weight: Font.DemiBold
@@ -1253,8 +1253,8 @@ FocusScope {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 82
                         radius: Math.min(10, theme.radius)
-                        color: Ui.tint(theme.text, 0.04)
-                        border.color: Ui.tint(theme.text, 0.07)
+                        color: Ui.tint(theme.ink1, 0.04)
+                        border.color: Ui.tint(theme.ink1, 0.07)
 
                         ColumnLayout {
                             anchors.fill: parent
@@ -1262,12 +1262,12 @@ FocusScope {
                             spacing: 2
                             Label {
                                 text: tile.label
-                                color: theme.textTertiary
+                                color: theme.ink3
                                 font.pixelSize: 12
                             }
                             Label {
                                 text: tile.value
-                                color: theme.text
+                                color: theme.ink1
                                 font.family: "Literata"
                                 font.pixelSize: 21
                                 font.weight: Font.DemiBold
@@ -1275,7 +1275,7 @@ FocusScope {
                             Label {
                                 visible: text !== ""
                                 text: tile.detail
-                                color: theme.textSecondary
+                                color: theme.ink2
                                 font.pixelSize: 11
                             }
                         }
@@ -1324,7 +1324,7 @@ FocusScope {
 
                     Label {
                         text: qsTr("Last 14 days")
-                        color: theme.textSecondary
+                        color: theme.ink2
                         font.pixelSize: 13
                         font.weight: Font.DemiBold
                     }
@@ -1333,8 +1333,8 @@ FocusScope {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 116
                         radius: Math.min(10, theme.radius)
-                        color: Ui.tint(theme.text, 0.03)
-                        border.color: Ui.tint(theme.text, 0.07)
+                        color: Ui.tint(theme.ink1, 0.03)
+                        border.color: Ui.tint(theme.ink1, 0.07)
 
                         RowLayout {
                             anchors.fill: parent
@@ -1363,7 +1363,7 @@ FocusScope {
                                         width: Math.min(20, parent.width - 2)
                                         height: dayBar.secs > 0 ? Math.max(5, (parent.height - 24) * dayBar.ratio) : 3
                                         radius: 3
-                                        color: dayBar.secs > 0 ? theme.accent : Ui.tint(theme.text, 0.12)
+                                        color: dayBar.secs > 0 ? theme.accent : Ui.tint(theme.ink1, 0.12)
                                         opacity: barHover.hovered ? 1.0 : (dayBar.secs > 0 ? 0.85 : 0.5)
                                     }
 
@@ -1372,7 +1372,7 @@ FocusScope {
                                         anchors.bottom: parent.bottom
                                         anchors.horizontalCenter: parent.horizontalCenter
                                         text: (dayBar.modelData.shortLabel || "").slice(0, 2)
-                                        color: dayBar.index === 13 ? theme.text : theme.textTertiary
+                                        color: dayBar.index === 13 ? theme.ink1 : theme.ink3
                                         font.pixelSize: 10
                                         font.weight: dayBar.index === 13 ? Font.DemiBold : Font.Normal
                                     }
@@ -1451,8 +1451,8 @@ FocusScope {
             width: Math.min(parent.width - 48, 380)
             height: dialogCol.implicitHeight + 40
             radius: Math.min(12, theme.radius)
-            color: theme.background
-            border.color: Ui.tint(theme.text, 0.12)
+            color: theme.ground
+            border.color: Ui.tint(theme.ink1, 0.12)
 
             ColumnLayout {
                 id: dialogCol
@@ -1462,7 +1462,7 @@ FocusScope {
 
                 Label {
                     text: collectionDialog.editingId > 0 ? qsTr("Rename shelf") : qsTr("New shelf")
-                    color: theme.text
+                    color: theme.ink1
                     font.pixelSize: 16
                     font.weight: Font.DemiBold
                 }
@@ -1471,7 +1471,7 @@ FocusScope {
                     Layout.fillWidth: true
                     Layout.preferredHeight: 38
                     radius: Math.min(8, theme.radius)
-                    color: Ui.tint(theme.text, 0.06)
+                    color: Ui.tint(theme.ink1, 0.06)
                     border.width: 1.5
                     border.color: theme.accent
 
@@ -1481,7 +1481,7 @@ FocusScope {
                         anchors.leftMargin: 12
                         anchors.rightMargin: 12
                         verticalAlignment: TextInput.AlignVCenter
-                        color: theme.text
+                        color: theme.ink1
                         font.pixelSize: 14
                         selectByMouse: true
                         Keys.onReturnPressed: collectionDialog.submit()
@@ -1492,7 +1492,7 @@ FocusScope {
                             verticalAlignment: Text.AlignVCenter
                             visible: colNameInput.text === ""
                             text: qsTr("e.g. Favorites, Science Fiction…")
-                            color: theme.textTertiary
+                            color: theme.ink3
                             font: colNameInput.font
                         }
                     }
