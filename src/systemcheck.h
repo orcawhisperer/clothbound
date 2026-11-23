@@ -20,6 +20,8 @@ class SystemCheck : public QObject {
     Q_PROPERTY(QVariantMap machine READ machine NOTIFY changed)
     // {feature, verdict, level ("good", "slow", "no"), detail}
     Q_PROPERTY(QVariantList verdicts READ verdicts NOTIFY changed)
+    // Compact 3-row summary for Settings › Intelligence: {feature, detail, level}.
+    Q_PROPERTY(QVariantList summaryVerdicts READ summaryVerdicts NOTIFY changed)
     Q_PROPERTY(QString tier READ tier NOTIFY changed)
     Q_PROPERTY(QString recommendation READ recommendation NOTIFY changed)
 
@@ -54,6 +56,7 @@ public:
     bool running() const { return m_running; }
     QVariantMap machine() const;
     QVariantList verdicts() const { return m_verdicts; }
+    QVariantList summaryVerdicts() const { return m_summaryVerdicts; }
     QString tier() const { return tierFor(m_machine); }
     QString recommendation() const { return m_recommendation; }
 
@@ -71,6 +74,7 @@ signals:
     void changed();
 
 private:
+    void rebuildSummary();
     void startBenchmark(int generation);
     void measureModel(int generation);
     void finish(int generation);
@@ -86,6 +90,7 @@ private:
     double m_promptRate = 0;
     double m_answerRate = 0;
     QVariantList m_verdicts;
+    QVariantList m_summaryVerdicts;
     QString m_recommendation;
     QPointer<Ai::Reply> m_reply;
     QElapsedTimer m_clock;

@@ -208,7 +208,7 @@ public:
 struct ImageRequest {
     QString feature = QStringLiteral("illustrate");
     QString prompt;
-    QString aspectRatio = QStringLiteral("3:4");
+    QString aspectRatio = QStringLiteral("4:3");
 };
 
 class ImageGenerator {

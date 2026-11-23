@@ -48,9 +48,69 @@ QString samplePassage() {
 }  // namespace
 
 SystemCheck::SystemCheck(AiServices *ai, LocalSpeech *speech, QObject *parent)
-    : QObject(parent), m_ai(ai), m_speech(speech) {}
+    : QObject(parent), m_ai(ai), m_speech(speech) {
+    if (m_ai) {
+        auto refreshSummary = [this] {
+            if (!m_inspected)
+                return;
+            rebuildSummary();
+            emit changed();
+        };
+        connect(m_ai, &AiServices::routingChanged, this, refreshSummary);
+        connect(m_ai, &AiServices::changed, this, refreshSummary);
+    }
+}
 
 SystemCheck::~SystemCheck() { cancel(); }
+
+void SystemCheck::rebuildSummary() {
+    QVariantList rows;
+    auto add = [&rows](const QString &feature, const QString &detail, const QString &level) {
+        rows.append(QVariantMap{{QStringLiteral("feature"), feature},
+                                {QStringLiteral("detail"), detail},
+                                {QStringLiteral("level"), level}});
+    };
+
+    // 1. Narration
+    if (m_voiceSpeed >= 1.2)
+        add(tr("Narration"), tr("%1× faster than real time").arg(m_voiceSpeed, 0, 'f', 1), QStringLiteral("good"));
+    else if (m_voiceSpeed > 0)
+        add(tr("Narration"), tr("%1× real time · prepares ahead").arg(m_voiceSpeed, 0, 'f', 1), QStringLiteral("slow"));
+    else if (m_machine.memoryGb >= 7.5)
+        add(tr("Narration"), tr("runs on this computer"), QStringLiteral("good"));
+    else if (m_machine.memoryGb > 0)
+        add(tr("Narration"), tr("may be slow here"), QStringLiteral("slow"));
+    else
+        add(tr("Narration"), tr("not measured yet"), QStringLiteral("no"));
+
+    // 2. Define, translate
+    const double quick = (m_promptRate > 0 && m_answerRate > 0) ? (1700.0 / m_promptRate + 200.0 / m_answerRate) : 0.0;
+    const bool hasLocal = m_ai && m_ai->hasLocal();
+    if (quick > 0 && quick <= 8.0)
+        add(tr("Define, translate"), tr("a few seconds"), QStringLiteral("good"));
+    else if (quick > 0)
+        add(tr("Define, translate"), tr("about %n s", "", qRound(quick)),
+            quick > 30.0 ? QStringLiteral("slow") : QStringLiteral("good"));
+    else if (hasLocal)
+        add(tr("Define, translate"), tr("a few seconds"), QStringLiteral("good"));
+    else if (m_machine.memoryGb >= 15 || m_machine.graphicsMemoryGb >= 6)
+        add(tr("Define, translate"), tr("ready with a local model"), QStringLiteral("good"));
+    else if (m_machine.memoryGb >= 7.5)
+        add(tr("Define, translate"), tr("slower here · fast with Gemini"), QStringLiteral("slow"));
+    else
+        add(tr("Define, translate"), tr("needs Gemini"), QStringLiteral("slow"));
+
+    // 3. Ask the whole book
+    const bool wholeBookLocal = m_machine.memoryGb >= 30 || m_machine.graphicsMemoryGb >= 16 ||
+                                (m_machine.graphics == QLatin1String("Apple") && m_machine.memoryGb >= 23);
+    if (wholeBookLocal)
+        add(tr("Ask the whole book"), hasLocal ? tr("runs on this computer") : tr("ready with a 9B+ model"),
+            QStringLiteral("good"));
+    else
+        add(tr("Ask the whole book"), tr("needs Gemini or 32 GB"), QStringLiteral("slow"));
+
+    m_summaryVerdicts = rows;
+}
 
 void SystemCheck::refresh() {
     if (m_inspected || m_inspecting)
@@ -67,6 +127,7 @@ void SystemCheck::refresh() {
                 self->m_machine = found;
                 self->m_inspected = true;
                 self->m_inspecting = false;
+                self->rebuildSummary();
                 emit self->changed();
             },
             Qt::QueuedConnection);
@@ -417,6 +478,7 @@ void SystemCheck::finish(int generation) {
     if (generation != m_generation)
         return;
     m_verdicts = judge(m_voiceSpeed, m_promptRate, m_answerRate);
+    rebuildSummary();
     const QString tierName = tierFor(m_machine);
     if (m_ai->hasLocal() && m_ai->hasKey())
         m_recommendation = tr("Hybrid: quick work on this computer, careful work with Gemini.");

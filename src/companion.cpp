@@ -85,6 +85,28 @@ QString makeExcerpt(const QString &text, qsizetype maxChars = 120) {
     return clean.left(cut).trimmed() + QChar(0x2026);
 }
 
+QString makeChipQuote(const QString &text) {
+    QString clean = text.simplified();
+    static const QRegularExpression leadTrim(QStringLiteral("^[^\\p{L}\\p{N}]+"));
+    clean.remove(leadTrim);
+    if (clean.isEmpty())
+        return {};
+    const QStringList words = clean.split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    QString out;
+    int taken = 0;
+    for (const QString &word : words) {
+        if (taken > 0 && (taken >= 5 || out.size() + 1 + word.size() > 28))
+            break;
+        if (!out.isEmpty())
+            out += QLatin1Char(' ');
+        out += word;
+        ++taken;
+    }
+    static const QRegularExpression trailTrim(QStringLiteral("[,;:\\-—\"'“”‘’()\\[\\]]+$"));
+    out.remove(trailTrim);
+    return out.trimmed();
+}
+
 QList<Companion::Citation> citationsFromHits(const QList<PassageIndex::Hit> &hits,
                                              const QList<Companion::Chapter> &chapters, const QString &format,
                                              int maxCount = 4) {
@@ -102,7 +124,9 @@ QList<Companion::Citation> citationsFromHits(const QList<PassageIndex::Hit> &hit
         Companion::Citation cite;
         cite.chapter = hit.passage.chapter;
         cite.offset = hit.passage.start;
-        cite.label = chapterDisplayLabel(chapters, hit.passage.chapter, format);
+        const QString place = chapterDisplayLabel(chapters, hit.passage.chapter, format);
+        const QString quote = makeChipQuote(hit.passage.text);
+        cite.label = quote.isEmpty() ? place : QStringLiteral("%1 · “%2”").arg(place, quote);
         cite.excerpt = makeExcerpt(hit.passage.text);
         out.append(cite);
         if (out.size() >= maxCount)
@@ -309,6 +333,7 @@ Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConn
             m_peopleWhere.clear();
         } else {
             m_where = m_peopleWhere;
+            m_whereLocal = m_peopleWhere.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
         }
         emit changed();
     });
@@ -329,7 +354,25 @@ void Companion::ensureTables() {
         " from_user INTEGER NOT NULL,"
         " text TEXT NOT NULL,"
         " sources TEXT NOT NULL DEFAULT '[]',"
+        " provenance TEXT NOT NULL DEFAULT '',"
+        " is_local INTEGER NOT NULL DEFAULT 0,"
         " created_at INTEGER NOT NULL)"));
+    bool hasProvenance = false;
+    bool hasIsLocal = false;
+    QSqlQuery info(db);
+    if (info.exec(QStringLiteral("PRAGMA table_info(companion_threads)"))) {
+        while (info.next()) {
+            const QString col = info.value(1).toString();
+            if (col == QLatin1String("provenance"))
+                hasProvenance = true;
+            else if (col == QLatin1String("is_local"))
+                hasIsLocal = true;
+        }
+    }
+    if (!hasProvenance)
+        query.exec(QStringLiteral("ALTER TABLE companion_threads ADD COLUMN provenance TEXT NOT NULL DEFAULT ''"));
+    if (!hasIsLocal)
+        query.exec(QStringLiteral("ALTER TABLE companion_threads ADD COLUMN is_local INTEGER NOT NULL DEFAULT 0"));
     query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS companion_threads_book ON companion_threads (book_id, seq)"));
     query.exec(QStringLiteral(
         "CREATE TABLE IF NOT EXISTS companion_whoswho ("
@@ -359,8 +402,10 @@ void Companion::loadBookState(int bookId) {
         return;
     loadConversation(bookId);
     if (loadWhosWhoSnapshot(bookId, m_reader->chapter(), m_reader->pageEnd(), m_reader->pageStart(), false) &&
-        m_where.isEmpty())
+        m_where.isEmpty()) {
         m_where = m_peopleWhere;
+        m_whereLocal = m_peopleWhere.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
+    }
 }
 
 void Companion::saveConversation(int bookId) {
@@ -379,12 +424,15 @@ void Companion::saveConversation(int bookId) {
         const Turn &turn = m_conversation[i];
         QSqlQuery ins(db);
         ins.prepare(QStringLiteral(
-            "INSERT INTO companion_threads (book_id, seq, from_user, text, sources, created_at) VALUES (?, ?, ?, ?, ?, ?)"));
+            "INSERT INTO companion_threads (book_id, seq, from_user, text, sources, provenance, is_local, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"));
         ins.addBindValue(bookId);
         ins.addBindValue(i);
         ins.addBindValue(turn.fromUser ? 1 : 0);
-        ins.addBindValue(turn.text);
+        ins.addBindValue(turn.text.isNull() ? QStringLiteral("") : turn.text);
         ins.addBindValue(QString::fromUtf8(QJsonDocument(citationsToJson(turn.sources)).toJson(QJsonDocument::Compact)));
+        ins.addBindValue(turn.provenance.isNull() ? QStringLiteral("") : turn.provenance);
+        ins.addBindValue(turn.local ? 1 : 0);
         ins.addBindValue(now);
         ok = ins.exec();
     }
@@ -401,7 +449,8 @@ void Companion::loadConversation(int bookId) {
         return;
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
-        "SELECT from_user, text, sources FROM companion_threads WHERE book_id = ? ORDER BY seq ASC, id ASC"));
+        "SELECT from_user, text, sources, provenance, is_local FROM companion_threads "
+        "WHERE book_id = ? ORDER BY seq ASC, id ASC"));
     query.addBindValue(bookId);
     if (!query.exec())
         return;
@@ -410,6 +459,8 @@ void Companion::loadConversation(int bookId) {
         turn.fromUser = query.value(0).toInt() != 0;
         turn.text = query.value(1).toString();
         turn.sources = citationsFromJson(query.value(2).toString().toUtf8());
+        turn.provenance = query.value(3).toString();
+        turn.local = query.value(4).toInt() != 0;
         m_conversation.append(std::move(turn));
     }
 }
@@ -532,8 +583,63 @@ QVariantList Companion::conversation() const {
     for (const Turn &turn : m_conversation) {
         out.append(QVariantMap{{QStringLiteral("fromUser"), turn.fromUser},
                                {QStringLiteral("text"), turn.text},
-                               {QStringLiteral("sources"), citationsToVariant(turn.sources)}});
+                               {QStringLiteral("sources"), citationsToVariant(turn.sources)},
+                               {QStringLiteral("provenance"), turn.provenance},
+                               {QStringLiteral("local"), turn.local}});
     }
+    return out;
+}
+
+QStringList Companion::suggestions() const {
+    QStringList askedLower;
+    for (const Turn &turn : m_conversation)
+        if (turn.fromUser)
+            askedLower.append(turn.text.trimmed().toLower());
+
+    QStringList out;
+    auto addIfFresh = [&](const QString &prompt) {
+        const QString clean = prompt.trimmed();
+        if (clean.isEmpty() || out.size() >= 2)
+            return;
+        const QString low = clean.toLower();
+        for (const QString &prev : askedLower)
+            if (prev == low)
+                return;
+        if (!out.contains(clean, Qt::CaseInsensitive))
+            out.append(clean);
+    };
+
+    // 1. Character prompt from already-loaded spoiler-safe Who's who entries.
+    for (const QVariant &entry : m_people) {
+        const QString name = entry.toMap().value(QStringLiteral("name")).toString().trimmed();
+        if (!name.isEmpty()) {
+            const QString candidate = tr("Who is %1?").arg(name);
+            const QString lowName = name.toLower();
+            bool mentioned = false;
+            for (const QString &prev : askedLower) {
+                if (prev.contains(lowName)) {
+                    mentioned = true;
+                    break;
+                }
+            }
+            if (!mentioned) {
+                addIfFresh(candidate);
+                break;
+            }
+        }
+    }
+
+    // 2. Chapter-specific prompt when a readable chapter title is present.
+    if (m_reader) {
+        const QString chapterTitle = m_reader->chapterTitle().trimmed();
+        if (!chapterTitle.isEmpty() && chapterTitle.size() <= 40)
+            addIfFresh(tr("What has happened in %1 so far?").arg(chapterTitle));
+    }
+
+    // 3. Clean general fallbacks grounded in what has been read so far.
+    addIfFresh(tr("Who are the key people so far?"));
+    addIfFresh(tr("Summarize what has happened so far"));
+    addIfFresh(tr("What should I remember from the last few pages?"));
     return out;
 }
 
@@ -718,6 +824,28 @@ bool Companion::cloudFor(const QString &feature) const {
     return provider && provider->id() != QLatin1String("local");
 }
 
+QString Companion::formatProvenance(const Ai::Provider *provider, const Ai::Reply *reply) const {
+    if (!provider)
+        return m_where;
+    if (provider->isLocal()) {
+        const QString rawModel = reply && !reply->model().isEmpty() ? reply->model() : m_ai->localTextModel();
+        const QString title = AiServices::friendlyModelTitle(rawModel);
+        return title.isEmpty() ? tr("On this computer · %1").arg(provider->name())
+                               : tr("On this computer · %1").arg(title);
+    }
+    if (provider->id() == QLatin1String("local")) {
+        const QString rawModel = reply && !reply->model().isEmpty() ? reply->model() : m_ai->localTextModel();
+        const QString title = AiServices::friendlyModelTitle(rawModel);
+        return title.isEmpty() ? tr("Sent to %1").arg(provider->name())
+                               : tr("Sent to %1 · %2").arg(provider->name(), title);
+    }
+    const double dollars = reply ? AiUsageLedger::cost(reply->model(), reply->usage(), QDate::currentDate(), false) : 0.0;
+    const QString costText = dollars < 0.01 ? tr("less than 1¢")
+                           : dollars < 1.0  ? tr("about %1¢").arg(qMax(1, qRound(dollars * 100)))
+                                            : QStringLiteral("$%1").arg(dollars, 0, 'f', 2);
+    return tr("Gemini · sent to Google · %1").arg(costText);
+}
+
 qint64 Companion::localCharBudget(const QString &feature, bool fast, qint64 fallbackChars, double charsPerToken) const {
     Ai::TextModel *model = m_ai->textFor(feature);
     const int ctxTokens = model ? model->contextWindow(fast) : 0;
@@ -765,6 +893,7 @@ void Companion::begin(const QString &feature, const QString &subject) {
     m_problem.clear();
     m_busy = true;
     m_where = m_ai->whereFor(feature);
+    m_whereLocal = (m_ai->routeFor(feature) == QLatin1String("local") && m_ai->localIsLoopback());
     m_status = tr("Thinking…");
     emit changed();
     emit answerChanged();
@@ -780,7 +909,7 @@ void Companion::rollbackPendingTurn() {
         return;
     m_pendingUserTurn = false;
     if (!m_answer.trimmed().isEmpty()) {
-        m_conversation.append({false, m_answer, m_currentSources});
+        m_conversation.append({false, m_answer, m_currentSources, m_where, m_whereLocal});
         m_currentSources.clear();
         saveConversation(m_reader->bookId());
         emit conversationChanged();
@@ -857,6 +986,7 @@ void Companion::run(const QString &feature, const Ai::TextRequest &request, std:
         return;
     }
     m_where = m_ai->whereFor(feature);
+    m_whereLocal = provider->isLocal();
     Ai::Reply *reply = model->generate(request);
     m_ai->track(reply);
     m_reply = reply;
@@ -880,6 +1010,8 @@ void Companion::run(const QString &feature, const Ai::TextRequest &request, std:
         }
         if (m_answer.isEmpty() && reply->result().isEmpty())
             m_answer = reply->text();
+        m_where = formatProvenance(providerGuard, reply);
+        m_whereLocal = providerGuard && providerGuard->isLocal();
         if (done)
             done(reply);
         if (m_problem.isEmpty()) {
@@ -954,7 +1086,8 @@ void Companion::define(const QString &word, int chapter, qint64 offset) {
                     const QStringList entries = (status == QProcess::NormalExit && code == 0) ? parseSdcvJson(output, wanted) : QStringList();
                     if (!entries.isEmpty()) {
                         m_answer = entries.join(QStringLiteral("\n\n"));
-                        m_where = tr("From your dictionary");
+                        m_where = tr("Dictionary on this computer");
+                        m_whereLocal = true;
                         m_busy = false;
                         emit answerChanged();
                         emit changed();
@@ -1109,7 +1242,7 @@ void Companion::ask(const QString &question) {
             return;
         }
     }
-    m_conversation.append({true, asked, {}});
+    m_conversation.append({true, asked, {}, {}, false});
     m_pendingUserTurn = true;
     emit conversationChanged();
     emit answerChanged();
@@ -1180,7 +1313,7 @@ void Companion::ask(const QString &question) {
                               finalSources =
                                   citationsFromHits(PassageIndex::byWords(passages, m_answer, 3), chapters, format, 3);
                           }
-                          m_conversation.append({false, m_answer, finalSources});
+                          m_conversation.append({false, m_answer, finalSources, m_where, m_whereLocal});
                           m_currentSources.clear();
                           saveConversation(bookId);
                           emit conversationChanged();
@@ -1336,12 +1469,14 @@ void Companion::runWhosWho(bool forceRefresh) {
                                  (key == m_peopleKey || !m_people.isEmpty());
         if (memoryValid) {
             m_where = m_peopleWhere.isEmpty() ? where : m_peopleWhere;
+            m_whereLocal = m_where.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
             m_busy = false;
             emit changed();
             return;
         }
         if (loadWhosWhoSnapshot(bookId, chapter, pageEnd, pageStart, true)) {
             m_where = m_peopleWhere.isEmpty() ? where : m_peopleWhere;
+            m_whereLocal = m_where.contains(QLatin1String("this computer"), Qt::CaseInsensitive);
             m_busy = false;
             emit changed();
             return;

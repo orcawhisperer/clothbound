@@ -44,6 +44,7 @@ class Companion : public QObject {
     Q_PROPERTY(QString problem READ problem NOTIFY changed)
     // Where the answer was made, in a few words.
     Q_PROPERTY(QString where READ where NOTIFY changed)
+    Q_PROPERTY(bool whereLocal READ whereLocal NOTIFY changed)
 
 public:
     struct Chapter {
@@ -61,6 +62,8 @@ public:
         bool fromUser = true;
         QString text;
         QList<Citation> sources;
+        QString provenance;
+        bool local = false;
     };
 
     Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent = nullptr);
@@ -81,6 +84,7 @@ public:
     QString status() const { return m_status; }
     QString problem() const { return m_problem; }
     QString where() const { return m_where; }
+    bool whereLocal() const { return m_whereLocal; }
 
     // A word, as used at (chapter, offset).
     Q_INVOKABLE void define(const QString &word, int chapter, qint64 offset);
@@ -100,6 +104,8 @@ public:
     Q_INVOKABLE void clearBookHistory(int bookId = 0);
     // What asking would send and cost: {where, words, cost, local}.
     Q_INVOKABLE QVariantMap askEstimate() const;
+    // Spoiler-safe, zero-cost starter prompts derived from what the reader has reached.
+    Q_INVOKABLE QStringList suggestions() const;
     // Strips Markdown image embeds and raw <img> tags before rendering LLM prose.
     Q_INVOKABLE QString sanitizeMarkdown(const QString &text) const { return cleanMarkdown(text); }
 
@@ -142,6 +148,7 @@ private:
     QString bookLine() const;
     QString placeTitle(int chapter) const;
     bool cloudFor(const QString &feature) const;
+    QString formatProvenance(const Ai::Provider *provider, const Ai::Reply *reply) const;
     void runWhosWho(bool forceRefresh);
 
     AiServices *m_ai;
@@ -162,6 +169,7 @@ private:
     QString m_status;
     QString m_problem;
     QString m_where;
+    bool m_whereLocal = false;
     QString m_targetLanguage;
     QString m_lastTranslateText;
     int m_lastTranslateChapter = 0;
