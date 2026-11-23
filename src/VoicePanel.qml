@@ -1093,30 +1093,24 @@ FocusScope {
                 }
 
                 // Where the voice comes from: made here, Gemini, or Studio.
-                RowLayout {
+                Segmented {
                     Layout.fillWidth: true
                     Layout.topMargin: 6
-                    spacing: 8
                     visible: voicePacks.supported || ai.localSpeechModel !== ""
-                    Choice {
-                        Layout.preferredWidth: 1
-                        visible: voicePacks.supported
-                        text: qsTr("On this computer")
-                        selected: panel.source === "builtin"
-                        onClicked: panel.source = "builtin"
+                    model: {
+                        const sources = []
+                        if (voicePacks.supported)
+                            sources.push({ value: "builtin", label: qsTr("On this computer") })
+                        sources.push({ value: "gemini", label: qsTr("Gemini") })
+                        if (ai.localSpeechModel !== "")
+                            sources.push({ value: "studio", label: qsTr("Studio") })
+                        return sources
                     }
-                    Choice {
-                        Layout.preferredWidth: 1
-                        text: qsTr("Gemini")
-                        selected: panel.source === "gemini"
-                        onClicked: panel.source = "gemini"
-                    }
-                    Choice {
-                        Layout.preferredWidth: 1
-                        visible: ai.localSpeechModel !== ""
-                        text: qsTr("Studio")
-                        selected: panel.source === "studio"
-                        onClicked: { panel.source = "studio"; voices.loadStudioVoices() }
+                    current: panel.source
+                    onActivated: (value) => {
+                        panel.source = value
+                        if (value === "studio")
+                            voices.loadStudioVoices()
                     }
                 }
                 Note {
