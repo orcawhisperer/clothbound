@@ -17,6 +17,7 @@
 #include "cli.h"
 #include "library.h"
 #include "libraryfinder.h"
+#include "libraryindex.h"
 #include "narration.h"
 #include "voicecatalog.h"
 #include "mpris.h"
@@ -366,6 +367,17 @@ int main(int argc, char *argv[]) {
     }
 
     LibraryFinder libraryFinder;
+    // Every book's words, searchable from the palette, read in gently after
+    // start-up and after each scan.
+    LibraryIndex libraryIndex;
+    auto indexLibrary = [&library, &libraryIndex] {
+        QList<LibraryIndex::Source> books;
+        for (const BookRecord &r : library.visibleRecords())
+            books.append({r.id, r.path, r.format, r.mtime});
+        libraryIndex.update(books);
+    };
+    QObject::connect(&library, &Library::scanFinished, &libraryIndex, [indexLibrary] { indexLibrary(); });
+    QTimer::singleShot(8000, &libraryIndex, indexLibrary);
     QQmlApplicationEngine engine;
     engine.addImportPath(QStringLiteral("qrc:/style"));
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
@@ -377,6 +389,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("theme", &theme);
     engine.rootContext()->setContextProperty("library", &library);
     engine.rootContext()->setContextProperty("libraryFinder", &libraryFinder);
+    engine.rootContext()->setContextProperty("libraryIndex", &libraryIndex);
     engine.rootContext()->setContextProperty("picker", &picker);
     engine.rootContext()->setContextProperty("reader", &reader);
     engine.rootContext()->setContextProperty("ai", &ai);

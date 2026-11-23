@@ -100,6 +100,26 @@ ColumnLayout {
     }
 
     SettingsCard {
+        title: qsTr("Search inside books")
+        description: libraryIndex.available
+                     ? qsTr("Every book's words, kept on this computer so the palette (Ctrl+K) finds a passage in any book.")
+                     : qsTr("This computer's SQLite has no full-text search (FTS5), so the palette searches titles, authors and notes only.")
+        SettingsRow {
+            visible: libraryIndex.available
+            title: libraryIndex.indexing
+                   ? qsTr("Reading books in · %1 of %2").arg(libraryIndex.done.toLocaleString(Qt.locale(), 'f', 0))
+                                                         .arg(libraryIndex.total.toLocaleString(Qt.locale(), 'f', 0))
+                   : qsTr("%n books searchable", "", libraryIndex.bookCount)
+            description: qsTr("%1 MB, in the cache; it can always be built again.").arg(Math.max(0.1, libraryIndex.megabytes).toLocaleString(Qt.locale(), 'f', 1))
+            TextButton {
+                text: qsTr("Rebuild")
+                enabled: !libraryIndex.indexing
+                onClicked: libraryIndex.rebuild()
+            }
+        }
+    }
+
+    SettingsCard {
         title: qsTr("What's new")
         description: qsTr("Dogear %1. See what changed in this version.").arg(Qt.application.version)
         RowLayout {

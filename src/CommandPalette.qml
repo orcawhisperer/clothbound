@@ -43,6 +43,13 @@ FocusScope {
         rebuild()
         input.forceActiveFocus()
     }
+    // Opens with something already typed, as from the library's search field.
+    function search(text) {
+        show()
+        input.text = text
+        input.cursorPosition = text.length
+        rebuild()
+    }
 
     function close() {
         if (!open)
@@ -225,7 +232,7 @@ FocusScope {
                 const a = matchedActions[i].item
                 out.push({
                     kind: "action",
-                    section: qsTr("Actions"),
+                    section: qsTr("Do"),
                     actionId: a.id,
                     title: a.title,
                     subtitle: a.subtitle,
@@ -304,6 +311,27 @@ FocusScope {
             }
         }
 
+        // The words of every book, from the library index.
+        if (mode === "all" && q.length >= 3 && libraryIndex.available) {
+            const found = libraryIndex.search(q, 6)
+            for (const hit of found) {
+                const book = library.book(hit.bookId)
+                if (!book.id)
+                    continue
+                out.push({
+                    kind: "text",
+                    section: qsTr("In your books"),
+                    bookId: hit.bookId,
+                    chapter: hit.chapter,
+                    offset: hit.offset,
+                    title: hit.snippet.replace(/[‹›]/g, ""),
+                    subtitle: book.title,
+                    hint: hit.bookId === reader.bookId && reading ? qsTr("Here") : "",
+                    glyph: Icons.search,
+                })
+            }
+        }
+
         // 4. Cross-book & current-book highlights and notes
         if (mode === "all" || mode === "marks") {
             const hits = q === "" ? cachedMarks : marks.searchAll(q, mode === "marks" ? 30 : 8)
@@ -350,7 +378,7 @@ FocusScope {
             openBook(item.bookId)
         else if (item.kind === "chapter")
             jumpChapter(item.chapter, item.fragment)
-        else if (item.kind === "mark")
+        else if (item.kind === "mark" || item.kind === "text")
             jumpMark(item.bookId, item.chapter, item.offset)
         else if (item.kind === "target")
             jumpTarget(item.target)

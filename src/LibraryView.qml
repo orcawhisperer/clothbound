@@ -21,6 +21,9 @@ FocusScope {
     readonly property bool collectionDialogOpen: collectionDialog.open
     readonly property bool menuOpen: sortMenu.opened || seriesMenu.opened || filterMenu.opened || moreMenu.opened
     property bool sidebarCollapsed: false
+    // What's typed in the search field; Ctrl+K takes it to the palette, which
+    // also searches inside every book.
+    readonly property string searchText: search.text
     function toggleSidebar() { sidebarCollapsed = !sidebarCollapsed }
     // The toolbar names what the grid shows: a shelf, a collection, or a search.
     readonly property string sectionTitle: {
