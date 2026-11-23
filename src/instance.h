@@ -4,16 +4,21 @@
 #include <QCryptographicHash>
 #include <QDBusConnection>
 #include <QDBusMessage>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocalSocket>
 #include <QObject>
 #include <QPointer>
-#include <QProcess>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QString>
+#include <QTimer>
 #include <QWindow>
+#include <functional>
+#include <memory>
 
 // One Dogear per library: opening it again (from the launcher, a terminal, or
 // a book file) brings back the one already running, hidden in the background
@@ -59,23 +64,22 @@ public:
     }
 
     void setWindow(QWindow *window) { m_window = window; }
+    void setHyprSocketForTesting(const QString &socketPath) { m_hyprSocketOverride = socketPath; }
 
     // Shows the window to the user: a hidden one comes back where they are,
-    // and one open elsewhere (another workspace) is gone to.
+    // and one open elsewhere (another workspace) is gone to. Never mutates
+    // process environment (setenv after threads start is POSIX UB).
     Q_INVOKABLE void bringBack(const QString &token = {}) {
+        Q_UNUSED(token);
         if (!m_window)
             return;
         const bool wasShown = m_window->isVisible();
-        // The launcher's token lets the compositor hand the window focus.
-        if (!token.isEmpty())
-            qputenv("XDG_ACTIVATION_TOKEN", token.toUtf8());
         m_window->setWindowStates(m_window->windowStates() & ~Qt::WindowMinimized);
         m_window->show();
         m_window->raise();
         m_window->requestActivate();
         // Shown again, the window is new to the compositor, which focuses it;
-        // one already open needs Hyprland asked, as Omarchy's own
-        // launch-or-focus does.
+        // one already open needs Hyprland asked asynchronously over its IPC socket.
         if (wasShown)
             focusOnHyprland();
     }
@@ -99,33 +103,89 @@ public slots:
 private:
     static QString path() { return QStringLiteral("/app/dogear/Reader"); }
 
-    static void focusOnHyprland() {
-        if (QGuiApplication::platformName() != QLatin1String("wayland") ||
-            !qEnvironmentVariableIsSet("HYPRLAND_INSTANCE_SIGNATURE"))
-            return;
-        const auto hyprctl = [](const QStringList &arguments) {
-            QProcess process;
-            process.start(QStringLiteral("hyprctl"), arguments);
-            if (!process.waitForFinished(1500) || process.exitCode() != 0)
-                return QByteArray();
-            return process.readAllStandardOutput();
+    QString hyprSocketPath() const {
+        if (!m_hyprSocketOverride.isEmpty())
+            return m_hyprSocketOverride;
+        if (QGuiApplication::platformName() != QLatin1String("wayland"))
+            return {};
+        const QString signature = qEnvironmentVariable("HYPRLAND_INSTANCE_SIGNATURE");
+        if (signature.isEmpty())
+            return {};
+        const QString runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
+        if (!runtime.isEmpty()) {
+            const QString socket = runtime + QStringLiteral("/hypr/") + signature + QStringLiteral("/.socket.sock");
+            if (QFileInfo::exists(socket))
+                return socket;
+        }
+        const QString legacy = QStringLiteral("/tmp/hypr/") + signature + QStringLiteral("/.socket.sock");
+        return QFileInfo::exists(legacy) ? legacy : QString();
+    }
+
+    void sendHyprCommand(const QString &socketPath, const QByteArray &command,
+                         std::function<void(const QByteArray &)> done) {
+        auto *socket = new QLocalSocket(this);
+        auto buffer = std::make_shared<QByteArray>();
+        auto handled = std::make_shared<bool>(false);
+        auto *timeout = new QTimer(socket);
+        timeout->setSingleShot(true);
+        timeout->setInterval(1500);
+        auto finish = [socket, buffer, handled, timeout, done = std::move(done)]() {
+            if (*handled)
+                return;
+            *handled = true;
+            timeout->stop();
+            const QByteArray reply = *buffer;
+            socket->deleteLater();
+            if (done)
+                done(reply);
         };
-        QString address;
-        const QJsonArray clients = QJsonDocument::fromJson(hyprctl({QStringLiteral("clients"), QStringLiteral("-j")})).array();
-        for (const QJsonValue &client : clients)
-            if (client[QLatin1String("pid")].toInteger() == QCoreApplication::applicationPid()) {
-                address = client[QLatin1String("address")].toString();
-                break;
-            }
-        if (address.isEmpty())
+        connect(timeout, &QTimer::timeout, socket, [socket, finish] {
+            socket->abort();
+            finish();
+        });
+        connect(socket, &QLocalSocket::connected, socket, [socket, command] {
+            socket->write(command);
+            socket->flush();
+        });
+        connect(socket, &QLocalSocket::readyRead, socket, [socket, buffer] { *buffer += socket->readAll(); });
+        connect(socket, &QLocalSocket::disconnected, this, finish);
+        connect(socket, &QLocalSocket::errorOccurred, this, [socket, finish](QLocalSocket::LocalSocketError err) {
+            if (err == QLocalSocket::PeerClosedError)
+                return;
+            socket->abort();
+            finish();
+        });
+        timeout->start();
+        socket->connectToServer(socketPath);
+    }
+
+    void focusOnHyprland() {
+        const QString socketPath = hyprSocketPath();
+        if (socketPath.isEmpty())
             return;
-        // Newer Hyprland takes its dispatchers in Lua, older releases in the
-        // classic form; Omarchy's launch-or-focus tries them in this order.
-        const QByteArray answer = hyprctl(
-            {QStringLiteral("dispatch"), QStringLiteral("hl.dsp.focus({ window = \"address:%1\" })").arg(address)});
-        if (answer.trimmed() != "ok")
-            hyprctl({QStringLiteral("dispatch"), QStringLiteral("focuswindow"), QStringLiteral("address:") + address});
+        sendHyprCommand(socketPath, QByteArrayLiteral("j/clients"), [this, socketPath](const QByteArray &reply) {
+            QString address;
+            const QJsonArray clients = QJsonDocument::fromJson(reply).array();
+            for (const QJsonValue &client : clients) {
+                if (client[QLatin1String("pid")].toInteger() == QCoreApplication::applicationPid()) {
+                    address = client[QLatin1String("address")].toString();
+                    break;
+                }
+            }
+            static const QRegularExpression validAddr(QStringLiteral("^0x[0-9a-fA-F]+$"));
+            if (!validAddr.match(address).hasMatch())
+                return;
+            // Newer Hyprland takes its dispatchers in Lua, older releases in the
+            // classic form; try Lua first and fall back to focuswindow asynchronously.
+            const QByteArray lua =
+                QByteArrayLiteral("dispatch hl.dsp.focus({ window = \"address:") + address.toUtf8() + QByteArrayLiteral("\" })");
+            sendHyprCommand(socketPath, lua, [this, socketPath, address](const QByteArray &answer) {
+                if (answer.trimmed() != "ok")
+                    sendHyprCommand(socketPath, QByteArrayLiteral("dispatch focuswindow address:") + address.toUtf8(), {});
+            });
+        });
     }
 
     QPointer<QWindow> m_window;
+    QString m_hyprSocketOverride;
 };

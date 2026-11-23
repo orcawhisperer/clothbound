@@ -23,19 +23,68 @@
  "%1 of %2 ready": "تم إعداد %1 من %2",
  "%1 theme": "سمة %1",
  "%1 · %2%": "%1 · %2%",
- "%1 · %n min of audio": "%1 · %n دقيقة من الصوت",
- "%1 · %n requests": "%1 · %n طلب",
- "%1 · the book so far, about %Ln words · about %2 a question": "%1 · الكتاب حتى الآن، حوالي %Ln كلمة · حوالي %2 لكل سؤال",
+ "%1 · %n min of audio": {
+  "zero": "%1 · %n دقيقة من الصوت",
+  "one": "%1 · %n دقيقة من الصوت",
+  "two": "%1 · %n دقيقة من الصوت",
+  "few": "%1 · %n دقيقة من الصوت",
+  "many": "%1 · %n دقيقة من الصوت",
+  "other": "%1 · %n دقيقة من الصوت"
+ },
+ "%1 · %n requests": {
+  "zero": "%1 · %n طلب",
+  "one": "%1 · %n طلب",
+  "two": "%1 · %n طلب",
+  "few": "%1 · %n طلب",
+  "many": "%1 · %n طلب",
+  "other": "%1 · %n طلب"
+ },
+ "%1 · the book so far, about %Ln words · about %2 a question": {
+  "zero": "%1 · الكتاب حتى الآن، حوالي %Ln كلمة · حوالي %2 لكل سؤال",
+  "one": "%1 · الكتاب حتى الآن، حوالي %Ln كلمة · حوالي %2 لكل سؤال",
+  "two": "%1 · الكتاب حتى الآن، حوالي %Ln كلمة · حوالي %2 لكل سؤال",
+  "few": "%1 · الكتاب حتى الآن، حوالي %Ln كلمة · حوالي %2 لكل سؤال",
+  "many": "%1 · الكتاب حتى الآن، حوالي %Ln كلمة · حوالي %2 لكل سؤال",
+  "other": "%1 · الكتاب حتى الآن، حوالي %Ln كلمة · حوالي %2 لكل سؤال"
+ },
  "%1 · the passages that matter, found in the book so far": "%1 · المقاطع المهمة التي تم العثور عليها في الكتاب حتى الآن",
  "%1%": "%1%",
  "%1% read": "تم قراءة %1%",
  "%1% · %2 left": "%1% · متبقي %2",
  "%1× faster than real time: plays as you listen": "أسرع بـ %1× من الوقت الفعلي: يتم التشغيل أثناء استماعك",
  "%1× real time here": "%1× من الوقت الفعلي هنا",
- "%Ln found": "تم العثور على %Ln",
- "%Ln marks": "%Ln علامة",
- "%n books": "%n كتب",
- "%n chapters": "%n فصول",
+ "%Ln found": {
+  "zero": "تم العثور على %Ln",
+  "one": "تم العثور على %Ln",
+  "two": "تم العثور على %Ln",
+  "few": "تم العثور على %Ln",
+  "many": "تم العثور على %Ln",
+  "other": "تم العثور على %Ln"
+ },
+ "%Ln marks": {
+  "zero": "%Ln علامة",
+  "one": "%Ln علامة",
+  "two": "%Ln علامة",
+  "few": "%Ln علامة",
+  "many": "%Ln علامة",
+  "other": "%Ln علامة"
+ },
+ "%n books": {
+  "zero": "%n كتب",
+  "one": "%n كتب",
+  "two": "%n كتب",
+  "few": "%n كتب",
+  "many": "%n كتب",
+  "other": "%n كتب"
+ },
+ "%n chapters": {
+  "zero": "%n فصول",
+  "one": "%n فصول",
+  "two": "%n فصول",
+  "few": "%n فصول",
+  "many": "%n فصول",
+  "other": "%n فصول"
+ },
  "%n cores": {
   "zero": "0 نواة",
   "one": "نواة %n واحدة",
@@ -44,9 +93,30 @@
   "many": "%n نواةً",
   "other": "%n نواة"
  },
- "%n editions": "%n إصدارات",
- "%n matches": "%n مطابقة",
- "%n pages": "%n صفحات",
+ "%n editions": {
+  "zero": "%n إصدارات",
+  "one": "%n إصدارات",
+  "two": "%n إصدارات",
+  "few": "%n إصدارات",
+  "many": "%n إصدارات",
+  "other": "%n إصدارات"
+ },
+ "%n matches": {
+  "zero": "%n مطابقة",
+  "one": "%n مطابقة",
+  "two": "%n مطابقة",
+  "few": "%n مطابقة",
+  "many": "%n مطابقة",
+  "other": "%n مطابقة"
+ },
+ "%n pages": {
+  "zero": "%n صفحات",
+  "one": "%n صفحات",
+  "two": "%n صفحات",
+  "few": "%n صفحات",
+  "many": "%n صفحات",
+  "other": "%n صفحات"
+ },
  ", and . skip a paragraph, < and > change the speed. Close the window and the reading goes on.": ", و . لتجاوز فقرة، و < و > لتغيير السرعة. أغلق النافذة وسيستمر القراءة.",
  "40%": "40%",
  "87, or 40%": "87، أو 40%",
@@ -88,11 +158,25 @@
  "Add the folder your books are in, and new ones there join by themselves.": "أضف المجلد الذي توجد فيه كتبك، وسينضم أي كتاب جديد تلقائياً.",
  "Add your Gemini key to use this.": "أضف مفتاح Gemini الخاص بك لاستخدام هذا.",
  "Add your key": "إضافة مفتاحك",
- "Added %n books": "تمت إضافة %n كتابًا",
+ "Added %n books": {
+  "zero": "تمت إضافة %n كتابًا",
+  "one": "تمت إضافة %n كتابًا",
+  "two": "تمت إضافة %n كتابًا",
+  "few": "تمت إضافة %n كتابًا",
+  "many": "تمت إضافة %n كتابًا",
+  "other": "تمت إضافة %n كتابًا"
+ },
  "Again": "مرة أخرى",
  "All": "الكل",
  "All books": "جميع الكتب",
- "All books · %n works": "جميع الكتب · %n عملًا",
+ "All books · %n works": {
+  "zero": "جميع الكتب · %n عملًا",
+  "one": "جميع الكتب · %n عملًا",
+  "two": "جميع الكتب · %n عملًا",
+  "few": "جميع الكتب · %n عملًا",
+  "many": "جميع الكتب · %n عملًا",
+  "other": "جميع الكتب · %n عملًا"
+ },
  "All files": "جميع الملفات",
  "Already run llama.cpp, LM Studio, MLX or vLLM? Start it, then Find, or give its address below.": "هل شغّلت مسبقاً llama.cpp أو LM Studio أو MLX أو vLLM؟ شغله ثم اضغط بحث، أو أدخل عنوانه أدناه.",
  "An even, clear reading with no direction. Good for study and reference.": "قراءة منتظمة وواضحة بدون توجيه. جيدة للدراسة والمرجع.",
@@ -261,7 +345,14 @@
  "Illustrate this page": "توضيح هذه الصفحة",
  "Illustrations": "الرسوم التوضيحية",
  "Imagining the picture…": "جاري تخيل الصورة...",
- "In %n minutes": "خلال %n دقائق",
+ "In %n minutes": {
+  "zero": "خلال %n دقائق",
+  "one": "خلال %n دقائق",
+  "two": "خلال %n دقائق",
+  "few": "خلال %n دقائق",
+  "many": "خلال %n دقائق",
+  "other": "خلال %n دقائق"
+ },
  "Install Ollama": "تثبيت Ollama",
  "Install Ollama, llama.cpp or LM Studio with a model such as %1, then Find again.": "قم بتثبيت Ollama أو llama.cpp أو LM Studio مع نموذج مثل %1، ثم ابحث مجددًا.",
  "Install one in the Narrator panel (V).": "قم بتثبيت واحد من لوحة الراوي (V).",
@@ -449,7 +540,14 @@
  "Show Dogear": "إظهار Dogear",
  "Show file": "إظهار الملف",
  "Show these shortcuts": "إظهار هذه الاختصارات",
- "Showing the first %Ln. A few more words will narrow it down.": "عرض أول %Ln. ستساعد بضع كلمات أخرى في تضييق نطاق البحث.",
+ "Showing the first %Ln. A few more words will narrow it down.": {
+  "zero": "عرض أول %Ln. ستساعد بضع كلمات أخرى في تضييق نطاق البحث.",
+  "one": "عرض أول %Ln. ستساعد بضع كلمات أخرى في تضييق نطاق البحث.",
+  "two": "عرض أول %Ln. ستساعد بضع كلمات أخرى في تضييق نطاق البحث.",
+  "few": "عرض أول %Ln. ستساعد بضع كلمات أخرى في تضييق نطاق البحث.",
+  "many": "عرض أول %Ln. ستساعد بضع كلمات أخرى في تضييق نطاق البحث.",
+  "other": "عرض أول %Ln. ستساعد بضع كلمات أخرى في تضييق نطاق البحث."
+ },
  "Size": "الحجم",
  "Skip": "تخطي",
  "Sleep timer": "مؤقت السكون",
@@ -471,7 +569,14 @@
  "Stop listening (⇧P)": "إيقاف الاستماع (⇧P)",
  "Stop using it": "التوقف عن استخدامه",
  "Stopping at the end of the chapter": "الإيقاف عند نهاية الفصل",
- "Stopping in %n min": "الإيقاف خلال %n دقيقة",
+ "Stopping in %n min": {
+  "zero": "الإيقاف خلال %n دقيقة",
+  "one": "الإيقاف خلال %n دقيقة",
+  "two": "الإيقاف خلال %n دقيقة",
+  "few": "الإيقاف خلال %n دقيقة",
+  "many": "الإيقاف خلال %n دقيقة",
+  "other": "الإيقاف خلال %n دقيقة"
+ },
  "Studio": "Studio",
  "Studio voice, made on this computer": "صوت من Studio، مُنشأ على هذا الحاسوب",
  "Style": "الأسلوب",

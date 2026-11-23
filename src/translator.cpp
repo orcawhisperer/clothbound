@@ -46,8 +46,9 @@ QString Translator::readLanguage(const QString &path) {
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return "en";
-    const QString code = QString::fromUtf8(file.readLine()).trimmed();
-    static const QRegularExpression valid("^[a-z]{2,3}(-[A-Za-z]{2})?$");
+    QString code = QString::fromUtf8(file.readLine()).trimmed();
+    code.replace(QLatin1Char('_'), QLatin1Char('-'));
+    static const QRegularExpression valid("^[a-z]{2,3}(-[A-Za-z]{2,4})*$");
     return valid.match(code).hasMatch() ? code : "en";
 }
 
@@ -65,7 +66,7 @@ QString Translator::pluralCategory(const QString &language, long long count) {
     if (in({"ja", "ko", "zh-CN", "zh-TW", "th", "vi", "id", "ms"})) return "other";
     if (in({"hi", "bn", "fa", "si"})) return n <= 1 ? "one" : "other";
     if (in({"fr", "pt-BR"})) return n <= 1 ? "one" : millions ? "many" : "other";
-    if (in({"ca", "es-MX", "it", "pt"})) return n == 1 ? "one" : millions ? "many" : "other";
+    if (in({"ca", "es", "es-MX", "it", "pt"})) return n == 1 ? "one" : millions ? "many" : "other";
     if (code == "fil") return (n10 == 4 || n10 == 6 || n10 == 9) ? "other" : "one";
     if (code == "is") return n10 == 1 && n100 != 11 ? "one" : "other";
     if (in({"cs", "sk"})) return n == 1 ? "one" : n >= 2 && n <= 4 ? "few" : "other";
@@ -89,12 +90,15 @@ QString Translator::pluralCategory(const QString &language, long long count) {
 // app's numbers and dates match the desktop's (Arabic there uses Western
 // digits); without Omarchy, Qt's own locale for the code.
 QLocale Translator::formatLocale(const QString &language) {
-    QFile registry(qEnvironmentVariable("OMARCHY_PATH") + "/default/i18n/locales.json");
-    if (registry.open(QIODevice::ReadOnly)) {
-        const QString name = QJsonDocument::fromJson(registry.readAll()).object()
-                                 .value(language).toObject().value("formatLocale").toString();
-        if (!name.isEmpty())
-            return QLocale(name);
+    const QString omarchyPath = qEnvironmentVariable("OMARCHY_PATH");
+    if (!omarchyPath.isEmpty()) {
+        QFile registry(omarchyPath + "/default/i18n/locales.json");
+        if (registry.open(QIODevice::ReadOnly)) {
+            const QString name = QJsonDocument::fromJson(registry.readAll()).object()
+                                     .value(language).toObject().value("formatLocale").toString();
+            if (!name.isEmpty())
+                return QLocale(name);
+        }
     }
     return QLocale(language);
 }
@@ -108,8 +112,12 @@ QString Translator::translate(const char *, const char *sourceText, const char *
         return value.toString();
     if (value.isObject()) {
         const QJsonObject forms = value.toObject();
-        const QString form = forms.value(n < 0 ? "other" : pluralCategory(entry.language, n)).toString();
-        return form.isEmpty() ? forms.value("other").toString() : form;
+        QString form = forms.value(n < 0 ? "other" : pluralCategory(entry.language, n)).toString();
+        if (form.isEmpty())
+            form = forms.value("other").toString();
+        if (form.isEmpty())
+            form = forms.value("many").toString();
+        return form.isEmpty() ? QString() : form;
     }
     return {};
 }

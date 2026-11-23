@@ -2,8 +2,9 @@
 
 #include <QFileSystemWatcher>
 #include <QHash>
+#include <QLocalSocket>
 #include <QObject>
-#include <QProcess>
+#include <QPointer>
 #include <QTimer>
 #include <QVariantMap>
 
@@ -29,7 +30,7 @@ class Theme : public QObject {
     Q_PROPERTY(QVariantMap colors READ colors NOTIFY changed)
 
 public:
-    explicit Theme(const QString &currentDirectory = {}, QObject *parent = nullptr, const QString &hyprctl = {});
+    explicit Theme(const QString &currentDirectory = {}, QObject *parent = nullptr, const QString &hyprSocketDir = {});
     ~Theme() override;
 
     QString accent() const { return color("accent"); }
@@ -54,8 +55,10 @@ public:
     static QHash<QString, QString> readPalette(const QString &path);
     // Kept from the template: just the accent, with the yellow fallback.
     static QString readAccent(const QString &path);
-    // The palette used when Omarchy isn't installed: a quiet dark one.
+    // The palette used when Omarchy isn't installed (or dark themes omit keys).
     static QHash<QString, QString> fallbackPalette();
+    // Fallback values for light themes that omit optional palette keys.
+    static QHash<QString, QString> fallbackLightPalette();
     // Black or white, whichever reads on `color` (WCAG relative luminance).
     static QString readableOn(const QString &color);
 
@@ -64,6 +67,7 @@ signals:
 
 private:
     void reload();
+    void connectHyprEvents();
     void refreshRounding();
 
     QString m_directory;
@@ -72,8 +76,9 @@ private:
     bool m_omarchy = false;
     QFileSystemWatcher m_watcher;
     QTimer m_debounce;
-    QString m_hyprctl;
+    QString m_hyprSocketDir;
     int m_radius = 0;
-    QProcess m_roundingProcess;
-    QTimer m_roundingPoll, m_roundingTimeout;
+    QLocalSocket m_eventSocket;
+    QByteArray m_eventBuffer;
+    QPointer<QLocalSocket> m_roundingSocket;
 };

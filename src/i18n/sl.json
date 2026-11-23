@@ -45,8 +45,18 @@
  "%1% · %2 left": "%1% · še %2",
  "%1× faster than real time: plays as you listen": "%1× hitreje kot v realnem času: predvaja se med poslušanjem",
  "%1× real time here": "%1× realnega časa tukaj",
- "%Ln found": "Najdenih %Ln",
- "%Ln marks": "%Ln zaznamkov",
+ "%Ln found": {
+  "one": "Najdenih %Ln",
+  "two": "Najdenih %Ln",
+  "few": "Najdenih %Ln",
+  "other": "Najdenih %Ln"
+ },
+ "%Ln marks": {
+  "one": "%Ln zaznamkov",
+  "two": "%Ln zaznamkov",
+  "few": "%Ln zaznamkov",
+  "other": "%Ln zaznamkov"
+ },
  "%n books": {
   "one": "%n knjiga",
   "two": "%n knjigi",
@@ -71,7 +81,12 @@
   "few": "%n izdaje",
   "other": "%n izdaj"
  },
- "%n matches": "%n zadetkov",
+ "%n matches": {
+  "one": "%n zadetkov",
+  "two": "%n zadetkov",
+  "few": "%n zadetkov",
+  "other": "%n zadetkov"
+ },
  "%n pages": {
   "one": "%n stran",
   "two": "%n strani",
@@ -115,11 +130,21 @@
  "Add the folder your books are in, and new ones there join by themselves.": "Dodaj mapo, v kateri so tvoje knjige, in nove se bodo samodejno pridružile.",
  "Add your Gemini key to use this.": "Če želite to uporabiti, dodajte svoj ključ Gemini.",
  "Add your key": "Dodaj ključ",
- "Added %n books": "Dodanih je %n knjig",
+ "Added %n books": {
+  "one": "Dodanih je %n knjig",
+  "two": "Dodanih je %n knjig",
+  "few": "Dodanih je %n knjig",
+  "other": "Dodanih je %n knjig"
+ },
  "Again": "Ponovno",
  "All": "Vse",
  "All books": "Vse knjige",
- "All books · %n works": "Vse knjige · %n del",
+ "All books · %n works": {
+  "one": "Vse knjige · %n del",
+  "two": "Vse knjige · %n del",
+  "few": "Vse knjige · %n del",
+  "other": "Vse knjige · %n del"
+ },
  "All files": "Vse datoteke",
  "Already run llama.cpp, LM Studio, MLX or vLLM? Start it, then Find, or give its address below.": "Si že zagnal llama.cpp, LM Studio, MLX ali vLLM? Zaženi ga, nato klikni »Najdi« ali spodaj vnesi njegov naslov.",
  "An even, clear reading with no direction. Good for study and reference.": "Enakomerno, jasno branje brez dodatnih usmeritev. Dobro za učenje in referenco.",
@@ -288,7 +313,12 @@
  "Illustrate this page": "Ilustriraj to stran",
  "Illustrations": "Ilustracije",
  "Imagining the picture…": "Oblikujem sliko v mislih…",
- "In %n minutes": "Čez %n minut",
+ "In %n minutes": {
+  "one": "Čez %n minut",
+  "two": "Čez %n minut",
+  "few": "Čez %n minut",
+  "other": "Čez %n minut"
+ },
  "Install Ollama": "Namesti Ollama",
  "Install Ollama, llama.cpp or LM Studio with a model such as %1, then Find again.": "Namestite Ollama, llama.cpp ali LM Studio z modelom, kot je %1, in nato znova poiščite.",
  "Install one in the Narrator panel (V).": "Namestite enega v plošči Pripovedovalec (V).",
@@ -474,7 +504,12 @@
  "Show Dogear": "Pokaži Dogear",
  "Show file": "Prikaži datoteko",
  "Show these shortcuts": "Pokaži te bližnjice",
- "Showing the first %Ln. A few more words will narrow it down.": "Prikazanih je prvih %Ln. Nekaj več besed bo zožilo izbiro.",
+ "Showing the first %Ln. A few more words will narrow it down.": {
+  "one": "Prikazanih je prvih %Ln. Nekaj več besed bo zožilo izbiro.",
+  "two": "Prikazanih je prvih %Ln. Nekaj več besed bo zožilo izbiro.",
+  "few": "Prikazanih je prvih %Ln. Nekaj več besed bo zožilo izbiro.",
+  "other": "Prikazanih je prvih %Ln. Nekaj več besed bo zožilo izbiro."
+ },
  "Size": "Velikost",
  "Skip": "Preskoči",
  "Sleep timer": "Časovnik za spanje",
@@ -496,7 +531,12 @@
  "Stop listening (⇧P)": "Ustavi poslušanje (⇧P)",
  "Stop using it": "Prenehaj uporabljati",
  "Stopping at the end of the chapter": "Zaustavitev ob koncu poglavja",
- "Stopping in %n min": "Zaustavitev čez %n min",
+ "Stopping in %n min": {
+  "one": "Zaustavitev čez %n min",
+  "two": "Zaustavitev čez %n min",
+  "few": "Zaustavitev čez %n min",
+  "other": "Zaustavitev čez %n min"
+ },
  "Studio": "Studio",
  "Studio voice, made on this computer": "Glas Studio, ustvarjen v tem računalniku",
  "Style": "Slog",

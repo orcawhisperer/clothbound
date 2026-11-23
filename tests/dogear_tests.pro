@@ -37,9 +37,14 @@ HEADERS += \
     ../src/bookrecord.h \
     ../src/bookscheme.h \
     ../src/booksearch.h \
+    ../src/cli.h \
+    ../src/filepicker.h \
     ../src/library.h \
     ../src/librarymodel.h \
     ../src/marks.h \
+    ../src/notifier.h \
+    ../src/pointerdriver.h \
+    ../src/portalfilepicker.h \
     ../src/reader.h \
     ../src/scanner.h \
     ../src/epubbook.h \
@@ -76,9 +81,11 @@ SOURCES += \
     ../src/bookname.cpp \
     ../src/bookscheme.cpp \
     ../src/booksearch.cpp \
+    ../src/cli.cpp \
     ../src/library.cpp \
     ../src/librarymodel.cpp \
     ../src/marks.cpp \
+    ../src/portalfilepicker.cpp \
     ../src/reader.cpp \
     ../src/scanner.cpp \
     ../src/epubbook.cpp \

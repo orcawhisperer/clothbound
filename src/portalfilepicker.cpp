@@ -1,13 +1,14 @@
 // From Omacut (MIT, David Heinemeier Hansson): the portal request and its
-// response handling are unchanged; the requests ask for folders and books.
+// response handling use async D-Bus calls without blocking Introspect.
 #include "portalfilepicker.h"
 
 #include <QCoreApplication>
-#include <QDBusConnection>
 #include <QDBusArgument>
-#include <QDBusInterface>
+#include <QDBusConnection>
+#include <QDBusMessage>
 #include <QDBusMetaType>
 #include <QDBusObjectPath>
+#include <QDBusPendingCall>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
 #include <QDir>
@@ -76,6 +77,7 @@ PortalFileFilter bookFilter() {
             {1, QStringLiteral("application/epub+zip")},
             {1, QStringLiteral("application/pdf")},
             {0, QStringLiteral("*.epub")},
+            {0, QStringLiteral("*.kepub")},
             {0, QStringLiteral("*.pdf")},
         },
     };
@@ -102,10 +104,15 @@ QString openFolder() {
     const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     return QDir(documents).exists() ? documents : QDir::homePath();
 }
-}
+}  // namespace
 
 PortalFilePicker::PortalFilePicker(QObject *parent) : FilePicker(parent) {
     registerPortalFilterTypes();
+}
+
+PortalFilePicker::~PortalFilePicker() {
+    closePendingRequest();
+    clearPending();
 }
 
 void PortalFilePicker::chooseFolders() {
@@ -140,10 +147,13 @@ bool PortalFilePicker::connectToRequestPath(const QString &path) {
 void PortalFilePicker::closePendingRequest() {
     if (m_pendingPath.isEmpty())
         return;
-    QDBusInterface request(QStringLiteral("org.freedesktop.portal.Desktop"), m_pendingPath,
-                           QStringLiteral("org.freedesktop.portal.Request"),
-                           QDBusConnection::sessionBus());
-    request.asyncCall(QStringLiteral("Close"));
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected())
+        return;
+    QDBusMessage message = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"), m_pendingPath,
+        QStringLiteral("org.freedesktop.portal.Request"), QStringLiteral("Close"));
+    bus.asyncCall(message);
 }
 
 void PortalFilePicker::requestFile(const QString &method, const QString &title,
@@ -157,11 +167,7 @@ void PortalFilePicker::requestFile(const QString &method, const QString &title,
     }
 
     QDBusConnection bus = QDBusConnection::sessionBus();
-    QDBusInterface portal(QStringLiteral("org.freedesktop.portal.Desktop"),
-                          QStringLiteral("/org/freedesktop/portal/desktop"),
-                          QStringLiteral("org.freedesktop.portal.FileChooser"),
-                          bus);
-    if (!portal.isValid()) {
+    if (!bus.isConnected()) {
         emit failed(tr("The XDG desktop portal file chooser is not available."));
         return;
     }
@@ -183,9 +189,15 @@ void PortalFilePicker::requestFile(const QString &method, const QString &title,
         return;
     }
 
+    QDBusMessage message = QDBusMessage::createMethodCall(
+        QStringLiteral("org.freedesktop.portal.Desktop"),
+        QStringLiteral("/org/freedesktop/portal/desktop"),
+        QStringLiteral("org.freedesktop.portal.FileChooser"),
+        method);
+    message << QString() << title << options;
+
     const int generation = ++m_pendingGeneration;
-    auto *watcher = new QDBusPendingCallWatcher(
-        portal.asyncCall(method, QString(), title, options), this);
+    auto *watcher = new QDBusPendingCallWatcher(bus.asyncCall(message), this);
     m_pendingWatcher = watcher;
 
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, watcher, generation]() {
@@ -226,15 +238,24 @@ void PortalFilePicker::handleResponse(uint response, const QVariantMap &results)
     const Action action = m_pendingAction;
     clearPending();
 
-    if (response != 0)
+    if (response == 1)
         return;
+    if (response != 0) {
+        emit failed(tr("The portal file picker could not complete the request."));
+        return;
+    }
 
     const QStringList uris = results.value(QStringLiteral("uris")).toStringList();
     if (uris.isEmpty() || action != Action::Open)
         return;
     QList<QUrl> urls;
-    for (const QString &uri : uris)
-        urls.append(QUrl(uri));
+    urls.reserve(uris.size());
+    for (const QString &uri : uris) {
+        QUrl url = QUrl::fromEncoded(uri.toUtf8(), QUrl::StrictMode);
+        if (!url.isValid())
+            url = QUrl(uri);
+        urls.append(url);
+    }
     emit chosen(urls);
 }
 

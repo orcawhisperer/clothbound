@@ -14,6 +14,7 @@ class PortalFilePicker : public FilePicker {
 
 public:
     explicit PortalFilePicker(QObject *parent = nullptr);
+    ~PortalFilePicker() override;
 
     void chooseFolders() override;
     void chooseBooks() override;

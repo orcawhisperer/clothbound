@@ -8,10 +8,26 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
-#include <QStandardPaths>
 #include <cmath>
+#include <memory>
 
-Theme::Theme(const QString &directory, QObject *parent, const QString &hyprctl)
+namespace {
+QString defaultHyprSocketDir() {
+    const QString signature = qEnvironmentVariable("HYPRLAND_INSTANCE_SIGNATURE");
+    if (signature.isEmpty())
+        return {};
+    const QString runtime = qEnvironmentVariable("XDG_RUNTIME_DIR");
+    if (!runtime.isEmpty()) {
+        const QString path = runtime + QStringLiteral("/hypr/") + signature;
+        if (QFileInfo::exists(path))
+            return path;
+    }
+    const QString legacy = QStringLiteral("/tmp/hypr/") + signature;
+    return QFileInfo::exists(legacy) ? legacy : QString();
+}
+}  // namespace
+
+Theme::Theme(const QString &directory, QObject *parent, const QString &hyprSocketDir)
     : QObject(parent),
       m_directory(directory.isEmpty() ? QDir::homePath() + "/.local/state/omarchy/current" : directory),
       m_palette(fallbackPalette()) {
@@ -21,45 +37,95 @@ Theme::Theme(const QString &directory, QObject *parent, const QString &hyprctl)
     connect(&m_watcher, &QFileSystemWatcher::fileChanged, this, [this] { m_debounce.start(); });
     connect(&m_debounce, &QTimer::timeout, this, &Theme::reload);
 
-    // Corners follow Hyprland's effective rounding, which themes and personal
-    // overrides can both set, so ask hyprctl rather than reading its config.
-    // Without Hyprland the corners stay sharp, like Omarchy's default.
-    m_hyprctl = !hyprctl.isEmpty() ? hyprctl
-              : directory.isEmpty() && !qEnvironmentVariableIsEmpty("HYPRLAND_INSTANCE_SIGNATURE")
-                  ? QStandardPaths::findExecutable("hyprctl") : QString();
-    m_roundingTimeout.setSingleShot(true);
-    m_roundingTimeout.setInterval(500);
-    connect(&m_roundingTimeout, &QTimer::timeout, &m_roundingProcess, &QProcess::kill);
-    connect(&m_roundingProcess, &QProcess::errorOccurred, this, [this] { m_roundingTimeout.stop(); });
-    connect(&m_roundingProcess, &QProcess::finished, this, [this](int code, QProcess::ExitStatus status) {
-        m_roundingTimeout.stop();
-        const auto value = QJsonDocument::fromJson(m_roundingProcess.readAllStandardOutput()).object().value("int");
-        if (code != 0 || status != QProcess::NormalExit || !value.isDouble() || value.toInt(-1) < 0)
-            return;
-        if (value.toInt() != m_radius) {
-            m_radius = value.toInt();
-            emit changed();
+    // Corners follow Hyprland's effective rounding via Hyprland's UNIX sockets
+    // directly: listen on .socket2.sock for configreloaded events (zero
+    // polling) and query .socket.sock asynchronously.
+    m_hyprSocketDir = !hyprSocketDir.isEmpty() ? hyprSocketDir
+                    : directory.isEmpty() ? defaultHyprSocketDir() : QString();
+    connect(&m_eventSocket, &QLocalSocket::readyRead, this, [this] {
+        m_eventBuffer += m_eventSocket.readAll();
+        qsizetype newline;
+        bool reloaded = false;
+        while ((newline = m_eventBuffer.indexOf('\n')) >= 0) {
+            const QByteArray line = m_eventBuffer.left(newline).trimmed();
+            m_eventBuffer.remove(0, newline + 1);
+            if (line.startsWith("configreloaded>>"))
+                reloaded = true;
         }
+        if (m_eventBuffer.size() > 65536)
+            m_eventBuffer.clear();
+        if (reloaded)
+            refreshRounding();
     });
-    m_roundingPoll.setInterval(1000);
-    connect(&m_roundingPoll, &QTimer::timeout, this, &Theme::refreshRounding);
-    if (!m_hyprctl.isEmpty())
-        m_roundingPoll.start();
+    if (!m_hyprSocketDir.isEmpty())
+        connectHyprEvents();
     reload();
 }
 
 Theme::~Theme() {
-    if (m_roundingProcess.state() != QProcess::NotRunning) {
-        m_roundingProcess.kill();
-        m_roundingProcess.waitForFinished(1000);
-    }
+    m_eventSocket.abort();
+    if (m_roundingSocket)
+        m_roundingSocket->abort();
+}
+
+void Theme::connectHyprEvents() {
+    if (m_hyprSocketDir.isEmpty() || m_eventSocket.state() != QLocalSocket::UnconnectedState)
+        return;
+    const QString eventSocket = m_hyprSocketDir + QStringLiteral("/.socket2.sock");
+    if (!QFileInfo::exists(eventSocket))
+        return;
+    m_eventBuffer.clear();
+    m_eventSocket.connectToServer(eventSocket);
 }
 
 void Theme::refreshRounding() {
-    if (m_hyprctl.isEmpty() || m_roundingProcess.state() != QProcess::NotRunning)
+    if (m_hyprSocketDir.isEmpty() || m_roundingSocket)
         return;
-    m_roundingProcess.start(m_hyprctl, {"-j", "getoption", "decoration:rounding"});
-    m_roundingTimeout.start();
+    const QString requestSocket = m_hyprSocketDir + QStringLiteral("/.socket.sock");
+    if (!QFileInfo::exists(requestSocket))
+        return;
+    auto *socket = new QLocalSocket(this);
+    m_roundingSocket = socket;
+    auto buffer = std::make_shared<QByteArray>();
+    auto handled = std::make_shared<bool>(false);
+    auto *timeout = new QTimer(socket);
+    timeout->setSingleShot(true);
+    timeout->setInterval(500);
+
+    auto finish = [this, socket, buffer, handled, timeout] {
+        if (*handled)
+            return;
+        *handled = true;
+        timeout->stop();
+        if (m_roundingSocket == socket)
+            m_roundingSocket = nullptr;
+        const auto value = QJsonDocument::fromJson(*buffer).object().value("int");
+        socket->deleteLater();
+        if (value.isDouble() && value.toInt(-1) >= 0 && value.toInt() != m_radius) {
+            m_radius = value.toInt();
+            emit changed();
+        }
+    };
+    connect(timeout, &QTimer::timeout, socket, [socket, finish] {
+        socket->abort();
+        finish();
+    });
+    connect(socket, &QLocalSocket::connected, socket, [socket] {
+        socket->write("j/getoption decoration:rounding");
+        socket->flush();
+    });
+    connect(socket, &QLocalSocket::readyRead, socket, [socket, buffer] {
+        *buffer += socket->readAll();
+    });
+    connect(socket, &QLocalSocket::disconnected, this, finish);
+    connect(socket, &QLocalSocket::errorOccurred, this, [socket, finish](QLocalSocket::LocalSocketError err) {
+        if (err == QLocalSocket::PeerClosedError)
+            return;
+        socket->abort();
+        finish();
+    });
+    timeout->start();
+    socket->connectToServer(requestSocket);
 }
 
 QHash<QString, QString> Theme::fallbackPalette() {
@@ -86,18 +152,55 @@ QHash<QString, QString> Theme::fallbackPalette() {
     };
 }
 
+QHash<QString, QString> Theme::fallbackLightPalette() {
+    return {
+        {"mode", "light"},
+        {"accent", "#1a5fb4"},
+        {"selection", "#d6e4f7"},
+        {"muted", "#d4d2cb"},
+        {"background", "#f6f5f0"},
+        {"dark_background", "#eceae3"},
+        {"darker_background", "#e2dfd7"},
+        {"lighter_background", "#ffffff"},
+        {"foreground", "#1c1b18"},
+        {"dark_foreground", "#5c5a54"},
+        {"light_foreground", "#45433e"},
+        {"bright_foreground", "#000000"},
+        {"red", "#c01c28"},
+        {"yellow", "#9a6700"},
+        {"orange", "#b25000"},
+        {"green", "#1f7a3f"},
+        {"cyan", "#0b6e7d"},
+        {"blue", "#1a5fb4"},
+        {"magenta", "#813d9c"},
+    };
+}
+
 QHash<QString, QString> Theme::readPalette(const QString &path) {
     QHash<QString, QString> palette;
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
         return palette;
-    static const QRegularExpression line(R"re(^\s*([a-z_0-9]+)\s*=\s*["']([^"']*)["'])re",
-                                         QRegularExpression::MultilineOption);
+    static const QRegularExpression section(R"re(^\s*\[)re");
+    static const QRegularExpression entry(R"re(^\s*([a-z_0-9]+)\s*=\s*(["'])([^"']*)\2\s*(?:#.*)?$)re");
     static const QRegularExpression hex("^#[0-9a-fA-F]{6}$");
-    auto matches = line.globalMatch(QString::fromUtf8(file.readAll()));
-    while (matches.hasNext()) {
-        const auto match = matches.next();
-        const QString key = match.captured(1), value = match.captured(2).trimmed();
+    const QString text = QString::fromUtf8(file.readAll());
+    bool inSection = false;
+    for (const QString &rawLine : text.split(QLatin1Char('\n'))) {
+        const QString line = rawLine.trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+        if (section.match(line).hasMatch()) {
+            inSection = true;
+            continue;
+        }
+        if (inSection)
+            continue;
+        const auto match = entry.match(line);
+        if (!match.hasMatch())
+            continue;
+        const QString key = match.captured(1);
+        const QString value = match.captured(3).trimmed();
         if (key == "mode" || hex.match(value).hasMatch())
             palette.insert(key, key == "mode" ? value.toLower() : value);
     }
@@ -109,7 +212,8 @@ QString Theme::readAccent(const QString &path) {
 }
 
 QString Theme::color(const QString &key) const {
-    return m_palette.value(key, fallbackPalette().value(key, "#ff00ff"));
+    const auto fallback = m_light ? fallbackLightPalette() : fallbackPalette();
+    return m_palette.value(key, fallback.value(key, "#ff00ff"));
 }
 
 QVariantMap Theme::colors() const {
@@ -129,6 +233,7 @@ QString Theme::readableOn(const QString &color) {
 QString Theme::accentForeground() const { return readableOn(accent()); }
 
 void Theme::reload() {
+    connectHyprEvents();
     refreshRounding();
     const auto paths = m_watcher.files() + m_watcher.directories();
     if (!paths.isEmpty())
@@ -147,20 +252,19 @@ void Theme::reload() {
         if (QFileInfo::exists(path))
             m_watcher.addPath(path);
 
-    // Keys a theme leaves out keep the fallback's value, so an older or
-    // partial colors.toml still yields a complete palette.
+    // Keys a theme leaves out keep the fallback matching its mode (light or
+    // dark), so partial light themes keep high-contrast secondary text.
     const auto read = readPalette(m_directory + "/theme/colors.toml");
-    auto palette = fallbackPalette();
-    for (auto it = read.cbegin(); it != read.cend(); ++it)
-        palette.insert(it.key(), it.value());
     const bool omarchy = read.contains("background") && read.contains("foreground");
-    // A theme with only an accent (or none) keeps the dark fallback around it.
-    if (!omarchy) {
-        const QString accent = read.value("accent", "#FFD60A");
-        palette = fallbackPalette();
-        palette.insert("accent", accent);
+    const bool light = omarchy && read.value("mode") == "light";
+    auto palette = light ? fallbackLightPalette() : fallbackPalette();
+    if (omarchy) {
+        for (auto it = read.cbegin(); it != read.cend(); ++it)
+            palette.insert(it.key(), it.value());
+    } else {
+        // A theme with only an accent (or none) keeps the dark fallback around it.
+        palette.insert("accent", read.value("accent", "#FFD60A"));
     }
-    const bool light = palette.value("mode") == "light";
     if (palette != m_palette || light != m_light || omarchy != m_omarchy) {
         m_palette = palette;
         m_light = light;

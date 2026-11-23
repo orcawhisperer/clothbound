@@ -7,8 +7,10 @@
 #include <QHostAddress>
 #include <QList>
 #include <QMap>
+#include <QPointer>
 #include <QTcpServer>
 #include <QTcpSocket>
+#include <memory>
 
 class FakeServer {
 public:
@@ -26,10 +28,13 @@ public:
 
     FakeServer() {
         m_server.listen(QHostAddress::LocalHost);
-        QObject::connect(&m_server, &QTcpServer::newConnection, [this] {
+        QPointer<QTcpServer> guard(&m_server);
+        QObject::connect(&m_server, &QTcpServer::newConnection, &m_server, [this, guard] {
             while (QTcpSocket *socket = m_server.nextPendingConnection()) {
                 auto buffer = std::make_shared<QByteArray>();
-                QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, socket, buffer] {
+                QObject::connect(socket, &QTcpSocket::readyRead, socket, [this, guard, socket, buffer] {
+                    if (!guard)
+                        return;
                     *buffer += socket->readAll();
                     const qsizetype end = buffer->indexOf("\r\n\r\n");
                     if (end < 0)
@@ -66,6 +71,8 @@ public:
             }
         });
     }
+
+    ~FakeServer() { m_server.close(); }
 
     QString endpoint() const { return QStringLiteral("http://127.0.0.1:%1/v1beta").arg(m_server.serverPort()); }
 

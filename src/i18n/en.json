@@ -39,9 +39,17 @@
   "one": "%n edition",
   "other": "%n editions"
  },
+ "%n h": {
+  "one": "%n h",
+  "other": "%n h"
+ },
  "%n matches": {
   "one": "%n match",
   "other": "%n matches"
+ },
+ "%n min": {
+  "one": "%n min",
+  "other": "%n min"
  },
  "%n pages": {
   "one": "%n page",

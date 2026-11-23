@@ -12,6 +12,8 @@ Dogear is the user's ebook reader. Its commands need no display; add
 `--json` for machine-readable output. Errors go to stderr and the exit code
 is 1.
 
+- `dogear add <folder-or-book>... [--json]`: add folders or book files to the
+  library (files are never changed).
 - `dogear info <book> [--json]`: title, author, edition (editor, publisher,
   year), language, description, chapters, pages, and the table of contents.
 - `dogear list [--json]`: the books in the library, with reading progress.
