@@ -1,5 +1,6 @@
 #include <QBuffer>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFontDatabase>
 #include <QGuiApplication>
@@ -28,56 +29,56 @@
 #include <cmath>
 #include <QtTest>
 
-#include "aiservices.h"
-#include "audiocache.h"
-#include "aiusage.h"
-#include "bookinfo.h"
-#include "cli.h"
+#include "ai/aiservices.h"
+#include "audio/audiocache.h"
+#include "ai/aiusage.h"
+#include "formats/bookinfo.h"
+#include "app/cli.h"
 #include "fakeserver.h"
-#include "gemini.h"
-#include "localmodels.h"
-#include "companion.h"
-#include "illustrator.h"
-#include "passageindex.h"
-#include "pdfbook.h"
-#include "pdfpages.h"
-#include "cast.h"
-#include "director.h"
-#include "download.h"
-#include "narration.h"
-#include "audiobook.h"
+#include "ai/gemini.h"
+#include "ai/localmodels.h"
+#include "ai/companion.h"
+#include "ai/illustrator.h"
+#include "ai/passageindex.h"
+#include "formats/pdfbook.h"
+#include "formats/pdfpages.h"
+#include "audio/cast.h"
+#include "audio/director.h"
+#include "audio/download.h"
+#include "audio/narration.h"
+#include "audio/audiobook.h"
 #include <QPdfWriter>
 #include <QPainter>
-#include "systemcheck.h"
-#include "localsetup.h"
-#include "instance.h"
-#include "keystore.h"
-#include "localspeech.h"
-#include "notifier.h"
-#include "pointerdriver.h"
-#include "portalfilepicker.h"
-#include "voicepacks.h"
-#include "sseparser.h"
-#include "surfacewatcher.h"
-#include "bookname.h"
-#include "bookscheme.h"
-#include "booksearch.h"
-#include "library.h"
-#include "libraryfinder.h"
-#include "libraryindex.h"
-#include "marks.h"
-#include "reader.h"
-#include "scanner.h"
-#include "epubbook.h"
-#include "htmltokenizer.h"
-#include "pdfbook.h"
-#include "speech.h"
-#include "speechplayer.h"
+#include "app/systemcheck.h"
+#include "ai/localsetup.h"
+#include "app/instance.h"
+#include "ai/keystore.h"
+#include "audio/localspeech.h"
+#include "app/notifier.h"
+#include "app/pointerdriver.h"
+#include "app/portalfilepicker.h"
+#include "audio/voicepacks.h"
+#include "ai/sseparser.h"
+#include "app/surfacewatcher.h"
+#include "formats/bookname.h"
+#include "formats/bookscheme.h"
+#include "library/booksearch.h"
+#include "library/library.h"
+#include "library/libraryfinder.h"
+#include "library/libraryindex.h"
+#include "library/marks.h"
+#include "reader/reader.h"
+#include "library/scanner.h"
+#include "formats/epubbook.h"
+#include "formats/htmltokenizer.h"
+#include "formats/pdfbook.h"
+#include "audio/speech.h"
+#include "audio/speechplayer.h"
 #include "testbooks.h"
-#include "theme.h"
-#include "translator.h"
-#include "voicecatalog.h"
-#include "ziparchive.h"
+#include "app/theme.h"
+#include "app/translator.h"
+#include "audio/voicecatalog.h"
+#include "formats/ziparchive.h"
 
 // A keyring that answers when told to, like one starting up or waiting to be
 // unlocked.
@@ -5744,7 +5745,7 @@ private slots:
     }
 
     void readerSurfaceRefreshAvoidsElidedOutlineAndNoOpRelayout() {
-        QFile jsFile(QFINDTESTDATA("../src/reader.js"));
+        QFile jsFile(QFINDTESTDATA("../src/reader/reader.js"));
         QVERIFY(jsFile.open(QIODevice::ReadOnly));
         const QString js = QString::fromUtf8(jsFile.readAll());
         QVERIFY(!js.contains(QStringLiteral("1px solid transparent")));
@@ -5756,7 +5757,7 @@ private slots:
         QVERIFY(js.contains(QStringLiteral("isNudgeGuarded")));
         QVERIFY(js.contains(QStringLiteral("isNudgeDelta")));
 
-        QFile qmlFile(QFINDTESTDATA("../src/EpubReader.qml"));
+        QFile qmlFile(QFINDTESTDATA("../src/ui/reader/EpubReader.qml"));
         QVERIFY(qmlFile.open(QIODevice::ReadOnly));
         const QString qml = QString::fromUtf8(qmlFile.readAll());
         QVERIFY(qml.contains(QStringLiteral("backgroundColor: view.look.bg")));
@@ -5798,7 +5799,7 @@ assert.strictEqual(DropCap.choose([]), -1);
 console.log('ok');
 )JS");
         QProcess process;
-        process.start(node, {"-e", script, QFINDTESTDATA("../src/dropcap.js")});
+        process.start(node, {"-e", script, QFINDTESTDATA("../src/reader/dropcap.js")});
         QVERIFY(process.waitForFinished(15000));
         QVERIFY2(process.exitCode() == 0, process.readAllStandardError().constData());
         QCOMPARE(process.readAllStandardOutput().trimmed(), QByteArray("ok"));
@@ -5809,7 +5810,7 @@ console.log('ok');
         if (node.isEmpty())
             QSKIP("node executable not available");
 
-        const QString readerJsPath = QFINDTESTDATA("../src/reader.js");
+        const QString readerJsPath = QFINDTESTDATA("../src/reader/reader.js");
         QVERIFY(QFileInfo::exists(readerJsPath));
 
         const QString harness = QStringLiteral(R"JS(
@@ -6320,7 +6321,7 @@ const flushRaf = () => {
         const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
         if (node.isEmpty())
             QSKIP("node executable not available");
-        const QString readerJsPath = QFINDTESTDATA("../src/reader.js");
+        const QString readerJsPath = QFINDTESTDATA("../src/reader/reader.js");
         const QString harness = QStringLiteral(R"JS(
 const fs = require('fs');
 const vm = require('vm');
@@ -6852,14 +6853,14 @@ domReady();
         QQmlEngine engine;
         const QString srcRoot = QFINDTESTDATA("../src");
         QVERIFY(QFileInfo::exists(srcRoot));
-        engine.addImportPath(srcRoot + QStringLiteral("/style"));
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
 
         QStringList qmlFiles;
-        for (const QString &name : QDir(srcRoot).entryList({QStringLiteral("*.qml")}, QDir::Files, QDir::Name))
-            qmlFiles.append(srcRoot + QLatin1Char('/') + name);
-        const QString styleRoot = srcRoot + QStringLiteral("/style/Dogear");
-        for (const QString &name : QDir(styleRoot).entryList({QStringLiteral("*.qml")}, QDir::Files, QDir::Name))
-            qmlFiles.append(styleRoot + QLatin1Char('/') + name);
+        QDirIterator it(srcRoot + QStringLiteral("/ui"), {QStringLiteral("*.qml")}, QDir::Files,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext())
+            qmlFiles.append(it.next());
+        qmlFiles.sort();
 
         QVERIFY2(qmlFiles.size() >= 65, qPrintable(QString::number(qmlFiles.size())));
         QStringList failures;
@@ -6871,7 +6872,7 @@ domReady();
         QVERIFY2(failures.isEmpty(), qPrintable(failures.join(QLatin1Char('\n'))));
 
         // Regression check for All Books list mode column alignment in LibraryView.qml.
-        QFile listFile(srcRoot + QStringLiteral("/LibraryView.qml"));
+        QFile listFile(srcRoot + QStringLiteral("/ui/library/LibraryView.qml"));
         QVERIFY(listFile.open(QIODevice::ReadOnly));
         const QString qml = QString::fromUtf8(listFile.readAll());
         QVERIFY(qml.contains(QStringLiteral("Layout.preferredWidth: 48")));
@@ -6893,7 +6894,7 @@ domReady();
         //    - close() resets both frames and clears #viewport.turning
         const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
         if (!node.isEmpty()) {
-            const QString readerJsPath = QFINDTESTDATA("../src/reader.js");
+            const QString readerJsPath = QFINDTESTDATA("../src/reader/reader.js");
             const QString dualHarness = QStringLiteral(R"JS(
 const fs = require('fs');
 const vm = require('vm');

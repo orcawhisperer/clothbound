@@ -61,14 +61,14 @@ def extract():
     """{english: plural?} for every visible string."""
     strings = {}
     qml = re.compile(r"qsTr\(\s*" + LITERAL + r"(\s*,\s*" + LITERAL + r"\s*,)?")
-    for path in sorted(list(SRC.glob("*.qml")) + list(SRC.glob("*.js"))):
+    for path in sorted(list(SRC.rglob("*.qml")) + list(SRC.rglob("*.js"))):
         for match in qml.finditer(path.read_text()):
             text = unescape(match.group(1))
             strings[text] = strings.get(text, False) or bool(match.group(2)) or "%n" in text or "%Ln" in text
     # C++: tr("…"), translate("Context", "…"), and QT_TR_NOOP("…"), with adjacent literals joined.
     joined = r'((?:"(?:[^"\\]|\\.)*"\s*)+)'
     cpp = re.compile(r"\btr\(\s*" + joined + r"|translate\(\s*" + LITERAL + r"\s*,\s*" + joined + r"|QT_TR_NOOP\(\s*" + joined)
-    for path in sorted(list(SRC.glob("*.cpp")) + list(SRC.glob("*.h"))):
+    for path in sorted(list(SRC.rglob("*.cpp")) + list(SRC.rglob("*.h"))):
         for match in cpp.finditer(path.read_text()):
             raw = match.group(1) or match.group(3) or match.group(4)
             text = "".join(unescape(part) for part in re.findall(LITERAL, raw))
