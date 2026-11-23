@@ -4,12 +4,14 @@
 #include "speech.h"
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QList>
 #include <QObject>
 #include <QPointer>
 #include <QSet>
 #include <QTimer>
 #include <QVariantMap>
+#include <functional>
 
 class AiServices;
 class Cast;
@@ -126,6 +128,9 @@ private:
     QSet<QString> m_storing;  // cache encodes still writing to disk
     QList<Job> m_queue;
     QMap<int, QStringList> m_plannedKeys;
+    QHash<int, QMap<int, QString>> m_pdfMoods;
+    QHash<int, QList<std::function<void()>>> m_pendingCastBatches;
+    QHash<int, QList<std::function<void()>>> m_pendingDirectorBatches;
     QList<QPointer<Ai::Reply>> m_replies;
     double m_minutesReady = 0;
     double m_minutesTotal = 0;

@@ -5,9 +5,10 @@ import "Format.js" as Format
 import "Icons.js" as Icons
 import "Ui.js" as Ui
 
-// The book being read aloud: play and pause, a paragraph back or on, the
-// pace, a sleep timer, the voice, and a way back to the voice's place when
-// the reader has turned elsewhere.
+// The book being read aloud: play and pause, ±15s skip, paragraph stepping,
+// pace, a sleep timer with live countdown & fade-out, the voice, quick
+// offline fallback, and a way back to the voice's place when the reader has
+// turned elsewhere.
 Rectangle {
     id: bar
 
@@ -15,6 +16,13 @@ Rectangle {
 
     signal voiceRequested()
     signal followRequested()
+
+    function formatSleep(secs) {
+        const total = Math.max(0, Math.floor(secs))
+        const m = Math.floor(total / 60)
+        const s = total % 60
+        return m + ":" + (s < 10 ? "0" + s : s)
+    }
 
     width: Math.max(240, Math.min(parent.width - 48, row.implicitWidth + 28))
     height: 52
@@ -30,7 +38,7 @@ Rectangle {
         anchors.bottomMargin: -4
         radius: parent.radius
         color: "black"
-        opacity: look.dark ? 0.35 : 0.12
+        opacity: bar.look.dark ? 0.35 : 0.12
     }
 
     Item {
@@ -51,6 +59,31 @@ Rectangle {
                 tone: bar.look.fg
                 tip: qsTr("Previous paragraph (,)")
                 onClicked: narration.previousParagraph()
+            }
+            AbstractButton {
+                id: back15Button
+                anchors.verticalCenter: parent.verticalCenter
+                implicitHeight: 34
+                implicitWidth: back15Label.implicitWidth + 12
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+                background: Rectangle {
+                    radius: Math.min(8, theme.radius)
+                    color: back15Button.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
+                }
+                contentItem: Label {
+                    id: back15Label
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    text: "−15s"
+                    color: bar.look.fg
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                onClicked: narration.skipSeconds(-15)
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Back 15 seconds")
+                ToolTip.delay: 700
             }
             AbstractButton {
                 id: play
@@ -87,6 +120,31 @@ Rectangle {
                 ToolTip.text: narration.playing ? qsTr("Pause (P)") : qsTr("Play (P)")
                 ToolTip.delay: 700
             }
+            AbstractButton {
+                id: fwd15Button
+                anchors.verticalCenter: parent.verticalCenter
+                implicitHeight: 34
+                implicitWidth: fwd15Label.implicitWidth + 12
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+                background: Rectangle {
+                    radius: Math.min(8, theme.radius)
+                    color: fwd15Button.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
+                }
+                contentItem: Label {
+                    id: fwd15Label
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    text: "+15s"
+                    color: bar.look.fg
+                    font.pixelSize: 12
+                    font.weight: Font.DemiBold
+                }
+                onClicked: narration.skipSeconds(15)
+                ToolTip.visible: hovered
+                ToolTip.text: qsTr("Forward 15 seconds")
+                ToolTip.delay: 700
+            }
             IconButton {
                 anchors.verticalCenter: parent.verticalCenter
                 look: bar.look
@@ -96,7 +154,7 @@ Rectangle {
                 onClicked: narration.nextParagraph()
             }
 
-            Item { width: 10; height: 1 }
+            Item { width: 8; height: 1 }
 
             // The voice and pace.
             AbstractButton {
@@ -139,7 +197,7 @@ Rectangle {
                     id: rateLabel
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
-                    text: Number(narration.rate).toLocaleString(Qt.locale(translator.language), 'f', narration.rate * 20 % 2 ? 2 : 1) + "×"
+                    text: Number(narration.rate).toLocaleString(Qt.locale(), 'f', narration.rate * 20 % 2 ? 2 : 1) + "×"
                     color: bar.look.muted
                     font.pixelSize: 13
                 }
@@ -160,12 +218,28 @@ Rectangle {
                 rightPadding: 6
                 text: narration.problem !== "" ? narration.problem
                     : narration.preparing ? qsTr("Preparing ahead · %1%").arg(narration.preparedPercent)
+                    : narration.fallbackNotice !== "" ? narration.fallbackNotice
                     : narration.minutesLeftInChapter > 0 && translator.language !== ""
                       ? qsTr("%1 left in chapter").arg(Format.duration(narration.minutesLeftInChapter)) : ""
                 color: narration.problem !== "" ? (theme.colors.orange || "#e5a050") : bar.look.muted
                 font.pixelSize: 12
                 elide: Text.ElideRight
-                width: Math.min(implicitWidth, Math.min(320, Math.max(80, bar.width - 340)))
+                width: Math.min(implicitWidth, Math.min(280, Math.max(80, (bar.parent ? bar.parent.width : 900) - 520)))
+            }
+
+            TextButton {
+                anchors.verticalCenter: parent.verticalCenter
+                look: bar.look
+                visible: narration.fallbackVoice !== ""
+                text: qsTr("Use %1 offline").arg(narration.fallbackVoiceName)
+                onClicked: narration.useFallbackVoice()
+            }
+            TextButton {
+                anchors.verticalCenter: parent.verticalCenter
+                look: bar.look
+                visible: narration.fallbackVoice === "" && narration.offerOfflineSetup
+                text: qsTr("Offline voices")
+                onClicked: bar.voiceRequested()
             }
 
             TextButton {
@@ -176,16 +250,55 @@ Rectangle {
                 onClicked: bar.followRequested()
             }
 
-            IconButton {
+            AbstractButton {
                 id: sleepButton
                 anchors.verticalCenter: parent.verticalCenter
-                look: bar.look
-                glyph: Icons.moon
-                tone: bar.look.fg
-                active: narration.sleepMinutes > 0 || narration.sleepAtChapterEnd
-                tip: narration.sleepMinutes > 0 ? qsTr("Stopping in %n min", "", narration.sleepMinutes)
-                   : narration.sleepAtChapterEnd ? qsTr("Stopping at the end of the chapter") : qsTr("Sleep timer")
+                readonly property bool timerActive: narration.sleepSecondsLeft > 0 || narration.sleepAtChapterEnd
+                implicitHeight: 34
+                implicitWidth: timerActive ? sleepRow.implicitWidth + 16 : 34
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+                background: Rectangle {
+                    radius: Math.min(8, theme.radius)
+                    color: narration.sleepFading
+                           ? Ui.tint(theme.colors.orange || "#e5a050", 0.22)
+                           : sleepButton.timerActive
+                             ? Ui.tint(bar.look.link, 0.16)
+                             : sleepButton.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
+                }
+                contentItem: Row {
+                    id: sleepRow
+                    anchors.centerIn: parent
+                    spacing: 5
+                    Glyph {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 17
+                        height: 17
+                        path: Icons.moon
+                        color: narration.sleepFading
+                               ? (theme.colors.orange || "#e5a050")
+                               : sleepButton.timerActive ? bar.look.link : bar.look.fg
+                    }
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: sleepButton.timerActive
+                        text: narration.sleepSecondsLeft > 0
+                              ? bar.formatSleep(narration.sleepSecondsLeft)
+                              : qsTr("Ch")
+                        color: narration.sleepFading
+                               ? (theme.colors.orange || "#e5a050")
+                               : bar.look.link
+                        font.pixelSize: 12
+                        font.weight: Font.DemiBold
+                        font.features: ({ "tnum": 1 })
+                    }
+                }
                 onClicked: sleepMenu.opened ? sleepMenu.close() : sleepMenu.open()
+                ToolTip.visible: hovered
+                ToolTip.text: narration.sleepFading ? qsTr("Fading out… %1").arg(bar.formatSleep(narration.sleepSecondsLeft))
+                            : narration.sleepSecondsLeft > 0 ? qsTr("Stopping in %1").arg(bar.formatSleep(narration.sleepSecondsLeft))
+                            : narration.sleepAtChapterEnd ? qsTr("Stopping at the end of the chapter") : qsTr("Sleep timer")
+                ToolTip.delay: 700
 
                 Popup {
                     id: sleepMenu
@@ -201,7 +314,7 @@ Rectangle {
                     contentItem: Column {
                         spacing: 2
                         Repeater {
-                            model: [15, 30, 60]
+                            model: [5, 15, 30, 60]
                             delegate: MenuRow {
                                 required property int modelData
                                 look: bar.look
@@ -218,7 +331,7 @@ Rectangle {
                         MenuRow {
                             look: bar.look
                             text: qsTr("Off")
-                            checked: narration.sleepMinutes === 0 && !narration.sleepAtChapterEnd
+                            checked: narration.sleepSecondsLeft === 0 && !narration.sleepAtChapterEnd
                             onClicked: { narration.sleepIn(0); sleepMenu.close() }
                         }
                     }

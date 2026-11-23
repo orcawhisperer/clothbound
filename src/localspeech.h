@@ -103,6 +103,9 @@ public:
     // Stops active work and unloads the voice model synchronously on the worker
     // thread, so its files can be removed safely.
     void unloadEngine();
+    VoicePacks *packs() const { return m_packs; }
+    bool packsSupported() const { return m_packs && m_packs->supported(); }
+    QVariantMap bestInstalledVoice(const QString &language) const;
 
 signals:
     void speedChanged();

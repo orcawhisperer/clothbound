@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <QHash>
 #include <QObject>
+#include <QPair>
 #include <QPointer>
 #include <QSet>
 #include <QTimer>
@@ -45,8 +46,16 @@ class Narration : public QObject {
     Q_PROPERTY(qint64 sentenceEnd READ sentenceEnd NOTIFY positionChanged)
     Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY positionChanged)
     Q_PROPERTY(int sleepMinutes READ sleepMinutes NOTIFY sleepChanged)
+    Q_PROPERTY(int sleepSecondsLeft READ sleepSecondsLeft NOTIFY sleepChanged)
+    Q_PROPERTY(bool sleepFading READ sleepFading NOTIFY sleepChanged)
     Q_PROPERTY(bool sleepAtChapterEnd READ sleepAtChapterEnd NOTIFY sleepChanged)
     Q_PROPERTY(QString problem READ problem NOTIFY problemChanged)
+    // Seamless cloud-to-local fallback offer / notice.
+    Q_PROPERTY(QString fallbackVoice READ fallbackVoice NOTIFY fallbackChanged)
+    Q_PROPERTY(QString fallbackVoiceName READ fallbackVoiceName NOTIFY fallbackChanged)
+    Q_PROPERTY(bool offerOfflineSetup READ offerOfflineSetup NOTIFY fallbackChanged)
+    Q_PROPERTY(QString fallbackNotice READ fallbackNotice NOTIFY fallbackChanged)
+    Q_PROPERTY(bool hasPendingStart READ hasPendingStart NOTIFY stateChanged)
     // A voice slower than listening (built-in, on a slow computer) gets a
     // head start first, so it then plays through without pausing.
     Q_PROPERTY(bool preparing READ preparing NOTIFY stateChanged)
@@ -78,21 +87,36 @@ public:
     qint64 positionUs() const;
     qint64 durationUs() const;
     int sleepMinutes() const;
+    int sleepSecondsLeft() const;
+    bool sleepFading() const { return m_sleepFading; }
     bool sleepAtChapterEnd() const { return m_sleepAtChapterEnd; }
     QString problem() const { return m_problem; }
+    QString fallbackVoice() const { return m_fallbackVoice; }
+    QString fallbackVoiceName() const { return m_fallbackVoiceName; }
+    bool offerOfflineSetup() const { return m_offerOfflineSetup; }
+    QString fallbackNotice() const { return m_fallbackNotice; }
+    bool hasPendingStart() const { return m_pendingStart; }
     bool preparing() const { return m_holdSamples > 0; }
     int preparedPercent() const;
 
     // Starts reading the open book at a chapter and offset.
     Q_INVOKABLE void start(int chapter, qint64 offset);
+    Q_INVOKABLE void startPending();
     Q_INVOKABLE void toggle();
     Q_INVOKABLE void pause();
     Q_INVOKABLE void resume();
     Q_INVOKABLE void stop();
     Q_INVOKABLE void nextParagraph();
     Q_INVOKABLE void previousParagraph();
+    Q_INVOKABLE void nextSentence();
+    Q_INVOKABLE void prevSentence();
+    Q_INVOKABLE void skipSeconds(int delta);
+    // Relative and absolute seek in microseconds (used by skipSeconds and MPRIS2).
+    void seekByUs(qint64 deltaUs);
+    void seekToUs(qint64 targetUs);
     // The voice for this book from now on (and the default for new books).
     Q_INVOKABLE void setVoice(const QString &id, const QString &name);
+    Q_INVOKABLE void useFallbackVoice();
     Q_INVOKABLE void sleepIn(int minutes);
     Q_INVOKABLE void sleepAtEndOfChapter();
 
@@ -108,8 +132,10 @@ signals:
     void volumeChanged();
     void settingsChanged();
     void positionChanged();
+    void seeked(qint64 positionUs);
     void sleepChanged();
     void problemChanged();
+    void fallbackChanged();
     // The engine needs a chapter's blocks from the reading surface.
     void blocksWanted(int chapter);
     void speaking(int chapter, qint64 start, qint64 end);
@@ -135,8 +161,6 @@ private:
         QList<QPair<double, double>> spans;  // its sentences' share of its length
         QList<qint64> boundaries;            // where each sentence ends, when the voice said
         QPointer<Ai::Reply> reply;
-        // Who reads it: the narrator, or (with a full cast) a character.
-        QString voice;
     };
 
     void pump();
@@ -145,7 +169,10 @@ private:
     void queue();
     void stallIfFailed();
     void heard(int trackId, qint64 sample);
-    void jumpTo(int index);
+    void jumpTo(int index, qint64 sampleOffset = 0, bool preservePause = false, int forceSentence = -1);
+    void seekBySamples(qint64 deltaSamples);
+    qint64 sampleOfSentence(const Clip &clip, int sentence) const;
+    void showSentenceForSample(int index, qint64 sample, int forceSentence = -1);
     void showSentence(double fraction);
     void showSentenceAt(int sentence);
     int indexOfClip(int trackId) const;
@@ -153,8 +180,18 @@ private:
     void checkHeadStart();
     void setBuffering(bool buffering);
     void setProblem(const QString &problem);
+    void onSleepTick();
+    void finishSleep();
+    void restoreSleepVolume();
+    QPair<QString, QString> bestLocalVoice() const;
+    bool localPacksSupported() const;
+    void updateFallbackOffer();
+    void clearFallbackOffer();
+    void setFallbackNotice(const QString &notice);
+    bool fallbackToLocalMidSession(int fromIndex, const QString &reason);
     bool keptDirections(int chapter);
     QSet<int> breaksFor(int chapter) const;
+    QMap<int, QString> blockVoicesFor(int chapter, const QList<SpeechBlock> &blocks) const;
     // A clip of the chapter's, with its reader.
     Clip clipFrom(const SpeechClip &spoken);
     QString voiceOf(const Clip &clip) const;
@@ -205,6 +242,8 @@ private:
     QHash<int, QMap<int, QString>> m_moods;
     QHash<int, qint64> m_directionsAsked;
     QHash<int, qint64> m_castAsked;
+    QSet<int> m_directorBatchesAsked;
+    QSet<int> m_castBatchesAsked;
 
     QString m_voice;
     QString m_voiceName;
@@ -213,10 +252,22 @@ private:
     bool m_economy = false;
     QString m_problem;
 
+    QString m_fallbackVoice;
+    QString m_fallbackVoiceName;
+    bool m_offerOfflineSetup = false;
+    QString m_fallbackNotice;
+    bool m_pendingStart = false;
+    int m_pendingChapter = 0;
+    qint64 m_pendingOffset = 0;
+
     QTimer m_directionsTimer;
     QTimer m_retryTimer;
     QTimer m_sleepTimer;
     QTimer m_sleepTick;
     QDateTime m_sleepAt;
+    int m_lastSleepSec = 0;
+    bool m_sleepFading = false;
+    bool m_sleepPausedRestore = false;
+    double m_preFadeVolume = -1.0;
     bool m_sleepAtChapterEnd = false;
 };

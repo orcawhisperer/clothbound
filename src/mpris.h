@@ -85,7 +85,7 @@ class MprisPlayer : public QDBusAbstractAdaptor {
     Q_PROPERTY(bool CanGoPrevious READ yes)
     Q_PROPERTY(bool CanPlay READ yes)
     Q_PROPERTY(bool CanPause READ yes)
-    Q_PROPERTY(bool CanSeek READ no)
+    Q_PROPERTY(bool CanSeek READ yes)
     Q_PROPERTY(bool CanControl READ yes)
 
 public:
@@ -109,8 +109,8 @@ public slots:
     void PlayPause();
     void Stop();
     void Play();
-    void Seek(qlonglong) {}
-    void SetPosition(const QDBusObjectPath &, qlonglong) {}
+    void Seek(qlonglong offsetUs);
+    void SetPosition(const QDBusObjectPath &trackId, qlonglong positionUs);
     void OpenUri(const QString &) {}
 
 signals:

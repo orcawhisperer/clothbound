@@ -2,7 +2,9 @@
 
 #include "aiservices.h"
 #include "audiocache.h"
+#include "director.h"
 #include "library.h"
+#include "pdfbook.h"
 #include "reader.h"
 #include "voicecatalog.h"
 #include "voicepacks.h"
@@ -215,6 +217,21 @@ QSet<int> Cast::breaks(int chapter, const QList<SpeechBlock> &blocks) const {
         if (voice != before)
             out.insert(i);
         before = voice;
+    }
+    return out;
+}
+
+QMap<int, QString> Cast::blockVoices(int chapter, const QList<SpeechBlock> &blocks) const {
+    QMap<int, QString> out;
+    if (!m_enabled || family().isEmpty() || !m_lines.contains(chapter))
+        return out;
+    const auto &chapterLines = m_lines.value(chapter);
+    for (auto it = chapterLines.cbegin(); it != chapterLines.cend(); ++it) {
+        if (it.key() < 0 || it.key() >= blocks.size())
+            continue;
+        const QString voice = voiceFor(it.value().speaker);
+        if (!voice.isEmpty() && voice != m_narrator)
+            out.insert(it.key(), voice);
     }
     return out;
 }
@@ -451,5 +468,68 @@ void Cast::ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context,
         }
         m_cache->storeDirections(keptAs, text);
         done(parse(text, count));
+    });
+}
+
+std::optional<QHash<int, QMap<int, Cast::Line>>> Cast::keptPdfBatch(int page) const {
+    if (!m_reader || m_reader->format() != QLatin1String("pdf"))
+        return std::nullopt;
+    const auto [first, last] = Director::pdfBatchRange(m_reader, page);
+    QList<SpeechBlock> combined;
+    QHash<int, QPair<int, int>> ranges;
+    for (int p = first; p <= last; ++p) {
+        const QJsonArray arr = PdfBook::speakable(m_reader->pdfPageText(p), m_reader->title());
+        const QList<SpeechBlock> pageBlocks =
+            Speech::parseBlocks(QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+        ranges.insert(p, {int(combined.size()), int(pageBlocks.size())});
+        combined.append(pageBlocks);
+    }
+    const auto lines = kept(first, combined);
+    if (!lines)
+        return std::nullopt;
+    QHash<int, QMap<int, Line>> byPage;
+    for (int p = first; p <= last; ++p) {
+        QMap<int, Line> pageLines;
+        const auto [start, count] = ranges.value(p, {0, 0});
+        for (auto it = lines->lowerBound(start); it != lines->end() && it.key() < start + count; ++it)
+            pageLines.insert(it.key() - start, it.value());
+        byPage.insert(p, pageLines);
+    }
+    return byPage;
+}
+
+void Cast::askPdfBatch(int page, QObject *context,
+                       std::function<void(const QHash<int, QMap<int, Line>> &byPage)> done) {
+    if (!m_reader || m_reader->format() != QLatin1String("pdf")) {
+        done({});
+        return;
+    }
+    const auto [first, last] = Director::pdfBatchRange(m_reader, page);
+    QList<SpeechBlock> combined;
+    QHash<int, QPair<int, int>> ranges;
+    for (int p = first; p <= last; ++p) {
+        const QJsonArray arr = PdfBook::speakable(m_reader->pdfPageText(p), m_reader->title());
+        const QList<SpeechBlock> pageBlocks =
+            Speech::parseBlocks(QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+        ranges.insert(p, {int(combined.size()), int(pageBlocks.size())});
+        combined.append(pageBlocks);
+    }
+    if (combined.isEmpty()) {
+        QHash<int, QMap<int, Line>> empty;
+        for (int p = first; p <= last; ++p)
+            empty.insert(p, {});
+        done(empty);
+        return;
+    }
+    ask(first, combined, context, [ranges, first, last, done = std::move(done)](const QMap<int, Line> &lines) {
+        QHash<int, QMap<int, Line>> byPage;
+        for (int p = first; p <= last; ++p) {
+            QMap<int, Line> pageLines;
+            const auto [start, count] = ranges.value(p, {0, 0});
+            for (auto it = lines.lowerBound(start); it != lines.end() && it.key() < start + count; ++it)
+                pageLines.insert(it.key() - start, it.value());
+            byPage.insert(p, pageLines);
+        }
+        done(byPage);
     });
 }

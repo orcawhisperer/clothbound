@@ -297,6 +297,75 @@ QVariantMap VoicePacks::voice(const QString &id) const {
     return found ? toMap(*found) : QVariantMap();
 }
 
+QVariantList VoicePacks::searchVoices(const QString &query, const QString &language, bool installedOnly) const {
+    const QStringList words = query.toLower().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    const QVariantList baseList = voices(language);
+    if (words.isEmpty() && !installedOnly)
+        return baseList;
+    QVariantList result;
+    result.reserve(baseList.size());
+    for (const QVariant &value : baseList) {
+        const QVariantMap map = value.toMap();
+        if (installedOnly && !map.value(QStringLiteral("installed")).toBool())
+            continue;
+        if (!words.isEmpty()) {
+            const QString hay = QStringList{map.value(QStringLiteral("name")).toString(),
+                                            map.value(QStringLiteral("language")).toString(),
+                                            map.value(QStringLiteral("languageName")).toString(),
+                                            map.value(QStringLiteral("engine")).toString(),
+                                            map.value(QStringLiteral("gender")).toString(),
+                                            map.value(QStringLiteral("grade")).toString(),
+                                            map.value(QStringLiteral("quality")).toString()}
+                                    .join(QLatin1Char(' '))
+                                    .toLower();
+            const bool match = std::all_of(words.cbegin(), words.cend(),
+                                           [&hay](const QString &word) { return hay.contains(word); });
+            if (!match)
+                continue;
+        }
+        result.append(map);
+    }
+    return result;
+}
+
+QVariantList VoicePacks::languages() const {
+    struct LangInfo {
+        QString code;
+        QString name;
+        int count = 0;
+        int installed = 0;
+    };
+    QHash<QString, LangInfo> byBase;
+    for (const Voice &voice : m_voices) {
+        const QString base = baseOf(voice.language);
+        if (base.isEmpty())
+            continue;
+        LangInfo &info = byBase[base];
+        if (info.code.isEmpty()) {
+            info.code = base;
+            const QString native = QLocale(voice.language).nativeLanguageName();
+            info.name = native.isEmpty() ? base : native;
+        }
+        ++info.count;
+        if (engineInstalled() && isInstalled(voice.pack))
+            ++info.installed;
+    }
+    QList<LangInfo> list = byBase.values();
+    std::sort(list.begin(), list.end(), [](const LangInfo &a, const LangInfo &b) {
+        if ((a.installed > 0) != (b.installed > 0))
+            return a.installed > 0;
+        return a.name.localeAwareCompare(b.name) < 0;
+    });
+    QVariantList result;
+    result.reserve(list.size());
+    for (const LangInfo &info : std::as_const(list))
+        result.append(QVariantMap{{QStringLiteral("code"), info.code},
+                                  {QStringLiteral("name"), info.name},
+                                  {QStringLiteral("count"), info.count},
+                                  {QStringLiteral("installed"), info.installed}});
+    return result;
+}
+
 QVariantMap VoicePacks::offer(const QString &language) const {
     const QVariantList candidates = voices(language);
     if (candidates.isEmpty())

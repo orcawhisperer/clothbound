@@ -2,16 +2,19 @@
 
 #include "aiservices.h"
 #include "audiocache.h"
+#include "pdfbook.h"
 #include "reader.h"
 
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <algorithm>
 
 namespace {
 constexpr int maxDirectorPromptChars = 28000;
 constexpr double estimatedDirectorCost = 0.005;
+constexpr int maxPdfBatchPages = 8;
 }
 
 Director::Director(AiServices *ai, AudioCache *cache, Reader *reader, QObject *parent)
@@ -154,4 +157,95 @@ void Director::ask(int chapter, const QList<SpeechBlock> &blocks, const QString 
         m_cache->storeDirections(keptAs, text);
         done(parse(text, count));
     });
+}
+
+QPair<int, int> Director::pdfBatchRange(const Reader *reader, int page) {
+    if (!reader || reader->format() != QLatin1String("pdf") || reader->chapterCount() <= 0)
+        return {page, page};
+    const int pageCount = reader->chapterCount();
+    const int clamped = qBound(0, page, pageCount - 1);
+    QList<int> boundaries;
+    for (const QVariant &entry : reader->contents()) {
+        const int p = entry.toMap().value(QStringLiteral("chapter"), -1).toInt();
+        if (p >= 0 && p < pageCount)
+            boundaries.append(p);
+    }
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end()), boundaries.end());
+    int secStart = 0;
+    int secEnd = pageCount - 1;
+    for (int b : std::as_const(boundaries)) {
+        if (b <= clamped)
+            secStart = b;
+        else {
+            secEnd = b - 1;
+            break;
+        }
+    }
+    const int offset = clamped - secStart;
+    const int first = secStart + (offset / maxPdfBatchPages) * maxPdfBatchPages;
+    const int last = qMin(secEnd, first + maxPdfBatchPages - 1);
+    return {first, last};
+}
+
+QHash<int, QMap<int, QString>> Director::splitMoodsByPage(const QMap<int, QString> &combined,
+                                                          const QHash<int, QPair<int, int>> &ranges, int firstPage,
+                                                          int lastPage) {
+    QHash<int, QMap<int, QString>> byPage;
+    QString carryMood;
+    for (int p = firstPage; p <= lastPage; ++p) {
+        QMap<int, QString> pageMoods;
+        const auto [start, count] = ranges.value(p, {0, 0});
+        if (count > 0) {
+            if (!carryMood.isEmpty())
+                pageMoods.insert(0, carryMood);
+            for (auto it = combined.lowerBound(start); it != combined.end() && it.key() < start + count; ++it)
+                pageMoods.insert(it.key() - start, it.value());
+            carryMood = Speech::moodAt(combined, start + count - 1);
+        }
+        byPage.insert(p, pageMoods);
+    }
+    return byPage;
+}
+
+Director::PdfBatch Director::buildPdfBatch(int page) const {
+    PdfBatch batch;
+    const auto [first, last] = pdfBatchRange(m_reader, page);
+    batch.firstPage = first;
+    batch.lastPage = last;
+    if (!m_reader || m_reader->format() != QLatin1String("pdf"))
+        return batch;
+    for (int p = first; p <= last; ++p) {
+        const QJsonArray arr = PdfBook::speakable(m_reader->pdfPageText(p), m_reader->title());
+        const QList<SpeechBlock> pageBlocks =
+            Speech::parseBlocks(QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact)));
+        batch.ranges.insert(p, {int(batch.blocks.size()), int(pageBlocks.size())});
+        batch.blocks.append(pageBlocks);
+    }
+    return batch;
+}
+
+std::optional<QHash<int, QMap<int, QString>>> Director::keptPdfBatch(int page, const QString &performance) const {
+    const PdfBatch batch = buildPdfBatch(page);
+    const auto combined = kept(batch.firstPage, batch.blocks, performance);
+    if (!combined)
+        return std::nullopt;
+    return splitMoodsByPage(*combined, batch.ranges, batch.firstPage, batch.lastPage);
+}
+
+void Director::askPdfBatch(int page, const QString &performance, QObject *context,
+                           std::function<void(const QHash<int, QMap<int, QString>> &byPage)> done) {
+    const PdfBatch batch = buildPdfBatch(page);
+    if (batch.blocks.isEmpty()) {
+        QHash<int, QMap<int, QString>> empty;
+        for (int p = batch.firstPage; p <= batch.lastPage; ++p)
+            empty.insert(p, {});
+        done(empty);
+        return;
+    }
+    ask(batch.firstPage, batch.blocks, performance, context,
+        [ranges = batch.ranges, first = batch.firstPage, last = batch.lastPage,
+         done = std::move(done)](const QMap<int, QString> &combined) {
+            done(splitMoodsByPage(combined, ranges, first, last));
+        });
 }

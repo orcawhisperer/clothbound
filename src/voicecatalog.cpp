@@ -553,8 +553,10 @@ void VoiceCatalog::design(const QVariantMap &proposal) {
     Ai::VoiceDesign design;
     design.name = proposal.value("name").toString().simplified();
     design.description = proposal.value("description").toString().simplified();
-    design.gender = proposal.value("gender").toString();
-    design.language = proposal.value("language").toString();
+    design.gender = proposal.value("gender").toString().trimmed().toLower();
+    if (design.gender != QLatin1String("male") && design.gender != QLatin1String("female"))
+        design.gender.clear();
+    design.language = proposal.value("language").toString().trimmed();
     if (design.description.isEmpty())
         return;
     if (design.name.isEmpty())
@@ -562,7 +564,10 @@ void VoiceCatalog::design(const QVariantMap &proposal) {
     if (m_castingReply)
         m_castingReply->abort();
     stopPreview();
-    m_proposal = proposal;
+    m_proposal = QVariantMap{{"name", design.name},
+                             {"description", design.description},
+                             {"gender", design.gender},
+                             {"language", design.language}};
     setCasting(QStringLiteral("designing"));
     Ai::Reply *reply = m_ai->voiceDesigner()->design(design);
     m_ai->track(reply);

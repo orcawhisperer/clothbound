@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QList>
 #include <QObject>
 #include <QPointer>
 #include <QStringList>
@@ -36,6 +37,8 @@ public:
     // The download's chapters, as an M4B in ~/Music/Dogear.
     Q_INVOKABLE void save();
     Q_INVOKABLE void cancel();
+    // Opens the file manager highlighting the last saved M4B file.
+    Q_INVOKABLE void revealSaved() const;
 
     // ffmpeg's metadata file: the book and its chapters (title, start and
     // end in milliseconds), escaped as ffmpeg wants.
@@ -52,6 +55,14 @@ signals:
     void changed();
 
 private:
+    struct PrepJob {
+        QString inputPath;  // source file to normalize, or empty for silence PCM
+        int pauseMs = 0;    // >0 when synthesizing silence
+        QString outputPath;
+    };
+
+    void runNextPrep();
+    void startMux();
     void fail(const QString &problem);
     void cleanupWork();
 
@@ -65,6 +76,14 @@ private:
     QString m_problem;
     QString m_saved;
     QString m_partial;
+    QString m_target;
+    QString m_ffmpegPath;
+    QStringList m_files;
+    QList<Chapter> m_chapters;
+    QList<PrepJob> m_prepQueue;
+    int m_prepTotal = 0;
+    int m_prepDone = 0;
+    bool m_cancelled = false;
     QByteArray m_stdoutBuf;
     std::unique_ptr<QTemporaryDir> m_work;
     QPointer<QProcess> m_ffmpeg;

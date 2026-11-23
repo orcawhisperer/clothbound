@@ -78,6 +78,11 @@ public:
     // Built-in voices that speak a language ("en-GB", "de"; "" for all),
     // installed or not: the ones installed, then the recommended, first.
     Q_INVOKABLE QVariantList voices(const QString &language) const;
+    // Fast search & filter across built-in voices (for virtualized VoicePanel).
+    Q_INVOKABLE QVariantList searchVoices(const QString &query, const QString &language = {},
+                                          bool installedOnly = false) const;
+    // Unique languages offered by built-in packs: {code, name, count, installed}.
+    Q_INVOKABLE QVariantList languages() const;
     Q_INVOKABLE QVariantMap voice(const QString &id) const;
     // The best voice to download for a book in `language`, with what it
     // takes: {voice, bytes, titles}; empty when no built-in voice speaks it.
