@@ -1,6 +1,9 @@
 #include "booksearch.h"
 
 #include "epubbook.h"
+#include "aiservices.h"
+#include "companion.h"
+#include "passageindex.h"
 #include "pdfbook.h"
 #include "reader.h"
 
@@ -95,6 +98,10 @@ QVariantMap BookSearch::hit(const QString &text, int chapter, qint64 start, qint
 }
 
 void BookSearch::find(const QString &query) {
+    if (m_byMeaning) {
+        findByMeaning(query);
+        return;
+    }
     const QString wanted = query.simplified();
     if (wanted == m_query && (m_searching || !m_results.isEmpty()))
         return;
@@ -196,4 +203,111 @@ QVariantList BookSearch::inChapter(int chapter) const {
             spans.append(QVariantMap{{"start", hit.value("start")}, {"end", hit.value("end")}});
     }
     return spans;
+}
+
+// --- By meaning -----------------------------------------------------------------
+
+void BookSearch::setMeaning(AiServices *ai, const QString &databaseConnection) {
+    m_ai = ai;
+    m_index = new PassageIndex(ai, databaseConnection, this);
+    connect(ai, &AiServices::changed, this, &BookSearch::changed);
+    connect(ai, &AiServices::routingChanged, this, &BookSearch::changed);
+}
+
+bool BookSearch::canSearchByMeaning() const { return m_ai && m_ai->embedder(); }
+
+QString BookSearch::where() const { return m_ai ? m_ai->whereFor(QStringLiteral("search")) : QString(); }
+
+void BookSearch::setByMeaning(bool byMeaning) {
+    if (byMeaning == m_byMeaning)
+        return;
+    m_byMeaning = byMeaning;
+    const QString again = m_query;
+    clear();
+    emit changed();
+    if (!again.isEmpty())
+        find(again);
+}
+
+void BookSearch::findByMeaning(const QString &query) {
+    const QString wanted = query.trimmed();
+    if (m_cancel)
+        *m_cancel = true;
+    m_query = wanted;
+    m_results.clear();
+    m_current = -1;
+    m_capped = false;
+    const int run = ++m_meaningRun;
+    if (wanted.size() < 3 || !canSearchByMeaning() || m_reader->bookPath().isEmpty()) {
+        m_searching = false;
+        emit changed();
+        emit currentChanged();
+        return;
+    }
+    m_searching = true;
+    m_preparing.clear();
+    emit changed();
+    emit currentChanged();
+    const QString path = m_reader->bookPath();
+    const QString format = m_reader->format();
+    const int bookId = m_reader->bookId();
+    QPointer<BookSearch> self(this);
+    QThreadPool::globalInstance()->start([self, path, format, run, wanted, bookId] {
+        // The whole book, as search sees it.
+        const QList<Companion::Chapter> chapters = Companion::textUpTo(path, format, 1 << 30, -1);
+        QMetaObject::invokeMethod(
+            qApp,
+            [self, chapters, run, wanted, bookId] {
+                if (!self || run != self->m_meaningRun)
+                    return;
+                QList<PassageIndex::Passage> passages;
+                QHash<int, QString> texts;
+                for (const Companion::Chapter &chapter : chapters) {
+                    passages += PassageIndex::split(chapter.index, chapter.text);
+                    texts.insert(chapter.index, chapter.text);
+                }
+                const auto search = [self, run, wanted, bookId, passages, texts] {
+                    self->m_index->search(bookId, passages, wanted, 25, [self, run, texts](const QList<PassageIndex::Hit> &hits, bool) {
+                        if (!self || run != self->m_meaningRun)
+                            return;
+                        for (const PassageIndex::Hit &found : hits) {
+                            QVariantMap hit = BookSearch::hit(texts.value(found.passage.chapter), found.passage.chapter,
+                                                              found.passage.start, qMin(found.passage.end, found.passage.start + 160));
+                            hit.insert(QStringLiteral("score"), found.score);
+                            self->m_results.append(hit);
+                        }
+                        self->m_searching = false;
+                        self->m_preparing.clear();
+                        emit self->changed();
+                        emit self->currentChanged();
+                    });
+                };
+                if (self->m_index->indexed(bookId) >= passages.size()) {
+                    search();
+                    return;
+                }
+                self->m_preparing = tr("Reading the book for meaning…");
+                emit self->changed();
+                self->m_index->build(
+                    bookId, passages,
+                    [self, run](double share) {
+                        if (!self || run != self->m_meaningRun)
+                            return;
+                        self->m_preparing = tr("Reading the book for meaning… %1%").arg(qRound(share * 100));
+                        emit self->changed();
+                    },
+                    [self, run, search](const QString &problem) {
+                        if (!self || run != self->m_meaningRun)
+                            return;
+                        if (!problem.isEmpty()) {
+                            self->m_preparing = problem;
+                            self->m_searching = false;
+                            emit self->changed();
+                            return;
+                        }
+                        search();
+                    });
+            },
+            Qt::QueuedConnection);
+    });
 }

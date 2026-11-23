@@ -118,15 +118,43 @@ FocusScope {
                 Label {
                     anchors.verticalCenter: parent.verticalCenter
                     visible: !parent.text
-                    text: qsTr("Search in the book")
+                    text: bookSearch.byMeaning ? qsTr("Describe what you're looking for") : qsTr("Search in the book")
                     color: bar.look.muted
                     font.pixelSize: 15
                 }
             }
+            // Words, or meaning.
+            AbstractButton {
+                id: meaning
+                visible: bookSearch.canSearchByMeaning
+                implicitHeight: 26
+                implicitWidth: meaningLabel.implicitWidth + 18
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+                onClicked: bookSearch.byMeaning = !bookSearch.byMeaning
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: qsTr("Find passages by what they're about, not their words. %1.").arg(bookSearch.where)
+                background: Rectangle {
+                    radius: 13
+                    color: bookSearch.byMeaning ? Ui.tint(bar.look.link, 0.22) : meaning.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
+                    border.width: 1
+                    border.color: bookSearch.byMeaning ? bar.look.link : Ui.tint(bar.look.fg, 0.2)
+                }
+                contentItem: Label {
+                    id: meaningLabel
+                    text: qsTr("By meaning")
+                    color: bookSearch.byMeaning ? bar.look.fg : bar.look.muted
+                    font.pixelSize: 12
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
             Label {
-                text: bookSearch.searching ? qsTr("Searching…")
+                text: bookSearch.preparing !== "" ? bookSearch.preparing
+                    : bookSearch.searching ? qsTr("Searching…")
                     : bookSearch.query.length < 2 ? ""
-                    : bookSearch.count === 0 ? qsTr("Not found")
+                    : bookSearch.count === 0 ? (bookSearch.byMeaning && bookSearch.query.length < 3 ? "" : qsTr("Not found"))
                     : bookSearch.current >= 0 && translator.language !== ""
                       ? qsTr("%1 of %2").arg((bookSearch.current + 1).toLocaleString(Qt.locale(), 'f', 0))
                                         .arg(bookSearch.count.toLocaleString(Qt.locale(), 'f', 0) + (bookSearch.capped ? "+" : ""))

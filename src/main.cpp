@@ -213,6 +213,7 @@ int main(int argc, char *argv[]) {
     Mpris mpris(&narration, &reader, &library);
     Download download(&ai, &audioCache, &reader, &narration);
     BookSearch bookSearch(&reader);
+    bookSearch.setMeaning(&ai, library.database().connectionName());
     Marks marks(&library);
     Companion companion(&ai, &reader, library.database().connectionName());
     QObject::connect(&reader, &Reader::bookChanged, &marks, [&marks, &reader] { marks.setBook(reader.bookId()); });

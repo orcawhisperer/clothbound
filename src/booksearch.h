@@ -7,6 +7,8 @@
 #include <atomic>
 #include <memory>
 
+class AiServices;
+class PassageIndex;
 class Reader;
 
 // Finding words in the open book. Every chapter's text is searched the way
@@ -24,6 +26,12 @@ class BookSearch : public QObject {
     // Each hit: {chapter, start, end, before, match, after}.
     Q_PROPERTY(QVariantList results READ results NOTIFY changed)
     Q_PROPERTY(int current READ current WRITE setCurrent NOTIFY currentChanged)
+    // Searching by meaning: passages close to what's described, not words.
+    Q_PROPERTY(bool byMeaning READ byMeaning WRITE setByMeaning NOTIFY changed)
+    Q_PROPERTY(bool canSearchByMeaning READ canSearchByMeaning NOTIFY changed)
+    // While a book is read for meaning the first time: "Reading the book… 40%".
+    Q_PROPERTY(QString preparing READ preparing NOTIFY changed)
+    Q_PROPERTY(QString where READ where NOTIFY changed)
 
 public:
     static constexpr int limit = 2000;
@@ -44,6 +52,13 @@ public:
     // The hits in a chapter, as {start, end} spans for highlighting.
     Q_INVOKABLE QVariantList inChapter(int chapter) const;
 
+    void setMeaning(AiServices *ai, const QString &databaseConnection);
+    bool byMeaning() const { return m_byMeaning; }
+    void setByMeaning(bool byMeaning);
+    bool canSearchByMeaning() const;
+    QString preparing() const { return m_preparing; }
+    QString where() const;
+
     // Lowercase, without accents, with plain quotes and dashes, and the same
     // length, so offsets in it are offsets in the text.
     static QString fold(const QString &text);
@@ -57,7 +72,14 @@ signals:
     void currentChanged();
 
 private:
+    void findByMeaning(const QString &query);
+
     Reader *m_reader;
+    AiServices *m_ai = nullptr;
+    PassageIndex *m_index = nullptr;
+    bool m_byMeaning = false;
+    QString m_preparing;
+    int m_meaningRun = 0;
     QString m_query;
     bool m_searching = false;
     bool m_capped = false;
