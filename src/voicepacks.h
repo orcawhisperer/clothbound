@@ -66,6 +66,8 @@ public:
     ~VoicePacks() override;
 
     static QString currentArchitecture();
+    // Human-friendly regional accent label for a BCP-47 language tag and voice id.
+    static QString accentFor(const QString &language, const QString &voiceId = {});
     bool supported() const { return !m_engine.url.isEmpty(); }
     bool engineInstalled() const { return isInstalled(m_engine.id); }
     bool busy() const { return m_download || m_unpacking || !m_queue.isEmpty(); }

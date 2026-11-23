@@ -35,6 +35,7 @@ class Narration : public QObject {
     Q_PROPERTY(bool following READ following WRITE setFollowing NOTIFY stateChanged)
     Q_PROPERTY(QString voice READ voice NOTIFY voiceChanged)
     Q_PROPERTY(QString voiceName READ voiceName NOTIFY voiceChanged)
+    Q_PROPERTY(QString voiceAccent READ voiceAccent NOTIFY voiceChanged)
     Q_PROPERTY(double rate READ rate WRITE setRate NOTIFY rateChanged)
     // How the book is performed: "plain" (an even reading, no direction),
     // "natural" (the mood follows the scene, never acted; the default), or
@@ -45,6 +46,8 @@ class Narration : public QObject {
     Q_PROPERTY(qint64 sentenceStart READ sentenceStart NOTIFY positionChanged)
     Q_PROPERTY(qint64 sentenceEnd READ sentenceEnd NOTIFY positionChanged)
     Q_PROPERTY(int minutesLeftInChapter READ minutesLeftInChapter NOTIFY positionChanged)
+    Q_PROPERTY(qint64 positionUs READ positionUs NOTIFY timeChanged)
+    Q_PROPERTY(qint64 durationUs READ durationUs NOTIFY timeChanged)
     Q_PROPERTY(int sleepMinutes READ sleepMinutes NOTIFY sleepChanged)
     Q_PROPERTY(int sleepSecondsLeft READ sleepSecondsLeft NOTIFY sleepChanged)
     Q_PROPERTY(bool sleepFading READ sleepFading NOTIFY sleepChanged)
@@ -72,6 +75,8 @@ public:
     void setFollowing(bool following);
     QString voice() const { return m_voice; }
     QString voiceName() const { return m_voiceName; }
+    QString voiceAccent() const;
+    Library *library() const { return m_library; }
     double rate() const { return m_rate; }
     void setRate(double rate);
     double volume() const;
@@ -111,9 +116,9 @@ public:
     Q_INVOKABLE void nextSentence();
     Q_INVOKABLE void prevSentence();
     Q_INVOKABLE void skipSeconds(int delta);
-    // Relative and absolute seek in microseconds (used by skipSeconds and MPRIS2).
+    // Relative and absolute seek in microseconds (used by skipSeconds, scrubber, and MPRIS2).
     void seekByUs(qint64 deltaUs);
-    void seekToUs(qint64 targetUs);
+    Q_INVOKABLE void seekToUs(qint64 targetUs);
     // The voice for this book from now on (and the default for new books).
     Q_INVOKABLE void setVoice(const QString &id, const QString &name);
     Q_INVOKABLE void useFallbackVoice();
@@ -132,6 +137,7 @@ signals:
     void volumeChanged();
     void settingsChanged();
     void positionChanged();
+    void timeChanged();
     void seeked(qint64 positionUs);
     void sleepChanged();
     void problemChanged();
@@ -222,6 +228,8 @@ private:
     int m_current = -1;
     int m_queued = -1;
     qint64 m_currentSample = 0;
+    qint64 m_lastTimeEmitMs = 0;
+    qint64 m_lastReportedSec = -1;
     double m_samplesPerChar = 24000.0 / 15.0;
     qint64 m_holdSamples = 0;
     int m_sentence = -1;
