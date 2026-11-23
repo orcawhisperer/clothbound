@@ -7,6 +7,7 @@
 #include "gemini.h"
 #include "localmodels.h"
 #include "companion.h"
+#include "pdfpages.h"
 #include "systemcheck.h"
 #include "keystore.h"
 #include "cli.h"
@@ -256,6 +257,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty(
         "settingsUrl", QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
                                            QStringLiteral("/settings.ini")));
+    engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
     engine.load(QUrl("qrc:/Main.qml"));
     if (engine.rootObjects().isEmpty())
         return 1;

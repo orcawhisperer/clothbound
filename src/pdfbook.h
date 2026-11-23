@@ -2,6 +2,8 @@
 
 #include <QDateTime>
 #include <QImage>
+#include <QJsonArray>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 #include <memory>
@@ -39,6 +41,29 @@ public:
 
     // The page on white, scaled to `size` (or to `height` keeping its shape).
     QImage renderPage(int page, const QSize &size) const;
+
+    // --- Text, for search, marks, the companion, and listening ----------
+    // A page's text, as PDFium orders it; offsets into it are where things
+    // are on the page.
+    QString pageText(int page) const;
+    // The page's size in points.
+    QSizeF pageSize(int page) const;
+    // Where a stretch of the page's text is, as rectangles in parts of the
+    // page (0 to 1 across and down).
+    QList<QRectF> textRects(int page, qint64 start, qint64 end) const;
+    // The text between two points (parts of the page): {start, end, text}.
+    struct Selection {
+        qint64 start = -1;
+        qint64 end = -1;
+        QString text;
+    };
+    Selection select(int page, const QPointF &from, const QPointF &to) const;
+    // A page's paragraphs to read aloud, as the reading surface gives them
+    // ({start, end, text, kind}): lines joined, running heads and page
+    // numbers left out, words broken across lines mended.
+    static QJsonArray speakable(const QString &pageText, const QString &bookTitle = {});
+    // The printed page's own label ("xii", "47"), if the PDF has labels.
+    QString pageLabel(int page) const;
     QImage renderCover(int height) const;
 
 private:

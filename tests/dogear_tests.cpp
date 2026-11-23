@@ -23,6 +23,10 @@
 #include "localmodels.h"
 #include "companion.h"
 #include "passageindex.h"
+#include "pdfbook.h"
+#include "pdfpages.h"
+#include <QPdfWriter>
+#include <QPainter>
 #include "systemcheck.h"
 #include "instance.h"
 #include "keystore.h"
@@ -1419,6 +1423,79 @@ private slots:
         QCOMPARE(requests[0].toObject()["model"].toString(), QString("models/gemini-embedding-2"));
         QCOMPARE(requests[0].toObject()["taskType"].toString(), QString("RETRIEVAL_QUERY"));
         QCOMPARE(requests[1].toObject()["content"].toObject()["parts"].toArray()[0].toObject()["text"].toString(), QString("b"));
+    }
+
+    // --- PDFs ------------------------------------------------------------------
+
+    // A page's paragraphs to read aloud: the page number and running head
+    // left out, lines joined, a word broken across lines mended, and every
+    // offset still the page's.
+    void pdfPagesAreSpoken() {
+        const QString page = QString("12\r\nTHE TIME MACHINE\r\nThe Time Traveller was expounding a recon") + QChar(0xFFFE) +
+                             QString("\r\ndite matter to us, and the bright fire burned.\r\n"
+                                     "His grey eyes shone and twinkled, and his face\r\n"
+                                     "was flushed. Short end.\r\n\r\n"
+                                     "A second paragraph begins here and goes on a while.\r\n");
+        const QJsonArray blocks = PdfBook::speakable(page, "The Time Machine");
+        QCOMPARE(blocks.size(), 2);
+        const QJsonObject first = blocks[0].toObject();
+        const qint64 start = first["start"].toInteger(), end = first["end"].toInteger();
+        QVERIFY(page.mid(start).startsWith("The Time Traveller"));
+        QCOMPARE(first["text"].toString().size(), end - start);
+        QCOMPARE(Speech::speakable(first["text"].toString()).simplified(),
+                 QString("The Time Traveller was expounding a recondite matter to us, and the bright fire burned. "
+                         "His grey eyes shone and twinkled, and his face was flushed. Short end."));
+        QVERIFY(blocks[1].toObject()["text"].toString().startsWith("A second paragraph"));
+    }
+
+    // Text, where it is, and what's between two points, on a real PDF page.
+    void pdfTextIsPlaced() {
+        QTemporaryDir dir;
+        const QString path = dir.filePath("book.pdf");
+        {
+            QPdfWriter writer(path);
+            writer.setPageSize(QPageSize(QPageSize::A5));
+            writer.setResolution(72);
+            QPainter painter(&writer);
+            painter.setFont(QFont("DejaVu Serif", 14));
+            painter.drawText(QPointF(40, 80), "Weena was a little creature.");
+            painter.drawText(QPointF(40, 120), "The Morlocks came at night.");
+        }
+        PdfBook book(path);
+        QVERIFY(book.open());
+        const QString text = book.pageText(0);
+        QVERIFY2(text.contains("Morlocks"), qPrintable(text));
+        const qint64 at = text.indexOf("Morlocks");
+        const QList<QRectF> rects = book.textRects(0, at, at + 8);
+        QVERIFY(!rects.isEmpty());
+        QVERIFY(rects.first().y() > 0.15 && rects.first().y() < 0.25);  // the second line, near the top
+        QVERIFY(rects.first().x() > 0.05);
+        QRectF word;
+        for (const QRectF &rect : rects)
+            word = word.isNull() ? rect : word.united(rect);
+        const PdfBook::Selection chosen = book.select(0, QPointF(word.x() + 0.002, word.center().y()),
+                                                      QPointF(word.right() - 0.002, word.center().y()));
+        QVERIFY2(chosen.text.contains("Morlocks"), qPrintable(chosen.text));
+        QVERIFY(chosen.start >= 0);
+        // Cropping finds the text, not the empty page around it.
+        const QRectF box = PdfPages::contentBox(book.renderPage(0, QSize(300, 425)));
+        QVERIFY(box.x() > 0.05 && box.width() < 0.95 && box.height() < 0.3);
+    }
+
+    void pdfPagesTakeTheTheme() {
+        QImage page(4, 1, QImage::Format_RGB32);
+        page.setPixel(0, 0, qRgb(255, 255, 255));  // paper
+        page.setPixel(1, 0, qRgb(0, 0, 0));        // ink
+        page.setPixel(2, 0, qRgb(200, 30, 30));    // a red picture
+        page.setPixel(3, 0, qRgb(128, 128, 128));
+        PdfPages::recolor(page, QColor("#1e1f24"), QColor("#d6d2c9"));
+        QCOMPARE(QColor(page.pixel(0, 0)).name(), QString("#1e1f24"));
+        QCOMPARE(QColor(page.pixel(1, 0)).name(), QString("#d6d2c9"));
+        QVERIFY(QColor(page.pixel(2, 0)).red() > QColor(page.pixel(2, 0)).green() * 2);  // still red
+        QImage white(1, 1, QImage::Format_RGB32);
+        white.fill(Qt::white);
+        PdfPages::recolor(white, Qt::white, Qt::black);
+        QCOMPARE(QColor(white.pixel(0, 0)), QColor(Qt::white));
     }
 
     // The window doesn't wait for the keyring: the key arrives when it

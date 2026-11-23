@@ -37,7 +37,19 @@ FocusScope {
     Material.theme: look.dark ? Material.Dark : Material.Light
     Material.accent: look.link
 
+    readonly property bool pdf: reader.format === "pdf"
+    // The surface's calls (dogear.next(), …): the web page's for an EPUB,
+    // the PDF surface's (which answers the same calls) for a PDF.
     function js(code, callback) {
+        if (pdf) {
+            // (QML keeps "escape" and "marks" for its own: the surface calls them
+            // dismiss and setMarks.)
+            const call = code.replace("dogear.escape(", "dogear.dismiss(").replace("dogear.marks(", "dogear.setMarks(")
+            const result = (new Function("dogear", "return (" + call + ")"))(pdfSurface)
+            if (callback)
+                callback(result)
+            return
+        }
         if (callback)
             web.runJavaScript(code, callback)
         else
@@ -66,7 +78,7 @@ FocusScope {
         }
     }
     function openBook() {
-        if (!surfaceReady || !reader.open)
+        if (!reader.open || (!surfaceReady && !pdf))
             return
         js("dogear.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
            + JSON.stringify(style()) + ")")
@@ -98,6 +110,10 @@ FocusScope {
     }
     // Keys and the mouse go back to the page when what was open closes.
     function focusPage() {
+        if (pdf) {
+            pdfSurface.forceActiveFocus()
+            return
+        }
         if (!panelOpen)
             web.forceActiveFocus()
     }
@@ -111,7 +127,10 @@ FocusScope {
         noteEditor.close()
         if (searchBar.editing)
             searchBar.close()
-        web.forceActiveFocus()
+        if (pdf)
+            pdfSurface.forceActiveFocus()
+        else
+            web.forceActiveFocus()
     }
     function dismiss() {
         if (panelOpen) {
@@ -138,6 +157,11 @@ FocusScope {
         toast.show(qsTr("%1 theme").arg(Themes.name(settings.theme)))
     }
     function resize(step) {
+        // A PDF's text is its pages: it zooms.
+        if (pdf) {
+            pdfSurface.zoom = step === 0 ? 1 : Math.max(1, Math.min(4, pdfSurface.zoom * (step > 0 ? 1.15 : 1 / 1.15)))
+            return
+        }
         settings.fontScale = step === 0 ? 1.15 : Math.max(0.7, Math.min(2.0, Math.round((settings.fontScale + step) * 100) / 100))
     }
     function showContents() { contents.show() }
@@ -296,7 +320,8 @@ FocusScope {
         target: narration
         function onBlocksWanted(chapter) { view.js("dogear.requestSpeakable(" + chapter + ")") }
         function onSpeaking(chapter, start, end) {
-            if (chapter === reader.chapter)
+            // A PDF shows two pages at once and finds its own way to the page.
+            if (chapter === reader.chapter || view.pdf)
                 view.js("dogear.speak(" + start + "," + end + "," + narration.following + ")")
             else if (narration.following)
                 view.js("dogear.goTo({chapter:" + chapter + ",offset:" + start + ",instant:true,quiet:true})"
@@ -368,9 +393,19 @@ FocusScope {
         color: view.look.bg
     }
 
+    PdfSurface {
+        id: pdfSurface
+        anchors.fill: web
+        visible: view.pdf
+        look: view.look
+        focus: view.pdf
+    }
+
     WebEngineView {
         id: web
         anchors.fill: parent
+        opacity: view.pdf ? 0 : 1
+        enabled: !view.pdf
         profile: readerProfile
         backgroundColor: view.look.bg
         // Chromium only takes the mouse (selecting words, a tap on the

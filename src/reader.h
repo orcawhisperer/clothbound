@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QObject>
+#include <QRectF>
 #include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
@@ -9,6 +10,7 @@
 
 class BookScheme;
 class EpubBook;
+class PdfBook;
 class Library;
 
 // The book being read, between the window and the reading surface
@@ -44,6 +46,10 @@ class Reader : public QObject {
     Q_PROPERTY(int minutesLeftInBook READ minutesLeftInBook NOTIFY locationChanged)
     Q_PROPERTY(bool atStart READ atStart NOTIFY locationChanged)
     Q_PROPERTY(bool atEnd READ atEnd NOTIFY locationChanged)
+    // A PDF: the surface's image source for its pages, and the crop that
+    // cuts the margins the same on every page (parts of a page).
+    Q_PROPERTY(QString pdfSource READ pdfSource NOTIFY bookChanged)
+    Q_PROPERTY(QRectF pdfCrop READ pdfCrop NOTIFY pdfCropChanged)
 
 public:
     Reader(Library *library, BookScheme *scheme, QObject *parent = nullptr);
@@ -101,6 +107,20 @@ public:
     Q_INVOKABLE void openExternal(const QString &url);
     Q_INVOKABLE void keyPressed(const QString &key, int modifiers);
     Q_INVOKABLE void log(const QString &message);
+    // --- PDFs: a page is a chapter, its text's offsets the place on it -------
+    QString pdfSource() const { return m_pdf ? QStringLiteral("image://pdf/") + m_token : QString(); }
+    QRectF pdfCrop() const { return m_pdfCrop; }
+    // A page's size in points: {width, height}.
+    Q_INVOKABLE QVariantMap pdfPageSize(int page) const;
+    // The words between two points (parts of the page): {chapter, start, end, text}.
+    Q_INVOKABLE QVariantMap pdfSelect(int page, qreal x1, qreal y1, qreal x2, qreal y2) const;
+    // Where a stretch of a page's text is: [{x, y, width, height}] in parts of the page.
+    Q_INVOKABLE QVariantList pdfRects(int page, qint64 start, qint64 end) const;
+    Q_INVOKABLE QString pdfPageLabel(int page) const;
+    Q_INVOKABLE QString pdfPageText(int page) const;
+    // Reads a page's paragraphs aloud (the surface asks for them).
+    Q_INVOKABLE void pdfSpeakable(int page);
+
     // A chapter's blocks to read aloud, as JSON from the surface.
     Q_INVOKABLE void speakableReady(int chapter, const QString &blocks) { emit speakable(chapter, blocks); }
     // What the reader has selected on the page ({} when nothing is).
@@ -125,6 +145,7 @@ signals:
     void selected(const QVariantMap &selection);
     void markChosen(int id, const QVariantMap &rect);
     void listenRequested(int chapter, qint64 offset);
+    void pdfCropChanged();
 
 private:
     void savePosition();
@@ -135,6 +156,9 @@ private:
     Library *m_library;
     BookScheme *m_scheme;
     std::shared_ptr<EpubBook> m_book;
+    std::shared_ptr<PdfBook> m_pdf;
+    QRectF m_pdfCrop{0, 0, 1, 1};
+    bool openPdf(int bookId);
     qint64 m_pageEnd = 0;
     QString m_token;
     int m_bookId = 0;

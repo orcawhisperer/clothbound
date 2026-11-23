@@ -1,6 +1,7 @@
 #include "booksearch.h"
 
 #include "epubbook.h"
+#include "pdfbook.h"
 #include "reader.h"
 
 #include <QCoreApplication>
@@ -106,7 +107,7 @@ void BookSearch::find(const QString &query) {
     m_searching = false;
     const QString path = m_reader->bookPath();
     // A letter or two finds everything; it waits for a little more.
-    if (wanted.size() < 2 || path.isEmpty() || m_reader->format() != QStringLiteral("epub")) {
+    if (wanted.size() < 2 || path.isEmpty()) {
         emit changed();
         emit currentChanged();
         return;
@@ -119,14 +120,16 @@ void BookSearch::find(const QString &query) {
     m_cancel = cancel;
     const QString folded = fold(wanted);
     QPointer<BookSearch> self(this);
-    QThreadPool::globalInstance()->start([self, cancel, path, folded] {
+    const bool pdf = m_reader->format() == QStringLiteral("pdf");
+    QThreadPool::globalInstance()->start([self, cancel, path, folded, pdf] {
         // Its own copy of the book, so the page can go on reading from its own.
-        EpubBook book(path);
+        EpubBook book(pdf ? QString() : path);
+        PdfBook pages(pdf ? path : QString());
         int found = 0;
-        if (book.open()) {
-            const int chapters = int(book.spine().size());
+        if (pdf ? pages.open() : book.open()) {
+            const int chapters = pdf ? pages.pageCount() : int(book.spine().size());
             for (int chapter = 0; chapter < chapters && !*cancel && found < limit; ++chapter) {
-                const QString text = book.chapterText(chapter);
+                const QString text = pdf ? pages.pageText(chapter) : book.chapterText(chapter);
                 QVariantList hits;
                 for (const auto &[start, end] : matches(fold(text), folded, limit - found))
                     hits.append(hit(text, chapter, start, end));

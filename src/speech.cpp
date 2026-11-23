@@ -375,3 +375,11 @@ QByteArray pcm16(const QVector<float> &samples) {
     return out;
 }
 }
+
+QString Speech::speakable(const QString &text) {
+    QString out = text;
+    out.remove(QChar(0x00AD));
+    out.remove(QChar(0x200B));
+    out.remove(QChar(0xFFFE));
+    return out;
+}

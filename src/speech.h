@@ -74,6 +74,10 @@ QByteArray wav(const QByteArray &pcm, int sampleRate);
 // Samples at another rate (cubic interpolation, which is clean enough for
 // speech between 16 and 24 kHz).
 QVector<float> resample(const QVector<float> &samples, int from, int to);
+// Text as it's sent to a voice: without the soft hyphens and zero-width
+// spaces that mend words broken across a PDF's lines (they keep offsets
+// true on the page, but aren't spoken).
+QString speakable(const QString &text);
 // Samples between -1 and 1 as 16-bit PCM.
 QByteArray pcm16(const QVector<float> &samples);
 }

@@ -190,13 +190,14 @@ void Download::pump() {
         }
         Ai::SpeechRequest request;
         request.feature = QStringLiteral("download");
-        request.text = job.text;
+        request.text = Speech::speakable(job.text);
         request.style = job.style;
         request.voice = m_voice;
         request.economy = m_economy;
         request.stream = false;
         request.background = m_flex;
-        request.sentences = job.sentences;
+        for (const QString &sentence : job.sentences)
+            request.sentences.append(Speech::speakable(sentence));
         Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
         if (!speaker) {
             m_queue.prepend(job);

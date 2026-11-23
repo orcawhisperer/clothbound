@@ -429,13 +429,13 @@ void Narration::stallIfFailed() {
 void Narration::fetch(int index) {
     Clip &clip = m_clips[index];
     Ai::SpeechRequest request;
-    request.text = clip.text;
+    request.text = Speech::speakable(clip.text);
     request.style = clip.style;
     request.voice = m_voice;
     request.economy = m_economy;
     request.stream = true;
     for (const SpeechSentence &sentence : std::as_const(clip.sentences))
-        request.sentences.append(sentence.text);
+        request.sentences.append(Speech::speakable(sentence.text));
     Ai::Reply *reply = speaker()->synthesize(request);
     m_ai->track(reply);
     clip.reply = reply;
