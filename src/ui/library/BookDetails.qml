@@ -391,6 +391,77 @@ FocusScope {
                             return idx > 0 ? (s + " · #" + (Math.floor(idx) === idx ? Math.floor(idx) : idx)) : s
                         }
                     }
+
+                    Fact {
+                        text: qsTr("Citation")
+                        visible: details.bookId > 0 && (details.book.title || "") !== ""
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    Row {
+                        visible: details.bookId > 0 && (details.book.title || "") !== ""
+                        Layout.fillWidth: true
+                        spacing: 6
+
+                        component CitePill: AbstractButton {
+                            id: citePill
+                            property string styleName
+                            property string copiedMessage
+                            implicitHeight: 26
+                            implicitWidth: citePillRow.implicitWidth + 16
+                            hoverEnabled: true
+                            focusPolicy: Qt.TabFocus
+                            Accessible.name: qsTr("Copy %1 citation").arg(text)
+                            onClicked: {
+                                const cited = reader.formatBookCitation(details.book, styleName)
+                                if (cited !== "") {
+                                    reader.copyText(cited)
+                                    toast.show(copiedMessage)
+                                }
+                            }
+                            background: Rectangle {
+                                radius: Ui.radius(13, theme.radius)
+                                color: citePill.pressed ? Ui.tint(theme.ink1, 0.12)
+                                     : citePill.hovered ? Ui.tint(theme.ink1, 0.08) : Ui.tint(theme.ink1, 0.04)
+                                border.width: citePill.visualFocus ? 2 : 1
+                                border.color: citePill.visualFocus ? theme.accent : Ui.tint(theme.ink1, 0.12)
+                                Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 90 } }
+                            }
+                            contentItem: Item {
+                                Row {
+                                    id: citePillRow
+                                    anchors.centerIn: parent
+                                    spacing: 5
+                                    Glyph {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 11.5
+                                        height: 11.5
+                                        stroke: 2
+                                        path: Icons.copy
+                                        color: theme.ink3
+                                    }
+                                    Label {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: citePill.text
+                                        color: theme.ink1
+                                        font.pixelSize: 12
+                                        font.weight: Font.Medium
+                                    }
+                                }
+                            }
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        }
+
+                        CitePill {
+                            text: "BibTeX"
+                            styleName: "bibtex"
+                            copiedMessage: qsTr("Copied BibTeX")
+                        }
+                        CitePill {
+                            text: "APA"
+                            styleName: "apa"
+                            copiedMessage: qsTr("Copied APA")
+                        }
+                    }
                 }
 
                 // Collections membership with color swatches.

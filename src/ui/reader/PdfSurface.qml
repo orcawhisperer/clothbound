@@ -41,8 +41,24 @@ Item {
     property var speaking: ({ chapter: -1, start: 0, end: 0 })
     property var selection: null   // {chapter, start, end, text}
     property int marksVersion: 0
+    property bool snipMode: false
+    readonly property bool peekOpen: peekCard.open
 
     signal contextMenuRequested(real x, real y)
+    signal snipActionTriggered(string action, string base64Png, int pageIndex, string customPrompt)
+
+    onSnipModeChanged: {
+        if (snipMode) {
+            closePeek()
+            if (selection) {
+                selection = null
+                reader.selectionChanged({})
+            }
+            snipOverlay.resetRect()
+        } else {
+            snipOverlay.resetRect()
+        }
+    }
 
     readonly property string colors: originalColors ? ""
                                      : ("?bg=" + encodeURIComponent(look ? look.bg : "#ffffff")
@@ -65,6 +81,8 @@ Item {
         foundVersion++
         selection = null
         speaking = { chapter: -1, start: 0, end: 0 }
+        cancelSnip()
+        closePeek()
         spreadRow.resetSlots()
         goTo(Object.assign({}, position || ({ chapter: 0 }), { quiet: true, instant: true }))
         return Promise.resolve(true)
@@ -153,7 +171,36 @@ Item {
     }
     function listeningStart() { return { chapter: current, offset: 0 } }
     function clearSelection() { selection = null }
+    function cancelSnip() {
+        snipOverlay.resetRect()
+        if (snipMode)
+            snipMode = false
+    }
+    function closePeek() {
+        peekCard.open = false
+    }
+    function openPeek(destPage, destY, anchorRect) {
+        if (destPage === undefined || destPage < 0)
+            return
+        const data = reader.peekPdfDestination(destPage, destY !== undefined ? destY : -1.0)
+        if (!data || data.page === undefined) {
+            goTo({ chapter: destPage, recordHistory: true })
+            return
+        }
+        peekCard.peekInfo = data
+        peekCard.anchorRect = anchorRect
+        peekCard.open = true
+        peekCard.place()
+    }
     function dismiss() {
+        if (snipMode) {
+            cancelSnip()
+            return true
+        }
+        if (peekCard.open) {
+            closePeek()
+            return true
+        }
         if (selection) {
             selection = null
             reader.selectionChanged({})
@@ -214,6 +261,9 @@ Item {
         return spread && first > 0 && first + 1 < count ? [first, first + 1] : [first]
     }
     function show(page, automated, dir, animate) {
+        closePeek()
+        if (snipMode)
+            cancelSnip()
         current = Math.max(0, Math.min(count - 1, page))
         if (scrolling)
             pageList.positionViewAtIndex(current, ListView.Beginning)
@@ -245,14 +295,22 @@ Item {
                            automated: !!automated,
                            snippet: reader.pdfPageText(page).replace(/\s+/g, " ").slice(0, 120) })
     }
+    // Active Page components currently shown on screen (in both spread and scroll modes).
+    function visiblePageItems() {
+        if (scrolling) {
+            const out = []
+            for (let i = 0; i < pageList.count; ++i) {
+                const del = pageList.itemAtIndex(i)
+                if (del && del.pageItem && del.pageItem.visible && del.pageItem.page >= 0)
+                    out.push(del.pageItem)
+            }
+            return out
+        }
+        return spreadRow.activePageItems().filter(p => p && p.visible && p.page >= 0)
+    }
     // The page under a point of the surface, and where on it (0 to 1).
     function pageAt(x, y) {
-        const items = scrolling
-            ? Array.from({ length: pageList.count }, (_, i) => pageList.itemAtIndex(i))
-            : spreadRow.activePageItems()
-        for (const item of items) {
-            if (!item || item.page === undefined || item.page < 0 || !item.visible)
-                continue
+        for (const item of visiblePageItems()) {
             const at = item.mapFromItem(surface, x, y)
             if (at.x >= 0 && at.y >= 0 && at.x <= item.width && at.y <= item.height)
                 return { page: item.page, x: item.toPageX(at.x), y: item.toPageY(at.y), item: item }
@@ -679,7 +737,7 @@ Item {
                     return hoveredLink.url.replace(/^https?:\/\//, "").split("/")[0]
                 if (hoveredLink.page >= 0) {
                     const lbl = reader.pdfPageLabel(hoveredLink.page)
-                    return qsTr("Go to p. %1").arg(lbl !== "" ? lbl : String(hoveredLink.page + 1))
+                    return qsTr("Peek p. %1 · Ctrl+click to jump").arg(lbl !== "" ? lbl : String(hoveredLink.page + 1))
                 }
                 return ""
             }
@@ -768,7 +826,8 @@ Item {
                             reader.markClicked(mark.id, { x: at.x, y: at.y, width: r.width * whole.width, height: r.height * whole.height })
                             return
                         }
-                // Clickable PDF link: external URL or internal page jump with history.
+                // Clickable PDF link: external URL, or internal citation/figure Quick-Look peek
+                // (Ctrl+click or Shift+click jumps immediately with history).
                 const link = pageItem.linkAt(x, y)
                 if (link) {
                     if (link.url && link.url !== "") {
@@ -776,7 +835,19 @@ Item {
                         return
                     }
                     if (link.page >= 0) {
-                        surface.goTo({ chapter: link.page, recordHistory: true })
+                        if ((event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)) !== 0) {
+                            surface.closePeek()
+                            surface.goTo({ chapter: link.page, recordHistory: true })
+                        } else {
+                            const at = whole.mapToItem(surface, link.x * whole.width, link.y * whole.height)
+                            const destY = link.destY !== undefined ? link.destY : -1.0
+                            surface.openPeek(link.page, destY, {
+                                x: at.x,
+                                y: at.y,
+                                width: Math.max(16, link.width * whole.width),
+                                height: Math.max(14, link.height * whole.height)
+                            })
+                        }
                         return
                     }
                 }
@@ -1027,7 +1098,7 @@ Item {
         }
         WheelHandler {
             id: spreadWheel
-            enabled: surface.zoom <= 1.01
+            enabled: surface.zoom <= 1.01 && !surface.snipMode && !surface.peekOpen
             acceptedModifiers: Qt.NoModifier
             property real gathered: 0
             property double quietUntil: 0
@@ -1098,6 +1169,7 @@ Item {
         delegate: Item {
             required property int index
             readonly property int page: index
+            readonly property alias pageItem: inner
             width: pageList.width
             height: inner.height
             function toPageX(x) { return inner.toPageX(x - inner.x) }
@@ -1123,7 +1195,717 @@ Item {
         }
     }
 
+    // --- Zero-Jump Citation & Figure Peek Card (Apple Quick-Look) ----------------
+    MouseArea {
+        id: peekBackdrop
+        anchors.fill: parent
+        z: 19
+        visible: peekCard.open
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        onPressed: (event) => {
+            event.accepted = true
+            surface.closePeek()
+        }
+        onWheel: (wheel) => wheel.accepted = true
+    }
+
+    Rectangle {
+        id: peekCard
+        z: 20
+        property bool open: false
+        property var peekInfo: ({})
+        property var anchorRect: null
+        property real reveal: open ? 1 : 0
+        readonly property string pageLabelText: peekInfo && peekInfo.pageLabel !== undefined && peekInfo.pageLabel !== ""
+                                                ? String(peekInfo.pageLabel)
+                                                : (peekInfo && peekInfo.page !== undefined ? String(peekInfo.page + 1) : "")
+        readonly property bool hasImage: !!(peekInfo && peekInfo.imageDataUrl && peekInfo.imageDataUrl !== "")
+
+        Behavior on reveal {
+            NumberAnimation {
+                duration: theme.reducedMotion ? 70 : 160
+                easing.type: Easing.OutCubic
+            }
+        }
+        visible: reveal > 0.01
+        opacity: reveal
+        scale: theme.reducedMotion ? 1.0 : (0.96 + 0.04 * reveal)
+        transformOrigin: Item.Top
+        width: Math.min(460, Math.max(280, surface.width - 32))
+        height: peekCol.implicitHeight
+        radius: Ui.radius(14, theme.radius)
+        color: surface.look ? surface.look.popover : "#FDFAF3"
+        border.width: 1
+        border.color: surface.look && surface.look.dark ? Qt.rgba(1, 1, 1, 0.11) : (surface.look ? surface.look.line : "#D8D2C6")
+
+        function place() {
+            const margin = 14
+            const w = Math.max(200, width)
+            const h = Math.max(120, height)
+            const maxX = Math.max(margin, surface.width - w - margin)
+            const maxY = Math.max(margin, surface.height - h - margin)
+            if (!anchorRect) {
+                x = Math.max(margin, Math.min(maxX, (surface.width - w) / 2))
+                y = Math.max(margin, Math.min(maxY, (surface.height - h) / 2))
+                return
+            }
+            const cx = anchorRect.x + (anchorRect.width || 0) / 2
+            x = Math.max(margin, Math.min(maxX, cx - w / 2))
+            const below = anchorRect.y + (anchorRect.height || 0) + 10
+            const above = anchorRect.y - h - 10
+            if (below + h <= surface.height - margin)
+                y = Math.max(margin, below)
+            else if (above >= margin)
+                y = Math.min(maxY, above)
+            else
+                y = Math.max(margin, Math.min(maxY, below))
+        }
+
+        onWidthChanged: if (open) place()
+        onHeightChanged: if (open) place()
+        Connections {
+            target: surface
+            function onWidthChanged() {
+                if (peekCard.open)
+                    peekCard.place()
+                if (snipOverlay.actionBarOpen)
+                    snipBar.place()
+            }
+            function onHeightChanged() {
+                if (peekCard.open)
+                    peekCard.place()
+                if (snipOverlay.actionBarOpen)
+                    snipBar.place()
+            }
+        }
+
+        // Soft feathered two-layer drop shadow.
+        Rectangle {
+            z: -2
+            anchors.fill: parent
+            anchors.leftMargin: -6
+            anchors.rightMargin: -6
+            anchors.topMargin: 10
+            anchors.bottomMargin: -18
+            radius: parent.radius > 0 ? parent.radius + 5 : 0
+            color: "black"
+            opacity: surface.look && surface.look.dark ? 0.42 : 0.12
+        }
+        Rectangle {
+            z: -1
+            anchors.fill: parent
+            anchors.topMargin: 4
+            anchors.bottomMargin: -6
+            radius: parent.radius
+            color: "black"
+            opacity: surface.look && surface.look.dark ? 0.30 : 0.08
+        }
+
+        // Absorb clicks and wheel events on the card itself.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onWheel: (wheel) => wheel.accepted = true
+        }
+
+        Column {
+            id: peekCol
+            width: parent.width
+            spacing: 0
+
+            // Header: Page N · Reference / Figure preview + close button.
+            Item {
+                width: parent.width
+                height: 40
+
+                Row {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 14
+                    anchors.right: peekCloseBtn.left
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 6
+
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Page %1").arg(peekCard.pageLabelText)
+                        color: surface.look ? surface.look.fg : "#26221D"
+                        font.pixelSize: 13
+                        font.weight: Font.DemiBold
+                        font.features: ({ "tnum": 1 })
+                    }
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "·"
+                        color: surface.look ? surface.look.muted : "#6E665A"
+                        font.pixelSize: 12
+                    }
+                    Label {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: qsTr("Reference / Figure preview")
+                        color: surface.look ? surface.look.muted : "#6E665A"
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                        width: Math.max(40, parent.width - 96)
+                    }
+                }
+
+                IconButton {
+                    id: peekCloseBtn
+                    anchors.right: parent.right
+                    anchors.rightMargin: 8
+                    anchors.verticalCenter: parent.verticalCenter
+                    implicitWidth: 26
+                    implicitHeight: 26
+                    tabFocusable: false
+                    look: surface.look
+                    glyph: Icons.close
+                    tone: surface.look ? surface.look.muted : "#6E665A"
+                    tip: qsTr("Dismiss (Esc)")
+                    onClicked: surface.closePeek()
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: surface.look && surface.look.dark ? Qt.rgba(1, 1, 1, 0.08) : (surface.look ? surface.look.line : "#E2DCD0")
+            }
+
+            // Body: theme-aware paper frame holding the live-cropped destination PNG.
+            Item {
+                width: parent.width
+                height: peekBodyInner.implicitHeight + 20
+
+                Column {
+                    id: peekBodyInner
+                    x: 12
+                    y: 10
+                    width: parent.width - 24
+                    spacing: 8
+
+                    Rectangle {
+                        visible: peekCard.hasImage
+                        width: parent.width
+                        readonly property real naturalRatio: peekImage.implicitWidth > 0 && peekImage.implicitHeight > 0
+                                                             ? (peekImage.implicitHeight / peekImage.implicitWidth)
+                                                             : 0.44
+                        height: Math.max(88, Math.min(Math.min(250, Math.max(120, surface.height * 0.36)),
+                                                      Math.round(width * naturalRatio)))
+                        radius: Ui.radius(8, theme.radius)
+                        color: surface.look && surface.look.dark ? "#F2EFE8" : "#FFFFFF"
+                        border.width: 1
+                        border.color: surface.look ? surface.look.line : "#D8D2C6"
+                        clip: true
+
+                        Image {
+                            id: peekImage
+                            anchors.fill: parent
+                            anchors.margins: 1
+                            source: peekCard.hasImage ? peekCard.peekInfo.imageDataUrl : ""
+                            fillMode: Image.PreserveAspectFit
+                            smooth: true
+                            mipmap: true
+                            cache: false
+                            opacity: surface.look && surface.look.dark ? 0.94 : 1.0
+                        }
+                    }
+
+                    Label {
+                        visible: !peekCard.hasImage && !!(peekCard.peekInfo && peekCard.peekInfo.excerpt)
+                        width: parent.width
+                        text: peekCard.peekInfo && peekCard.peekInfo.excerpt ? String(peekCard.peekInfo.excerpt) : ""
+                        textFormat: Text.PlainText
+                        color: surface.look ? surface.look.fg : "#26221D"
+                        font.pixelSize: 13
+                        lineHeight: 1.4
+                        wrapMode: Text.Wrap
+                        maximumLineCount: 4
+                        elide: Text.ElideRight
+                    }
+                }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: 1
+                color: surface.look && surface.look.dark ? Qt.rgba(1, 1, 1, 0.08) : (surface.look ? surface.look.line : "#E2DCD0")
+            }
+
+            // Footer: Jump to page <N> -> + Dismiss.
+            Item {
+                width: parent.width
+                height: 44
+
+                TextButton {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 10
+                    anchors.verticalCenter: parent.verticalCenter
+                    size: "compact"
+                    ghost: true
+                    look: surface.look
+                    text: qsTr("Dismiss")
+                    onClicked: surface.closePeek()
+                }
+
+                TextButton {
+                    anchors.right: parent.right
+                    anchors.rightMargin: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    size: "compact"
+                    primary: true
+                    look: surface.look
+                    text: qsTr("Jump to page %1 →").arg(peekCard.pageLabelText)
+                    onClicked: {
+                        const targetPage = peekCard.peekInfo && peekCard.peekInfo.page !== undefined ? peekCard.peekInfo.page : -1
+                        surface.closePeek()
+                        if (targetPage >= 0)
+                            surface.goTo({ chapter: targetPage, recordHistory: true })
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Visual "Snip & Explain" Drag-Region Overlay -----------------------------
+    Item {
+        id: snipOverlay
+        anchors.fill: parent
+        z: 25
+        visible: surface.snipMode
+
+        property bool dragging: false
+        property bool hasRect: false
+        property bool actionBarOpen: false
+        property real startX: 0
+        property real startY: 0
+        property rect box: Qt.rect(0, 0, 0, 0)
+        property int targetPage: -1
+        property rect normBox: Qt.rect(0, 0, 0, 0)
+        readonly property color scrimColor: surface.look && surface.look.dark
+                                            ? Qt.rgba(6 / 255, 7 / 255, 10 / 255, 0.44)
+                                            : Qt.rgba(16 / 255, 15 / 255, 13 / 255, 0.30)
+        readonly property color accentColor: surface.look ? surface.look.link : theme.accent
+
+        function resetRect() {
+            dragging = false
+            hasRect = false
+            actionBarOpen = false
+            box = Qt.rect(0, 0, 0, 0)
+            targetPage = -1
+            normBox = Qt.rect(0, 0, 0, 0)
+        }
+
+        function triggerAction(action) {
+            if (targetPage < 0 || normBox.width <= 0.0005 || normBox.height <= 0.0005) {
+                surface.cancelSnip()
+                return
+            }
+            const page = targetPage
+            const nx = normBox.x
+            const ny = normBox.y
+            const nw = normBox.width
+            const nh = normBox.height
+            const b64 = reader.snipPdfRegionBase64(page, nx, ny, nw, nh)
+            surface.cancelSnip()
+            if (b64 && b64 !== "")
+                surface.snipActionTriggered(action, b64, page, "")
+        }
+
+        // Translucent scrim: full-surface before drag, 4-rectangle frosted cutout
+        // during/after drag so the snipped region shines at 100% full brightness.
+        Rectangle {
+            visible: !snipOverlay.hasRect
+            anchors.fill: parent
+            color: snipOverlay.scrimColor
+        }
+        Rectangle {
+            visible: snipOverlay.hasRect
+            x: 0
+            y: 0
+            width: parent.width
+            height: Math.max(0, snipOverlay.box.y)
+            color: snipOverlay.scrimColor
+        }
+        Rectangle {
+            visible: snipOverlay.hasRect
+            x: 0
+            y: snipOverlay.box.y + snipOverlay.box.height
+            width: parent.width
+            height: Math.max(0, parent.height - (snipOverlay.box.y + snipOverlay.box.height))
+            color: snipOverlay.scrimColor
+        }
+        Rectangle {
+            visible: snipOverlay.hasRect
+            x: 0
+            y: snipOverlay.box.y
+            width: Math.max(0, snipOverlay.box.x)
+            height: snipOverlay.box.height
+            color: snipOverlay.scrimColor
+        }
+        Rectangle {
+            visible: snipOverlay.hasRect
+            x: snipOverlay.box.x + snipOverlay.box.width
+            y: snipOverlay.box.y
+            width: Math.max(0, parent.width - (snipOverlay.box.x + snipOverlay.box.width))
+            height: snipOverlay.box.height
+            color: snipOverlay.scrimColor
+        }
+
+        // Crosshair drag surface covering the reading stage while in snip mode.
+        MouseArea {
+            id: snipDrag
+            anchors.fill: parent
+            z: 1
+            hoverEnabled: true
+            preventStealing: true
+            acceptedButtons: Qt.LeftButton | Qt.RightButton
+            cursorShape: Qt.CrossCursor
+            onWheel: (wheel) => wheel.accepted = true
+            onPressed: (event) => {
+                if (event.button === Qt.RightButton) {
+                    surface.cancelSnip()
+                    return
+                }
+                snipOverlay.actionBarOpen = false
+                snipOverlay.dragging = true
+                snipOverlay.hasRect = false
+                snipOverlay.startX = Math.max(0, Math.min(snipOverlay.width, event.x))
+                snipOverlay.startY = Math.max(0, Math.min(snipOverlay.height, event.y))
+                snipOverlay.box = Qt.rect(snipOverlay.startX, snipOverlay.startY, 0, 0)
+            }
+            onPositionChanged: (event) => {
+                if (!snipOverlay.dragging)
+                    return
+                const cx = Math.max(0, Math.min(snipOverlay.width, event.x))
+                const cy = Math.max(0, Math.min(snipOverlay.height, event.y))
+                const rx = Math.round(Math.min(snipOverlay.startX, cx))
+                const ry = Math.round(Math.min(snipOverlay.startY, cy))
+                const rw = Math.round(Math.abs(cx - snipOverlay.startX))
+                const rh = Math.round(Math.abs(cy - snipOverlay.startY))
+                snipOverlay.box = Qt.rect(rx, ry, rw, rh)
+                snipOverlay.hasRect = rw >= 6 && rh >= 6
+            }
+            onReleased: (event) => {
+                if (event.button === Qt.RightButton || !snipOverlay.dragging)
+                    return
+                snipOverlay.dragging = false
+                if (!snipOverlay.hasRect || snipOverlay.box.width < 14 || snipOverlay.box.height < 14) {
+                    snipOverlay.resetRect()
+                    return
+                }
+                // Match the dragged box to the visible PDF page with the largest overlap.
+                let best = null
+                let bestArea = 36
+                for (const p of surface.visiblePageItems()) {
+                    const tl = p.mapFromItem(surface, snipOverlay.box.x, snipOverlay.box.y)
+                    const br = p.mapFromItem(surface, snipOverlay.box.x + snipOverlay.box.width,
+                                             snipOverlay.box.y + snipOverlay.box.height)
+                    const ix1 = Math.max(0, Math.min(p.width, Math.min(tl.x, br.x)))
+                    const iy1 = Math.max(0, Math.min(p.height, Math.min(tl.y, br.y)))
+                    const ix2 = Math.max(0, Math.min(p.width, Math.max(tl.x, br.x)))
+                    const iy2 = Math.max(0, Math.min(p.height, Math.max(tl.y, br.y)))
+                    const area = (ix2 - ix1) * (iy2 - iy1)
+                    if (area > bestArea) {
+                        bestArea = area
+                        best = { pageItem: p, ix1: ix1, iy1: iy1, ix2: ix2, iy2: iy2 }
+                    }
+                }
+                if (!best) {
+                    snipOverlay.resetRect()
+                    return
+                }
+                const p = best.pageItem
+                const nx1 = Math.max(0, Math.min(1, p.toPageX(best.ix1)))
+                const ny1 = Math.max(0, Math.min(1, p.toPageY(best.iy1)))
+                const nx2 = Math.max(nx1, Math.min(1, p.toPageX(best.ix2)))
+                const ny2 = Math.max(ny1, Math.min(1, p.toPageY(best.iy2)))
+                if (nx2 - nx1 <= 0.002 || ny2 - ny1 <= 0.002) {
+                    snipOverlay.resetRect()
+                    return
+                }
+                const stl = p.mapToItem(surface, best.ix1, best.iy1)
+                const sbr = p.mapToItem(surface, best.ix2, best.iy2)
+                const bx = Math.round(stl.x)
+                const by = Math.round(stl.y)
+                const bw = Math.max(12, Math.round(sbr.x) - bx)
+                const bh = Math.max(12, Math.round(sbr.y) - by)
+                snipOverlay.box = Qt.rect(bx, by, bw, bh)
+                snipOverlay.targetPage = p.page
+                snipOverlay.normBox = Qt.rect(nx1, ny1, nx2 - nx1, ny2 - ny1)
+                snipOverlay.actionBarOpen = true
+                snipBar.place()
+            }
+        }
+
+        // Crisp accent frame & L-shaped corner markers around the un-dimmed cutout.
+        Item {
+            z: 2
+            visible: snipOverlay.hasRect
+            x: snipOverlay.box.x
+            y: snipOverlay.box.y
+            width: snipOverlay.box.width
+            height: snipOverlay.box.height
+
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: -1
+                color: "transparent"
+                border.width: 1
+                border.color: Qt.rgba(1, 1, 1, 0.55)
+            }
+            Rectangle {
+                anchors.fill: parent
+                color: "transparent"
+                border.width: 1.5
+                border.color: snipOverlay.accentColor
+            }
+
+            readonly property real arm: Math.min(12, Math.max(6, Math.min(width, height) / 3))
+            // Top-left corner marker
+            Rectangle { x: -1; y: -1; width: parent.arm; height: 2.5; radius: 1; color: snipOverlay.accentColor }
+            Rectangle { x: -1; y: -1; width: 2.5; height: parent.arm; radius: 1; color: snipOverlay.accentColor }
+            // Top-right corner marker
+            Rectangle { x: parent.width - parent.arm + 1; y: -1; width: parent.arm; height: 2.5; radius: 1; color: snipOverlay.accentColor }
+            Rectangle { x: parent.width - 1.5; y: -1; width: 2.5; height: parent.arm; radius: 1; color: snipOverlay.accentColor }
+            // Bottom-left corner marker
+            Rectangle { x: -1; y: parent.height - 1.5; width: parent.arm; height: 2.5; radius: 1; color: snipOverlay.accentColor }
+            Rectangle { x: -1; y: parent.height - parent.arm + 1; width: 2.5; height: parent.arm; radius: 1; color: snipOverlay.accentColor }
+            // Bottom-right corner marker
+            Rectangle { x: parent.width - parent.arm + 1; y: parent.height - 1.5; width: parent.arm; height: 2.5; radius: 1; color: snipOverlay.accentColor }
+            Rectangle { x: parent.width - 1.5; y: parent.height - parent.arm + 1; width: 2.5; height: parent.arm; radius: 1; color: snipOverlay.accentColor }
+        }
+
+        // Unobtrusive top hint pill.
+        Rectangle {
+            id: snipHintPill
+            z: 3
+            anchors.top: parent.top
+            anchors.topMargin: 16
+            anchors.horizontalCenter: parent.horizontalCenter
+            height: 34
+            width: Math.min(parent.width - 32, snipHintRow.implicitWidth + 24)
+            radius: 17
+            color: Qt.rgba(26 / 255, 25 / 255, 23 / 255, 0.92)
+            border.width: 1
+            border.color: Qt.rgba(1, 1, 1, 0.12)
+            opacity: (snipBar.visible && snipBar.y < 66) ? 0.0 : 1.0
+            visible: opacity > 0.01
+            Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+
+            Row {
+                id: snipHintRow
+                anchors.centerIn: parent
+                spacing: 8
+                Glyph {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 14
+                    height: 14
+                    stroke: 1.9
+                    path: "M4 8.5 V5.5 Q4 4 5.5 4 H8.5 M15.5 4 H18.5 Q20 4 20 5.5 V8.5 M20 15.5 V18.5 Q20 20 18.5 20 H15.5 M8.5 20 H5.5 Q4 20 4 18.5 V15.5 M12 9 V15 M9 12 H15"
+                    color: "#F2EFE9"
+                }
+                Label {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: qsTr("Drag over an equation, chart, or table · Esc to cancel")
+                    color: "#F2EFE9"
+                    font.pixelSize: 12
+                    font.weight: Font.Medium
+                    elide: Text.ElideRight
+                    width: Math.min(implicitWidth, snipOverlay.width - 78)
+                }
+            }
+        }
+
+        // Sleek floating Snip Action Bar anchored beside the cutout (strictly viewport-clamped).
+        Rectangle {
+            id: snipBar
+            z: 4
+            visible: snipOverlay.actionBarOpen && snipOverlay.hasRect
+            width: Math.min(snipBarRow.implicitWidth + 14, Math.max(220, snipOverlay.width - 24))
+            height: 40
+            radius: Ui.radius(12, theme.radius)
+            color: surface.look ? surface.look.popover : "#FDFAF3"
+            border.width: 1
+            border.color: surface.look && surface.look.dark ? Qt.rgba(1, 1, 1, 0.11) : (surface.look ? surface.look.line : "#D8D2C6")
+            transformOrigin: Item.Top
+
+            onVisibleChanged: {
+                if (visible) {
+                    place()
+                    if (!theme.reducedMotion) {
+                        snipBarAnim.restart()
+                    } else {
+                        opacity = 1
+                        scale = 1
+                    }
+                }
+            }
+            onWidthChanged: if (visible) place()
+
+            ParallelAnimation {
+                id: snipBarAnim
+                NumberAnimation { target: snipBar; property: "opacity"; from: 0.0; to: 1.0; duration: 120; easing.type: Easing.OutCubic }
+                NumberAnimation { target: snipBar; property: "scale"; from: 0.96; to: 1.0; duration: 130; easing.type: Easing.OutCubic }
+            }
+
+            function place() {
+                const margin = 12
+                const w = width
+                const h = height
+                const maxX = Math.max(margin, snipOverlay.width - w - margin)
+                const maxY = Math.max(margin, snipOverlay.height - h - margin)
+                const cx = snipOverlay.box.x + snipOverlay.box.width / 2
+                x = Math.max(margin, Math.min(maxX, cx - w / 2))
+                const below = snipOverlay.box.y + snipOverlay.box.height + 10
+                const above = snipOverlay.box.y - h - 10
+                if (below + h <= snipOverlay.height - margin)
+                    y = Math.max(margin, below)
+                else if (above >= margin)
+                    y = Math.min(maxY, above)
+                else
+                    y = Math.max(margin, Math.min(maxY, snipOverlay.box.y + snipOverlay.box.height - h - 10))
+            }
+
+            // Layered elevation shadow matching SelectionBar.
+            Rectangle {
+                z: -2
+                anchors.fill: parent
+                anchors.leftMargin: -4
+                anchors.rightMargin: -4
+                anchors.topMargin: 8
+                anchors.bottomMargin: -14
+                radius: parent.radius > 0 ? parent.radius + 4 : 0
+                color: "black"
+                opacity: surface.look && surface.look.dark ? 0.36 : 0.12
+            }
+            Rectangle {
+                z: -1
+                anchors.fill: parent
+                anchors.topMargin: 3
+                anchors.bottomMargin: -5
+                radius: parent.radius
+                color: "black"
+                opacity: surface.look && surface.look.dark ? 0.28 : 0.08
+            }
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onWheel: (wheel) => wheel.accepted = true
+            }
+
+            component SnipAction: AbstractButton {
+                id: snipBtn
+                property bool accent: false
+                property bool muted: false
+                property string iconPath: ""
+                anchors.verticalCenter: parent.verticalCenter
+                implicitHeight: 28
+                implicitWidth: snipBtnRow.implicitWidth + 16
+                hoverEnabled: true
+                focusPolicy: Qt.NoFocus
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                background: Rectangle {
+                    radius: Ui.radius(7, theme.radius)
+                    color: snipBtn.accent
+                           ? (snipBtn.pressed ? Ui.tint(snipOverlay.accentColor, 0.24)
+                              : snipBtn.hovered ? Ui.tint(snipOverlay.accentColor, 0.18)
+                              : Ui.tint(snipOverlay.accentColor, 0.12))
+                           : (snipBtn.pressed ? Ui.tint(surface.look ? surface.look.fg : "#26221D", 0.14)
+                              : snipBtn.hovered ? Ui.tint(surface.look ? surface.look.fg : "#26221D", 0.08)
+                              : "transparent")
+                    Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 90 } }
+                }
+                contentItem: Item {
+                    Row {
+                        id: snipBtnRow
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Glyph {
+                            visible: snipBtn.iconPath !== ""
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 13
+                            height: 13
+                            stroke: 1.9
+                            path: snipBtn.iconPath
+                            color: snipBtn.accent ? snipOverlay.accentColor : (surface.look ? surface.look.fg : "#26221D")
+                        }
+                        Label {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: snipBtn.text
+                            color: snipBtn.accent ? snipOverlay.accentColor
+                                   : snipBtn.muted ? (surface.look ? surface.look.muted : "#6E665A")
+                                   : (surface.look ? surface.look.fg : "#26221D")
+                            font.pixelSize: 13
+                            font.weight: snipBtn.accent ? Font.DemiBold : Font.Medium
+                        }
+                    }
+                }
+            }
+
+            Flickable {
+                id: snipBarScroll
+                anchors.fill: parent
+                anchors.leftMargin: 6
+                anchors.rightMargin: 6
+                clip: true
+                interactive: contentWidth > width
+                contentWidth: snipBarRow.implicitWidth
+                contentHeight: height
+                boundsBehavior: Flickable.StopAtBounds
+
+                Row {
+                    id: snipBarRow
+                    x: Math.max(0, (snipBarScroll.width - width) / 2)
+                    y: (40 - height) / 2
+                    spacing: 2
+
+                    SnipAction {
+                        accent: true
+                        iconPath: Icons.sparkle
+                        text: qsTr("Explain")
+                        onClicked: snipOverlay.triggerAction("explain")
+                    }
+                    SnipAction {
+                        text: qsTr("Copy LaTeX")
+                        onClicked: snipOverlay.triggerAction("latex")
+                    }
+                    SnipAction {
+                        text: qsTr("Extract Table")
+                        onClicked: snipOverlay.triggerAction("table")
+                    }
+                    SnipAction {
+                        text: qsTr("Ask…")
+                        onClicked: snipOverlay.triggerAction("ask")
+                    }
+                    Item {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 9
+                        height: 18
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: 1
+                            height: 18
+                            color: surface.look && surface.look.dark ? Qt.rgba(1, 1, 1, 0.10) : (surface.look ? surface.look.line : "#D8D2C6")
+                        }
+                    }
+                    SnipAction {
+                        muted: true
+                        text: qsTr("Cancel")
+                        onClicked: surface.cancelSnip()
+                    }
+                }
+            }
+        }
+    }
+
     Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_Escape && (snipMode || peekCard.open)) {
+            dismiss()
+            event.accepted = true
+            return
+        }
         if (event.matches(StandardKey.Copy) && selection && selection.text) {
             reader.copyText(selection.text)
             event.accepted = true

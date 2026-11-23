@@ -20,11 +20,14 @@ class Library;
 class Reader : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool open READ isOpen NOTIFY bookChanged)
+    Q_PROPERTY(bool isPdf READ isPdf NOTIFY bookChanged)
     Q_PROPERTY(int bookId READ bookId NOTIFY bookChanged)
     Q_PROPERTY(QString format READ format NOTIFY bookChanged)
     Q_PROPERTY(QString title READ title NOTIFY bookChanged)
     Q_PROPERTY(QString author READ author NOTIFY bookChanged)
     Q_PROPERTY(QString language READ language NOTIFY bookChanged)
+    Q_PROPERTY(QString detectedDoi READ detectedDoi NOTIFY bookChanged)
+    Q_PROPERTY(QString detectedArxiv READ detectedArxiv NOTIFY bookChanged)
     Q_PROPERTY(QVariantMap manifest READ manifest NOTIFY bookChanged)
     Q_PROPERTY(QVariantList contents READ contents NOTIFY bookChanged)
     Q_PROPERTY(QVariantList chapterMarks READ chapterMarks NOTIFY lengthsChanged)
@@ -73,11 +76,18 @@ public:
     ~Reader() override;
 
     bool isOpen() const { return m_bookId > 0; }
+    bool isPdf() const { return m_pdf != nullptr; }
     int bookId() const { return m_bookId; }
     QString format() const { return m_format; }
     QString title() const { return m_title; }
     QString author() const { return m_author; }
     QString language() const { return m_language; }
+    QString detectedDoi() const { return m_detectedDoi; }
+    QString detectedArxiv() const { return m_detectedArxiv; }
+    // Academic citations ("bibtex" or "apa") for the open book or any library record.
+    Q_INVOKABLE QString formatCitation(const QString &style) const;
+    Q_INVOKABLE QString formatBookCitation(const QVariantMap &bookInfo, const QString &style) const;
+    static QString formatCitationFor(const QVariantMap &bookInfo, const QString &style);
     qint64 pageStart() const { return m_offset; }
     qint64 pageEnd() const { return m_pageEnd; }
     QString snippet() const { return m_snippet; }
@@ -155,8 +165,12 @@ public:
     Q_INVOKABLE QVariantMap pdfSelect(int page, qreal x1, qreal y1, qreal x2, qreal y2) const;
     // The word under a point (parts of the page): {chapter, start, end, text}.
     Q_INVOKABLE QVariantMap pdfSelectWord(int page, qreal x, qreal y) const;
-    // Clickable internal/external links on a page: [{x, y, width, height, page, url}].
+    // Clickable internal/external links on a page: [{x, y, width, height, page, destY, url}].
     Q_INVOKABLE QVariantList pdfLinks(int page) const;
+    // High-DPI PNG crop of a normalized [0..1] page region, encoded as base64.
+    Q_INVOKABLE QString snipPdfRegionBase64(int pageIndex, double normX, double normY, double normW, double normH) const;
+    // Zero-jump preview strip for an internal PDF link destination: {page, pageLabel, imageDataUrl, excerpt}.
+    Q_INVOKABLE QVariantMap peekPdfDestination(int destPage, double destY = -1.0) const;
     // Where a stretch of a page's text is: [{x, y, width, height}] in parts of the page.
     Q_INVOKABLE QVariantList pdfRects(int page, qint64 start, qint64 end) const;
     Q_INVOKABLE QString pdfPageLabel(int page) const;
@@ -223,6 +237,8 @@ private:
     QString m_title;
     QString m_author;
     QString m_language;
+    QString m_detectedDoi;
+    QString m_detectedArxiv;
     QString m_error;
     QVariantMap m_manifest;
     QVariantList m_contents;

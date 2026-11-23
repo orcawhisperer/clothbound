@@ -11,11 +11,13 @@
 #include <QAudioSink>
 #include <QBuffer>
 #include <QClipboard>
+#include <QFileInfo>
 #include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMediaDevices>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
@@ -367,6 +369,8 @@ bool Reader::openBook(int bookId) {
     m_title = record.title;
     m_author = record.author;
     m_language = book->metadata().language.isEmpty() ? record.language : book->metadata().language;
+    m_detectedDoi = PdfBook::extractDoi(record.isbn + QLatin1Char(' ') + record.description);
+    m_detectedArxiv = PdfBook::extractArxivId(record.description);
 
     const auto &spine = book->spine();
     QVariantList spineList;
@@ -490,6 +494,8 @@ void Reader::close() {
     m_token.clear();
     m_bookId = 0;
     m_format.clear();
+    m_detectedDoi.clear();
+    m_detectedArxiv.clear();
     m_manifest.clear();
     m_contents.clear();
     m_chapterTitles.clear();
@@ -1038,6 +1044,8 @@ bool Reader::openPdf(int bookId) {
     m_title = record.title;
     m_author = record.author;
     m_language = record.language;
+    m_detectedDoi = book->detectedDoi();
+    m_detectedArxiv = book->detectedArxiv();
 
     // Each page is titled by the outline entry it falls under.
     m_chapterTitles = QStringList(pages, QString());
@@ -1216,11 +1224,367 @@ QVariantList Reader::pdfLinks(int page) const {
                 {QStringLiteral("width"), rect.width()},
                 {QStringLiteral("height"), rect.height()},
                 {QStringLiteral("page"), entry.page},
+                {QStringLiteral("destY"), entry.destY},
                 {QStringLiteral("url"), url},
             });
         }
     }
     return out;
+}
+
+QString Reader::snipPdfRegionBase64(int pageIndex, double normX, double normY, double normW, double normH) const {
+    if (!m_pdf)
+        return {};
+    const QByteArray png = m_pdf->renderRegionPng(pageIndex, normX, normY, normW, normH, 1400);
+    if (png.isEmpty())
+        return {};
+    return QString::fromLatin1(png.toBase64());
+}
+
+QVariantMap Reader::peekPdfDestination(int destPage, double destY) const {
+    if (!m_pdf || destPage < 0 || destPage >= m_pdf->pageCount())
+        return {};
+    constexpr double stripH = 0.38;
+    const double topY = (destY < 0.0 || !std::isfinite(destY))
+                            ? 0.0
+                            : std::clamp(std::clamp(destY, 0.0, 1.0) - stripH * 0.5, 0.0, 1.0 - stripH);
+
+    // Frame horizontally around the book's detected text bounds (with comfortable breathing room)
+    // so tiny citations and figure labels read clearly inside the Quick-Look card.
+    double normX = 0.0;
+    double normW = 1.0;
+    if (m_pdfCrop.width() >= 0.4 && m_pdfCrop.width() < 0.98) {
+        normX = qMax(0.0, m_pdfCrop.x() - 0.02);
+        normW = qMin(1.0 - normX, m_pdfCrop.width() + 0.04);
+    }
+
+    const QByteArray png = m_pdf->renderRegionPng(destPage, normX, topY, normW, stripH, 840);
+    const QString imageDataUrl =
+        png.isEmpty() ? QString() : QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
+
+    QString excerpt = m_pdf->pageTextInBand(destPage, topY, qMin(1.0, topY + stripH), 260);
+    if (excerpt.isEmpty())
+        excerpt = m_pdf->pageText(destPage);
+    excerpt.replace(QString(QChar(0xFFFE)) + QLatin1String("\r\n"), QString())
+        .replace(QLatin1String("\r\n"), QLatin1String(" "));
+    excerpt = excerpt.simplified();
+    if (excerpt.size() > 240) {
+        const qsizetype cut = excerpt.lastIndexOf(QLatin1Char(' '), 240);
+        excerpt = excerpt.left(cut > 140 ? cut : 240).trimmed() + QChar(0x2026);
+    }
+
+    const QString rawLabel = m_pdf->pageLabel(destPage).trimmed();
+    const QString pageLabel = rawLabel.isEmpty() ? QString::number(destPage + 1) : rawLabel;
+    return QVariantMap{
+        {QStringLiteral("page"), destPage},
+        {QStringLiteral("pageLabel"), pageLabel},
+        {QStringLiteral("imageDataUrl"), imageDataUrl},
+        {QStringLiteral("excerpt"), excerpt},
+    };
+}
+
+namespace {
+
+struct CitationPerson {
+    QString first;
+    QString last;
+};
+
+QList<CitationPerson> parseCitationPeople(const QString &raw) {
+    QList<CitationPerson> out;
+    const QString trimmed = raw.trimmed();
+    if (trimmed.isEmpty())
+        return out;
+
+    static const QRegularExpression primarySplit(QStringLiteral(R"(\s*(?:;|/|\||\band\b|&)\s*)"),
+                                                 QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression whitespace(QStringLiteral(R"(\s+)"));
+    static const QStringList particles = {QStringLiteral("de"), QStringLiteral("del"), QStringLiteral("da"),
+                                          QStringLiteral("di"), QStringLiteral("du"),  QStringLiteral("la"),
+                                          QStringLiteral("le"), QStringLiteral("van"), QStringLiteral("von")};
+
+    auto parseSingle = [&](const QString &piece) {
+        const QString clean = piece.trimmed();
+        if (clean.isEmpty())
+            return;
+        const QStringList tokens = clean.split(whitespace, Qt::SkipEmptyParts);
+        if (tokens.isEmpty())
+            return;
+        if (tokens.size() == 1) {
+            out.append({QString(), tokens.first()});
+            return;
+        }
+        qsizetype lastIdx = tokens.size() - 1;
+        if (tokens.size() >= 3 && particles.contains(tokens[lastIdx - 1].toLower()))
+            --lastIdx;
+        const QString first = tokens.mid(0, lastIdx).join(QLatin1Char(' '));
+        const QString last = tokens.mid(lastIdx).join(QLatin1Char(' '));
+        out.append({first, last});
+    };
+
+    for (const QString &chunk : trimmed.split(primarySplit, Qt::SkipEmptyParts)) {
+        const QString part = chunk.trimmed();
+        if (part.isEmpty())
+            continue;
+        if (part.contains(QLatin1Char(','))) {
+            const QStringList commaParts = part.split(QLatin1Char(','), Qt::SkipEmptyParts);
+            if (commaParts.size() == 2 && !commaParts[0].trimmed().contains(QLatin1Char(' '))) {
+                out.append({commaParts[1].trimmed(), commaParts[0].trimmed()});
+            } else {
+                for (const QString &sub : commaParts)
+                    parseSingle(sub);
+            }
+        } else {
+            parseSingle(part);
+        }
+    }
+    return out;
+}
+
+QString asciiSlug(const QString &text) {
+    const QString decomposed = text.normalized(QString::NormalizationForm_D);
+    QString out;
+    out.reserve(decomposed.size());
+    for (const QChar ch : decomposed) {
+        if (ch.category() == QChar::Mark_NonSpacing)
+            continue;
+        if ((ch >= QLatin1Char('a') && ch <= QLatin1Char('z')) ||
+            (ch >= QLatin1Char('A') && ch <= QLatin1Char('Z')) ||
+            (ch >= QLatin1Char('0') && ch <= QLatin1Char('9')))
+            out.append(ch.toLower());
+    }
+    return out;
+}
+
+QString bibtexEscape(QString text) {
+    text.replace(QLatin1Char('{'), QStringLiteral("\\{"));
+    text.replace(QLatin1Char('}'), QStringLiteral("\\}"));
+    text.replace(QLatin1Char('&'), QStringLiteral("\\&"));
+    text.replace(QLatin1Char('%'), QStringLiteral("\\%"));
+    text.replace(QLatin1Char('$'), QStringLiteral("\\$"));
+    text.replace(QLatin1Char('#'), QStringLiteral("\\#"));
+    return text;
+}
+
+QString formatApaPerson(const CitationPerson &p) {
+    if (p.first.isEmpty())
+        return p.last;
+    static const QRegularExpression splitRe(QStringLiteral(R"([\s.]+)"));
+    QStringList initials;
+    for (const QString &tok : p.first.split(splitRe, Qt::SkipEmptyParts)) {
+        if (tok.contains(QLatin1Char('-'))) {
+            QStringList hyphenParts;
+            for (const QString &hp : tok.split(QLatin1Char('-'), Qt::SkipEmptyParts))
+                if (!hp.isEmpty())
+                    hyphenParts.append(hp.left(1).toUpper() + QLatin1Char('.'));
+            if (!hyphenParts.isEmpty())
+                initials.append(hyphenParts.join(QLatin1Char('-')));
+        } else if (!tok.isEmpty()) {
+            initials.append(tok.left(1).toUpper() + QLatin1Char('.'));
+        }
+    }
+    return initials.isEmpty() ? p.last : QStringLiteral("%1, %2").arg(p.last, initials.join(QLatin1Char(' ')));
+}
+
+QString joinApaPeople(const QList<CitationPerson> &people) {
+    QStringList formatted;
+    formatted.reserve(people.size());
+    for (const CitationPerson &p : people)
+        formatted.append(formatApaPerson(p));
+    if (formatted.isEmpty())
+        return {};
+    if (formatted.size() == 1)
+        return formatted.first();
+    if (formatted.size() == 2)
+        return formatted[0] + QStringLiteral(", & ") + formatted[1];
+    if (formatted.size() > 20) {
+        return formatted.mid(0, 19).join(QStringLiteral(", ")) + QStringLiteral(", ... ") + formatted.last();
+    }
+    return formatted.mid(0, formatted.size() - 1).join(QStringLiteral(", ")) + QStringLiteral(", & ") + formatted.last();
+}
+
+QString cleanDoiValue(QString doi) {
+    doi = doi.trimmed();
+    static const QRegularExpression prefixRe(QStringLiteral(R"(^(?:https?://(?:dx\.)?doi\.org/|doi:\s*))"),
+                                             QRegularExpression::CaseInsensitiveOption);
+    doi.remove(prefixRe);
+    return doi.trimmed();
+}
+
+QString cleanArxivBare(QString arxiv) {
+    arxiv = arxiv.trimmed();
+    static const QRegularExpression prefixRe(QStringLiteral(R"(^arXiv:\s*)"), QRegularExpression::CaseInsensitiveOption);
+    arxiv.remove(prefixRe);
+    return arxiv.trimmed();
+}
+
+}  // namespace
+
+QString Reader::formatCitationFor(const QVariantMap &bookInfo, const QString &style) {
+    const QString fmt = style.trimmed().toLower();
+    if (fmt != QLatin1String("bibtex") && fmt != QLatin1String("apa"))
+        return {};
+
+    const QString title = bookInfo.value(QStringLiteral("title")).toString().simplified();
+    const QString authorRaw = bookInfo.value(QStringLiteral("author")).toString().simplified();
+    const QString editorRaw = bookInfo.value(QStringLiteral("editor")).toString().simplified();
+    const QString publisher = bookInfo.value(QStringLiteral("publisher")).toString().simplified();
+    const QString isbn = bookInfo.value(QStringLiteral("isbn")).toString().simplified();
+    const QString bookFormat = bookInfo.value(QStringLiteral("format")).toString().trimmed().toLower();
+    QString doi = cleanDoiValue(bookInfo.value(QStringLiteral("doi")).toString());
+    QString arxivBare = cleanArxivBare(bookInfo.value(QStringLiteral("arxiv")).toString());
+    int year = bookInfo.value(QStringLiteral("year")).toInt();
+
+    if (year <= 0 && arxivBare.size() >= 4 && arxivBare[0].isDigit() && arxivBare[1].isDigit()) {
+        const int yy = arxivBare.left(2).toInt();
+        if (yy >= 7 && yy <= 99)
+            year = 2000 + yy;
+    }
+
+    const QList<CitationPerson> authors = parseCitationPeople(authorRaw);
+    const QList<CitationPerson> editors = parseCitationPeople(editorRaw);
+    const QString safeTitle = title.isEmpty() ? QStringLiteral("Untitled") : title;
+
+    if (fmt == QLatin1String("bibtex")) {
+        const bool isBook = (bookFormat == QLatin1String("epub") && !isbn.isEmpty());
+        QString entryType = QStringLiteral("misc");
+        if (!doi.isEmpty())
+            entryType = isBook ? QStringLiteral("book") : QStringLiteral("article");
+        else if (!arxivBare.isEmpty())
+            entryType = QStringLiteral("misc");
+        else if (!isbn.isEmpty() || !publisher.isEmpty() || bookFormat == QLatin1String("epub"))
+            entryType = QStringLiteral("book");
+
+        QString keyAuthor;
+        if (!authors.isEmpty())
+            keyAuthor = asciiSlug(authors.first().last);
+        else if (!editors.isEmpty())
+            keyAuthor = asciiSlug(editors.first().last);
+        if (keyAuthor.isEmpty())
+            keyAuthor = QStringLiteral("ref");
+
+        static const QStringList stopWords = {QStringLiteral("the"), QStringLiteral("a"),   QStringLiteral("an"),
+                                              QStringLiteral("of"),  QStringLiteral("on"),  QStringLiteral("in"),
+                                              QStringLiteral("for"), QStringLiteral("to"),  QStringLiteral("and")};
+        static const QRegularExpression wordRe(QStringLiteral(R"([^\p{L}\p{N}]+)"));
+        QString keyWord;
+        for (const QString &w : safeTitle.split(wordRe, Qt::SkipEmptyParts)) {
+            const QString slug = asciiSlug(w);
+            if (!slug.isEmpty() && !stopWords.contains(slug)) {
+                keyWord = slug;
+                break;
+            }
+        }
+        const QString citeKey = keyAuthor + (year > 0 ? QString::number(year) : QString()) + keyWord;
+
+        auto formatBibPeople = [](const QList<CitationPerson> &people) {
+            QStringList parts;
+            for (const CitationPerson &p : people) {
+                const QString full =
+                    p.first.isEmpty() ? p.last : QStringLiteral("%1, %2").arg(p.last, p.first);
+                parts.append(bibtexEscape(full));
+            }
+            return parts.join(QStringLiteral(" and "));
+        };
+
+        QStringList fields;
+        fields.append(QStringLiteral("  title = {%1}").arg(bibtexEscape(safeTitle)));
+        if (!authors.isEmpty())
+            fields.append(QStringLiteral("  author = {%1}").arg(formatBibPeople(authors)));
+        if (!editors.isEmpty())
+            fields.append(QStringLiteral("  editor = {%1}").arg(formatBibPeople(editors)));
+        if (year > 0)
+            fields.append(QStringLiteral("  year = {%1}").arg(year));
+        if (!publisher.isEmpty())
+            fields.append(QStringLiteral("  publisher = {%1}").arg(bibtexEscape(publisher)));
+        if (!isbn.isEmpty())
+            fields.append(QStringLiteral("  isbn = {%1}").arg(isbn));
+        if (!doi.isEmpty())
+            fields.append(QStringLiteral("  doi = {%1}").arg(doi));
+        if (!arxivBare.isEmpty()) {
+            fields.append(QStringLiteral("  eprint = {%1}").arg(arxivBare));
+            fields.append(QStringLiteral("  archivePrefix = {arXiv}"));
+            if (doi.isEmpty())
+                fields.append(QStringLiteral("  url = {https://arxiv.org/abs/%1}").arg(arxivBare));
+        }
+
+        return QStringLiteral("@%1{%2,\n%3\n}").arg(entryType, citeKey, fields.join(QStringLiteral(",\n")));
+    }
+
+    // APA 7th edition.
+    const QString yearPart = year > 0 ? QStringLiteral("(%1).").arg(year) : QStringLiteral("(n.d.).");
+    const bool endsTerminal = safeTitle.endsWith(QLatin1Char('.')) || safeTitle.endsWith(QLatin1Char('?')) ||
+                              safeTitle.endsWith(QLatin1Char('!'));
+    const QString titlePart = endsTerminal ? safeTitle : (safeTitle + QLatin1Char('.'));
+
+    QString out;
+    if (!authors.isEmpty()) {
+        out = QStringLiteral("%1 %2 %3").arg(joinApaPeople(authors), yearPart, titlePart);
+    } else if (!editors.isEmpty()) {
+        const QString edTag = editors.size() == 1 ? QStringLiteral("(Ed.).") : QStringLiteral("(Eds.).");
+        out = QStringLiteral("%1 %2 %3 %4").arg(joinApaPeople(editors), edTag, yearPart, titlePart);
+    } else {
+        out = QStringLiteral("%1 %2").arg(titlePart, yearPart);
+    }
+
+    if (!publisher.isEmpty())
+        out += QStringLiteral(" %1.").arg(publisher);
+    if (!arxivBare.isEmpty() && doi.isEmpty())
+        out += QStringLiteral(" arXiv preprint arXiv:%1. https://arxiv.org/abs/%1").arg(arxivBare);
+    else if (!doi.isEmpty())
+        out += QStringLiteral(" https://doi.org/%1").arg(doi);
+
+    return out.simplified();
+}
+
+QString Reader::formatCitation(const QString &style) const {
+    if (!isOpen())
+        return {};
+    const BookRecord record = m_library ? m_library->record(m_bookId) : BookRecord{};
+    int year = record.year;
+    if (year <= 0 && m_pdf && m_pdf->created().isValid())
+        year = m_pdf->created().date().year();
+    const QVariantMap info{
+        {QStringLiteral("title"), m_title.isEmpty() ? record.title : m_title},
+        {QStringLiteral("author"), m_author.isEmpty() ? record.author : m_author},
+        {QStringLiteral("editor"), record.editor},
+        {QStringLiteral("publisher"), record.publisher},
+        {QStringLiteral("year"), year},
+        {QStringLiteral("isbn"), record.isbn},
+        {QStringLiteral("format"), m_format},
+        {QStringLiteral("doi"), m_detectedDoi},
+        {QStringLiteral("arxiv"), m_detectedArxiv},
+    };
+    return formatCitationFor(info, style);
+}
+
+QString Reader::formatBookCitation(const QVariantMap &bookInfo, const QString &style) const {
+    QVariantMap enriched = bookInfo;
+    const int id = enriched.value(QStringLiteral("id")).toInt();
+    const QString fmt = enriched.value(QStringLiteral("format")).toString().trimmed().toLower();
+    if (id > 0 && id == m_bookId) {
+        if (enriched.value(QStringLiteral("doi")).toString().isEmpty() && !m_detectedDoi.isEmpty())
+            enriched.insert(QStringLiteral("doi"), m_detectedDoi);
+        if (enriched.value(QStringLiteral("arxiv")).toString().isEmpty() && !m_detectedArxiv.isEmpty())
+            enriched.insert(QStringLiteral("arxiv"), m_detectedArxiv);
+        if (enriched.value(QStringLiteral("year")).toInt() <= 0 && m_pdf && m_pdf->created().isValid())
+            enriched.insert(QStringLiteral("year"), m_pdf->created().date().year());
+    } else if (fmt == QLatin1String("pdf") && enriched.value(QStringLiteral("doi")).toString().isEmpty() &&
+               enriched.value(QStringLiteral("arxiv")).toString().isEmpty()) {
+        const QString path = enriched.value(QStringLiteral("path")).toString();
+        if (!path.isEmpty() && QFileInfo::exists(path)) {
+            PdfBook probe(path);
+            if (probe.open()) {
+                if (const QString doi = probe.detectedDoi(); !doi.isEmpty())
+                    enriched.insert(QStringLiteral("doi"), doi);
+                if (const QString arxiv = probe.detectedArxiv(); !arxiv.isEmpty())
+                    enriched.insert(QStringLiteral("arxiv"), arxiv);
+                if (enriched.value(QStringLiteral("year")).toInt() <= 0 && probe.created().isValid())
+                    enriched.insert(QStringLiteral("year"), probe.created().date().year());
+            }
+        }
+    }
+    return formatCitationFor(enriched, style);
 }
 
 QVariantList Reader::pdfRects(int page, qint64 start, qint64 end) const {
