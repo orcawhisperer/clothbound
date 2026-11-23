@@ -37,7 +37,7 @@ QSet<int> Director::breaks(const QMap<int, QString> &moods) {
 }
 
 bool Director::canDirect(const QList<SpeechBlock> &blocks) const {
-    if (!m_ai->text())
+    if (!m_ai->textFor(QStringLiteral("director")))
         return false;
     for (const SpeechBlock &block : blocks)
         if (block.kind != QStringLiteral("break"))
@@ -77,7 +77,7 @@ Ai::TextRequest Director::request(int chapter, const QList<SpeechBlock> &blocks,
 // The same chapter, performance, prompt and model always get the same
 // direction.
 QString Director::key(const Ai::TextRequest &request) const {
-    return AudioCache::keyFor(m_ai->provider()->id(), m_ai->text()->textModelName(true), QStringLiteral("director"),
+    return AudioCache::keyFor(m_ai->textProviderFor(QStringLiteral("director"))->id(), m_ai->textFor(QStringLiteral("director"))->textModelName(true), QStringLiteral("director"),
                               request.system, request.messages.value(0).text);
 }
 
@@ -100,7 +100,7 @@ void Director::ask(int chapter, const QList<SpeechBlock> &blocks, const QString 
     const Ai::TextRequest question = request(chapter, blocks, performance);
     const QString keptAs = key(question);
     const int count = int(blocks.size());
-    Ai::Reply *reply = m_ai->text()->generate(question);
+    Ai::Reply *reply = m_ai->textFor(QStringLiteral("director"))->generate(question);
     m_ai->track(reply);
     connect(reply, &Ai::Reply::finished, context, [this, reply, keptAs, count, done] {
         reply->deleteLater();

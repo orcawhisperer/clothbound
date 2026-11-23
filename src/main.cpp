@@ -5,6 +5,8 @@
 #include "audiocache.h"
 #include "bookscheme.h"
 #include "gemini.h"
+#include "localmodels.h"
+#include "systemcheck.h"
 #include "keystore.h"
 #include "cli.h"
 #include "library.h"
@@ -195,12 +197,16 @@ int main(int argc, char *argv[]) {
     SecretKeyStore keys;
     AiServices ai(&gemini, nullptr, library.database().connectionName());
     ai.lookUpKeyIn(&keys);
+    // Models the reader runs on this computer, for text work routed there.
+    LocalModels localModels;
+    ai.setLocalModels(&localModels);
     // Built-in voices: made on this computer, from voices downloaded on request.
     VoicePacks voicePacks(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/voices"));
     LocalSpeech localSpeech(&voicePacks);
     ai.setLocalSpeech(&localSpeech);
     AudioCache audioCache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/audio"),
                           library.database().connectionName());
+    SystemCheck systemCheck(&ai, &localSpeech);
     Narration narration(&ai, &audioCache, &reader, &library);
     Mpris mpris(&narration, &reader, &library);
     Download download(&ai, &audioCache, &reader, &narration);
@@ -239,6 +245,7 @@ int main(int argc, char *argv[]) {
     Notifier notifier;
     engine.rootContext()->setContextProperty("desktop", &notifier);
     engine.rootContext()->setContextProperty("instance", &instance);
+    engine.rootContext()->setContextProperty("systemCheck", &systemCheck);
     engine.rootContext()->setContextProperty("localSpeech", &localSpeech);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
     engine.rootContext()->setContextProperty("readerProfile", profile);

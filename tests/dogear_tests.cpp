@@ -20,6 +20,8 @@
 #include "bookinfo.h"
 #include "fakeserver.h"
 #include "gemini.h"
+#include "localmodels.h"
+#include "systemcheck.h"
 #include "instance.h"
 #include "keystore.h"
 #include "localspeech.h"
@@ -1079,6 +1081,211 @@ private slots:
         // Its pace here is kept.
         local.noteSpeed(packs.model("builtin:kokoro:bm_george")->key, 3.0);
         QCOMPARE(local.speedOf("builtin:kokoro:bm_george"), 3.0);
+    }
+
+    // --- Local models ------------------------------------------------------
+
+    // Each server gets the request it understands: Ollama its own API with
+    // room for a chapter and no thinking aloud; llama.cpp the OpenAI one with
+    // a strict schema; MLX, which has no structured output, the schema in
+    // its instructions.
+    void localChatBodies() {
+        Ai::TextRequest request;
+        request.system = "Direct the narration.";
+        request.messages = {{true, "Chapter one."}};
+        request.schema = QJsonObject{{"type", "object"}};
+        request.fast = true;
+        const QJsonObject ollama = LocalModels::chatBody(LocalModels::Ollama, request, "qwen3.5:4b");
+        QCOMPARE(ollama["model"].toString(), QString("qwen3.5:4b"));
+        QCOMPARE(ollama["think"].toBool(true), false);
+        QCOMPARE(ollama["format"].toObject()["type"].toString(), QString("object"));
+        QCOMPARE(ollama["options"].toObject()["num_ctx"].toInt(), 8192);
+        QCOMPARE(ollama["messages"].toArray().first().toObject()["role"].toString(), QString("system"));
+        const QJsonObject llama = LocalModels::chatBody(LocalModels::LlamaCpp, request, "m");
+        QCOMPARE(llama["response_format"].toObject()["type"].toString(), QString("json_schema"));
+        QVERIFY(llama["response_format"].toObject()["json_schema"].toObject()["strict"].toBool());
+        QCOMPARE(llama["chat_template_kwargs"].toObject()["enable_thinking"].toBool(true), false);
+        const QJsonObject mlx = LocalModels::chatBody(LocalModels::Mlx, request, "m");
+        QVERIFY(!mlx.contains("response_format"));
+        QVERIFY(mlx["messages"].toArray().first().toObject()["content"].toString().contains("JSON schema"));
+    }
+
+    void localAnswersAreCleaned() {
+        QCOMPARE(LocalModels::cleanText("<think>hmm, moods</think>\n\nCalm.", false), QString("Calm."));
+        QCOMPARE(LocalModels::cleanText("Here:\n```json\n{\"a\": 1}\n```", true), QString("{\"a\": 1}"));
+        QCOMPARE(LocalModels::cleanText("<think>still thinking", false), QString());
+        QVERIFY(LocalModels::queryText("qwen3-embedding:0.6b", "who is Weena").endsWith("Query: who is Weena"));
+        QCOMPARE(LocalModels::queryText("bge-m3", "who"), QString("who"));
+    }
+
+    // A streamed answer from an OpenAI-compatible server, and one from
+    // Ollama, both arrive as text, and JSON ones as a result.
+    void localModelsStream() {
+        FakeServer server;
+        LocalModels local;
+        LocalModels::Server where;
+        where.kind = LocalModels::LlamaCpp;
+        where.url = QUrl(server.origin());
+        local.configure(where, "qwen", "embed");
+        server.responses.append({200, "text/event-stream",
+                                 "data: {\"choices\":[{\"delta\":{\"content\":\"{\\\"mood\\\": \"}}]}\n\n"
+                                 "data: {\"choices\":[{\"delta\":{\"content\":\"\\\"calm\\\"}\"}}]}\n\n"
+                                 "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":9}}\n\n"
+                                 "data: [DONE]\n\n"});
+        Ai::TextRequest request;
+        request.stream = true;
+        request.schema = QJsonObject{{"type", "object"}};
+        request.messages = {{true, "?"}};
+        Ai::Reply *reply = local.generate(request);
+        QSignalSpy finished(reply, &Ai::Reply::finished);
+        QVERIFY(finished.wait(3000));
+        QVERIFY2(!reply->error(), qPrintable(reply->error().message));
+        QCOMPARE(reply->result()["mood"].toString(), QString("calm"));
+        QCOMPARE(reply->usage().inputTokens, 120);
+        QCOMPARE(server.requests.first().path, QByteArray("/v1/chat/completions"));
+
+        where.kind = LocalModels::Ollama;
+        local.configure(where, "qwen3.5:4b", "qwen3-embedding:0.6b");
+        server.responses.append({200, "application/x-ndjson",
+                                 "{\"message\":{\"content\":\"<think>x</think>The \"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"Morlocks.\"},\"done\":false}\n"
+                                 "{\"message\":{\"content\":\"\"},\"done\":true,\"prompt_eval_count\":50,\"eval_count\":4}\n"});
+        Ai::TextRequest plain;
+        plain.stream = true;
+        plain.messages = {{true, "Who?"}};
+        reply = local.generate(plain);
+        QSignalSpy text(reply, &Ai::Reply::textReceived);
+        QSignalSpy done(reply, &Ai::Reply::finished);
+        QVERIFY(done.wait(3000));
+        QCOMPARE(reply->text(), QString("The Morlocks."));
+        QVERIFY(!text.isEmpty());
+        for (const auto &delta : text)
+            QVERIFY(!delta.first().toString().contains("think"));
+        QCOMPARE(reply->usage().outputTokens, 4);
+        QCOMPARE(server.requests.last().path, QByteArray("/api/chat"));
+
+        // Embeddings, in the order asked, with the query marked.
+        server.responses.append({200, "application/json", "{\"embeddings\":[[0.1,0.2],[0.3,0.4]]}"});
+        reply = local.embed({"a", "b"}, true);
+        QSignalSpy embedded(reply, &Ai::Reply::finished);
+        QVERIFY(embedded.wait(3000));
+        QCOMPARE(reply->vectors().size(), 2);
+        QCOMPARE(reply->vectors()[1][0], 0.3f);
+        QVERIFY(QJsonDocument::fromJson(server.requests.last().body).object()["input"].toArray()[0].toString().contains("Query: a"));
+        where.kind = LocalModels::LmStudio;
+        local.configure(where, "m", "e");
+        server.responses.append({200, "application/json",
+                                 "{\"data\":[{\"index\":1,\"embedding\":[2]},{\"index\":0,\"embedding\":[1]}]}"});
+        reply = local.embed({"a", "b"}, false);
+        QSignalSpy ordered(reply, &Ai::Reply::finished);
+        QVERIFY(ordered.wait(3000));
+        QCOMPARE(reply->vectors()[0][0], 1.0f);
+
+        // A server that has stopped says so.
+        where.url = QUrl("http://127.0.0.1:9");
+        local.configure(where, "m");
+        reply = local.generate(plain);
+        QSignalSpy refused(reply, &Ai::Reply::finished);
+        QVERIFY(refused.wait(5000));
+        QCOMPARE(reply->error().kind, Ai::Error::Offline);
+    }
+
+    // Servers are told apart by how they answer, not by their port.
+    void serversAreFound() {
+        FakeServer ollama;
+        ollama.routes.insert("/api/tags", {200, "application/json",
+                                           "{\"models\":[{\"name\":\"qwen3.5:4b\"},{\"name\":\"qwen3-embedding:0.6b\"}]}"});
+        FakeServer llama;
+        llama.routes.insert("/props", {200, "application/json", "{\"default_generation_settings\":{},\"model_path\":\"x.gguf\"}"});
+        llama.routes.insert("/v1/models", {200, "application/json", "{\"data\":[{\"id\":\"gemma-4-e4b\",\"owned_by\":\"llamacpp\"}]}"});
+        FakeServer studio;
+        studio.routes.insert("/api/v0/models", {200, "application/json",
+                                                "{\"data\":[{\"id\":\"qwen3.5-9b\",\"type\":\"llm\"},{\"id\":\"nomic-embed\",\"type\":\"embeddings\"}]}"});
+        ServerFinder finder;
+        QSignalSpy finished(&finder, &ServerFinder::finished);
+        finder.find({QUrl(ollama.origin()), QUrl(llama.origin()), QUrl(studio.origin() + "/v1")});
+        QVERIFY(finished.wait(8000));
+        QMap<LocalModels::Kind, LocalModels::Server> found;
+        for (const auto &server : finder.servers())
+            if (server.url.port() == QUrl(ollama.origin()).port() || server.url.port() == QUrl(llama.origin()).port() ||
+                server.url.port() == QUrl(studio.origin()).port())
+                found.insert(server.kind, server);
+        QCOMPARE(found.size(), 3);
+        QCOMPARE(found[LocalModels::Ollama].textModels, QStringList{"qwen3.5:4b"});
+        QCOMPARE(found[LocalModels::Ollama].embeddingModels, QStringList{"qwen3-embedding:0.6b"});
+        QCOMPARE(found[LocalModels::LlamaCpp].textModels, QStringList{"gemma-4-e4b"});
+        QCOMPARE(found[LocalModels::LmStudio].embeddingModels, QStringList{"nomic-embed"});
+    }
+
+    // Hybrid sends quick work to this computer and careful work to Gemini;
+    // Local never sends anything away; Cloud falls back to local without a key.
+    void featuresAreRouted() {
+        QTemporaryDir dir;
+        Library library(dir.filePath("data"), dir.filePath("cache"));
+        QVERIFY(library.open());
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        LocalModels local;
+        services.setLocalModels(&local);
+        const QString before = services.preset();
+        QVERIFY(!services.textFor("director"));
+        LocalModels::Server where;
+        where.kind = LocalModels::Ollama;
+        where.url = QUrl("http://127.0.0.1:11434");
+        local.configure(where, "qwen3.5:4b");
+        services.setPreset("cloud");
+        QCOMPARE(services.routeFor("explain"), QString("local"));  // no key: local stands in
+        gemini.setKey("k");
+        QCOMPARE(services.routeFor("explain"), QString("cloud"));
+        services.setPreset("hybrid");
+        QCOMPARE(services.routeFor("director"), QString("local"));
+        QCOMPARE(services.routeFor("ask"), QString("cloud"));
+        QVERIFY(services.whereFor("director").contains("Ollama"));
+        services.setOverride("ask", "local");
+        QCOMPARE(services.routeFor("ask"), QString("local"));
+        services.setOverride("ask", "");
+        services.setPreset("local");
+        QCOMPARE(services.routeFor("ask"), QString("local"));
+        local.configure({}, {});
+        QCOMPARE(services.routeFor("ask"), QString());  // never away
+        QVERIFY(!services.textFor("director"));
+        services.setPreset(before);
+        QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + "/settings.ini", QSettings::IniFormat).remove("ai/preset");
+    }
+
+    // What a computer has, from its /proc and /sys.
+    void computerIsInspected() {
+        QTemporaryDir root;
+        QDir(root.path()).mkpath("proc");
+        QDir(root.path()).mkpath("sys/class/drm/card1/device");
+        auto write = [&](const QString &path, const QByteArray &text) {
+            QFile file(root.filePath(path));
+            QVERIFY(file.open(QIODevice::WriteOnly));
+            file.write(text);
+        };
+        write("proc/meminfo", "MemTotal:       32617612 kB\nMemAvailable:   20000000 kB\n");
+        write("proc/cpuinfo", "processor\t: 0\nmodel name\t: AMD Ryzen 7 8840U\nflags\t\t: sse2 avx2 avx_vnni\n\n"
+                              "processor\t: 1\nmodel name\t: AMD Ryzen 7 8840U\nflags\t\t: sse2 avx2 avx_vnni\n");
+        write("sys/class/drm/card1/device/vendor", "0x1002\n");
+        write("sys/class/drm/card1/device/mem_info_vram_total", "536870912\n");
+        const SystemCheck::Machine machine = SystemCheck::inspect(root.path());
+        QCOMPARE(qRound(machine.memoryGb), 31);
+        QCOMPARE(machine.cores, 2);
+        QCOMPARE(machine.architecture, QString("x86_64"));
+        QCOMPARE(machine.features, (QStringList{"AVX2", "AVX-VNNI"}));
+        QCOMPARE(machine.graphics, QString("AMD Radeon"));
+        QVERIFY(!machine.discreteGraphics);  // a 780M's carve-out isn't VRAM
+        QCOMPARE(SystemCheck::tierFor(machine), QString("Local Standard"));
+        QCOMPARE(SystemCheck::suggestedModel(machine), QString("Gemma 4 26B-A4B"));
+        QCOMPARE(SystemCheck::billionsIn("qwen3.5:4b"), 4.0);
+        QCOMPARE(SystemCheck::billionsIn("Qwen3.5-9B-Instruct-Q4_K_M"), 9.0);
+        QCOMPARE(SystemCheck::billionsIn("gemma4:e4b"), 4.0);
+        QCOMPARE(SystemCheck::billionsIn("llama"), 0.0);
+        SystemCheck::Machine small;
+        small.memoryGb = 8;
+        QCOMPARE(SystemCheck::tierFor(small), QString("Local voices"));
     }
 
     // The window doesn't wait for the keyring: the key arrives when it

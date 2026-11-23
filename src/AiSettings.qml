@@ -21,6 +21,8 @@ FocusScope {
         replacing = false
         if (ai.hasKey && !ai.connected && !ai.checking)
             ai.check()
+        if (!ai.localServers.length && !ai.findingLocal)
+            ai.findLocal()
         forceActiveFocus()
         if (!ai.hasKey)
             keyInput.forceActiveFocus()
@@ -91,7 +93,7 @@ FocusScope {
                     Glyph { Layout.preferredWidth: 22; Layout.preferredHeight: 22; path: Icons.sparkle; color: theme.accent }
                     Label {
                         Layout.fillWidth: true
-                        text: ai.providerName
+                        text: qsTr("Intelligence")
                         color: theme.text
                         font.pixelSize: 20
                         font.weight: Font.DemiBold
@@ -122,7 +124,7 @@ FocusScope {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: ai.status
+                        text: ai.providerName + " · " + ai.status
                         color: theme.text
                         font.pixelSize: 14
                         wrapMode: Text.Wrap
@@ -226,6 +228,8 @@ FocusScope {
                     font.capitalization: Font.AllUppercase
                     font.letterSpacing: 0.8
                 }
+
+                WhereItRuns { Layout.fillWidth: true }
 
                 Heading { text: qsTr("Privacy") }
                 Label {

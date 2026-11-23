@@ -253,7 +253,7 @@ void Narration::addBlocks(int chapter, const QString &json) {
     m_blocks.insert(chapter, blocks);
     // Direction kept from an earlier reading shapes the clips from the
     // start, so they match the audio made then.
-    const bool kept = directed() && m_ai->text() && keptDirections(chapter);
+    const bool kept = directed() && m_ai->textFor(QStringLiteral("director")) && keptDirections(chapter);
     const qint64 from = chapter == m_startChapter ? m_startOffset : 0;
     const bool firstOfSession = m_clips.isEmpty();
     const QList<SpeechClip> made = Speech::clipsFrom(chapter, blocks, from, breaksFor(chapter));
@@ -269,7 +269,7 @@ void Narration::addBlocks(int chapter, const QString &json) {
     if (firstOfSession && !kept)
         for (int i = before; i < qMin<qsizetype>(before + 3, m_clips.size()); ++i)
             m_clips[i].immediate = true;
-    if (directed() && m_ai->text() && !made.isEmpty() && !kept)
+    if (directed() && m_ai->textFor(QStringLiteral("director")) && !made.isEmpty() && !kept)
         requestDirections(chapter);
     if (m_current < 0 && !m_clips.isEmpty())
         m_current = 0;

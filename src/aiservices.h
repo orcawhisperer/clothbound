@@ -8,6 +8,8 @@
 #include <memory>
 
 class KeyStore;
+class LocalModels;
+class ServerFinder;
 
 // Dogear's intelligence, as the window and the features see it: which
 // provider serves each capability, its key, whether it works, and what it
@@ -30,6 +32,17 @@ class AiServices : public QObject {
     Q_PROPERTY(double spentThisMonth READ spentThisMonth NOTIFY usageChanged)
     Q_PROPERTY(double budget READ budget WRITE setBudget NOTIFY usageChanged)
     Q_PROPERTY(QVariantList usageThisMonth READ usageThisMonth NOTIFY usageChanged)
+    // Where text work runs: "cloud", "hybrid" or "local".
+    Q_PROPERTY(QString preset READ preset WRITE setPreset NOTIFY routingChanged)
+    Q_PROPERTY(bool hasLocal READ hasLocal NOTIFY routingChanged)
+    Q_PROPERTY(QString localName READ localName NOTIFY routingChanged)
+    Q_PROPERTY(QString localUrl READ localUrl NOTIFY routingChanged)
+    Q_PROPERTY(QString localTextModel READ localTextModel NOTIFY routingChanged)
+    Q_PROPERTY(QString localEmbeddingModel READ localEmbeddingModel NOTIFY routingChanged)
+    Q_PROPERTY(QString localSpeechModel READ localSpeechModel NOTIFY routingChanged)
+    // The servers found by findLocal(): {kind, name, url, textModels, embeddingModels, speechModels}.
+    Q_PROPERTY(QVariantList localServers READ localServers NOTIFY localServersChanged)
+    Q_PROPERTY(bool findingLocal READ findingLocal NOTIFY localServersChanged)
 
 public:
     // The key is read from `keys` before this returns, as commands need it.
@@ -60,6 +73,42 @@ public:
         return speaker && speaker->canSpeak(voice);
     }
     Ai::VoiceDesigner *voiceDesigner() const { return m_provider->hasKey() ? m_provider->voiceDesigner() : nullptr; }
+
+    // --- Routing: which model does a feature's text work --------------------
+    // Features: "director", "casting", "define", "translate", "whoswho",
+    // "cast" (quick, structured work, fine on small local models) and
+    // "explain", "recap", "ask" (careful work, Gemini's unless local).
+    void setLocalModels(LocalModels *local);
+    LocalModels *localModels() const { return m_localModels; }
+    Ai::TextModel *textFor(const QString &feature) const;
+    Ai::Provider *textProviderFor(const QString &feature) const;
+    // Finding passages by meaning: the local embedder when routed there.
+    Ai::Embedder *embedder() const;
+    Ai::Provider *embedderProvider() const;
+    // "cloud", "local", or "" when nothing can do it.
+    Q_INVOKABLE QString routeFor(const QString &feature) const;
+    // For the reader: where a feature's work happens, in a few words.
+    Q_INVOKABLE QString whereFor(const QString &feature) const;
+    // A feature's own route ("cloud", "local", or "" to follow the preset).
+    Q_INVOKABLE QString overrideFor(const QString &feature) const;
+    Q_INVOKABLE void setOverride(const QString &feature, const QString &route);
+    static bool isCareful(const QString &feature);
+    QString preset() const;
+    void setPreset(const QString &preset);
+    bool hasLocal() const;
+    QString localName() const;
+    QString localUrl() const;
+    QString localTextModel() const;
+    QString localEmbeddingModel() const;
+    QString localSpeechModel() const;
+    QVariantList localServers() const { return m_localServers; }
+    bool findingLocal() const { return m_findingLocal; }
+    // Looks for model servers on this computer (and at `url`, if given).
+    Q_INVOKABLE void findLocal(const QString &url = {});
+    // Uses a server and its models ("" for a role it won't have).
+    Q_INVOKABLE void useLocal(const QString &kind, const QString &url, const QString &textModel,
+                              const QString &embeddingModel, const QString &speechModel = {});
+    Q_INVOKABLE void forgetLocal();
 
     bool hasKey() const { return m_provider->hasKey(); }
     bool checking() const { return m_checking; }
@@ -95,10 +144,16 @@ signals:
     void changed();
     void usageChanged();
     void keyChecked(bool ok, const QString &message);
+    void routingChanged();
+    void localServersChanged();
 
 private:
     Ai::Provider *m_provider;
     Ai::Provider *m_local = nullptr;
+    LocalModels *m_localModels = nullptr;
+    ServerFinder *m_finder = nullptr;
+    QVariantList m_localServers;
+    bool m_findingLocal = false;
     KeyStore *m_keys;
     AiUsageLedger m_ledger;
     bool m_checking = false;

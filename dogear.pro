@@ -25,6 +25,8 @@ HEADERS += \
     src/epubbook.h \
     src/filepicker.h \
     src/gemini.h \
+    src/localmodels.h \
+    src/systemcheck.h \
     src/htmltokenizer.h \
     src/keystore.h \
     src/library.h \
@@ -63,6 +65,8 @@ SOURCES += \
     src/cli.cpp \
     src/epubbook.cpp \
     src/gemini.cpp \
+    src/localmodels.cpp \
+    src/systemcheck.cpp \
     src/htmltokenizer.cpp \
     src/keystore.cpp \
     src/library.cpp \

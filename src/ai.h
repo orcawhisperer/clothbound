@@ -110,6 +110,8 @@ public:
     // Where each sentence of a SpeechRequest's `sentences` ends in the audio,
     // in samples; empty when the synthesizer can't tell.
     QList<qint64> boundaries() const { return m_boundaries; }
+    // An Embedder's vectors, one per text asked about.
+    QList<QList<float>> vectors() const { return m_vectors; }
 
     virtual void abort() = 0;
 
@@ -145,6 +147,7 @@ protected:
     QString m_model;
     QString m_feature;
     QList<qint64> m_boundaries;
+    QList<QList<float>> m_vectors;
     bool m_finished = false;
 };
 
@@ -178,6 +181,16 @@ public:
     }
 };
 
+// Text as vectors, for finding passages by meaning: close vectors, close
+// meanings. A query and the passages it looks for are embedded differently
+// by some models, hence `query`.
+class Embedder {
+public:
+    virtual ~Embedder() = default;
+    virtual Reply *embed(const QStringList &texts, bool query) = 0;
+    virtual QString embeddingModelName() const = 0;
+};
+
 class VoiceDesigner {
 public:
     virtual ~VoiceDesigner() = default;
@@ -208,6 +221,7 @@ public:
     virtual TextModel *text() { return nullptr; }
     virtual SpeechSynthesizer *speech() { return nullptr; }
     virtual VoiceDesigner *voiceDesigner() { return nullptr; }
+    virtual Embedder *embedder() { return nullptr; }
 };
 
 }

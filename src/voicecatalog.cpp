@@ -373,7 +373,7 @@ void VoiceCatalog::resetCasting() {
 }
 
 void VoiceCatalog::cast(const QString &passage) {
-    if (!m_ai->text() || !m_ai->voiceDesigner()) {
+    if (!m_ai->textFor(QStringLiteral("casting")) || !m_ai->voiceDesigner()) {
         setCasting(QStringLiteral("failed"), m_ai->describe(int(Ai::Error::NoKey)));
         return;
     }
@@ -398,7 +398,7 @@ void VoiceCatalog::cast(const QString &passage) {
         {"required", QJsonArray{"name", "description", "gender", "language"}},
     };
     setCasting(QStringLiteral("thinking"));
-    Ai::Reply *reply = m_ai->text()->generate(request);
+    Ai::Reply *reply = m_ai->textFor(QStringLiteral("casting"))->generate(request);
     m_ai->track(reply);
     m_castingReply = reply;
     connect(reply, &Ai::Reply::finished, this, [this, reply] {

@@ -5,6 +5,7 @@
 #include "bookinfo.h"
 #include "gemini.h"
 #include "keystore.h"
+#include "localmodels.h"
 #include "epubbook.h"
 #include "library.h"
 #include "marks.h"
@@ -404,7 +405,7 @@ int voices(const QStringList &arguments) {
 // from standard input, so it never appears in the shell's history.
 int ai(const QStringList &arguments) {
     Command command("ai", "Gemini for Dogear's listening and companion: status, key, forget.");
-    command.parser.addPositionalArgument("action", "status (default), key (read from standard input), or forget", "[action]");
+    command.parser.addPositionalArgument("action", "status (default), key (read from standard input), forget, or local (find model servers on this computer)", "[action]");
     command.json();
     command.parser.process(arguments);
     const QString action = command.argument(1).isEmpty() ? QStringLiteral("status") : command.argument(1);
@@ -415,6 +416,43 @@ int ai(const QStringList &arguments) {
     GeminiProvider gemini;
     SecretKeyStore keys;
     AiServices services(&gemini, &keys, library.database().connectionName());
+    LocalModels local;
+    services.setLocalModels(&local);
+
+    if (action == "local") {
+        ServerFinder finder;
+        QEventLoop loop;
+        QObject::connect(&finder, &ServerFinder::finished, &loop, &QEventLoop::quit);
+        finder.find(services.localUrl().isEmpty() ? QList<QUrl>() : QList<QUrl>{QUrl(services.localUrl())});
+        loop.exec();
+        QJsonArray found;
+        for (const LocalModels::Server &server : finder.servers())
+            found.append(QJsonObject{{"kind", LocalModels::kindId(server.kind)},
+                                     {"name", LocalModels::kindName(server.kind)},
+                                     {"url", server.url.toString()},
+                                     {"textModels", QJsonArray::fromStringList(server.textModels)},
+                                     {"embeddingModels", QJsonArray::fromStringList(server.embeddingModels)},
+                                     {"speechModels", QJsonArray::fromStringList(server.speechModels)}});
+        if (command.asJson()) {
+            print(QJsonObject{{"servers", found}, {"using", services.localUrl()}});
+            return 0;
+        }
+        if (found.isEmpty())
+            print(stdout, "No model servers found on this computer (Ollama, llama.cpp, LM Studio, MLX, vLLM).");
+        for (const QJsonValue &value : found) {
+            const QJsonObject server = value.toObject();
+            print(stdout, server["name"].toString() + " at " + server["url"].toString() +
+                              (server["url"].toString() == services.localUrl() ? " (in use)" : ""));
+            for (const char *role : {"textModels", "embeddingModels", "speechModels"}) {
+                QStringList models;
+                for (const QJsonValue &model : server[role].toArray())
+                    models.append(model.toString());
+                if (!models.isEmpty())
+                    print(stdout, QString("  %1: %2").arg(QString(role).remove("Models"), models.join(", ")));
+            }
+        }
+        return 0;
+    }
 
     if (action == "forget") {
         services.forgetKey();
@@ -464,7 +502,11 @@ int ai(const QStringList &arguments) {
                              {"speechModel", services.speechModel()},
                              {"spentThisMonth", services.spentThisMonth()},
                              {"budget", services.budget()},
-                             {"usage", usage}};
+                             {"usage", usage},
+                             {"preset", services.preset()},
+                             {"local", services.localUrl()},
+                             {"localTextModel", services.localTextModel()},
+                             {"localEmbeddingModel", services.localEmbeddingModel()}};
     if (command.asJson()) {
         print(status);
     } else {
@@ -473,6 +515,11 @@ int ai(const QStringList &arguments) {
             print(stdout, "Key in " + services.keyLocation() + "; models " + services.textModel() + ", " + services.speechModel());
         print(stdout, QString("This month: about $%1 of a $%2 budget").arg(services.spentThisMonth(), 0, 'f', 2)
                           .arg(services.budget(), 0, 'f', 2));
+        if (services.hasLocal())
+            print(stdout, QString("On this computer: %1 at %2, with %3").arg(services.localName(), services.localUrl(),
+                                                                          services.localTextModel()));
+        print(stdout, "Where it runs: " + services.preset() + " (quick work: " + services.whereFor("director") +
+                          "; careful work: " + services.whereFor("explain") + ")");
     }
     return services.hasKey() && !services.connected() ? 1 : 0;
 }

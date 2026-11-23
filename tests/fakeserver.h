@@ -49,7 +49,11 @@ public:
                         return;
                     request.body = buffer->mid(end + 4, length);
                     requests.append(request);
-                    const Response response = responses.isEmpty() ? Response{404, "text/plain", "none"} : responses.takeFirst();
+                    Response response{404, "text/plain", "none"};
+                    if (routes.contains(request.path))
+                        response = routes.value(request.path);
+                    else if (!responses.isEmpty())
+                        response = responses.takeFirst();
                     QByteArray reply = "HTTP/1.1 " + QByteArray::number(response.status) + " Status\r\n";
                     reply += "Content-Type: " + response.contentType + "\r\n";
                     reply += "Content-Length: " + QByteArray::number(response.body.size()) + "\r\n";
@@ -65,7 +69,11 @@ public:
 
     QString endpoint() const { return QStringLiteral("http://127.0.0.1:%1/v1beta").arg(m_server.serverPort()); }
 
+    QString origin() const { return QStringLiteral("http://127.0.0.1:%1").arg(m_server.serverPort()); }
+
     QList<Response> responses;
+    // Answers for a path, whenever it's asked (before `responses`).
+    QMap<QByteArray, Response> routes;
     QList<Request> requests;
 
 private:
