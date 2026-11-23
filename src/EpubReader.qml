@@ -990,6 +990,54 @@ FocusScope {
         }
     }
 
+    // The first book opened shows the four keys worth knowing, once.
+    Rectangle {
+        id: keysStrip
+        z: 4
+        readonly property bool wanted: onboarding.tips.indexOf("keys") < 0 && reader.open && !view.epubLoading
+                                       && !view.panelOpen && !narration.active && !view.chromeShown
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: wanted ? parent.height - height - 28 : parent.height + 8
+        Behavior on y { NumberAnimation { duration: 220; easing.type: Easing.OutCubic } }
+        visible: y < parent.height
+        width: keysRow.implicitWidth + 24
+        height: 44
+        radius: Math.min(12, Math.max(theme.radius, 8))
+        color: view.look.popover
+        border.color: view.look.line
+        Rectangle {
+            z: -1
+            anchors.fill: parent
+            anchors.topMargin: 3
+            anchors.bottomMargin: -3
+            radius: parent.radius
+            color: "black"
+            opacity: view.look.dark ? 0.3 : 0.1
+        }
+        Row {
+            id: keysRow
+            anchors.centerIn: parent
+            spacing: 14
+            Repeater {
+                model: [{ key: qsTr("Space"), what: qsTr("Turn the page") }, { key: "P", what: qsTr("Listen") },
+                        { key: "C", what: qsTr("Companion") }, { key: "?", what: qsTr("All keys") }]
+                delegate: Row {
+                    required property var modelData
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: 6
+                    KeyHint { anchors.verticalCenter: parent.verticalCenter; text: modelData.key }
+                    Label { anchors.verticalCenter: parent.verticalCenter; text: modelData.what; color: view.look.fg; font.pixelSize: 12 }
+                }
+            }
+            TextButton {
+                anchors.verticalCenter: parent.verticalCenter
+                height: 28
+                text: qsTr("Got it")
+                onClicked: onboarding.tips = onboarding.tips.concat(["keys"])
+            }
+        }
+    }
+
     // How far through the book, always: a hairline along the foot of the
     // page with a tick at each chapter. The scrubber in the chrome moves it.
     Item {
@@ -1436,8 +1484,19 @@ FocusScope {
             }
             visible = false
         }
-        onCompanion: (feature) => {
+        onAskCompanion: (feature) => {
             view.askCompanion(feature, target)
+            visible = false
+        }
+        onDefineHere: {
+            if (!target || !(target.text || target.quote))
+                return
+            const text = target.text || target.quote
+            view.lastCompanionTarget = { chapter: target.chapter, start: target.start, end: target.end, text: text }
+            companion.define(text, target.chapter, target.start)
+        }
+        onMoreInCompanion: {
+            view.showCompanion("selection")
             visible = false
         }
         onNote: {

@@ -21,8 +21,13 @@ Rectangle {
     signal copy()
     signal listen()
     // "define", "explain" or "translate", for the companion.
-    signal companion(string feature)
+    signal askCompanion(string feature)
     signal remove()
+    // Define answered in place, under the buttons; "More" opens the companion.
+    signal defineHere()
+    signal moreInCompanion()
+    property bool defining: false
+    onVisibleChanged: if (!visible) defining = false
 
     readonly property var colors: ["yellow", "green", "blue", "pink"]
     readonly property var swatches: Themes.swatches
@@ -39,9 +44,10 @@ Rectangle {
         y = rect.y - height - 10 >= 8 ? rect.y - height - 10 : Math.min(area.height - height - 8, rect.y + rect.height + 10)
     }
     onWidthChanged: if (visible && anchorRect && anchorArea) place(anchorRect, anchorArea)
+    onHeightChanged: if (visible && anchorRect && anchorArea) place(anchorRect, anchorArea)
 
-    width: row.implicitWidth + 16
-    height: 44
+    width: defining ? Math.max(row.implicitWidth + 16, 360) : row.implicitWidth + 16
+    height: defining ? 44 + definition.implicitHeight + 14 : 44
     radius: Math.min(10, theme.radius)
     color: look.popover
     border.color: look.line
@@ -63,9 +69,34 @@ Rectangle {
         opacity: bar.look.dark ? 0.35 : 0.12
     }
 
+    // A word on the popover: Note, Define, Explain, Translate.
+    component Word: AbstractButton {
+        id: word
+        property bool on: false
+        anchors.verticalCenter: parent.verticalCenter
+        implicitHeight: 30
+        implicitWidth: wordLabel.implicitWidth + 16
+        hoverEnabled: true
+        focusPolicy: Qt.NoFocus
+        background: Rectangle {
+            radius: Math.min(6, theme.radius)
+            color: word.on ? Ui.tint(bar.look.link, 0.16) : word.pressed ? Ui.tint(bar.look.fg, 0.14) : word.hovered ? Ui.tint(bar.look.fg, 0.08) : "transparent"
+        }
+        contentItem: Label {
+            id: wordLabel
+            text: word.text
+            color: word.on ? bar.look.link : bar.look.fg
+            font.pixelSize: 13
+            font.weight: Font.Medium
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
     Row {
         id: row
-        anchors.centerIn: parent
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: (44 - height) / 2
         spacing: 2
 
         Repeater {
@@ -106,12 +137,9 @@ Rectangle {
             color: bar.look.line
         }
 
-        IconButton {
-            anchors.verticalCenter: parent.verticalCenter
-            glyph: Icons.note
-            look: bar.look
-            active: bar.forMark && (bar.target.note || "") !== ""
-            tip: bar.forMark && (bar.target.note || "") !== "" ? qsTr("Edit the note") : qsTr("Add a note")
+        Word {
+            on: bar.forMark && (bar.target.note || "") !== ""
+            text: qsTr("Note")
             onClicked: bar.note()
         }
         IconButton {
@@ -127,28 +155,14 @@ Rectangle {
             height: 22
             color: bar.look.line
         }
-        IconButton {
-            anchors.verticalCenter: parent.verticalCenter
+        Word {
             visible: (bar.target.text || bar.target.quote || "").trim().split(/\s+/).length <= 3
-            glyph: Icons.dictionary
-            look: bar.look
-            tip: qsTr("Define")
-            onClicked: bar.companion("define")
+            on: bar.defining
+            text: qsTr("Define")
+            onClicked: { bar.defining = true; bar.defineHere() }
         }
-        IconButton {
-            anchors.verticalCenter: parent.verticalCenter
-            glyph: Icons.sparkle
-            look: bar.look
-            tip: qsTr("Explain")
-            onClicked: bar.companion("explain")
-        }
-        IconButton {
-            anchors.verticalCenter: parent.verticalCenter
-            glyph: Icons.translate
-            look: bar.look
-            tip: qsTr("Translate")
-            onClicked: bar.companion("translate")
-        }
+        Word { text: qsTr("Explain"); onClicked: bar.askCompanion("explain") }
+        Word { text: qsTr("Translate"); onClicked: bar.askCompanion("translate") }
         IconButton {
             anchors.verticalCenter: parent.verticalCenter
             visible: !bar.forMark
@@ -164,6 +178,74 @@ Rectangle {
             look: bar.look
             tip: qsTr("Remove the highlight")
             onClicked: bar.remove()
+        }
+    }
+
+    // The definition, in place.
+    Column {
+        id: definition
+        visible: bar.defining
+        x: 14
+        y: 46
+        width: bar.width - 28
+        spacing: 8
+        Rectangle { width: parent.width; height: 1; color: bar.look.line }
+        Row {
+            visible: companion.busy && companion.feature === "define"
+            spacing: 8
+            BusyIndicator { width: 16; height: 16; padding: 0; running: parent.visible }
+            Label { text: qsTr("Looking it up…"); color: bar.look.muted; font.pixelSize: 12 }
+        }
+        Label {
+            width: parent.width
+            visible: companion.feature === "define" && companion.problem !== ""
+            text: companion.problem
+            color: bar.look.muted
+            font.pixelSize: 12
+            wrapMode: Text.Wrap
+        }
+        TextEdit {
+            width: parent.width
+            visible: companion.feature === "define" && companion.answer !== ""
+            readOnly: true
+            selectByMouse: true
+            wrapMode: Text.Wrap
+            textFormat: TextEdit.MarkdownText
+            text: companion.feature === "define" ? companion.sanitizeMarkdown(companion.answer) : ""
+            color: bar.look.fg
+            selectionColor: Ui.tint(bar.look.link, 0.35)
+            font.pixelSize: 14
+            font.family: "Literata"
+            height: Math.min(implicitHeight, 180)
+            clip: true
+        }
+        Row {
+            width: parent.width
+            visible: companion.feature === "define" && !companion.busy && companion.answer !== ""
+            spacing: 8
+            Rectangle {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 6; height: 6; radius: 3
+                color: ai.routeFor("define") === "local" && ai.localIsLoopback ? theme.positive : theme.cloud
+            }
+            Label {
+                anchors.verticalCenter: parent.verticalCenter
+                width: parent.width - 6 - moreLink.width - 24
+                text: companion.where
+                color: bar.look.muted
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+            Label {
+                id: moreLink
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("More in Companion")
+                color: bar.look.link
+                font.pixelSize: 11
+                font.weight: Font.Medium
+                TapHandler { onTapped: bar.moreInCompanion() }
+                HoverHandler { cursorShape: Qt.PointingHandCursor }
+            }
         }
     }
 }
