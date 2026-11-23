@@ -9,6 +9,11 @@ AbstractButton {
     id: row
 
     property string hint
+    property var look: null
+
+    readonly property color inkColor: look ? (look.fg || look.ink || theme.text) : theme.text
+    readonly property color mutedColor: look ? (look.muted || theme.textTertiary) : theme.textTertiary
+    readonly property color accentColor: look ? (look.link || theme.accent) : theme.accent
 
     width: parent ? parent.width : 200
     implicitHeight: 34
@@ -17,7 +22,7 @@ AbstractButton {
 
     background: Rectangle {
         radius: Math.min(6, theme.radius)
-        color: row.hovered ? Ui.tint(theme.text, 0.08) : "transparent"
+        color: row.hovered ? Ui.tint(row.inkColor, 0.08) : "transparent"
     }
     contentItem: Item {
         Glyph {
@@ -29,7 +34,7 @@ AbstractButton {
             height: 16
             stroke: 2.2
             path: Icons.check
-            color: theme.accent
+            color: row.accentColor
             visible: row.checked
         }
         Label {
@@ -38,7 +43,7 @@ AbstractButton {
             anchors.right: hintLabel.left
             anchors.verticalCenter: parent.verticalCenter
             text: row.text
-            color: theme.text
+            color: row.inkColor
             font.pixelSize: 13
             elide: Text.ElideRight
         }
@@ -48,7 +53,7 @@ AbstractButton {
             anchors.rightMargin: 10
             anchors.verticalCenter: parent.verticalCenter
             text: row.hint
-            color: theme.textTertiary
+            color: row.mutedColor
             font.pixelSize: 12
             font.family: "monospace"
         }

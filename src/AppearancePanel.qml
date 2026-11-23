@@ -15,6 +15,8 @@ FocusScope {
     property bool open: false
     property var look
     property var settings
+    property bool pdf: false
+    property var pdfSurface: null
 
     signal closed()
 
@@ -138,7 +140,7 @@ FocusScope {
         }
         IconButton {
             glyph: Icons.close
-            tone: panel.look.fg
+            look: panel.look
             tip: qsTr("Close (Esc)")
             onClicked: panel.close()
         }
@@ -202,8 +204,11 @@ FocusScope {
                 }
             }
 
-            Heading { text: qsTr("Typeface") }
+            Heading { visible: !panel.pdf; text: qsTr("Typeface") }
             GridLayout {
+                visible: !panel.pdf
+                enabled: !panel.settings.publisher
+                opacity: panel.settings.publisher ? 0.45 : 1
                 Layout.fillWidth: true
                 columns: 2
                 columnSpacing: 8
@@ -234,12 +239,48 @@ FocusScope {
                 }
             }
 
-            Heading { text: qsTr("Size") }
+            Heading { visible: panel.pdf; text: qsTr("Zoom") }
             RowLayout {
+                visible: panel.pdf && panel.pdfSurface !== null
                 Layout.fillWidth: true
                 spacing: 10
                 IconButton {
-                    tone: panel.look.fg
+                    look: panel.look
+                    glyph: Icons.zoomOut
+                    tip: qsTr("Smaller (−)")
+                    onClicked: if (panel.pdfSurface) panel.pdfSurface.zoom = Math.max(1, Math.round(panel.pdfSurface.zoom / 1.15 * 100) / 100)
+                }
+                Slider {
+                    Layout.fillWidth: true
+                    from: 1.0
+                    to: 4.0
+                    stepSize: 0.1
+                    value: panel.pdfSurface ? panel.pdfSurface.zoom : 1.0
+                    focusPolicy: Qt.NoFocus
+                    onMoved: if (panel.pdfSurface) panel.pdfSurface.zoom = Math.round(value * 100) / 100
+                }
+                IconButton {
+                    look: panel.look
+                    glyph: Icons.zoomIn
+                    tip: qsTr("Larger (+)")
+                    onClicked: if (panel.pdfSurface) panel.pdfSurface.zoom = Math.min(4, Math.round(panel.pdfSurface.zoom * 1.15 * 100) / 100)
+                }
+                Label {
+                    Layout.preferredWidth: 44
+                    horizontalAlignment: Text.AlignRight
+                    text: Math.round((panel.pdfSurface ? panel.pdfSurface.zoom : 1.0) * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
+                    color: panel.look.muted
+                    font.pixelSize: 12
+                }
+            }
+
+            Heading { visible: !panel.pdf; text: qsTr("Size") }
+            RowLayout {
+                visible: !panel.pdf
+                Layout.fillWidth: true
+                spacing: 10
+                IconButton {
+                    look: panel.look
                     tip: qsTr("Smaller (−)")
                     contentItem: Label { text: "A"; font.family: "Literata"; font.pixelSize: 13; color: panel.look.fg; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     onClicked: panel.settings.fontScale = Math.max(0.7, Math.round((panel.settings.fontScale - 0.05) * 100) / 100)
@@ -254,7 +295,7 @@ FocusScope {
                     onMoved: panel.settings.fontScale = Math.round(value * 100) / 100
                 }
                 IconButton {
-                    tone: panel.look.fg
+                    look: panel.look
                     tip: qsTr("Larger (+)")
                     contentItem: Label { text: "A"; font.family: "Literata"; font.pixelSize: 21; color: panel.look.fg; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
                     onClicked: panel.settings.fontScale = Math.min(2.0, Math.round((panel.settings.fontScale + 0.05) * 100) / 100)
@@ -262,26 +303,28 @@ FocusScope {
                 Label {
                     Layout.preferredWidth: 44
                     horizontalAlignment: Text.AlignRight
-                    text: Math.round(panel.settings.fontScale * 100).toLocaleString(Qt.locale(translator.language), 'f', 0) + "%"
+                    text: Math.round(panel.settings.fontScale * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
                     color: panel.look.muted
                     font.pixelSize: 12
                 }
             }
 
-            Heading { text: qsTr("Line spacing") }
+            Heading { visible: !panel.pdf; text: qsTr("Line spacing") }
             Slider {
+                visible: !panel.pdf
                 Layout.fillWidth: true
                 from: 1.2
                 to: 2.0
                 stepSize: 0.05
                 value: panel.settings.lineHeight
                 focusPolicy: Qt.NoFocus
-                enabled: panel.settings.font !== "publisher" || !panel.settings.publisher
+                enabled: !panel.settings.publisher
                 onMoved: panel.settings.lineHeight = Math.round(value * 100) / 100
             }
 
-            Heading { text: qsTr("Margins") }
+            Heading { visible: !panel.pdf; text: qsTr("Margins") }
             RowLayout {
+                visible: !panel.pdf
                 Layout.fillWidth: true
                 spacing: 8
                 Repeater {
@@ -315,27 +358,52 @@ FocusScope {
 
             Item { Layout.preferredHeight: 6 }
             Toggle {
+                visible: panel.pdf
+                text: qsTr("Trim margins")
+                checked: panel.settings.pdfCrop
+                onToggled: (on) => panel.settings.pdfCrop = on
+            }
+            Toggle {
+                visible: panel.pdf
+                text: qsTr("Original page colors")
+                checked: panel.settings.pdfOriginalColors
+                onToggled: (on) => panel.settings.pdfOriginalColors = on
+            }
+            Label {
+                visible: panel.pdf
+                Layout.fillWidth: true
+                text: qsTr("Shows PDF pages with their original ink and paper instead of recoloring them to the reading theme.")
+                color: panel.look.muted
+                font.pixelSize: 12
+                wrapMode: Text.Wrap
+            }
+            Toggle {
+                visible: !panel.pdf
                 text: qsTr("Justify text")
                 checked: panel.settings.justify
                 onToggled: (on) => panel.settings.justify = on
             }
             Toggle {
+                visible: !panel.pdf
                 text: qsTr("Hyphenate")
                 checked: panel.settings.hyphenate
                 enabled: panel.settings.justify
                 onToggled: (on) => panel.settings.hyphenate = on
             }
             Toggle {
+                visible: !panel.pdf
                 text: qsTr("Animate page turns")
                 checked: panel.settings.animate
                 onToggled: (on) => panel.settings.animate = on
             }
             Toggle {
+                visible: !panel.pdf
                 text: qsTr("Use the book's own styles")
                 checked: panel.settings.publisher
                 onToggled: (on) => panel.settings.publisher = on
             }
             Label {
+                visible: !panel.pdf
                 Layout.fillWidth: true
                 text: qsTr("Keeps the publisher's fonts, spacing, and layout; only the colors follow the theme.")
                 color: panel.look.muted

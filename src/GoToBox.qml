@@ -59,6 +59,21 @@ FocusScope {
         radius: Math.min(12, theme.radius)
         color: box.look.popover
         border.color: box.look.border
+        Rectangle {
+            z: -1
+            anchors.fill: parent
+            anchors.topMargin: 4
+            anchors.bottomMargin: -4
+            radius: parent.radius
+            color: "black"
+            opacity: box.look.dark ? 0.35 : 0.12
+        }
+        // Keep clicks and wheel inside the box from falling through to the scrim.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onWheel: (wheel) => wheel.accepted = true
+        }
     }
 
     Column {

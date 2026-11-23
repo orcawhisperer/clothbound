@@ -10,7 +10,9 @@ AbstractButton {
     property string glyph
     property string tip
     property bool active: false
-    property color tone: theme.text
+    property var look: null
+    property color tone: look ? (look.fg || look.ink || theme.text) : theme.text
+    readonly property color accentColor: look ? (look.link || theme.accent) : theme.accent
 
     implicitWidth: 36
     implicitHeight: 36
@@ -19,9 +21,9 @@ AbstractButton {
 
     background: Rectangle {
         radius: Math.min(8, theme.radius)
-        color: button.active ? Ui.tint(theme.accent, 0.18)
-             : button.pressed ? Ui.tint(button.tone, 0.16)
-             : button.hovered ? Ui.tint(button.tone, 0.08) : "transparent"
+        color: button.active ? Ui.tint(button.accentColor, 0.18)
+             : button.enabled && button.pressed ? Ui.tint(button.tone, 0.16)
+             : button.enabled && button.hovered ? Ui.tint(button.tone, 0.08) : "transparent"
         Behavior on color { ColorAnimation { duration: 120 } }
     }
 
@@ -31,7 +33,7 @@ AbstractButton {
             width: 20
             height: 20
             path: button.glyph
-            color: button.active ? theme.accent : button.tone
+            color: button.active ? button.accentColor : button.tone
             opacity: button.enabled ? 1 : 0.4
         }
     }

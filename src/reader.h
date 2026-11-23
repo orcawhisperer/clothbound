@@ -46,6 +46,9 @@ class Reader : public QObject {
     Q_PROPERTY(int minutesLeftInBook READ minutesLeftInBook NOTIFY locationChanged)
     Q_PROPERTY(bool atStart READ atStart NOTIFY locationChanged)
     Q_PROPERTY(bool atEnd READ atEnd NOTIFY locationChanged)
+    // Incremented only when the active surface reports a real location,
+    // distinguishing post-load syncs from openBook()'s initial signal.
+    Q_PROPERTY(int relocationSeq READ relocationSeq NOTIFY locationChanged)
     // A PDF: the surface's image source for its pages, and the crop that
     // cuts the margins the same on every page (parts of a page).
     Q_PROPERTY(QString pdfSource READ pdfSource NOTIFY bookChanged)
@@ -89,6 +92,7 @@ public:
     int minutesLeftInBook() const;
     bool atStart() const { return m_chapter <= m_firstLinear && m_page <= 0; }
     bool atEnd() const { return m_atEnd; }
+    int relocationSeq() const { return m_relocationSeq; }
 
     Q_INVOKABLE bool openBook(int bookId);
     Q_INVOKABLE void close();
@@ -123,11 +127,13 @@ public:
 
     // A chapter's blocks to read aloud, as JSON from the surface.
     Q_INVOKABLE void speakableReady(int chapter, const QString &blocks) { emit speakable(chapter, blocks); }
+    Q_INVOKABLE void speakableReadyFor(qint64 session, int chapter, const QString &blocks);
     // What the reader has selected on the page ({} when nothing is).
-    Q_INVOKABLE void selectionChanged(const QVariantMap &selection) { emit selected(selection); }
-    Q_INVOKABLE void markClicked(int id, const QVariantMap &rect) { emit markChosen(id, rect); }
+    Q_INVOKABLE void selectionChanged(const QVariantMap &selection);
+    Q_INVOKABLE void markClicked(int id, const QVariantMap &rect);
     // The reader asked to listen from a paragraph.
     Q_INVOKABLE void listenFrom(int chapter, qint64 offset) { emit listenRequested(chapter, offset); }
+    Q_INVOKABLE void listenFromSession(qint64 session, int chapter, qint64 offset);
 
     // Progress through the whole book at a chapter and an offset in it.
     double fractionAt(int chapter, qint64 offset) const;
@@ -177,6 +183,9 @@ private:
     QList<QPair<int, QString>> m_pageTargets;
     bool m_hasPageList = false;
     int m_firstLinear = 0;
+    int m_lastLinear = 0;
+    qint64 m_session = 0;
+    int m_relocationSeq = 0;
 
     int m_chapter = 0;
     qint64 m_offset = 0;

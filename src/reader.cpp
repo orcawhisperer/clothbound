@@ -55,6 +55,7 @@ bool Reader::openBook(int bookId) {
     m_book = book;
     m_token = m_scheme->add(book);
     m_bookId = bookId;
+    ++m_session;
     m_format = record.format;
     m_title = record.title;
     m_author = record.author;
@@ -64,17 +65,23 @@ bool Reader::openBook(int bookId) {
     QVariantList spineList;
     m_linear.clear();
     m_firstLinear = -1;
+    m_lastLinear = -1;
     for (int i = 0; i < spine.size(); ++i) {
         spineList.append(QVariantMap{
             {"href", QString::fromUtf8(QUrl::toPercentEncoding(spine[i].path, "/"))},
             {"linear", spine[i].linear},
         });
         m_linear.append(spine[i].linear);
-        if (spine[i].linear && m_firstLinear < 0)
-            m_firstLinear = i;
+        if (spine[i].linear) {
+            if (m_firstLinear < 0)
+                m_firstLinear = i;
+            m_lastLinear = i;
+        }
     }
     if (m_firstLinear < 0)
         m_firstLinear = 0;
+    if (m_lastLinear < 0)
+        m_lastLinear = qMax(0, int(spine.size()) - 1);
 
     // Each chapter is titled by the first contents entry that points into
     // it; chapters the contents skip carry the title before them.
@@ -109,6 +116,7 @@ bool Reader::openBook(int bookId) {
         {"language", m_language},
         {"rtl", book->isRightToLeft()},
         {"title", m_title},
+        {"session", double(m_session)},
     };
 
     m_lengths = m_library->chapterLengths(bookId);
@@ -129,6 +137,9 @@ bool Reader::openBook(int bookId) {
     }
     m_chapter = m_startPosition.value("chapter").toInt();
     m_offset = m_startPosition.value("offset").toLongLong();
+    m_pageEnd = 0;
+    m_snippet.clear();
+    m_relocationSeq = 0;
     m_page = 0;
     m_pages = 1;
     m_progress = record.progress;
@@ -153,6 +164,7 @@ void Reader::close() {
     }
     flushReadingTime();
     m_timeFlush.stop();
+    ++m_session;
     m_scheme->remove(m_token);
     PdfPages::remove(m_token);
     m_book.reset();
@@ -166,6 +178,19 @@ void Reader::close() {
     m_chapterTitles.clear();
     m_lengths.clear();
     m_pageTargets.clear();
+    m_hasPageList = false;
+    m_firstLinear = 0;
+    m_lastLinear = 0;
+    m_chapter = 0;
+    m_offset = 0;
+    m_pageEnd = 0;
+    m_snippet.clear();
+    m_relocationSeq = 0;
+    m_page = 0;
+    m_pages = 1;
+    m_progress = 0;
+    m_pageLabel.clear();
+    m_atEnd = false;
     emit bookChanged();
 }
 
@@ -284,6 +309,8 @@ int Reader::contentsIndex() const {
 }
 
 int Reader::minutesLeftInChapter() const {
+    if (m_atEnd)
+        return 0;
     const double pace = m_library->charsPerMinute();
     const qint64 length = m_lengths.value(m_chapter, 0);
     if (length <= 0 || pace <= 0)
@@ -292,6 +319,8 @@ int Reader::minutesLeftInChapter() const {
 }
 
 int Reader::minutesLeftInBook() const {
+    if (m_atEnd)
+        return 0;
     const double pace = m_library->charsPerMinute();
     qint64 total = 0;
     for (const int length : m_lengths)
@@ -304,6 +333,8 @@ int Reader::minutesLeftInBook() const {
 void Reader::relocated(const QVariantMap &location) {
     if (!m_bookId)
         return;
+    if (location.contains(QStringLiteral("session")) && location.value(QStringLiteral("session")).toLongLong() != m_session)
+        return;
     m_chapter = location.value("chapter").toInt();
     m_offset = qMax<qint64>(0, location.value("offset").toLongLong());
     m_snippet = location.value("snippet").toString();
@@ -311,9 +342,12 @@ void Reader::relocated(const QVariantMap &location) {
     m_page = location.value("page").toInt();
     m_pages = qMax(1, location.value("pages").toInt());
     m_pageLabel = location.value("pageLabel").toString();
-    const bool lastChapter = m_chapter >= chapterCount() - 1;
-    m_atEnd = location.value("atEnd").toBool() && lastChapter;
+    // Keep startPosition current so a WebEngine crash reload resumes here.
+    m_startPosition = QVariantMap{{"chapter", m_chapter}, {"offset", double(m_offset)}, {"snippet", m_snippet}};
+    const bool nearEnd = m_pdf ? (m_chapter >= qMax(0, chapterCount() - 2)) : (m_chapter >= m_lastLinear);
+    m_atEnd = location.value("atEnd").toBool() && nearEnd;
     m_progress = m_atEnd ? 1.0 : fractionAt(m_chapter, m_offset);
+    ++m_relocationSeq;
 
     // Reading pace comes from steady forward reading: the time spent on a
     // page and how much text it held. Jumps and quick flips don't count.
@@ -360,6 +394,30 @@ void Reader::openExternal(const QString &url) {
 
 void Reader::keyPressed(const QString &key, int modifiers) { emit this->key(key, modifiers); }
 
+void Reader::speakableReadyFor(qint64 session, int chapter, const QString &blocks) {
+    if (session != m_session || !m_bookId)
+        return;
+    emit speakable(chapter, blocks);
+}
+
+void Reader::selectionChanged(const QVariantMap &selection) {
+    if (selection.contains(QStringLiteral("session")) && selection.value(QStringLiteral("session")).toLongLong() != m_session)
+        return;
+    emit selected(selection);
+}
+
+void Reader::markClicked(int id, const QVariantMap &rect) {
+    if (rect.contains(QStringLiteral("session")) && rect.value(QStringLiteral("session")).toLongLong() != m_session)
+        return;
+    emit markChosen(id, rect);
+}
+
+void Reader::listenFromSession(qint64 session, int chapter, qint64 offset) {
+    if (session != m_session || !m_bookId)
+        return;
+    emit listenRequested(chapter, offset);
+}
+
 void Reader::log(const QString &message) {
     if (qEnvironmentVariableIsSet("DOGEAR_DEBUG"))
         fprintf(stderr, "reader: %s\n", qPrintable(message));
@@ -404,9 +462,15 @@ bool Reader::openPdf(int bookId) {
         m_error = book->errorString();
         return false;
     }
+    const int pages = book->pageCount();
+    if (pages <= 0) {
+        m_error = tr("This PDF has no pages.");
+        return false;
+    }
     close();
     m_pdf = book;
     m_bookId = bookId;
+    ++m_session;
     m_token = QStringLiteral("p%1-%2").arg(bookId).arg(QDateTime::currentMSecsSinceEpoch());
     PdfPages::add(m_token, book);
     m_format = record.format;
@@ -414,7 +478,6 @@ bool Reader::openPdf(int bookId) {
     m_author = record.author;
     m_language = record.language;
 
-    const int pages = book->pageCount();
     // Each page is titled by the outline entry it falls under.
     m_chapterTitles = QStringList(pages, QString());
     m_contents.clear();
@@ -429,14 +492,19 @@ bool Reader::openPdf(int bookId) {
         if (m_chapterTitles[i].isEmpty())
             m_chapterTitles[i] = m_chapterTitles[i - 1];
     QVariantList spine;
-    for (int i = 0; i < pages; ++i)
+    m_pageTargets.clear();
+    m_pageTargets.reserve(pages);
+    for (int i = 0; i < pages; ++i) {
         spine.append(QVariantMap{{"linear", true}});
+        const QString label = book->pageLabel(i).trimmed();
+        m_pageTargets.append({i, label.isEmpty() ? QString::number(i + 1) : label});
+    }
     m_linear = QList<bool>(pages, true);
     m_firstLinear = 0;
-    m_pageTargets.clear();
-    m_hasPageList = false;
+    m_lastLinear = pages - 1;
+    m_hasPageList = !m_pageTargets.isEmpty();
     m_manifest = QVariantMap{{"format", "pdf"}, {"spine", spine}, {"pages", pages}, {"title", m_title},
-                             {"language", m_language}};
+                             {"language", m_language}, {"session", double(m_session)}};
 
     // Progress by text: each page's length, measured once and kept.
     m_lengths = m_library->chapterLengths(bookId);
@@ -464,19 +532,51 @@ bool Reader::openPdf(int bookId) {
             return lengths;
         }));
     }
-    // The margins to cut, found on a copy of its own.
-    auto *crop = new QFutureWatcher<QRectF>(this);
-    connect(crop, &QFutureWatcher<QRectF>::finished, this, [this, crop, bookId] {
-        crop->deleteLater();
-        if (bookId != m_bookId)
-            return;
-        m_pdfCrop = crop->result();
-        emit pdfCropChanged();
-    });
-    crop->setFuture(QtConcurrent::run([path] {
-        PdfBook own(path);
-        return own.open() ? PdfPages::bookCrop(own) : QRectF(0, 0, 1, 1);
-    }));
+    // The margins to cut: restored from book_settings when the file hasn't
+    // changed, or measured once in the background and saved.
+    m_pdfCrop = QRectF(0, 0, 1, 1);
+    bool cropCached = false;
+    const qint64 mtime = record.mtime;
+    const QString savedCrop = m_library->bookSetting(bookId, QStringLiteral("pdf_crop"));
+    if (!savedCrop.isEmpty()) {
+        const QStringList parts = savedCrop.split(QLatin1Char(':'));
+        if (parts.size() == 2 && parts[0].toLongLong() == mtime) {
+            const QStringList nums = parts[1].split(QLatin1Char(','));
+            if (nums.size() == 4) {
+                bool ok0 = false, ok1 = false, ok2 = false, ok3 = false;
+                const double cx = nums[0].toDouble(&ok0), cy = nums[1].toDouble(&ok1);
+                const double cw = nums[2].toDouble(&ok2), ch = nums[3].toDouble(&ok3);
+                if (ok0 && ok1 && ok2 && ok3 && cx >= 0.0 && cy >= 0.0 && cw >= 0.4 && ch >= 0.4 && cx + cw <= 1.001 &&
+                    cy + ch <= 1.001) {
+                    m_pdfCrop = QRectF(cx, cy, qMin(cw, 1.0 - cx), qMin(ch, 1.0 - cy));
+                    cropCached = true;
+                }
+            }
+        }
+    }
+    if (!cropCached) {
+        auto *crop = new QFutureWatcher<QRectF>(this);
+        connect(crop, &QFutureWatcher<QRectF>::finished, this, [this, crop, bookId, mtime] {
+            crop->deleteLater();
+            const QRectF result = crop->result();
+            m_library->setBookSetting(
+                bookId, QStringLiteral("pdf_crop"),
+                QStringLiteral("%1:%2,%3,%4,%5")
+                    .arg(mtime)
+                    .arg(result.x(), 0, 'f', 4)
+                    .arg(result.y(), 0, 'f', 4)
+                    .arg(result.width(), 0, 'f', 4)
+                    .arg(result.height(), 0, 'f', 4));
+            if (bookId != m_bookId)
+                return;
+            m_pdfCrop = result;
+            emit pdfCropChanged();
+        });
+        crop->setFuture(QtConcurrent::run([path] {
+            PdfBook own(path);
+            return own.open() ? PdfPages::bookCrop(own) : QRectF(0, 0, 1, 1);
+        }));
+    }
 
     m_startPosition = QVariantMap{{"chapter", 0}, {"offset", 0}};
     const QJsonObject saved = QJsonDocument::fromJson(record.position.toUtf8()).object();
@@ -487,6 +587,9 @@ bool Reader::openPdf(int bookId) {
     }
     m_chapter = m_startPosition.value("chapter").toInt();
     m_offset = m_startPosition.value("offset").toLongLong();
+    m_pageEnd = 0;
+    m_snippet.clear();
+    m_relocationSeq = 0;
     m_page = 0;
     m_pages = 1;
     m_progress = record.progress;
@@ -537,5 +640,15 @@ void Reader::pdfSpeakable(int page) {
     if (!m_pdf)
         return;
     const QJsonArray blocks = PdfBook::speakable(m_pdf->pageText(page), m_title);
-    emit speakable(page, QString::fromUtf8(QJsonDocument(blocks).toJson(QJsonDocument::Compact)));
+    const QString json = QString::fromUtf8(QJsonDocument(blocks).toJson(QJsonDocument::Compact));
+    const qint64 session = m_session;
+    // Deliver asynchronously so consecutive blank/scanned PDF pages never
+    // recurse synchronously through Narration::addBlocks() -> blocksWanted().
+    QMetaObject::invokeMethod(
+        this,
+        [this, session, page, json] {
+            if (session == m_session && m_pdf)
+                emit speakable(page, json);
+        },
+        Qt::QueuedConnection);
 }

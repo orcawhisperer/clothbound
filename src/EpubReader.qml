@@ -38,6 +38,20 @@ FocusScope {
     Material.accent: look.link
 
     readonly property bool pdf: reader.format === "pdf"
+    // WebEngine is only instantiated once an EPUB is opened, so PDF-only
+    // sessions don't pay Chromium's memory cost.
+    property bool webNeeded: false
+    readonly property var web: webLoader.item
+
+    Component.onCompleted: {
+        if (reader.open) {
+            if (pdf)
+                openBook()
+            else
+                webNeeded = true
+        }
+    }
+
     // The surface's calls (dogear.next(), …): the web page's for an EPUB,
     // the PDF surface's (which answers the same calls) for a PDF.
     function js(code, callback) {
@@ -50,6 +64,8 @@ FocusScope {
                 callback(result)
             return
         }
+        if (!web)
+            return
         if (callback)
             web.runJavaScript(code, callback)
         else
@@ -69,6 +85,8 @@ FocusScope {
             layout: settings.layout,
             animate: settings.animate,
             publisher: settings.publisher,
+            pdfCrop: settings.pdfCrop,
+            pdfOriginalColors: settings.pdfOriginalColors,
             marginTop: 54,
             // Room for the listen bar under the text while listening.
             marginBottom: narration.active ? 84 : 54,
@@ -78,10 +96,25 @@ FocusScope {
         }
     }
     function openBook() {
-        if (!reader.open || (!surfaceReady && !pdf))
+        if (!reader.open)
             return
+        if (!pdf)
+            webNeeded = true
+        if (!surfaceReady && !pdf)
+            return
+        decoratedChapter = -1
         js("dogear.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
            + JSON.stringify(style()) + ")")
+    }
+    function closeBook() {
+        closePanels()
+        selectionBar.visible = false
+        view.selection = ({})
+        decoratedChapter = -1
+        if (pdf)
+            pdfSurface.clearSelection()
+        else if (surfaceReady && web)
+            js("dogear.close()")
     }
     // Turning pages by hand while listening leaves the voice where it is;
     // "Follow along" brings the page back to it.
@@ -114,7 +147,7 @@ FocusScope {
             pdfSurface.forceActiveFocus()
             return
         }
-        if (!panelOpen)
+        if (!panelOpen && web)
             web.forceActiveFocus()
     }
     function closePanels() {
@@ -129,7 +162,7 @@ FocusScope {
             searchBar.close()
         if (pdf)
             pdfSurface.forceActiveFocus()
-        else
+        else if (web)
             web.forceActiveFocus()
     }
     function dismiss() {
@@ -164,24 +197,37 @@ FocusScope {
         }
         settings.fontScale = step === 0 ? 1.15 : Math.max(0.7, Math.min(2.0, Math.round((settings.fontScale + step) * 100) / 100))
     }
-    function showContents() { contents.show() }
-    function showAppearance() { appearance.show() }
+    function showContents() {
+        appearance.close()
+        voicePanel.close()
+        marksPanel.close()
+        companionPanel.close()
+        contents.show()
+    }
+    function showAppearance() {
+        contents.close()
+        voicePanel.close()
+        marksPanel.close()
+        companionPanel.close()
+        appearance.show()
+    }
     // Search hits on the page: all of them in the chapter shown, and the one
     // gone to.
     property int foundChapter: -1
     function markFound() {
-        if (!surfaceReady || !reader.open)
+        if ((!surfaceReady && !pdf) || !reader.open)
             return
         foundChapter = reader.chapter
         const hit = bookSearch.current >= 0 ? bookSearch.results[bookSearch.current] : null
-        const current = hit && hit.chapter === reader.chapter ? { start: hit.start, end: hit.end } : null
+        const current = hit && (hit.chapter === reader.chapter || pdf)
+                        ? { chapter: hit.chapter, start: hit.start, end: hit.end } : null
         js("dogear.found(" + JSON.stringify(bookSearch.inChapter(reader.chapter)) + "," + JSON.stringify(current) + ")")
     }
     function showFound(hit) {
         leaveVoice()
         js("dogear.goTo(" + JSON.stringify({ chapter: hit.chapter, offset: hit.start, instant: true }) + ")"
            + ".then(() => dogear.found(" + JSON.stringify(bookSearch.inChapter(hit.chapter)) + ","
-           + JSON.stringify({ start: hit.start, end: hit.end }) + "))")
+           + JSON.stringify({ chapter: hit.chapter, start: hit.start, end: hit.end }) + "))")
         foundChapter = hit.chapter
     }
     Connections {
@@ -191,13 +237,17 @@ FocusScope {
     // Highlights and search hits are drawn on each chapter as it's shown.
     property int decoratedChapter: -1
     function decorate() {
-        if (surfaceReady && reader.open)
+        if ((pdf || (surfaceReady && reader.relocationSeq > 0)) && reader.open)
             js("dogear.marks(" + JSON.stringify(marks.highlightsIn(reader.chapter)) + ")")
     }
     Connections {
         target: reader
         function onLocationChanged() {
             selectionBar.visible = false
+            // Skip Reader::openBook()'s synchronous pre-load signal on EPUBs so
+            // opening-chapter highlights paint once reader.js actually loads it.
+            if (!view.pdf && reader.relocationSeq === 0)
+                return
             if (reader.chapter !== view.decoratedChapter) {
                 view.decoratedChapter = reader.chapter
                 view.decorate()
@@ -238,7 +288,10 @@ FocusScope {
         function onChanged() { view.decorate() }
     }
     function mapRect(rect) {
-        const at = web.mapToItem(view, rect.x, rect.y)
+        const src = pdf ? pdfSurface : web
+        if (!src)
+            return rect
+        const at = src.mapToItem(view, rect.x, rect.y)
         return { x: at.x, y: at.y, width: rect.width, height: rect.height }
     }
 
@@ -297,7 +350,7 @@ FocusScope {
     Timer {
         id: styleTimer
         interval: 50
-        onTriggered: if (view.surfaceReady && reader.open) view.js("dogear.setStyle(" + JSON.stringify(view.style()) + ")")
+        onTriggered: if ((view.surfaceReady || view.pdf) && reader.open) view.js("dogear.setStyle(" + JSON.stringify(view.style()) + ")")
     }
     onLookChanged: styleTimer.restart()
     Connections {
@@ -311,6 +364,8 @@ FocusScope {
         function onLayoutChanged() { styleTimer.restart() }
         function onAnimateChanged() { styleTimer.restart() }
         function onPublisherChanged() { styleTimer.restart() }
+        function onPdfCropChanged() { styleTimer.restart() }
+        function onPdfOriginalColorsChanged() { styleTimer.restart() }
     }
 
     Connections {
@@ -343,6 +398,10 @@ FocusScope {
             toast.show(qsTr("Listening uses your Gemini key. Add it to start."))
             win.showAiSettings()
         }
+        function onVoiceMissing() {
+            toast.show(qsTr("That voice isn't downloaded yet. Choose or download one."))
+            view.showVoices()
+        }
     }
 
     // Back from another workspace or app: a fresh frame of the page, at once
@@ -350,7 +409,10 @@ FocusScope {
     Connections {
         target: win
         function onActiveChanged() { if (win.active) view.refreshSoon() }
-        function onVisibilityChanged() { view.refreshSoon() }
+        function onVisibilityChanged() {
+            if (win.visible && win.visibility !== Window.Minimized && win.visibility !== Window.Hidden)
+                view.refreshSoon()
+        }
     }
     Connections {
         target: Qt.application
@@ -362,19 +424,22 @@ FocusScope {
         refreshTimer.restart()
         refreshLater.restart()
     }
-    Timer { id: refreshTimer; interval: 16; onTriggered: view.js("dogear.refresh && dogear.refresh()") }
-    Timer { id: refreshLater; interval: 350; onTriggered: view.js("dogear.refresh && dogear.refresh()") }
+    Timer { id: refreshTimer; interval: 16; onTriggered: if (!view.pdf && view.surfaceReady && reader.open) view.js("dogear.refresh && dogear.refresh()") }
+    Timer { id: refreshLater; interval: 350; onTriggered: if (!view.pdf && view.surfaceReady && reader.open) view.js("dogear.refresh && dogear.refresh()") }
 
     Connections {
         target: reader
         function onSurfaceReady() {
             view.surfaceReady = true
-            view.openBook()
+            if (reader.open && !view.pdf)
+                view.openBook()
         }
         function onBookChanged() {
-            if (reader.open && reader.format === "pdf")
-                win.tip("pdf", qsTr("PDF pages follow your reading theme. + and − zoom, and the layout (A) shows one page, two, or scrolling."))
             if (reader.open) {
+                if (reader.format === "pdf")
+                    win.tip("pdf", qsTr("PDF pages follow your reading theme. + and − zoom, and the layout (A) shows one page, two, or scrolling."))
+                else
+                    view.webNeeded = true
                 view.closePanels()
                 view.chromeShown = false
                 view.openBook()
@@ -395,23 +460,56 @@ FocusScope {
 
     // Keys typed while the page had the focus come back here.
     function pageKey(key, modifiers) {
-        const shift = modifiers & 1, ctrl = modifiers & 2, alt = modifiers & 4
+        if (win.helpVisible || aiSettings.open || welcome.open || win.typing)
+            return
+        const shift = (modifiers & 1) !== 0, ctrl = (modifiers & 2) !== 0, alt = (modifiers & 4) !== 0, meta = (modifiers & 8) !== 0
+        const plain = !ctrl && !alt && !meta
+        if (alt && !ctrl && !meta && key === "ArrowLeft") { back(); return }
+        if (ctrl && !alt && !meta) {
+            if (key === "f" || key === "F") searchBar.show()
+            else if (key === "+" || key === "=") resize(0.05)
+            else if (key === "-") resize(-0.05)
+            else if (key === "0") resize(0)
+            else if (key === ",") aiSettings.open ? aiSettings.close() : aiSettings.show()
+            else if ((key === "z" || key === "Z") && shift && marks.canRedo) marks.redo()
+            else if ((key === "z" || key === "Z") && !shift && marks.canUndo) {
+                const what = marks.undoText
+                marks.undo()
+                toast.show(qsTr("Undid: %1").arg(what))
+            }
+            return
+        }
+        if (key === "Escape") { dismiss(); return }
+        if (!plain)
+            return
         if (key === "ArrowRight" || key === "PageDown" || key === "l" || key === "j" || (key === " " && !shift)) next()
         else if (key === "ArrowLeft" || key === "PageUp" || key === "h" || key === "k" || (key === " " && shift)) prev()
-        else if (key === "Escape") dismiss()
         else if (key === "]") nextChapter()
         else if (key === "[") prevChapter()
-        else if (key === "t" || key === "T") contents.show()
-        else if (key === "a" || key === "A") appearance.show()
+        else if (key === "t" || key === "T") showContents()
+        else if (key === "a" || key === "A") showAppearance()
         else if (key === "g" || key === "G") goTo.show()
+        else if (key === "b" || key === "B") toggleBookmark()
+        else if (key === "m" || key === "M") showMarks()
+        else if (key === "c" || key === "C") showCompanion("ask")
+        else if (key === "v" || key === "V") showVoices()
+        else if (key === "/") searchBar.show()
+        else if (key === "n" && bookSearch.count > 0) searchBar.next()
+        else if (key === "N" && bookSearch.count > 0) searchBar.previous()
+        else if (key === "Tab") view.chromeShown ? (view.chromeShown = false) : view.showChrome()
+        else if (key === "p" && !shift) narration.active ? narration.toggle() : listen()
+        else if ((key === "P" || (key === "p" && shift)) && narration.active) narration.stop()
+        else if (key === "," && narration.active) narration.previousParagraph()
+        else if (key === "." && narration.active) narration.nextParagraph()
+        else if (key === "<" && narration.active) narration.rate = narration.rate - 0.1
+        else if (key === ">" && narration.active) narration.rate = narration.rate + 0.1
         else if (key === "d" || key === "D") cycleTheme()
         else if (key === "+" || key === "=") resize(0.05)
         else if (key === "-") resize(-0.05)
         else if (key === "0") resize(0)
         else if (key === "f" || key === "F" || key === "F11") win.toggleFullScreen()
         else if (key === "?") win.helpVisible = !win.helpVisible
-        else if ((key === "q" || key === "Q") && !ctrl) Qt.quit()
-        else if (alt && key === "ArrowLeft") back()
+        else if (key === "q" || key === "Q") Qt.quit()
     }
 
     Rectangle {
@@ -421,63 +519,80 @@ FocusScope {
 
     PdfSurface {
         id: pdfSurface
-        anchors.fill: web
+        anchors.fill: parent
         visible: view.pdf
         look: view.look
         focus: view.pdf
+        onContextMenuRequested: (x, y) => {
+            const place = pdfSurface.placeAt(x, y)
+            if (!place)
+                return
+            pageMenu.place = place
+            pageMenu.popup(pdfSurface, x, y)
+        }
     }
 
-    WebEngineView {
-        id: web
+    Loader {
+        id: webLoader
         anchors.fill: parent
+        active: view.webNeeded
         opacity: view.pdf ? 0 : 1
         enabled: !view.pdf
-        profile: readerProfile
-        backgroundColor: view.look.bg
-        // Chromium only takes the mouse (selecting words, a tap on the
-        // margin) when it has focus; the window's shortcuts still come first.
-        activeFocusOnPress: true
-        webChannel: channel
-        url: "dogear://local/app/reader.html"
-        settings.javascriptCanOpenWindows: false
-        settings.localContentCanAccessRemoteUrls: false
-        settings.localContentCanAccessFileUrls: false
-        settings.pluginsEnabled: false
-        settings.pdfViewerEnabled: false
-        settings.focusOnNavigationEnabled: false
-        settings.showScrollBars: false
-        settings.errorPageEnabled: false
-        settings.spatialNavigationEnabled: false
-        settings.linksIncludedInFocusChain: false
-        // Dogear's own menu for the page: listening from the place clicked,
-        // and the selection's highlight, note and copy.
-        onContextMenuRequested: (request) => {
-            request.accepted = true
-            const at = Qt.point(request.position.x, request.position.y)
-            view.js("JSON.stringify(dogear.placeAt(" + at.x + "," + at.y + "))", function(result) {
-                const place = JSON.parse(result || "null")
-                if (!place)
-                    return
-                pageMenu.place = place
-                pageMenu.popup(web, at.x, at.y)
-            })
-        }
-        onNewWindowRequested: (request) => {}
-        onNavigationRequested: (request) => {
-            if (!request.url.toString().startsWith("dogear://"))
-                request.reject()
-        }
-        onJavaScriptConsoleMessage: (level, message, line, source) => {
-            if (level === WebEngineView.ErrorMessageLevel || debugMode)
-                console.warn(source.split("/").pop() + ":" + line + ": " + message)
-        }
-        onLoadingChanged: (request) => {
-            if (debugMode || request.status === WebEngineView.LoadFailedStatus)
-                console.warn("reader surface:", request.status, request.url, request.errorString)
-        }
-        onRenderProcessTerminated: (status, code) => {
-            view.surfaceReady = false
-            reload()
+        sourceComponent: webComponent
+    }
+
+    Component {
+        id: webComponent
+        WebEngineView {
+            id: webItem
+            profile: readerProfile
+            backgroundColor: view.look.bg
+            // Chromium only takes the mouse (selecting words, a tap on the
+            // margin) when it has focus; the window's shortcuts still come first.
+            activeFocusOnPress: true
+            webChannel: channel
+            url: "dogear://local/app/reader.html"
+            settings.javascriptCanOpenWindows: false
+            settings.localContentCanAccessRemoteUrls: false
+            settings.localContentCanAccessFileUrls: false
+            settings.pluginsEnabled: false
+            settings.pdfViewerEnabled: false
+            settings.focusOnNavigationEnabled: false
+            settings.showScrollBars: false
+            settings.errorPageEnabled: false
+            settings.spatialNavigationEnabled: false
+            settings.linksIncludedInFocusChain: false
+            // Dogear's own menu for the page: listening from the place clicked,
+            // and the selection's highlight, note and copy.
+            onContextMenuRequested: (request) => {
+                request.accepted = true
+                const at = Qt.point(request.position.x, request.position.y)
+                view.js("JSON.stringify(dogear.placeAt(" + at.x + "," + at.y + "))", function(result) {
+                    const place = JSON.parse(result || "null")
+                    if (!place)
+                        return
+                    pageMenu.place = place
+                    pageMenu.popup(webItem, at.x, at.y)
+                })
+            }
+            onNewWindowRequested: (request) => {}
+            onNavigationRequested: (request) => {
+                if (!request.url.toString().startsWith("dogear://"))
+                    request.reject()
+            }
+            onJavaScriptConsoleMessage: (level, message, line, source) => {
+                if (level === WebEngineView.ErrorMessageLevel || debugMode)
+                    console.warn(source.split("/").pop() + ":" + line + ": " + message)
+            }
+            onLoadingChanged: (request) => {
+                if (debugMode || request.status === WebEngineView.LoadFailedStatus)
+                    console.warn("reader surface:", request.status, request.url, request.errorString)
+            }
+            onRenderProcessTerminated: (status, code) => {
+                view.surfaceReady = false
+                view.decoratedChapter = -1
+                reload()
+            }
         }
     }
 
@@ -538,7 +653,7 @@ FocusScope {
         Label {
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
-            text: reader.minutesLeftInChapter > 0 && translator.language !== ""
+            text: !view.pdf && reader.minutesLeftInChapter > 0 && translator.language !== ""
                   ? qsTr("%1 left in chapter").arg(Format.duration(reader.minutesLeftInChapter)) : ""
             color: view.look.muted
             font.pixelSize: 12
@@ -547,7 +662,7 @@ FocusScope {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: {
-                const percent = qsTr("%1%").arg(Math.round(reader.progress * 100).toLocaleString(Qt.locale(translator.language), 'f', 0))
+                const percent = qsTr("%1%").arg(Math.round(reader.progress * 100).toLocaleString(Qt.locale(), 'f', 0))
                 return reader.pageLabel !== "" ? qsTr("p. %1").arg(reader.pageLabel) + "  ·  " + percent : percent
             }
             color: view.look.muted
@@ -576,16 +691,16 @@ FocusScope {
     Timer {
         id: chromeTimer
         interval: 3200
-        onTriggered: if (!chromeHover.hovered && !scrubberHover.hovered) view.chromeShown = false
+        onTriggered: if (!chromeHover.hovered && !scrubberHover.hovered && !progressScrubber.dragging) view.chromeShown = false
     }
-    // The chrome comes when the pointer moves to the top edge, not merely
-    // because it rests there when a book opens.
+    // The chrome comes when the pointer moves to the top or bottom edge, not
+    // merely because it rests there when a book opens.
     property real lastPointerY: -1
     HoverHandler {
         id: topEdge
         onPointChanged: {
             const y = point.position.y
-            if (view.lastPointerY >= 0 && y !== view.lastPointerY && y < 64 && !view.panelOpen)
+            if (view.lastPointerY >= 0 && y !== view.lastPointerY && (y < 64 || y > view.height - 64) && !view.panelOpen)
                 view.showChrome()
             view.lastPointerY = y
         }
@@ -609,22 +724,22 @@ FocusScope {
             spacing: 6
             IconButton {
                 glyph: Icons.back
-                tone: view.look.fg
+                look: view.look
                 tip: qsTr("Library (Esc)")
                 onClicked: view.closeRequested()
             }
             IconButton {
                 glyph: Icons.contents
-                tone: view.look.fg
+                look: view.look
                 tip: qsTr("Contents (T)")
                 active: contents.open
-                onClicked: contents.open ? contents.close() : contents.show()
+                onClicked: contents.open ? contents.close() : view.showContents()
             }
         }
 
         Column {
             anchors.centerIn: parent
-            width: Math.min(parent.width - 420, 640)
+            width: Math.max(0, Math.min(parent.width - 520, 640))
             Label {
                 width: parent.width
                 horizontalAlignment: Text.AlignHCenter
@@ -651,34 +766,34 @@ FocusScope {
             spacing: 6
             IconButton {
                 glyph: Icons.bookmark
-                tone: view.look.fg
+                look: view.look
                 active: view.pageBookmark > 0
                 tip: view.pageBookmark ? qsTr("Remove the bookmark (B)") : qsTr("Bookmark this page (B)")
                 onClicked: view.toggleBookmark()
             }
             IconButton {
                 glyph: Icons.pen
-                tone: view.look.fg
+                look: view.look
                 active: marksPanel.open
                 tip: qsTr("Highlights, notes, and bookmarks (M)")
                 onClicked: marksPanel.open ? marksPanel.close() : view.showMarks()
             }
             IconButton {
                 glyph: Icons.sparkle
-                tone: view.look.fg
+                look: view.look
                 active: companionPanel.open
                 tip: qsTr("Companion: ask about the book (C)")
                 onClicked: companionPanel.open ? companionPanel.close() : view.showCompanion("ask")
             }
             IconButton {
                 glyph: Icons.headphones
-                tone: view.look.fg
+                look: view.look
                 active: narration.active
                 tip: narration.active ? qsTr("Stop listening (⇧P)") : qsTr("Listen from this page (P)")
                 onClicked: view.listen()
             }
             IconButton {
-                tone: view.look.fg
+                look: view.look
                 tip: qsTr("Appearance (A)")
                 active: appearance.open
                 contentItem: Label {
@@ -689,11 +804,11 @@ FocusScope {
                     horizontalAlignment: Text.AlignHCenter
                     verticalAlignment: Text.AlignVCenter
                 }
-                onClicked: appearance.open ? appearance.close() : appearance.show()
+                onClicked: appearance.open ? appearance.close() : view.showAppearance()
             }
             IconButton {
                 glyph: Icons.fullscreen
-                tone: view.look.fg
+                look: view.look
                 tip: qsTr("Full screen (F)")
                 onClicked: win.toggleFullScreen()
             }
@@ -733,6 +848,7 @@ FocusScope {
             font.pixelSize: 12
         }
         ProgressScrubber {
+            id: progressScrubber
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.bottom: parent.bottom
@@ -788,6 +904,8 @@ FocusScope {
         height: parent.height
         look: view.look
         settings: view.settings
+        pdf: view.pdf
+        pdfSurface: pdfSurface
     }
 
     // The bookmark's ribbon, hanging from the top of a marked page.
@@ -903,19 +1021,35 @@ FocusScope {
             visible: pageMenu.hasSelection
             height: visible ? implicitHeight : 0
             text: qsTr("Highlight")
-            onTriggered: selectionBar.highlight("yellow")
+            onTriggered: {
+                marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
+                                   view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
+                view.js("dogear.clearSelection()")
+                selectionBar.visible = false
+            }
         }
         MenuItem {
             visible: pageMenu.hasSelection
             height: visible ? implicitHeight : 0
             text: qsTr("Add a note")
-            onTriggered: selectionBar.note()
+            onTriggered: {
+                const id = marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
+                                              view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
+                view.js("dogear.clearSelection()")
+                selectionBar.visible = false
+                noteEditor.show(id)
+            }
         }
         MenuItem {
             visible: pageMenu.hasSelection
             height: visible ? implicitHeight : 0
             text: qsTr("Copy")
-            onTriggered: selectionBar.copy()
+            onTriggered: {
+                reader.copyText(view.selection.text)
+                view.js("dogear.clearSelection()")
+                selectionBar.visible = false
+                toast.show(qsTr("Copied"))
+            }
         }
         MenuSeparator { visible: pageMenu.hasSelection }
         MenuItem {
@@ -980,6 +1114,7 @@ FocusScope {
 
     SearchBar {
         id: searchBar
+        onClosed: view.focusPage()
         anchors.horizontalCenter: parent.horizontalCenter
         y: 64
         z: 5
@@ -997,31 +1132,33 @@ FocusScope {
     }
 
     // --- Keys ----------------------------------------------------------------
-    readonly property bool keys: visible && !panelOpen && !win.helpVisible
+    readonly property bool modalOpen: win.helpVisible || aiSettings.open || welcome.open
+    readonly property bool keys: visible && !panelOpen && !modalOpen && !win.typing
     // Listening keys work with a panel open too, unless a field is taking typing.
-    readonly property bool typing: win.activeFocusItem !== null && win.activeFocusItem.cursorPosition !== undefined
-    readonly property bool listenKeys: visible && !win.helpVisible && !typing
+    readonly property bool typing: win.typing
+    readonly property bool listenKeys: visible && !modalOpen && !win.typing
     Shortcut { sequence: "C"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showCompanion("ask") }
     Shortcut { sequences: ["Right", "PgDown", "L", "J", "Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.next() }
     Shortcut { sequences: ["Left", "PgUp", "H", "K", "Shift+Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prev() }
     Shortcut { sequence: "]"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.nextChapter() }
     Shortcut { sequence: "["; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prevChapter() }
     Shortcut { sequence: "Alt+Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.back() }
-    Shortcut { sequence: "T"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: contents.show() }
-    Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: appearance.show() }
+    Shortcut { sequence: "T"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showContents() }
+    Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showAppearance() }
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: goTo.show() }
     Shortcut { sequence: "B"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.toggleBookmark() }
     Shortcut { sequence: "M"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showMarks() }
     Shortcut { sequences: [StandardKey.Redo]; context: Qt.ApplicationShortcut; enabled: view.keys && marks.canRedo; onActivated: marks.redo() }
+    Shortcut { sequences: [StandardKey.Copy]; context: Qt.ApplicationShortcut; enabled: view.visible && view.pdf && !!pdfSurface.selection && !view.modalOpen && !win.typing; onActivated: { reader.copyText(pdfSurface.selection.text); toast.show(qsTr("Copied")) } }
     Shortcut { sequences: ["/", StandardKey.Find]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: searchBar.show() }
     Shortcut { sequence: "N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.next() }
     Shortcut { sequence: "Shift+N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.previous() }
     Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.cycleTheme() }
-    Shortcut { sequences: ["+", "=", "Ctrl++", "Ctrl+="]; context: Qt.ApplicationShortcut; enabled: view.visible; onActivated: view.resize(0.05) }
-    Shortcut { sequences: ["-", "Ctrl+-"]; context: Qt.ApplicationShortcut; enabled: view.visible; onActivated: view.resize(-0.05) }
-    Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: view.visible; onActivated: view.resize(0) }
+    Shortcut { sequences: ["+", "=", "Ctrl++", "Ctrl+="]; context: Qt.ApplicationShortcut; enabled: view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0.05) }
+    Shortcut { sequences: ["-", "Ctrl+-"]; context: Qt.ApplicationShortcut; enabled: view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(-0.05) }
+    Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0) }
     Shortcut { sequence: "Tab"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
-    Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: view.visible && !win.helpVisible; onActivated: view.dismiss() }
+    Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: view.visible && !view.modalOpen; onActivated: view.dismiss() }
     // Listening.
     // P listens from the page in view, then pauses and goes on; ⇧P stops.
     Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.listenKeys; onActivated: narration.active ? narration.toggle() : view.listen() }

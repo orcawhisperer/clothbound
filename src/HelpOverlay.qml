@@ -66,63 +66,80 @@ Rectangle {
 
     Rectangle {
         anchors.centerIn: parent
-        width: columns.implicitWidth + 64
-        height: columns.implicitHeight + 56
+        width: Math.min(parent.width - 48, columns.implicitWidth + 64)
+        height: Math.min(parent.height - 48, columns.implicitHeight + 56)
         radius: Math.min(12, theme.radius)
         color: theme.background
         border.color: Ui.tint(theme.text, 0.1)
 
         TapHandler {}
 
-        Row {
-            id: columns
-            anchors.centerIn: parent
-            spacing: 48
+        Flickable {
+            anchors.fill: parent
+            anchors.leftMargin: 32
+            anchors.rightMargin: 32
+            anchors.topMargin: 28
+            anchors.bottomMargin: 28
+            contentWidth: columns.implicitWidth
+            contentHeight: columns.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            ScrollBar.horizontal: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            // Each column is a few sections; the ones for where you are come first.
-            Repeater {
-                model: {
-                    const reading = { title: qsTr("Reading"), items: help.readingSection }
-                    const listening = { title: qsTr("Listening"), items: help.listeningSection }
-                    const library = { title: qsTr("Library"), items: help.librarySection.concat(help.everywhere) }
-                    return help.reading ? [[reading], [listening, library]] : [[library], [reading, listening]]
-                }
-                delegate: Column {
-                    id: column
-                    required property var modelData
-                    spacing: 22
+            Grid {
+                id: columns
+                columns: help.width >= 960 ? 2 : 1
+                columnSpacing: 48
+                rowSpacing: 24
 
-                    Repeater {
-                        model: column.modelData
-                        delegate: Column {
-                            id: section
-                            required property var modelData
-                            spacing: 9
+                // Each column is a few sections; the ones for where you are come first.
+                Repeater {
+                    model: {
+                        const reading = { title: qsTr("Reading"), items: help.readingSection }
+                        const listening = { title: qsTr("Listening"), items: help.listeningSection }
+                        const library = { title: qsTr("Library"), items: help.librarySection.concat(help.everywhere) }
+                        return help.reading ? [[reading], [listening, library]] : [[library], [reading, listening]]
+                    }
+                    delegate: Column {
+                        id: column
+                        required property var modelData
+                        spacing: 22
 
-                            Label {
-                                text: section.modelData.title
-                                color: theme.text
-                                font.pixelSize: 16
-                                font.weight: Font.DemiBold
-                                bottomPadding: 6
-                            }
-                            Repeater {
-                                model: section.modelData.items
-                                delegate: Row {
-                                    required property var modelData
-                                    spacing: 18
-                                    Label {
-                                        width: 150
-                                        horizontalAlignment: Text.AlignRight
-                                        text: modelData.keys
-                                        color: theme.accent
-                                        font.pixelSize: 13
-                                        font.family: "monospace"
-                                    }
-                                    Label {
-                                        text: modelData.action
-                                        color: theme.textSecondary
-                                        font.pixelSize: 13
+                        Repeater {
+                            model: column.modelData
+                            delegate: Column {
+                                id: section
+                                required property var modelData
+                                spacing: 9
+
+                                Label {
+                                    text: section.modelData.title
+                                    color: theme.text
+                                    font.pixelSize: 16
+                                    font.weight: Font.DemiBold
+                                    bottomPadding: 6
+                                }
+                                Repeater {
+                                    model: section.modelData.items
+                                    delegate: Row {
+                                        required property var modelData
+                                        spacing: 18
+                                        Label {
+                                            width: 150
+                                            horizontalAlignment: Text.AlignRight
+                                            text: modelData.keys
+                                            color: theme.accent
+                                            font.pixelSize: 13
+                                            font.family: "monospace"
+                                        }
+                                        Label {
+                                            width: Math.min(implicitWidth, Math.max(180, help.width - 280))
+                                            text: modelData.action
+                                            color: theme.textSecondary
+                                            font.pixelSize: 13
+                                            wrapMode: Text.Wrap
+                                        }
                                     }
                                 }
                             }

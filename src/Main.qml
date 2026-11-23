@@ -89,8 +89,9 @@ ApplicationWindow {
 
     property bool helpVisible: false
     readonly property bool readerOpen: reader.open
-    // Letters are text while a field has the keys, not shortcuts.
+    // Letters are text while any editable field has focus, not global shortcuts.
     readonly property bool typing: libraryView.typing
+                                   || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined && !activeFocusItem.readOnly)
     readonly property bool overlayOpen: helpVisible || libraryView.menuOpen || aiSettings.open || welcome.open
     readonly property bool libraryKeys: !readerOpen && !typing && !overlayOpen && !libraryView.detailsOpen
 
@@ -102,14 +103,18 @@ ApplicationWindow {
             toast.show(qsTr("“%1” can't be opened: %2").arg(book.title).arg(book.problem))
             return
         }
+        if (!reader.openBook(bookId)) {
+            toast.show(reader.errorString())
+            return
+        }
         // The reading surface starts loading with the first book and then
         // stays, so later books open at once.
         readerLoader.active = true
-        if (!reader.openBook(bookId))
-            toast.show(reader.errorString())
     }
     function closeBook() {
         const id = reader.bookId
+        if (readerLoader.item)
+            readerLoader.item.closeBook()
         reader.close()
         libraryView.select(id)
     }
@@ -124,10 +129,12 @@ ApplicationWindow {
     Shortcut {
         sequence: "Esc"
         context: Qt.ApplicationShortcut
-        enabled: win.helpVisible || libraryView.detailsOpen || aiSettings.open
+        enabled: win.helpVisible || welcome.open || aiSettings.open || libraryView.detailsOpen
         onActivated: {
             if (win.helpVisible)
                 win.helpVisible = false
+            else if (welcome.open)
+                welcome.close()
             else if (aiSettings.open)
                 aiSettings.close()
             else
@@ -241,7 +248,12 @@ ApplicationWindow {
             id: aiSettings
             anchors.fill: parent
             z: 55
-            onClosed: if (!win.readerOpen) libraryView.focusGrid()
+            onClosed: {
+                if (win.readerOpen && readerLoader.item)
+                    readerLoader.item.focusPage()
+                else
+                    libraryView.focusGrid()
+            }
         }
 
         Welcome {
@@ -250,7 +262,12 @@ ApplicationWindow {
             z: 58
             onAddBooks: picker.chooseFolders()
             onShowIntelligence: win.showAiSettings()
-            onClosed: if (!win.readerOpen) libraryView.focusGrid()
+            onClosed: {
+                if (win.readerOpen && readerLoader.item)
+                    readerLoader.item.focusPage()
+                else
+                    libraryView.focusGrid()
+            }
         }
 
         HelpOverlay {
@@ -280,8 +297,10 @@ ApplicationWindow {
         toast.show(text, qsTr("Got it"), () => {})
     }
     // A first launch is welcomed; a new version (for someone who has read
-    // with Dogear before) gets What's new.
+    // with Dogear before) gets What's new. Never pop over a CLI-opened book.
     function greet() {
+        if (win.readerOpen)
+            return
         const version = Qt.application.version
         if (!onboarding.welcomed && library.bookCount === 0)
             welcome.show("welcome")
@@ -311,6 +330,8 @@ ApplicationWindow {
         property string layout: "auto"
         property bool animate: true
         property bool publisher: false
+        property bool pdfCrop: true
+        property bool pdfOriginalColors: false
     }
 
     Connections {

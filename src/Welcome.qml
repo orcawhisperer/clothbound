@@ -81,6 +81,8 @@ FocusScope {
     visible: open
     Keys.onEscapePressed: close()
     Keys.onReturnPressed: next()
+    Keys.onEnterPressed: next()
+    Keys.onSpacePressed: next()
     Keys.onRightPressed: next()
     Keys.onLeftPressed: if (page > 0) page--
     Material.roundedScale: theme.radius
@@ -95,114 +97,132 @@ FocusScope {
         id: card
         anchors.centerIn: parent
         width: Math.min(560, parent.width - 48)
-        height: column.implicitHeight + 56
+        height: Math.min(parent.height - 48, body.implicitHeight + footer.implicitHeight + 70)
         radius: Math.min(14, theme.radius + 4)
         color: theme.surface
         border.color: Ui.tint(theme.text, 0.1)
 
-        ColumnLayout {
-            id: column
-            x: 28
-            y: 28
-            width: parent.width - 56
-            spacing: 14
+        readonly property var current: welcome.mode === "welcome" ? welcome.pages[welcome.page] : null
 
-            readonly property var current: welcome.mode === "welcome" ? welcome.pages[welcome.page] : null
+        Flickable {
+            anchors.top: parent.top
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: footer.top
+            anchors.topMargin: 28
+            anchors.leftMargin: 28
+            anchors.rightMargin: 28
+            anchors.bottomMargin: 14
+            contentHeight: body.implicitHeight
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-            RowLayout {
-                spacing: 12
-                Glyph {
-                    Layout.preferredWidth: 28
-                    Layout.preferredHeight: 28
-                    path: column.current ? column.current.glyph : Icons.sparkle
-                    color: theme.accent
-                }
-                Label {
-                    Layout.fillWidth: true
-                    text: column.current ? column.current.title : qsTr("What's new in Dogear %1").arg(Qt.application.version)
-                    color: theme.text
-                    font.pixelSize: 22
-                    font.weight: Font.DemiBold
-                    wrapMode: Text.Wrap
-                }
-            }
-            Label {
-                Layout.fillWidth: true
-                visible: !!column.current
-                text: column.current ? column.current.text : ""
-                color: theme.textSecondary
-                font.pixelSize: 15
-                wrapMode: Text.Wrap
-                lineHeight: 1.3
-            }
-            Repeater {
-                model: column.current ? column.current.points : welcome.news
-                delegate: RowLayout {
-                    required property string modelData
-                    Layout.fillWidth: true
-                    spacing: 10
-                    Rectangle {
-                        Layout.alignment: Qt.AlignTop
-                        Layout.topMargin: 8
-                        width: 6; height: 6; radius: 3
+            ColumnLayout {
+                id: body
+                width: parent.width
+                spacing: 14
+
+                RowLayout {
+                    spacing: 12
+                    Glyph {
+                        Layout.preferredWidth: 28
+                        Layout.preferredHeight: 28
+                        path: card.current ? card.current.glyph : Icons.sparkle
                         color: theme.accent
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: modelData
+                        text: card.current ? card.current.title : qsTr("What's new in Dogear %1").arg(Qt.application.version)
                         color: theme.text
-                        font.pixelSize: 14
+                        font.pixelSize: 22
+                        font.weight: Font.DemiBold
                         wrapMode: Text.Wrap
-                        lineHeight: 1.3
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: !!card.current
+                    text: card.current ? card.current.text : ""
+                    color: theme.textSecondary
+                    font.pixelSize: 15
+                    wrapMode: Text.Wrap
+                    lineHeight: 1.3
+                }
+                Repeater {
+                    model: card.current ? card.current.points : welcome.news
+                    delegate: RowLayout {
+                        required property string modelData
+                        Layout.fillWidth: true
+                        spacing: 10
+                        Rectangle {
+                            Layout.alignment: Qt.AlignTop
+                            Layout.topMargin: 8
+                            width: 6; height: 6; radius: 3
+                            color: theme.accent
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData
+                            color: theme.text
+                            font.pixelSize: 14
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.3
+                        }
                     }
                 }
             }
+        }
 
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.topMargin: 8
-                spacing: 8
-                // Where you are in the three.
-                Row {
-                    visible: welcome.mode === "welcome"
-                    spacing: 6
-                    Repeater {
-                        model: welcome.pages.length
-                        delegate: Rectangle {
-                            required property int index
-                            width: index === welcome.page ? 18 : 6
-                            height: 6
-                            radius: 3
-                            color: index === welcome.page ? theme.accent : Ui.tint(theme.text, 0.25)
-                            Behavior on width { NumberAnimation { duration: 150 } }
-                        }
+        RowLayout {
+            id: footer
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 28
+            anchors.rightMargin: 28
+            anchors.bottomMargin: 24
+            spacing: 8
+            // Where you are in the three.
+            Row {
+                visible: welcome.mode === "welcome"
+                spacing: 6
+                Repeater {
+                    model: welcome.pages.length
+                    delegate: Rectangle {
+                        required property int index
+                        width: index === welcome.page ? 18 : 6
+                        height: 6
+                        radius: 3
+                        color: index === welcome.page ? theme.accent : Ui.tint(theme.text, 0.25)
+                        Behavior on width { NumberAnimation { duration: 150 } }
                     }
                 }
-                Item { Layout.fillWidth: true }
-                TextButton {
-                    visible: welcome.mode === "welcome" && welcome.page < welcome.pages.length - 1
-                    text: qsTr("Skip")
-                    onClicked: welcome.close()
-                }
-                TextButton {
-                    visible: !!column.current && column.current.action !== ""
-                    text: column.current ? column.current.action : ""
-                    onClicked: {
-                        if (welcome.page === 0) {
-                            welcome.addBooks()
-                            welcome.next()
-                        } else {
-                            welcome.close()
-                            welcome.showIntelligence()
-                        }
+            }
+            Item { Layout.fillWidth: true }
+            TextButton {
+                visible: welcome.mode === "welcome" && welcome.page < welcome.pages.length - 1
+                text: qsTr("Skip")
+                onClicked: welcome.close()
+            }
+            TextButton {
+                visible: !!card.current && card.current.action !== ""
+                text: card.current ? card.current.action : ""
+                onClicked: {
+                    if (welcome.page === 0) {
+                        welcome.addBooks()
+                        welcome.next()
+                    } else {
+                        welcome.close()
+                        welcome.showIntelligence()
                     }
                 }
-                TextButton {
-                    primary: true
-                    text: welcome.mode === "welcome" && welcome.page < welcome.pages.length - 1 ? qsTr("Next")
-                        : qsTr("Start reading")
-                    onClicked: welcome.next()
-                }
+            }
+            TextButton {
+                primary: true
+                text: welcome.mode === "welcome" && welcome.page < welcome.pages.length - 1 ? qsTr("Next")
+                    : qsTr("Start reading")
+                onClicked: welcome.next()
             }
         }
     }

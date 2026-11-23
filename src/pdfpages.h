@@ -1,10 +1,14 @@
 #pragma once
 
+#include <QCache>
 #include <QColor>
 #include <QHash>
+#include <QImage>
 #include <QMutex>
 #include <QQuickAsyncImageProvider>
 #include <QRectF>
+#include <QSet>
+#include <QThreadPool>
 #include <memory>
 
 class PdfBook;
@@ -15,6 +19,9 @@ class PdfBook;
 // to the text color) while pictures keep their colors.
 class PdfPages : public QQuickAsyncImageProvider {
 public:
+    PdfPages();
+    ~PdfPages() override;
+
     static void add(const QString &token, std::shared_ptr<PdfBook> book);
     static void remove(const QString &token);
 
@@ -28,8 +35,23 @@ public:
     // text are cut, the same on every page so nothing jumps.
     static QRectF bookCrop(PdfBook &book);
 
+    struct WorkerState {
+        QString token;
+        QString path;
+        std::unique_ptr<PdfBook> book;
+    };
+
 private:
-    static std::shared_ptr<PdfBook> book(const QString &token);
+    friend class PageResponse;
+    static QString pathFor(const QString &token);
+    static QImage cached(const QString &key);
+    static void storeCached(const QString &token, const QString &key, const QImage &image);
+
+    QThreadPool m_pool;
+    std::shared_ptr<WorkerState> m_worker;
+
     static QMutex s_mutex;
-    static QHash<QString, std::shared_ptr<PdfBook>> s_books;
+    static QHash<QString, QString> s_paths;
+    static QCache<QString, QImage> s_cache;
+    static QHash<QString, QSet<QString>> s_tokenKeys;
 };
