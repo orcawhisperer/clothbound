@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 
+import "Shortcuts.js" as Shortcuts
 import "Ui.js" as Ui
 
 // Every shortcut, shown with ?. The section for where you are comes first.
@@ -21,50 +22,10 @@ Rectangle {
         onWheel: (wheel) => wheel.accepted = true
     }
 
-    readonly property var librarySection: [
-        { keys: "← → ↑ ↓  h j k l", action: qsTr("Move between books") },
-        { keys: "↵", action: qsTr("Open the book, or choose an edition") },
-        { keys: "Space", action: qsTr("Continue the book you were reading") },
-        { keys: "/", action: qsTr("Search the library") },
-        { keys: "I", action: qsTr("Details about the book") },
-        { keys: "S", action: qsTr("Change the order") },
-        { keys: "G", action: qsTr("Group or separate editions") },
-        { keys: "A", action: qsTr("Add a folder of books") },
-        { keys: "Ctrl Z", action: qsTr("Undo") }
-    ]
-    readonly property var readingSection: [
-        { keys: "Space  →  l  j", action: qsTr("Next page") },
-        { keys: "⇧ Space  ←  h  k", action: qsTr("Previous page") },
-        { keys: "[  ]", action: qsTr("Previous / next chapter") },
-        { keys: "T", action: qsTr("Contents") },
-        { keys: "/  Ctrl F", action: qsTr("Search in the book") },
-        { keys: "n  N", action: qsTr("Next / previous result") },
-        { keys: "B", action: qsTr("Bookmark this page") },
-        { keys: "M", action: qsTr("Highlights, notes, and bookmarks") },
-        { keys: "C", action: qsTr("Companion: ask, previously, who's who") },
-        { keys: "A", action: qsTr("Typography and theme") },
-        { keys: "+  −  0", action: qsTr("Larger, smaller, default text") },
-        { keys: "D", action: qsTr("Next reading theme") },
-        { keys: "G", action: qsTr("Go to a page or percentage") },
-        { keys: "Alt ←  Alt →", action: qsTr("Back / forward in reading history") },
-        { keys: "Ctrl Z  Ctrl ⇧ Z", action: qsTr("Undo / redo") },
-        { keys: "Esc", action: qsTr("Close a panel, or back to the library") }
-    ]
-    readonly property var listeningSection: [
-        { keys: "P", action: qsTr("Listen from this page, pause, go on") },
-        { keys: "⇧ P", action: qsTr("Stop listening") },
-        { keys: ",  .", action: qsTr("Previous / next paragraph") },
-        { keys: "⇧ ←  ⇧ →", action: qsTr("Skip back / forward 15 seconds") },
-        { keys: "<  >", action: qsTr("Slower / faster") },
-        { keys: "V", action: qsTr("Narrator and style") },
-        { keys: "Super W", action: qsTr("Close the window and keep listening; open Dogear again to return") }
-    ]
-    readonly property var everywhere: [
-        { keys: "Ctrl K", action: qsTr("Command palette") },
-        { keys: "F  F11", action: qsTr("Full screen") },
-        { keys: "?", action: qsTr("Show these shortcuts") },
-        { keys: "Q", action: qsTr("Quit") }
-    ]
+    readonly property var librarySection: Shortcuts.library(translator.language)
+    readonly property var readingSection: Shortcuts.reading(translator.language)
+    readonly property var listeningSection: Shortcuts.listening(translator.language)
+    readonly property var everywhere: Shortcuts.everywhere(translator.language)
 
     Rectangle {
         anchors.centerIn: parent

@@ -31,6 +31,7 @@ for mode in dark light; do
     shoot "welcome-$mode" $t --empty --first-run "$@"
     shoot "palette-$mode" $t "$@" -- --run "commandPalette.show()"
     shoot "settings-$mode" $t "$@" -- --run "win.showAiSettings()"
+    shoot "settings-general-$mode" $t "$@" -- --run "settingsView.show('general')"
     shoot "reader-$mode" $t "$@" -- --delay 2500 --step 2500 --run "$OPEN" --run "$TEXT" --run "$R.showChrome()"
     shoot "companion-$mode" $t "$@" -- --delay 2500 --step 2500 --run "$OPEN" --run "$TEXT" --run "$R.showCompanion('ask')"
     shoot "narrator-$mode" $t "$@" -- --delay 2500 --step 2500 --run "$OPEN" --run "$TEXT" --run "$R.showVoices()"
