@@ -86,17 +86,29 @@ Rectangle {
                                 Repeater {
                                     model: section.modelData.items
                                     delegate: Row {
+                                        id: shortcutRow
                                         required property var modelData
                                         spacing: 18
-                                        Label {
-                                            width: 150
-                                            horizontalAlignment: Text.AlignRight
-                                            text: modelData.keys
-                                            color: theme.accentInk
-                                            font.pixelSize: 13
-                                            font.family: "monospace"
+                                        // The keys, as key badges, set right against their action.
+                                        Item {
+                                            width: 170
+                                            height: Math.max(22, keyBadges.height)
+                                            Row {
+                                                id: keyBadges
+                                                anchors.right: parent.right
+                                                anchors.verticalCenter: parent.verticalCenter
+                                                spacing: 4
+                                                Repeater {
+                                                    model: shortcutRow.modelData.keys.split(/\s{2,}/)
+                                                    delegate: KeyHint {
+                                                        required property string modelData
+                                                        text: modelData
+                                                    }
+                                                }
+                                            }
                                         }
                                         Label {
+                                            topPadding: 2
                                             width: Math.min(implicitWidth, Math.max(180, help.width - 280))
                                             text: modelData.action
                                             color: theme.ink2

@@ -11,13 +11,18 @@ files.
 ## What it does
 
 - **A library** of your EPUB and PDF books, found in the watched folders you
-  manage, with covers, editions grouped together, custom **collections/shelves**,
-  status & format filter chips (Reading, Unread, Finished, EPUB, PDF, Series),
-  series ordering, a compact **list view** alongside the cover grid, and
-  **reading stats** (total time, daily streak, 14-day activity, and pace).
-- **Command Palette (`Ctrl+K`)**: instant fuzzy search across every book in
-  your library, the current book's chapters, cross-book highlights & notes,
-  page/percentage jumps, and every app or reader action.
+  manage (on first run Dogear offers the folder your books are already in),
+  with covers, editions grouped together, a sidebar of shelves (Reading now,
+  All books, Want to read, Finished, Listening) and your own **collections**,
+  a Continue card for the book you read last, a compact **list view**
+  alongside the cover grid, and **reading stats** (total time, daily streak,
+  14-day activity, and pace). `Ctrl+B` folds the sidebar.
+- **Command Palette (`Ctrl+K`)**: instant search across your books' titles,
+  **the words inside every book** (a full-text index kept on this computer),
+  the current book's chapters, cross-book highlights & notes, page/percentage
+  jumps, and every app or reader action.
+- **Light and dark**, following your Omarchy theme as it changes (or set in
+  Settings), with Dogear's own controls set in Inter.
 - **A page to read on**: EPUB in columns or scrolling, with your typeface,
   size, spacing and theme; PDF pages recolored to the reading theme with
   their blank margins cut, one at a time, two side by side, or scrolling.
@@ -84,6 +89,7 @@ what will work well here, what will be slow, and what needs Gemini.
 | / or Ctrl F | Search the library |
 | Ctrl K | Command palette: jump to any book, note, or action |
 | I · S · G · V · A | Details · order (incl. series) · group editions · grid/list view · add a folder |
+| Ctrl B | Show or hide the sidebar |
 
 | Reading | |
 |---|---|
@@ -91,6 +97,7 @@ what will work well here, what will be slow, and what needs Gemini.
 | [ ] | Previous / next chapter |
 | Ctrl K | Command palette: chapters, notes, books, and reader actions |
 | T · G | Contents · go to a page or percentage |
+| Tab | Show the controls |
 | / or Ctrl F, then n N | Search in the book, next / previous result |
 | B · M | Bookmark this page · highlights, notes and bookmarks |
 | C | The X-Ray companion: ask, previously, who's who, pictures |
@@ -105,7 +112,7 @@ what will work well here, what will be slow, and what needs Gemini.
 | < > | Slower / faster |
 | V | Narrator, style, full cast, and M4B audiobook export |
 
-`Ctrl+K` opens the command palette anywhere, `Ctrl+,` opens Intelligence settings, `?` shows every key in the app, `F` or `F11` is full screen, and `Q` quits.
+`Ctrl+K` opens the command palette anywhere, `Ctrl+,` opens Settings, `?` shows every key in the app, `F` or `F11` is full screen, and `Q` quits.
 
 ## Commands
 
