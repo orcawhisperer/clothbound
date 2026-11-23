@@ -3,6 +3,7 @@
 #include "aiservices.h"
 #include "audiocache.h"
 #include "director.h"
+#include "cast.h"
 #include "narration.h"
 #include "reader.h"
 
@@ -128,6 +129,24 @@ void Download::addBlocks(int chapter, const QString &json) {
     if (!m_active || !m_waiting.contains(chapter))
         return;
     const QList<SpeechBlock> blocks = Speech::parseBlocks(json);
+    // Who speaks what first (with a full cast), then the director's moods.
+    if (m_cast && m_cast->enabled() && m_cast->available() && !m_cast->knows(chapter)) {
+        if (const auto lines = m_cast->kept(chapter, blocks)) {
+            m_cast->learn(chapter, *lines);
+        } else {
+            m_cast->ask(chapter, blocks, this, [this, chapter, blocks](const QMap<int, Cast::Line> &lines) {
+                if (!m_active || !m_waiting.contains(chapter))
+                    return;
+                m_cast->learn(chapter, lines);
+                direct(chapter, blocks);
+            });
+            return;
+        }
+    }
+    direct(chapter, blocks);
+}
+
+void Download::direct(int chapter, const QList<SpeechBlock> &blocks) {
     const Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
     if (m_performance == QStringLiteral("plain") || !speaker || !speaker->supportsStyle() || !m_director->canDirect(blocks)) {
         plan(chapter, blocks, {});
@@ -153,15 +172,23 @@ void Download::plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<in
     const bool dramatic = m_performance == QStringLiteral("dramatic");
     const bool styled = m_performance != QStringLiteral("plain") && speaker->supportsStyle();
     double planned = 0;
-    for (const SpeechClip &clip : Speech::clips(chapter, blocks, Director::breaks(moods))) {
+    QSet<int> breaks = Director::breaks(moods);
+    if (m_cast)
+        breaks.unite(m_cast->breaks(chapter, blocks));
+    for (const SpeechClip &clip : Speech::clips(chapter, blocks, breaks)) {
         if (clip.text.isEmpty())
             continue;
         Job job;
         job.text = clip.text;
+        job.voice = m_cast ? m_cast->voiceAt(chapter, clip.block) : m_voice;
+        if (job.voice.isEmpty() || !m_ai->canSpeakWith(job.voice))
+            job.voice = m_voice;
         job.style = styled ? Speech::styleFor(Speech::moodAt(moods, clip.block), dramatic) : QString();
         for (const SpeechSentence &sentence : clip.sentences)
             job.sentences.append(sentence.text);
-        job.key = AudioCache::keyFor(provider, model, m_voice, job.style, job.text);
+        Ai::SpeechSynthesizer *reader = m_ai->speechFor(job.voice);
+        job.key = AudioCache::keyFor(m_ai->providerFor(job.voice)->id(), reader ? reader->speechModelName(m_economy) : model,
+                                     job.voice, job.style, job.text);
         job.minutes = job.text.size() / charsPerMinute;
         planned += job.minutes;
         if (!m_cache->lookup(job.key).isEmpty())
@@ -192,13 +219,13 @@ void Download::pump() {
         request.feature = QStringLiteral("download");
         request.text = Speech::speakable(job.text);
         request.style = job.style;
-        request.voice = m_voice;
+        request.voice = job.voice;
         request.economy = m_economy;
         request.stream = false;
         request.background = m_flex;
         for (const QString &sentence : job.sentences)
             request.sentences.append(Speech::speakable(sentence));
-        Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
+        Ai::SpeechSynthesizer *speaker = m_ai->speechFor(job.voice);
         if (!speaker) {
             m_queue.prepend(job);
             stopWith(m_ai->describe(int(Ai::Error::NoKey)));

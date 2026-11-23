@@ -55,6 +55,8 @@ public:
     Q_INVOKABLE QVariantList suggestions(const QString &language) const;
     // The voices the reader has designed, newest first.
     Q_INVOKABLE QVariantList designedVoices() const;
+    // Gemini's prebuilt voices, which speak every language: for casting.
+    QVariantList classicVoices() const;
     // Every voice matching all the words of `text`; narrators first. With a
     // language, only voices that speak it.
     Q_INVOKABLE QVariantList search(const QString &text, const QString &language, int limit = 80) const;

@@ -234,6 +234,14 @@ QVariantList VoiceCatalog::suggestions(const QString &language) const {
     return result;
 }
 
+QVariantList VoiceCatalog::classicVoices() const {
+    QVariantList out;
+    for (const Ai::Voice &voice : m_voices)
+        if (isClassic(voice))
+            out.append(toMap(voice));
+    return out;
+}
+
 QVariantList VoiceCatalog::designedVoices() const {
     QList<const Ai::Voice *> designed;
     for (const Ai::Voice &voice : m_voices)

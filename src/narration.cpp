@@ -4,6 +4,7 @@
 #include "aiservices.h"
 #include "audiocache.h"
 #include "director.h"
+#include "cast.h"
 #include "library.h"
 #include "reader.h"
 #include "speechplayer.h"
@@ -108,6 +109,8 @@ void Narration::loadVoice() {
         m_voice = s.value(QStringLiteral("listen/voice"), QStringLiteral("sulafat")).toString();
         m_voiceName = s.value(QStringLiteral("listen/voiceName"), QStringLiteral("Sulafat")).toString();
     }
+    if (m_cast)
+        m_cast->setNarrator(m_voice);
     emit voiceChanged();
 }
 
@@ -176,6 +179,8 @@ void Narration::setVoice(const QString &id, const QString &name) {
         m_library->setBookSetting(m_reader->bookId(), QStringLiteral("voice"), m_voice);
         m_library->setBookSetting(m_reader->bookId(), QStringLiteral("voiceName"), m_voiceName);
     }
+    if (m_cast)
+        m_cast->setNarrator(m_voice);
     emit voiceChanged();
     // The new voice takes over from the sentence being spoken.
     if (m_active && m_sentenceStart >= 0) {
@@ -257,21 +262,27 @@ void Narration::addBlocks(int chapter, const QString &json) {
     // Direction kept from an earlier reading shapes the clips from the
     // start, so they match the audio made then.
     const bool kept = directed() && m_ai->textFor(QStringLiteral("director")) && keptDirections(chapter);
+    // The cast too, kept from an earlier reading, or asked for below.
+    bool castKept = true;
+    if (m_cast && m_cast->enabled() && m_cast->available() && !m_cast->knows(chapter)) {
+        if (const auto lines = m_cast->kept(chapter, blocks))
+            m_cast->learn(chapter, *lines);
+        else
+            castKept = false;
+    }
     const qint64 from = chapter == m_startChapter ? m_startOffset : 0;
     const bool firstOfSession = m_clips.isEmpty();
     const QList<SpeechClip> made = Speech::clipsFrom(chapter, blocks, from, breaksFor(chapter));
     const int before = int(m_clips.size());
-    for (const SpeechClip &spoken : made) {
-        Clip clip;
-        static_cast<SpeechClip &>(clip) = spoken;
-        clip.spans = Speech::timeline(clip);
-        m_clips.append(clip);
-    }
+    for (const SpeechClip &spoken : made)
+        m_clips.append(clipFrom(spoken));
     // Otherwise the first few clips go ahead without direction, so the
     // voice starts at once and never waits on the director.
-    if (firstOfSession && !kept)
+    if (firstOfSession && (!kept || !castKept))
         for (int i = before; i < qMin<qsizetype>(before + 3, m_clips.size()); ++i)
             m_clips[i].immediate = true;
+    if (!castKept && !made.isEmpty())
+        requestCast(chapter);
     if (directed() && m_ai->textFor(QStringLiteral("director")) && !made.isEmpty() && !kept)
         requestDirections(chapter);
     if (m_current < 0 && !m_clips.isEmpty())
@@ -377,8 +388,13 @@ void Narration::pump() {
             continue;
         }
         clip.style = styleFor(clip);
-        const QString model = speaker()->speechModelName(m_economy);
-        clip.key = AudioCache::keyFor(m_ai->providerFor(m_voice)->id(), model, m_voice, clip.style, clip.text);
+        // A character's voice that can't speak now (not downloaded, no key)
+        // gives way to the narrator's.
+        if (!clip.voice.isEmpty() && clip.voice != m_voice && !m_ai->canSpeakWith(clip.voice))
+            clip.voice = m_voice;
+        const QString voice = voiceOf(clip);
+        const QString model = m_ai->speechFor(voice)->speechModelName(m_economy);
+        clip.key = AudioCache::keyFor(m_ai->providerFor(voice)->id(), model, voice, clip.style, clip.text);
         const QString file = m_cache->lookup(clip.key);
         if (!file.isEmpty()) {
             decode(i, file);
@@ -431,12 +447,12 @@ void Narration::fetch(int index) {
     Ai::SpeechRequest request;
     request.text = Speech::speakable(clip.text);
     request.style = clip.style;
-    request.voice = m_voice;
+    request.voice = voiceOf(clip);
     request.economy = m_economy;
     request.stream = true;
     for (const SpeechSentence &sentence : std::as_const(clip.sentences))
         request.sentences.append(Speech::speakable(sentence.text));
-    Ai::Reply *reply = speaker()->synthesize(request);
+    Ai::Reply *reply = m_ai->speechFor(request.voice)->synthesize(request);
     m_ai->track(reply);
     clip.reply = reply;
     clip.state = Clip::Working;
@@ -756,7 +772,51 @@ bool Narration::keptDirections(int chapter) {
     return true;
 }
 
-QSet<int> Narration::breaksFor(int chapter) const { return Director::breaks(m_moods.value(chapter)); }
+QSet<int> Narration::breaksFor(int chapter) const {
+    QSet<int> breaks = Director::breaks(m_moods.value(chapter));
+    if (m_cast)
+        breaks.unite(m_cast->breaks(chapter, m_blocks.value(chapter)));
+    return breaks;
+}
+
+Narration::Clip Narration::clipFrom(const SpeechClip &spoken) const {
+    Clip clip;
+    static_cast<SpeechClip &>(clip) = spoken;
+    clip.spans = Speech::timeline(clip);
+    clip.voice = m_cast ? m_cast->voiceAt(spoken.chapter, spoken.block) : m_voice;
+    return clip;
+}
+
+QString Narration::voiceOf(const Clip &clip) const { return clip.voice.isEmpty() ? m_voice : clip.voice; }
+
+void Narration::setCast(Cast *cast) {
+    m_cast = cast;
+    cast->setNarrator(m_voice);
+    // A voice changed by hand, or the cast turned on or off: what's not yet
+    // heard is read again by whoever reads it now.
+    connect(cast, &Cast::recast, this, [this] {
+        if (!m_active)
+            return;
+        QSet<int> chapters;
+        for (const Clip &clip : std::as_const(m_clips))
+            chapters.insert(clip.chapter);
+        for (int chapter : chapters) {
+            if (m_cast->enabled() && !m_cast->knows(chapter))
+                requestCast(chapter);
+            recut(chapter);
+        }
+    });
+}
+
+void Narration::requestCast(int chapter) {
+    m_cast->ask(chapter, m_blocks.value(chapter), this, [this, chapter](const QMap<int, Cast::Line> &lines) {
+        if (!m_active || !m_blocks.contains(chapter))
+            return;
+        m_cast->learn(chapter, lines);
+        trace(QStringLiteral("cast: chapter %1: %2 lines").arg(chapter).arg(lines.size()));
+        recut(chapter);
+    });
+}
 
 void Narration::requestDirections(int chapter) {
     m_directionsAsked.insert(chapter, nowMs());
@@ -775,6 +835,13 @@ void Narration::requestDirections(int chapter) {
 // begins a clip of its own and every clip is read in one mood.
 void Narration::applyMoods(int chapter, const QMap<int, QString> &moods) {
     m_moods.insert(chapter, moods);
+    if (!moods.isEmpty())
+        recut(chapter);
+    else
+        pump();
+}
+
+void Narration::recut(int chapter) {
     int end = -1;
     for (int i = 0; i < m_clips.size(); ++i)
         if (m_clips[i].chapter == chapter)
@@ -783,19 +850,15 @@ void Narration::applyMoods(int chapter, const QMap<int, QString> &moods) {
     while (from > 0 && m_clips[from - 1].chapter == chapter && m_clips[from - 1].state == Clip::Waiting &&
            !m_clips[from - 1].immediate && !m_clips[from - 1].queued)
         --from;
-    if (end > 0 && from < end && !moods.isEmpty()) {
+    if (end > 0 && from < end) {
         const QList<SpeechBlock> blocks = m_blocks.value(chapter);
         const Clip &first = m_clips[from];
         const qint64 offset = first.pauseMs > 0 ? blocks.value(first.block).start : first.start();
         const QList<SpeechClip> remade = Speech::clipsFrom(chapter, blocks, offset, breaksFor(chapter));
         m_clips.remove(from, end - from);
         int at = from;
-        for (const SpeechClip &spoken : remade) {
-            Clip clip;
-            static_cast<SpeechClip &>(clip) = spoken;
-            clip.spans = Speech::timeline(clip);
-            m_clips.insert(at++, clip);
-        }
+        for (const SpeechClip &spoken : remade)
+            m_clips.insert(at++, clipFrom(spoken));
     }
     pump();
 }

@@ -17,6 +17,7 @@ class AiServices;
 class AudioCache;
 class Library;
 class Reader;
+class Cast;
 class Director;
 class SpeechPlayer;
 
@@ -93,6 +94,8 @@ public:
 
     // A chapter's blocks, as the reading surface reports them.
     void addBlocks(int chapter, const QString &json);
+    // A full cast for the book, when on.
+    void setCast(Cast *cast);
 
 signals:
     void stateChanged();
@@ -124,6 +127,8 @@ private:
         QList<QPair<double, double>> spans;  // its sentences' share of its length
         QList<qint64> boundaries;            // where each sentence ends, when the voice said
         QPointer<Ai::Reply> reply;
+        // Who reads it: the narrator, or (with a full cast) a character.
+        QString voice;
     };
 
     void pump();
@@ -141,6 +146,12 @@ private:
     void setProblem(const QString &problem);
     bool keptDirections(int chapter);
     QSet<int> breaksFor(int chapter) const;
+    // A clip of the chapter's, with its reader.
+    Clip clipFrom(const SpeechClip &spoken) const;
+    QString voiceOf(const Clip &clip) const;
+    // The chapter's clips not yet begun, cut again (after new direction or casting).
+    void recut(int chapter);
+    void requestCast(int chapter);
     void requestDirections(int chapter);
     void applyMoods(int chapter, const QMap<int, QString> &moods);
     bool waitingForDirections(const Clip &clip) const;
@@ -156,6 +167,7 @@ private:
     Library *m_library;
 
     Director *m_director;
+    Cast *m_cast = nullptr;
     SpeechPlayer *m_player;
     QList<Clip> m_clips;
     int m_current = -1;

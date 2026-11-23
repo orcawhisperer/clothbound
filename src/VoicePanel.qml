@@ -574,6 +574,77 @@ FocusScope {
                     : qsTr("The most natural voices, with styles; they use your own Gemini key.")
             }
 
+            // A full cast: characters in voices of their own.
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.topMargin: 6
+                visible: cast.available && panel.source !== "studio"
+                radius: Math.min(10, theme.radius)
+                color: Ui.tint(panel.look.fg, 0.04)
+                border.color: panel.look.border
+                implicitHeight: castColumn.implicitHeight + 20
+                ColumnLayout {
+                    id: castColumn
+                    x: 12
+                    y: 10
+                    width: parent.width - 24
+                    spacing: 6
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Full cast")
+                            color: panel.look.fg
+                            font.pixelSize: 14
+                            font.weight: Font.DemiBold
+                        }
+                        Switch {
+                            checked: cast.enabled
+                            onToggled: cast.enabled = checked
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: cast.enabled
+                              ? qsTr("Each character's lines in a voice of their own; %1 reads the rest. Who speaks is worked out a chapter at a time (%2).").arg(narration.voiceName).arg(ai.whereFor("cast"))
+                              : qsTr("Give each character a voice of their own, chosen from the narrator's family of voices.")
+                        color: panel.look.muted
+                        font.pixelSize: 12
+                        wrapMode: Text.Wrap
+                    }
+                    Repeater {
+                        model: cast.enabled ? cast.members.slice(0, 12) : []
+                        delegate: RowLayout {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            spacing: 8
+                            Label {
+                                Layout.fillWidth: true
+                                text: modelData.speaker
+                                color: panel.look.fg
+                                font.pixelSize: 13
+                                elide: Text.ElideRight
+                            }
+                            ComboBox {
+                                Layout.preferredWidth: 170
+                                readonly property var choices: cast.choices()
+                                model: choices.map(c => c.name + (c.gender ? " · " + c.gender : ""))
+                                currentIndex: choices.findIndex(c => c.id === modelData.voice)
+                                onActivated: (index) => cast.setVoice(modelData.speaker, choices[index].id)
+                            }
+                            Listen { voiceId: modelData.voice }
+                        }
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        visible: cast.enabled && cast.members.length === 0
+                        text: qsTr("Characters appear here as they're heard.")
+                        color: panel.look.muted
+                        font.pixelSize: 12
+                    }
+                }
+            }
+
             // The Studio server's voices.
             ColumnLayout {
                 Layout.fillWidth: true
@@ -660,10 +731,10 @@ FocusScope {
                     radius: Math.min(10, theme.radius)
                     color: Ui.tint(panel.look.link, 0.07)
                     border.color: Ui.tint(panel.look.link, 0.28)
-                    implicitHeight: cast.implicitHeight + 28
+                    implicitHeight: castingColumn.implicitHeight + 28
 
                     ColumnLayout {
-                        id: cast
+                        id: castingColumn
                         x: 14
                         y: 14
                         width: parent.width - 28

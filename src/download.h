@@ -12,6 +12,7 @@
 #include <QVariantMap>
 
 class AiServices;
+class Cast;
 class AudioCache;
 class Director;
 class Narration;
@@ -63,6 +64,8 @@ public:
 
     // A chapter's blocks, as the reading surface reports them.
     void addBlocks(int chapter, const QString &json);
+    // A full cast, so downloads are read by the voices listening uses.
+    void setCast(Cast *cast) { m_cast = cast; }
 
 signals:
     void changed();
@@ -78,6 +81,7 @@ private:
         QString text;
         QStringList sentences;
         QString style;
+        QString voice;
         double minutes = 0;
         int tries = 0;
     };
@@ -86,6 +90,7 @@ private:
     double estimatedMinutes(int chapter) const;
     void planAhead();
     void plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<int, QString> &moods);
+    void direct(int chapter, const QList<SpeechBlock> &blocks);
     void pump();
     void made(const Job &job, Ai::Reply *reply);
     void failed(Job job, const Ai::Error &error);
@@ -98,6 +103,7 @@ private:
     Reader *m_reader;
     Narration *m_narration;
     Director *m_director;
+    Cast *m_cast = nullptr;
 
     bool m_active = false;
     bool m_paused = false;

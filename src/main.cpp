@@ -7,6 +7,7 @@
 #include "gemini.h"
 #include "localmodels.h"
 #include "companion.h"
+#include "cast.h"
 #include "illustrator.h"
 #include "pdfpages.h"
 #include "systemcheck.h"
@@ -222,6 +223,10 @@ int main(int argc, char *argv[]) {
     QObject::connect(&reader, &Reader::bookChanged, &marks, [&marks, &reader] { marks.setBook(reader.bookId()); });
     VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
                         QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/voices.json"));
+    // A full cast, when a book has it on: characters in voices of their own.
+    Cast cast(&ai, &audioCache, &reader, &library, &voices, &voicePacks);
+    narration.setCast(&cast);
+    download.setCast(&cast);
     // A book named on the command line joins the library (it may live
     // anywhere) and opens.
     int bookToOpen = 0;
@@ -249,6 +254,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("bookSearch", &bookSearch);
     engine.rootContext()->setContextProperty("marks", &marks);
     engine.rootContext()->setContextProperty("companion", &companion);
+    engine.rootContext()->setContextProperty("cast", &cast);
     engine.rootContext()->setContextProperty("illustrator", &illustrator);
     engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
     Notifier notifier;

@@ -25,6 +25,7 @@
 #include "passageindex.h"
 #include "pdfbook.h"
 #include "pdfpages.h"
+#include "cast.h"
 #include <QPdfWriter>
 #include <QPainter>
 #include "systemcheck.h"
@@ -1496,6 +1497,21 @@ private slots:
         white.fill(Qt::white);
         PdfPages::recolor(white, Qt::white, Qt::black);
         QCOMPARE(QColor(white.pixel(0, 0)), QColor(Qt::white));
+    }
+
+    // Who speaks: paragraphs out of range, the narrator's, and unknown
+    // genders are told apart.
+    void castLinesAreRead() {
+        const QString json = R"({"lines":[{"block":1,"speaker":"Weena","gender":"female"},)"
+                             R"({"block":3,"speaker":"narrator","gender":""},)"
+                             R"({"block":4,"speaker":"The Time Traveller","gender":"man"},)"
+                             R"({"block":9,"speaker":"Filby","gender":"male"}]})";
+        const QMap<int, Cast::Line> lines = Cast::parse(json, 5);
+        QCOMPARE(lines.size(), 2);
+        QCOMPARE(lines[1].speaker, QString("Weena"));
+        QCOMPARE(lines[1].gender, QString("female"));
+        QCOMPARE(lines[4].gender, QString());
+        QVERIFY(Cast::prompt().contains("narrator"));
     }
 
     // The window doesn't wait for the keyring: the key arrives when it
