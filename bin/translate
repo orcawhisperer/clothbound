@@ -137,10 +137,14 @@ Answer with a JSON array: for each entry, its "i" and its translation.
         for i, text in enumerate(batch):
             item = answer.get(i, {})
             value, plural = item.get("translation"), item.get("forms")
-            if strings[text] and isinstance(plural, dict) and plural.get("other"):
-                done[text] = {form: plural.get(form) or plural["other"] for form in forms}
+            given = [plural.get(form) for form in forms if isinstance(plural, dict) and plural.get(form)]
+            if strings[text] and given:
+                # A form left out takes the most general one given.
+                fallback = plural.get("other") or given[-1]
+                done[text] = {form: plural.get(form) or fallback for form in forms}
             elif isinstance(value, str) and value.strip():
-                done[text] = value
+                # A counted string given as one translation serves every form.
+                done[text] = {form: value for form in forms} if strings[text] else value
         print(f"  {code}: {min(start + 100, len(missing))} of {len(missing)}", flush=True)
     return done, len(missing)
 
