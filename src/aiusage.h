@@ -27,6 +27,8 @@ public:
     double spentSince(const QDate &day) const;
     // One row per feature this month: {feature, cost, requests, audioMinutes}.
     QVariantList monthByFeature(const QDate &today = QDate::currentDate()) const;
+    // Clears this month's local usage estimate rows (does not affect provider billing).
+    void clearMonth(const QDate &today = QDate::currentDate());
 
     static const QList<Price> &prices();
     // What a request costs on a given day (local models, and models without

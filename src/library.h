@@ -55,6 +55,8 @@ public:
     // Files and folders dropped on the window or chosen in a picker.
     Q_INVOKABLE void addUrls(const QList<QUrl> &urls);
     Q_INVOKABLE void removeFolder(const QString &path);
+    Q_INVOKABLE QVariantList folderStats() const;
+    Q_INVOKABLE void openFolder(const QString &path) const;
     Q_INVOKABLE void rescan();
     Q_INVOKABLE void cancelScan();
     // Reads one file now and stores it, for books opened from outside the

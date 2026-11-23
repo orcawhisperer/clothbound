@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+import "Ui.js" as Ui
+
 // A group of settings on a raised card, with an optional title and a
 // sentence under it. Rows go inside.
 Rectangle {
@@ -15,17 +17,17 @@ Rectangle {
     default property alias content: body.data
 
     Layout.fillWidth: true
-    implicitHeight: column.implicitHeight + 32
-    radius: Math.min(12, theme.radius)
+    implicitHeight: column.implicitHeight + 36
+    radius: Ui.radius(12, theme.radius)
     color: theme.raised
     border.width: 1
     border.color: theme.hairline
 
     ColumnLayout {
         id: column
-        x: 18
-        y: 16
-        width: parent.width - 36
+        x: 20
+        y: 18
+        width: parent.width - 40
         spacing: 12
 
         RowLayout {
@@ -57,7 +59,7 @@ Rectangle {
             color: theme.ink3
             font.pixelSize: 12
             wrapMode: Text.Wrap
-            lineHeight: 1.2
+            lineHeight: 1.35
         }
         ColumnLayout {
             id: body

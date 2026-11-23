@@ -65,6 +65,15 @@ QString AiServices::keyLocation() const {
     return m_fromEnvironment ? tr("the GEMINI_API_KEY environment variable") : (m_keys ? m_keys->where() : QString());
 }
 
+QString AiServices::maskedKey() const {
+    if (!hasKey())
+        return {};
+    const QString key = m_fromEnvironment ? QString::fromUtf8(qgetenv("GEMINI_API_KEY")).trimmed() : m_savedKey.trimmed();
+    if (key.size() < 12)
+        return QStringLiteral("••••••••");
+    return key.left(4) + QStringLiteral("••••") + key.right(4);
+}
+
 QString AiServices::textModel() const {
     auto *model = m_provider->text();
     return model ? model->textModelName(false) : QString();
@@ -104,6 +113,12 @@ void AiServices::setUnlimitedBudget(bool unlimited) {
 
 QVariantList AiServices::usageThisMonth() const { return m_ledger.monthByFeature(); }
 
+void AiServices::resetUsageThisMonth() {
+    m_ledger.clearMonth();
+    m_spentCache = -1;
+    emit usageChanged();
+}
+
 bool AiServices::fitsBudget(double cost) const {
     if (m_unlimitedBudget)
         return true;
@@ -127,6 +142,7 @@ void AiServices::setKey(const QString &key) {
     m_provider->setKey(trimmed);
     m_keyChangedHere = true;
     m_checking = true;
+    m_checkFailed = false;
     m_status = tr("Checking the key…");
     emit changed();
     Ai::Reply *reply = m_provider->check();
@@ -137,6 +153,7 @@ void AiServices::setKey(const QString &key) {
             return;
         if (reply->error()) {
             m_checking = false;
+            m_checkFailed = true;
             // A key that doesn't work isn't kept, and the one before stays.
             m_provider->setKey(m_fromEnvironment ? QString::fromUtf8(qgetenv("GEMINI_API_KEY")) : m_savedKey);
             m_connected = false;
@@ -147,6 +164,7 @@ void AiServices::setKey(const QString &key) {
         }
         auto finish = [this, trimmed](bool saved, const QString &problem) {
             m_checking = false;
+            m_checkFailed = false;
             if (saved)
                 m_savedKey = trimmed;
             m_fromEnvironment = false;
@@ -176,6 +194,7 @@ void AiServices::forgetKey() {
     if (m_keyCheckReply)
         m_keyCheckReply->abort();
     m_checking = false;
+    m_checkFailed = false;
     if (m_keys)
         (void)m_keys->removeLater(m_provider->id());
     m_savedKey.clear();
@@ -192,6 +211,7 @@ void AiServices::check() {
         return;
     const int generation = ++m_keyGeneration;
     m_checking = true;
+    m_checkFailed = false;
     m_status = tr("Checking the key…");
     emit changed();
     Ai::Reply *reply = m_provider->check();
@@ -202,6 +222,7 @@ void AiServices::check() {
             return;
         m_checking = false;
         m_connected = !reply->error();
+        m_checkFailed = bool(reply->error());
         m_status = reply->error() ? describe(reply->error().kind, reply->error().message) : tr("Connected");
         emit changed();
     });
@@ -220,6 +241,7 @@ void AiServices::track(Ai::Reply *reply, bool flex) {
         }
         if (reply->error().kind == Ai::Error::BadKey && providerId == m_provider->id() && m_connected) {
             m_connected = false;
+            m_checkFailed = true;
             m_status = describe(Ai::Error::BadKey);
             emit changed();
         }
@@ -324,6 +346,9 @@ QString AiServices::preset() const {
 }
 
 void AiServices::setPreset(const QString &preset) {
+    if (!preset.isEmpty() && preset != QLatin1String("cloud") && preset != QLatin1String("hybrid") &&
+        preset != QLatin1String("local"))
+        return;
     if (preset == this->preset() && !m_preset.isEmpty())
         return;
     m_preset = preset;
@@ -341,6 +366,12 @@ QString AiServices::overrideFor(const QString &feature) const {
 }
 
 void AiServices::setOverride(const QString &feature, const QString &route) {
+    if (feature.isEmpty())
+        return;
+    if (!route.isEmpty() && route != QLatin1String("cloud") && route != QLatin1String("local"))
+        return;
+    if (m_overrides.value(feature) == route)
+        return;
     QSettings s = settings();
     if (route.isEmpty()) {
         m_overrides.remove(feature);
@@ -488,10 +519,40 @@ QString AiServices::whereFor(const QString &feature) const {
 }
 
 void AiServices::findLocal(const QString &url) {
+    auto sameEndpoint = [](const QUrl &a, const QUrl &b) {
+        auto canon = [](const QUrl &u) {
+            const QUrl n = LocalModels::normalizeServerUrl(u);
+            QString host = n.host().toLower();
+            if (host == QLatin1String("localhost") || host == QLatin1String("localhost."))
+                host = QStringLiteral("127.0.0.1");
+            const int port = n.port(n.scheme().toLower() == QLatin1String("https") ? 443 : 80);
+            return QStringLiteral("%1://%2:%3%4").arg(n.scheme().toLower(), host).arg(port).arg(n.path());
+        };
+        return canon(a) == canon(b);
+    };
+    const QString trimmed = url.trimmed();
+    QList<QUrl> extra;
+    m_requestedLocalUrl.clear();
+    if (!trimmed.isEmpty()) {
+        const QUrl candidate = QUrl::fromUserInput(trimmed);
+        if (!LocalModels::isHttpUrl(candidate)) {
+            m_localError = tr("Enter an http:// or https:// address, such as localhost:11434.");
+            emit localServersChanged();
+            return;
+        }
+        m_requestedLocalUrl = LocalModels::normalizeServerUrl(candidate);
+        extra.append(m_requestedLocalUrl);
+    }
+    if (!localUrl().isEmpty()) {
+        const QUrl current(localUrl());
+        if (LocalModels::isHttpUrl(current))
+            extra.append(current);
+    }
     if (!m_finder) {
         m_finder = new ServerFinder(this);
-        connect(m_finder, &ServerFinder::finished, this, [this] {
+        connect(m_finder, &ServerFinder::finished, this, [this, sameEndpoint] {
             m_localServers.clear();
+            bool matchedRequested = !m_requestedLocalUrl.isValid();
             for (const LocalModels::Server &server : m_finder->servers()) {
                 m_localServers.append(QVariantMap{{QStringLiteral("kind"), LocalModels::kindId(server.kind)},
                                                   {QStringLiteral("name"), LocalModels::kindName(server.kind)},
@@ -500,32 +561,64 @@ void AiServices::findLocal(const QString &url) {
                                                   {QStringLiteral("embeddingModels"), server.embeddingModels},
                                                   {QStringLiteral("speechModels"), server.speechModels},
                                                   {QStringLiteral("contextWindow"), server.contextWindow}});
+                if (m_requestedLocalUrl.isValid() && sameEndpoint(server.url, m_requestedLocalUrl))
+                    matchedRequested = true;
                 if (m_localModels && m_localModels->isConfigured() &&
-                    server.url.toString() == m_localModels->server().url.toString()) {
+                    sameEndpoint(server.url, m_localModels->server().url)) {
                     if (server.contextWindow > 0)
                         m_localModels->setContextWindow(server.contextWindow);
                     else if (!m_localModels->textModelName(false).isEmpty() && m_localModels->reportedContextWindow() <= 0)
                         m_localModels->queryContextWindow();
                 }
             }
+            if (!matchedRequested)
+                m_localError = tr("No compatible model server answered at %1.").arg(m_requestedLocalUrl.toString());
+            else
+                m_localError.clear();
+            m_requestedLocalUrl.clear();
             m_findingLocal = false;
             emit localServersChanged();
         });
     }
+    m_localError.clear();
     m_findingLocal = true;
     emit localServersChanged();
-    QList<QUrl> extra;
-    if (!url.trimmed().isEmpty()) {
-        const QUrl candidate = QUrl::fromUserInput(url.trimmed());
-        if (LocalModels::isHttpUrl(candidate))
-            extra.append(candidate);
-    }
-    if (!localUrl().isEmpty()) {
-        const QUrl current(localUrl());
-        if (LocalModels::isHttpUrl(current))
-            extra.append(current);
-    }
     m_finder->find(extra);
+}
+
+void AiServices::testLocal() {
+    if (!m_localModels || !m_localModels->isConfigured())
+        return;
+    if (m_localTestReply)
+        m_localTestReply->abort();
+    const int gen = ++m_localTestGen;
+    m_testingLocal = true;
+    m_localError.clear();
+    m_localTestResult.clear();
+    emit localServersChanged();
+    m_localTestClock.start();
+    Ai::Reply *reply = m_localModels->check();
+    m_localTestReply = reply;
+    connect(reply, &Ai::Reply::finished, this, [this, reply, gen] {
+        reply->deleteLater();
+        if (gen != m_localTestGen)
+            return;
+        m_localTestReply.clear();
+        m_testingLocal = false;
+        if (reply->error()) {
+            m_localError = describeFor(m_localModels, reply->error().kind, reply->error().message);
+            m_localTestResult.clear();
+        } else {
+            const qint64 ms = qMax<qint64>(1, m_localTestClock.elapsed());
+            m_localError.clear();
+            m_localTestResult = tr("Connected · %1 ms").arg(ms);
+            if (m_localModels && !m_localModels->textModelName(false).isEmpty())
+                m_localModels->queryContextWindow();
+        }
+        emit localServersChanged();
+        if (!reply->error() && !m_findingLocal)
+            findLocal();
+    });
 }
 
 void AiServices::useLocal(const QString &kind, const QString &url, const QString &textModel,
@@ -535,6 +628,12 @@ void AiServices::useLocal(const QString &kind, const QString &url, const QString
     const QUrl parsed = LocalModels::normalizeServerUrl(QUrl(url.trimmed()));
     if (!LocalModels::isHttpUrl(parsed))
         return;
+    ++m_localTestGen;
+    if (m_localTestReply)
+        m_localTestReply->abort();
+    m_testingLocal = false;
+    m_localError.clear();
+    m_localTestResult.clear();
     QSettings s = settings();
     s.setValue(QStringLiteral("local/kind"), kind);
     s.setValue(QStringLiteral("local/url"), parsed.toString());
@@ -556,15 +655,23 @@ void AiServices::useLocal(const QString &kind, const QString &url, const QString
     if (server.contextWindow <= 0 && !textModel.isEmpty())
         m_localModels->queryContextWindow();
     emit routingChanged();
+    emit localServersChanged();
     emit changed();
 }
 
 void AiServices::forgetLocal() {
+    ++m_localTestGen;
+    if (m_localTestReply)
+        m_localTestReply->abort();
+    m_testingLocal = false;
+    m_localError.clear();
+    m_localTestResult.clear();
     QSettings s = settings();
     s.remove(QStringLiteral("local"));
     if (m_localModels)
         m_localModels->configure({}, {});
     emit routingChanged();
+    emit localServersChanged();
     emit changed();
 }
 

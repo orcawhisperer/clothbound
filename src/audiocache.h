@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QFuture>
 #include <QHash>
 #include <QList>
 #include <QObject>
@@ -20,6 +21,10 @@ class QProcess;
 class AudioCache : public QObject {
     Q_OBJECT
     Q_PROPERTY(double megabytes READ megabytes NOTIFY changed)
+    Q_PROPERTY(int clipCount READ clipCount NOTIFY changed)
+    Q_PROPERTY(bool clearing READ clearing NOTIFY changed)
+    Q_PROPERTY(bool ffmpegAvailable READ ffmpegAvailable CONSTANT)
+    Q_PROPERTY(QString audiobookFolder READ audiobookFolder CONSTANT)
 
 public:
     AudioCache(const QString &directory, const QString &databaseConnection, QObject *parent = nullptr,
@@ -50,7 +55,13 @@ public:
     void decode(const QString &file, int sampleRate, QObject *context,
                 std::function<void(const QByteArray &pcm, bool ok)> done);
     void storeDirections(const QString &key, const QString &json);
-    double megabytes() const;
+    double megabytes() const { return m_totalBytes / (1024.0 * 1024.0); }
+    int clipCount() const { return m_clipCount; }
+    bool clearing() const { return m_clearing; }
+    bool ffmpegAvailable() const { return !m_ffmpeg.isEmpty(); }
+    QString audiobookFolder() const;
+    Q_INVOKABLE void openAudiobookFolder() const;
+    Q_INVOKABLE void refreshStats();
     Q_INVOKABLE void clear();
 
     // The cache key for a piece of narration: everything that changes how it
@@ -80,6 +91,7 @@ private:
     };
 
     void evict();
+    void syncStats();
     bool hasBoundaries() const;
     void cleanupPartials();
     void indexClip(const QString &key, const QString &name, double seconds, const QString &joined);
@@ -90,6 +102,11 @@ private:
     QString m_connection;
     qint64 m_cap;
     QString m_ffmpeg;
+    qint64 m_totalBytes = 0;
+    int m_clipCount = 0;
+    bool m_clearing = false;
+    quint64 m_clearGen = 0;
+    QFuture<void> m_clearFuture;
     QList<EncodeJob> m_encodeQueue;
     QList<DecodeJob> m_decodeQueue;
     QHash<QProcess *, QString> m_encodePartials;

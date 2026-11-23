@@ -96,3 +96,10 @@ QVariantList AiUsageLedger::monthByFeature(const QDate &today) const {
                                 {"audioMinutes", query.value(3).toDouble() / 25.0 / 60.0}});
     return rows;
 }
+
+void AiUsageLedger::clearMonth(const QDate &today) {
+    QSqlQuery query(database());
+    query.prepare(QStringLiteral("DELETE FROM ai_usage WHERE at >= ?"));
+    query.addBindValue(QDateTime(QDate(today.year(), today.month(), 1), QTime(0, 0)).toSecsSinceEpoch());
+    query.exec();
+}

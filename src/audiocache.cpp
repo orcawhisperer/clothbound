@@ -5,15 +5,19 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QMetaObject>
 #include <QProcess>
 #include <QSaveFile>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QStandardPaths>
+#include <QUrl>
+#include <QtConcurrent>
 #include <cstdio>
 #include <memory>
 
@@ -37,9 +41,11 @@ AudioCache::AudioCache(const QString &directory, const QString &databaseConnecti
     QDir().mkpath(m_directory);
     cleanupPartials();
     migrate();
+    syncStats();
 }
 
 AudioCache::~AudioCache() {
+    ++m_clearGen;
     m_encodeQueue.clear();
     m_decodeQueue.clear();
     const auto encodeProcs = m_encodePartials.keys();
@@ -63,6 +69,8 @@ AudioCache::~AudioCache() {
         }
     }
     m_decodeProcesses.clear();
+    if (m_clearFuture.isRunning())
+        m_clearFuture.waitForFinished();
 }
 
 void AudioCache::cleanupPartials() {
@@ -144,6 +152,8 @@ QString AudioCache::lookup(const QString &key) {
         del.prepare(QStringLiteral("DELETE FROM audio_clips WHERE key = ?"));
         del.addBindValue(key);
         del.exec();
+        syncStats();
+        emit changed();
         return {};
     }
     QSqlQuery touch(db);
@@ -206,6 +216,7 @@ void AudioCache::remove(const QString &key) {
     del.prepare(QStringLiteral("DELETE FROM audio_clips WHERE key = ?"));
     del.addBindValue(key);
     del.exec();
+    syncStats();
     emit changed();
 }
 
@@ -233,6 +244,7 @@ void AudioCache::indexClip(const QString &key, const QString &name, double secon
     query.addBindValue(joined);
     query.exec();
     evict();
+    syncStats();
     emit stored(key);
     emit changed();
 }
@@ -300,7 +312,8 @@ void AudioCache::pumpEncodes() {
         const QString key = job.key;
         const double secs = job.seconds;
         const QString joined = job.joined;
-        auto finish = [this, ffmpeg, partial, target, name, key, secs, joined, handled](bool ok) {
+        const quint64 clearGen = m_clearGen;
+        auto finish = [this, ffmpeg, partial, target, name, key, secs, joined, clearGen, handled](bool ok) {
             if (*handled)
                 return;
             *handled = true;
@@ -309,7 +322,9 @@ void AudioCache::pumpEncodes() {
             m_activeEncodeKeys.remove(key);
             --m_activeEncodes;
             ffmpeg->deleteLater();
-            if (ok && QFile::exists(partial)) {
+            if (clearGen != m_clearGen) {
+                QFile::remove(partial);
+            } else if (ok && QFile::exists(partial)) {
                 if (atomicReplace(partial, target)) {
                     indexClip(key, name, secs, joined);
                 } else {
@@ -410,10 +425,36 @@ void AudioCache::pumpDecodes() {
     }
 }
 
-double AudioCache::megabytes() const {
+void AudioCache::syncStats() {
     QSqlQuery query(QSqlDatabase::database(m_connection));
-    query.exec(QStringLiteral("SELECT COALESCE(SUM(bytes), 0) FROM audio_clips"));
-    return query.next() ? query.value(0).toDouble() / (1024.0 * 1024.0) : 0;
+    if (query.exec(QStringLiteral("SELECT COALESCE(SUM(bytes), 0), COUNT(*) FROM audio_clips")) && query.next()) {
+        m_totalBytes = qMax<qint64>(0, query.value(0).toLongLong());
+        m_clipCount = qMax(0, query.value(1).toInt());
+    } else {
+        m_totalBytes = 0;
+        m_clipCount = 0;
+    }
+}
+
+void AudioCache::refreshStats() {
+    const qint64 beforeBytes = m_totalBytes;
+    const int beforeClips = m_clipCount;
+    syncStats();
+    if (m_totalBytes != beforeBytes || m_clipCount != beforeClips)
+        emit changed();
+}
+
+QString AudioCache::audiobookFolder() const {
+    QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    if (music.isEmpty())
+        music = QDir::homePath() + QStringLiteral("/Music");
+    return music + QStringLiteral("/Dogear");
+}
+
+void AudioCache::openAudiobookFolder() const {
+    const QString folder = audiobookFolder();
+    QDir().mkpath(folder);
+    QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
 }
 
 void AudioCache::evict() {
@@ -446,18 +487,46 @@ void AudioCache::evict() {
 }
 
 void AudioCache::clear() {
+    ++m_clearGen;
+    m_encodeQueue.clear();
     QSqlDatabase db = QSqlDatabase::database(m_connection);
-    QSqlQuery files(db);
-    files.exec(QStringLiteral("SELECT file FROM audio_clips"));
-    while (files.next())
-        QFile::remove(QDir(m_directory).filePath(files.value(0).toString()));
+    QStringList filesToDelete;
+    {
+        QSqlQuery files(db);
+        files.exec(QStringLiteral("SELECT file FROM audio_clips"));
+        const QDir dir(m_directory);
+        while (files.next())
+            filesToDelete.append(dir.filePath(files.value(0).toString()));
+    }
     const bool inTx = db.transaction();
     QSqlQuery(db).exec(QStringLiteral("DELETE FROM audio_clips"));
     QSqlQuery(db).exec(QStringLiteral("DELETE FROM narration_directions"));
     if (inTx)
         db.commit();
-    cleanupPartials();
+    m_totalBytes = 0;
+    m_clipCount = 0;
+    if (filesToDelete.isEmpty()) {
+        cleanupPartials();
+        emit changed();
+        return;
+    }
+    m_clearing = true;
     emit changed();
+    const quint64 gen = m_clearGen;
+    auto *watcher = new QFutureWatcher<void>(this);
+    connect(watcher, &QFutureWatcher<void>::finished, this, [this, watcher, gen] {
+        watcher->deleteLater();
+        if (gen == m_clearGen) {
+            m_clearing = false;
+            cleanupPartials();
+            emit changed();
+        }
+    });
+    m_clearFuture = QtConcurrent::run([filesToDelete] {
+        for (const QString &path : filesToDelete)
+            QFile::remove(path);
+    });
+    watcher->setFuture(m_clearFuture);
 }
 
 double AudioCache::seconds(const QString &key) {

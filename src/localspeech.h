@@ -71,6 +71,8 @@ class LocalWorker;
 // knows where each sentence ends in the audio.
 class LocalSpeech : public Ai::Provider, public Ai::SpeechSynthesizer {
     Q_OBJECT
+    Q_PROPERTY(int threads READ threads CONSTANT)
+    Q_PROPERTY(double averageSpeed READ averageSpeed NOTIFY speedChanged)
 
 public:
     using Engines = std::function<std::unique_ptr<TtsEngine>(const QString &library)>;
@@ -98,6 +100,8 @@ public:
     // Seconds of speech a voice makes in a second on this computer; 0 until
     // it has been heard here.
     Q_INVOKABLE double speedOf(const QString &voiceId) const override;
+    Q_INVOKABLE double averageSpeed() const;
+    int threads() const { return SherpaEngine::threads(); }
     // Records a measured pace (from the worker).
     void noteSpeed(const QString &modelKey, double speed);
     // Stops active work and unloads the voice model synchronously on the worker

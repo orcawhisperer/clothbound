@@ -8,7 +8,7 @@ function library() {
         { keys: "← → ↑ ↓  h j k l", action: qsTr("Move between books") },
         { keys: "↵", action: qsTr("Open the book, or choose an edition") },
         { keys: "Space", action: qsTr("Continue the book you were reading") },
-        { keys: "/", action: qsTr("Search the library") },
+        { keys: "/  Ctrl F", action: qsTr("Search the library") },
         { keys: "I", action: qsTr("Details about the book") },
         { keys: "S", action: qsTr("Change the order") },
         { keys: "G", action: qsTr("Group or separate editions") },
@@ -20,8 +20,8 @@ function library() {
 }
 function reading() {
     return [
-        { keys: "Space  →  l  j", action: qsTr("Next page") },
-        { keys: "⇧ Space  ←  h  k", action: qsTr("Previous page") },
+        { keys: "Space  →  PgDn  l  j", action: qsTr("Next page") },
+        { keys: "⇧ Space  ←  PgUp  h  k", action: qsTr("Previous page") },
         { keys: "[  ]", action: qsTr("Previous / next chapter") },
         { keys: "T", action: qsTr("Contents") },
         { keys: "/  Ctrl F", action: qsTr("Search in the book") },
@@ -30,10 +30,11 @@ function reading() {
         { keys: "M", action: qsTr("Highlights, notes, and bookmarks") },
         { keys: "C", action: qsTr("Companion: ask, previously, who's who") },
         { keys: "A", action: qsTr("Typography and theme") },
-        { keys: "+  −  0", action: qsTr("Larger, smaller, default text") },
+        { keys: "+  −  0", action: qsTr("Larger, smaller, default text or zoom") },
         { keys: "D", action: qsTr("Next reading theme") },
         { keys: "G", action: qsTr("Go to a page or percentage") },
-        { keys: "Tab", action: qsTr("Show the controls") },
+        { keys: "Ctrl C", action: qsTr("Copy selected text") },
+        { keys: "Tab", action: qsTr("Show or hide the controls") },
         { keys: "Alt ←  Alt →", action: qsTr("Back / forward in reading history") },
         { keys: "Ctrl Z  Ctrl ⇧ Z", action: qsTr("Undo / redo") },
         { keys: "Esc", action: qsTr("Close a panel, or back to the library") }

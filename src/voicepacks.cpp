@@ -1,5 +1,7 @@
 #include "voicepacks.h"
 
+#include "sherpaonnx.h"
+
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
@@ -14,6 +16,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QSet>
 #include <QSysInfo>
 #include <QtConcurrent>
 #include <algorithm>
@@ -82,15 +85,21 @@ VoicePacks::VoicePacks(const QString &directory, QObject *parent, const QString 
     }
     load(json);
     QDir().mkpath(m_directory);
+    // Seed estimates immediately from the manifest so callers never block on
+    // recursive directory walks during startup, then refine off the UI thread.
     for (const Pack &pack : std::as_const(m_packs))
         if (isInstalled(pack.id))
-            m_megabytes += sizeOf(QDir(m_directory).filePath(pack.dir)) / (1024.0 * 1024.0);
-    if (isInstalled(m_engine.id))
-        m_megabytes += sizeOf(QDir(m_directory).filePath(m_engine.dir)) / (1024.0 * 1024.0);
+            m_packMegabytes.insert(pack.id, pack.size / (1024.0 * 1024.0));
+    if (!m_engine.url.isEmpty() && isInstalled(m_engine.id))
+        m_packMegabytes.insert(m_engine.id, m_engine.size / (1024.0 * 1024.0));
+    recomputeMegabytes();
+    if (!m_packMegabytes.isEmpty())
+        measureInstalledAsync();
 }
 
 VoicePacks::~VoicePacks() {
     ++m_generation;
+    ++m_measureGeneration;
     if (m_download)
         m_download->abort();
     if (m_tar) {
@@ -102,6 +111,66 @@ VoicePacks::~VoicePacks() {
     }
     if (m_part)
         m_part->close();
+    if (m_measureFuture.isRunning())
+        m_measureFuture.waitForFinished();
+}
+
+QString VoicePacks::engineVersion() const { return QString::fromLatin1(SherpaOnnx::version); }
+
+int VoicePacks::installedVoiceCount() const {
+    if (!engineInstalled())
+        return 0;
+    int count = 0;
+    for (const Voice &voice : m_voices)
+        if (isInstalled(voice.pack))
+            ++count;
+    return count;
+}
+
+int VoicePacks::voiceCountForPack(const QString &packId) const {
+    int count = 0;
+    for (const Voice &voice : m_voices)
+        if (voice.pack == packId)
+            ++count;
+    return count;
+}
+
+void VoicePacks::recomputeMegabytes() {
+    double total = 0;
+    for (auto it = m_packMegabytes.cbegin(); it != m_packMegabytes.cend(); ++it)
+        total += it.value();
+    m_megabytes = total;
+}
+
+void VoicePacks::measureInstalledAsync() {
+    QList<QPair<QString, QString>> targets;
+    if (!m_engine.url.isEmpty() && isInstalled(m_engine.id))
+        targets.append({m_engine.id, QDir(m_directory).filePath(m_engine.dir)});
+    for (const Pack &pack : std::as_const(m_packs))
+        if (isInstalled(pack.id))
+            targets.append({pack.id, QDir(m_directory).filePath(pack.dir)});
+    if (targets.isEmpty())
+        return;
+    const quint64 gen = ++m_measureGeneration;
+    auto *watcher = new QFutureWatcher<QHash<QString, double>>(this);
+    connect(watcher, &QFutureWatcher<QHash<QString, double>>::finished, this, [this, watcher, gen] {
+        const QHash<QString, double> measured = watcher->result();
+        watcher->deleteLater();
+        if (gen != m_measureGeneration)
+            return;
+        for (auto it = measured.cbegin(); it != measured.cend(); ++it)
+            if (isInstalled(it.key()))
+                m_packMegabytes.insert(it.key(), it.value());
+        recomputeMegabytes();
+        emit changed();
+    });
+    m_measureFuture = QtConcurrent::run([targets] {
+        QHash<QString, double> sizes;
+        for (const auto &[id, dir] : targets)
+            sizes.insert(id, sizeOf(dir) / (1024.0 * 1024.0));
+        return sizes;
+    });
+    watcher->setFuture(m_measureFuture);
 }
 
 QString VoicePacks::currentArchitecture() {
@@ -471,6 +540,33 @@ void VoicePacks::installVoice(const QString &voiceId) {
     next();
 }
 
+void VoicePacks::installPack(const QString &packId) {
+    const auto found = pack(packId);
+    if (!found || busy())
+        return;
+    if (!supported()) {
+        fail(tr("There's no built-in speech engine for this computer's processor (%1).").arg(m_architecture));
+        return;
+    }
+    ++m_generation;
+    m_queue.clear();
+    if (!engineInstalled())
+        m_queue.append(m_engine);
+    if (found->id != m_engine.id && !isInstalled(found->id))
+        m_queue.append(*found);
+    if (m_queue.isEmpty())
+        return;
+    m_waitingVoice.clear();
+    m_batchBytes = 0;
+    for (const Pack &queued : std::as_const(m_queue))
+        m_batchBytes += queued.size;
+    m_doneBytes = 0;
+    m_currentBytes = 0;
+    m_problem.clear();
+    emit changed();
+    next();
+}
+
 double VoicePacks::progress() const {
     if (m_batchBytes <= 0)
         return 0;
@@ -662,7 +758,9 @@ void VoicePacks::verifyAndUnpack(const Pack &pack, const QString &archive) {
                     }
                     marker.close();
                     QFile::remove(archive);
-                    m_megabytes += sizeOf(target) / (1024.0 * 1024.0);
+                    m_packMegabytes.insert(pack.id, pack.size / (1024.0 * 1024.0));
+                    recomputeMegabytes();
+                    measureInstalledAsync();
                     m_doneBytes += pack.size;
                     m_currentBytes = 0;
                     if (!m_queue.isEmpty())
@@ -724,7 +822,8 @@ void VoicePacks::remove(const QString &packId) {
     if (!QFileInfo(target).canonicalFilePath().startsWith(QFileInfo(m_directory).canonicalFilePath() + '/'))
         return;
     emit aboutToRemove(packId);
-    m_megabytes = qMax(0.0, m_megabytes - sizeOf(target) / (1024.0 * 1024.0));
+    m_packMegabytes.remove(packId);
+    recomputeMegabytes();
     QDir(target).removeRecursively();
     const QString archive = archivePath(*found);
     QFile::remove(archive);
@@ -734,14 +833,59 @@ void VoicePacks::remove(const QString &packId) {
 
 QVariantList VoicePacks::installedPacks() const {
     QVariantList result;
-    QList<Pack> all{m_engine};
+    QList<Pack> all;
+    if (!m_engine.url.isEmpty())
+        all.append(m_engine);
     for (const Pack &pack : std::as_const(m_packs))
         all.append(pack);
+    std::stable_sort(all.begin(), all.end(), [](const Pack &a, const Pack &b) {
+        auto rank = [](const QString &k) {
+            return k == QLatin1String("engine") ? 0 : k == QLatin1String("kokoro") ? 1 : k == QLatin1String("pocket") ? 2 : 3;
+        };
+        if (rank(a.kind) != rank(b.kind))
+            return rank(a.kind) < rank(b.kind);
+        return a.title.localeAwareCompare(b.title) < 0;
+    });
     for (const Pack &pack : std::as_const(all))
         if (!pack.url.isEmpty() && isInstalled(pack.id))
             result.append(QVariantMap{{"id", pack.id},
+                                      {"kind", pack.kind},
                                       {"title", pack.title},
-                                      {"megabytes", sizeOf(QDir(m_directory).filePath(pack.dir)) / (1024.0 * 1024.0)},
-                                      {"license", pack.license}});
+                                      {"megabytes", m_packMegabytes.value(pack.id, pack.size / (1024.0 * 1024.0))},
+                                      {"license", pack.license},
+                                      {"voiceCount", voiceCountForPack(pack.id)}});
+    return result;
+}
+
+QVariantList VoicePacks::catalogPacks() const {
+    QVariantList result;
+    const qint64 engineExtra = engineInstalled() ? 0 : m_engine.size;
+    QList<Pack> featured;
+    for (const Pack &pack : std::as_const(m_packs))
+        if (pack.kind == QLatin1String("kokoro") || pack.kind == QLatin1String("pocket"))
+            featured.append(pack);
+    std::stable_sort(featured.begin(), featured.end(), [](const Pack &a, const Pack &b) {
+        return a.kind == QLatin1String("kokoro") && b.kind != QLatin1String("kokoro");
+    });
+    for (const Pack &pack : std::as_const(featured)) {
+        const bool installed = engineInstalled() && isInstalled(pack.id);
+        QSet<QString> langs;
+        int voices = 0;
+        for (const Voice &v : m_voices) {
+            if (v.pack != pack.id)
+                continue;
+            ++voices;
+            langs.insert(baseOf(v.language));
+        }
+        result.append(QVariantMap{{"id", pack.id},
+                                  {"kind", pack.kind},
+                                  {"title", pack.title},
+                                  {"installed", installed},
+                                  {"packInstalled", isInstalled(pack.id)},
+                                  {"bytes", installed ? 0 : (isInstalled(pack.id) ? 0 : pack.size) + engineExtra},
+                                  {"license", pack.license},
+                                  {"voiceCount", voices},
+                                  {"languageCount", int(langs.size())}});
+    }
     return result;
 }

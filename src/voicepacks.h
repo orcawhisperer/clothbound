@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include <QFuture>
 #include <QHash>
 #include <QList>
 #include <QObject>
@@ -23,7 +24,9 @@ class VoicePacks : public QObject {
     Q_OBJECT
     // This computer's processor has an engine to download.
     Q_PROPERTY(bool supported READ supported CONSTANT)
+    Q_PROPERTY(QString engineVersion READ engineVersion CONSTANT)
     Q_PROPERTY(bool engineInstalled READ engineInstalled NOTIFY changed)
+    Q_PROPERTY(int installedVoiceCount READ installedVoiceCount NOTIFY changed)
     Q_PROPERTY(bool busy READ busy NOTIFY progressChanged)
     // What's downloading or unpacking, as the reader would call it.
     Q_PROPERTY(QString installing READ installing NOTIFY progressChanged)
@@ -69,7 +72,9 @@ public:
     // Human-friendly regional accent label for a BCP-47 language tag and voice id.
     static QString accentFor(const QString &language, const QString &voiceId = {});
     bool supported() const { return !m_engine.url.isEmpty(); }
+    QString engineVersion() const;
     bool engineInstalled() const { return isInstalled(m_engine.id); }
+    int installedVoiceCount() const;
     bool busy() const { return m_download || m_unpacking || !m_queue.isEmpty(); }
     QString installing() const { return m_currentTitle; }
     double progress() const;
@@ -91,10 +96,14 @@ public:
     Q_INVOKABLE QVariantMap offer(const QString &language) const;
     // Downloads what a voice needs, its engine too when it's missing.
     Q_INVOKABLE void installVoice(const QString &voiceId);
+    // Downloads a voice pack (and the engine if needed) by pack id.
+    Q_INVOKABLE void installPack(const QString &packId);
     Q_INVOKABLE void cancel();
     Q_INVOKABLE void remove(const QString &packId);
-    // {id, title, megabytes, license} for each pack on this computer.
+    // {id, kind, title, megabytes, license, voiceCount} for each pack on this computer.
     Q_INVOKABLE QVariantList installedPacks() const;
+    // Primary downloadable packs (Kokoro, Pocket TTS) with install status & sizes.
+    Q_INVOKABLE QVariantList catalogPacks() const;
 
     bool isInstalled(const QString &packId) const;
     // The engine's C API library, when it's installed.
@@ -133,6 +142,9 @@ private:
     };
 
     void load(const QByteArray &manifest);
+    void measureInstalledAsync();
+    void recomputeMegabytes();
+    int voiceCountForPack(const QString &packId) const;
     const Voice *findVoice(const QString &id) const;
     QVariantMap toMap(const Voice &voice) const;
     void next();
@@ -163,4 +175,7 @@ private:
     qint64 m_currentBytes = 0;
     QString m_problem;
     double m_megabytes = 0;
+    QHash<QString, double> m_packMegabytes;
+    QFuture<QHash<QString, double>> m_measureFuture;
+    quint64 m_measureGeneration = 0;
 };

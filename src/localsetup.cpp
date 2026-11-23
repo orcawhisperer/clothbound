@@ -1,6 +1,7 @@
 #include "localsetup.h"
 
 #include "aiservices.h"
+#include "localmodels.h"
 #include "systemcheck.h"
 
 #include <QCoreApplication>
@@ -185,7 +186,18 @@ void LocalSetup::install() {
 void LocalSetup::download() {
     if (m_text.isEmpty() || m_pulling)
         return;
+    m_pullCustom = false;
+    m_customPulledModel.clear();
     pull({m_text.value("model").toString(), m_search.value("model").toString()});
+}
+
+void LocalSetup::pullModel(const QString &model) {
+    const QString tag = model.trimmed();
+    if (tag.isEmpty() || m_pulling)
+        return;
+    m_pullCustom = true;
+    m_customPulledModel = tag;
+    pull({tag});
 }
 
 void LocalSetup::useExisting() {
@@ -218,12 +230,18 @@ void LocalSetup::useExisting() {
 }
 
 void LocalSetup::cancel() {
+    ++m_pullGen;
     m_poll.stop();
-    const bool wasWaiting = m_waiting;
+    const bool wasActive = m_waiting || m_pulling;
     m_waiting = false;
+    m_pulling = false;
+    m_pullCustom = false;
+    m_customPulledModel.clear();
+    m_progress = 0;
+    m_status.clear();
     if (m_reply)
         m_reply->abort();
-    if (wasWaiting)
+    if (wasActive)
         emit changed();
 }
 
@@ -233,9 +251,31 @@ void LocalSetup::pull(const QStringList &models) {
         remaining.removeFirst();
     if (remaining.isEmpty()) {
         // Everything's here: use it, and let the work run here.
+        const bool wasCustom = m_pullCustom;
+        const QString pulledTag = m_customPulledModel;
         m_pulling = false;
+        m_pullCustom = false;
+        m_customPulledModel.clear();
         m_status.clear();
-        m_ai->useLocal(QStringLiteral("ollama"), ollama, m_text.value("model").toString(), m_search.value("model").toString());
+        if (wasCustom && !pulledTag.isEmpty()) {
+            const bool isOllamaConfigured = m_ai->localModels() && m_ai->localModels()->isConfigured() &&
+                                            m_ai->localModels()->server().kind == LocalModels::Ollama;
+            const QString targetUrl = isOllamaConfigured ? m_ai->localUrl() : ollama;
+            LocalModels::Server classifier;
+            ServerFinder::sortModels(classifier, {pulledTag});
+            QString text = isOllamaConfigured ? m_ai->localTextModel() : QString();
+            QString embed = isOllamaConfigured ? m_ai->localEmbeddingModel() : QString();
+            QString speech = isOllamaConfigured ? m_ai->localSpeechModel() : QString();
+            if (!classifier.embeddingModels.isEmpty())
+                embed = pulledTag;
+            else if (!classifier.speechModels.isEmpty())
+                speech = pulledTag;
+            else
+                text = pulledTag;
+            m_ai->useLocal(QStringLiteral("ollama"), targetUrl, text, embed, speech);
+        } else {
+            m_ai->useLocal(QStringLiteral("ollama"), ollama, m_text.value("model").toString(), m_search.value("model").toString());
+        }
         if (m_ai->preset() == QLatin1String("cloud"))
             m_ai->setPreset(m_ai->hasKey() ? QStringLiteral("hybrid") : QStringLiteral("local"));
         m_ai->findLocal();
@@ -243,12 +283,17 @@ void LocalSetup::pull(const QStringList &models) {
         return;
     }
     const QString model = remaining.first();
+    const int gen = ++m_pullGen;
     m_pulling = true;
     m_progress = 0;
     m_problem.clear();
     m_status = tr("Downloading %1…").arg(titleOf(model));
     emit changed();
-    QNetworkRequest request(QUrl(ollama + QStringLiteral("/api/pull")));
+    const QString base = (m_ai->localModels() && m_ai->localModels()->isConfigured() &&
+                          m_ai->localModels()->server().kind == LocalModels::Ollama)
+                             ? m_ai->localUrl()
+                             : ollama;
+    QNetworkRequest request(QUrl(base + QStringLiteral("/api/pull")));
     request.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     request.setTransferTimeout(120000);
@@ -260,8 +305,8 @@ void LocalSetup::pull(const QStringList &models) {
     // instead of resetting to 0% on every small manifest/config layer.
     auto layers = std::make_shared<QHash<QString, QPair<qint64, qint64>>>();
     const qint64 manifestBytes = m_sizes.value(model, 0);
-    const auto handleLine = [this, failed, layers, manifestBytes, model](const QByteArray &raw) {
-        if (raw.isEmpty())
+    const auto handleLine = [this, gen, failed, layers, manifestBytes, model](const QByteArray &raw) {
+        if (gen != m_pullGen || raw.isEmpty())
             return;
         const QJsonObject line = QJsonDocument::fromJson(raw).object();
         if (line.isEmpty())
@@ -307,16 +352,22 @@ void LocalSetup::pull(const QStringList &models) {
             handleLine(tail);
         }
     };
-    connect(reply, &QNetworkReply::readyRead, this, [reply, buffer, parseLines] {
+    connect(reply, &QNetworkReply::readyRead, this, [this, gen, reply, buffer, parseLines] {
+        if (gen != m_pullGen)
+            return;
         *buffer += reply->readAll();
         parseLines(false);
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, buffer, failed, remaining, parseLines] {
+    connect(reply, &QNetworkReply::finished, this, [this, gen, reply, buffer, failed, remaining, parseLines] {
         reply->deleteLater();
+        if (gen != m_pullGen)
+            return;
         *buffer += reply->readAll();
         parseLines(true);
         if (reply->error() != QNetworkReply::NoError || !failed->isEmpty()) {
             m_pulling = false;
+            m_pullCustom = false;
+            m_customPulledModel.clear();
             m_status.clear();
             m_problem = reply->error() == QNetworkReply::OperationCanceledError
                             ? QString()

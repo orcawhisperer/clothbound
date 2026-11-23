@@ -4,9 +4,11 @@
 #include "aiusage.h"
 
 #include <QDate>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
 #include <QPointer>
+#include <QUrl>
 #include <QVariantList>
 #include <memory>
 
@@ -23,7 +25,9 @@ class AiServices : public QObject {
     Q_PROPERTY(bool hasKey READ hasKey NOTIFY changed)
     Q_PROPERTY(bool checking READ checking NOTIFY changed)
     Q_PROPERTY(bool connected READ connected NOTIFY changed)
+    Q_PROPERTY(bool checkFailed READ checkFailed NOTIFY changed)
     Q_PROPERTY(QString status READ status NOTIFY changed)
+    Q_PROPERTY(QString maskedKey READ maskedKey NOTIFY changed)
     Q_PROPERTY(QString providerName READ providerName CONSTANT)
     Q_PROPERTY(QString privacyNote READ privacyNote CONSTANT)
     Q_PROPERTY(QString keyLocation READ keyLocation NOTIFY changed)
@@ -50,6 +54,9 @@ class AiServices : public QObject {
     // The servers found by findLocal(): {kind, name, url, textModels, embeddingModels, speechModels, contextWindow}.
     Q_PROPERTY(QVariantList localServers READ localServers NOTIFY localServersChanged)
     Q_PROPERTY(bool findingLocal READ findingLocal NOTIFY localServersChanged)
+    Q_PROPERTY(QString localError READ localError NOTIFY localServersChanged)
+    Q_PROPERTY(bool testingLocal READ testingLocal NOTIFY localServersChanged)
+    Q_PROPERTY(QString localTestResult READ localTestResult NOTIFY localServersChanged)
 
 public:
     // The key is read from `keys` before this returns, as commands need it.
@@ -118,8 +125,13 @@ public:
     Q_INVOKABLE void clearOverrides();
     QVariantList localServers() const { return m_localServers; }
     bool findingLocal() const { return m_findingLocal; }
+    QString localError() const { return m_localError; }
+    bool testingLocal() const { return m_testingLocal; }
+    QString localTestResult() const { return m_localTestResult; }
     // Looks for model servers on this computer (and at `url`, if given).
     Q_INVOKABLE void findLocal(const QString &url = {});
+    // Tests connectivity to the currently configured local model server.
+    Q_INVOKABLE void testLocal();
     // Uses a server and its models ("" for a role it won't have).
     Q_INVOKABLE void useLocal(const QString &kind, const QString &url, const QString &textModel,
                               const QString &embeddingModel, const QString &speechModel = {});
@@ -128,7 +140,9 @@ public:
     bool hasKey() const { return m_provider->hasKey(); }
     bool checking() const { return m_checking; }
     bool connected() const { return m_connected; }
+    bool checkFailed() const { return m_checkFailed; }
     QString status() const { return m_status; }
+    QString maskedKey() const;
     QString providerName() const { return m_provider->name(); }
     QString privacyNote() const { return m_provider->privacyNote(); }
     QString keyLocation() const;
@@ -143,6 +157,7 @@ public:
     bool unlimitedBudget() const { return m_unlimitedBudget; }
     void setUnlimitedBudget(bool unlimited);
     QVariantList usageThisMonth() const;
+    Q_INVOKABLE void resetUsageThisMonth();
 
     // Checks a key with the provider, and keeps it in the keyring if it works.
     Q_INVOKABLE void setKey(const QString &key);
@@ -172,10 +187,18 @@ private:
     ServerFinder *m_finder = nullptr;
     QVariantList m_localServers;
     bool m_findingLocal = false;
+    QUrl m_requestedLocalUrl;
+    QString m_localError;
+    bool m_testingLocal = false;
+    QString m_localTestResult;
+    int m_localTestGen = 0;
+    QPointer<Ai::Reply> m_localTestReply;
+    QElapsedTimer m_localTestClock;
     KeyStore *m_keys;
     AiUsageLedger m_ledger;
     bool m_checking = false;
     bool m_connected = false;
+    bool m_checkFailed = false;
     bool m_fromEnvironment = false;
     // The key as the keyring has it, to go back to when a new one fails.
     QString m_savedKey;
