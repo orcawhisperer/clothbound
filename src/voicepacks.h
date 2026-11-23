@@ -55,6 +55,9 @@ public:
         QString lang;
         QString dictDir;
         int speaker = 0;
+        // Pocket TTS: its folder, and the recording a voice speaks like.
+        QString dir;
+        QString reference;
     };
 
     explicit VoicePacks(const QString &directory, QObject *parent = nullptr, const QString &architecture = {},
@@ -111,6 +114,7 @@ private:
         bool recommended = false;
         int speaker = 0;
         QString model;  // Piper's model file
+        QString reference;  // Pocket's: the recording it speaks like
     };
     struct LanguageSetup {
         QString lexicon;

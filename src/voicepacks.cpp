@@ -112,6 +112,27 @@ void VoicePacks::load(const QByteArray &manifest) {
         }
     }
 
+    // Pocket TTS: English voices made like a short recording.
+    const QJsonObject pocket = root.value("pocket").toObject();
+    if (!pocket.isEmpty()) {
+        const Pack pack{pocket.value("id").toString(), QStringLiteral("pocket"), pocket.value("title").toString(),
+                        QUrl(pocket.value("url").toString()), pocket.value("size").toInteger(),
+                        pocket.value("sha256").toString().toLatin1(), pocket.value("dir").toString(),
+                        pocket.value("license").toString()};
+        m_packs.insert(pack.id, pack);
+        for (const auto &value : pocket.value("voices").toArray()) {
+            const QJsonObject v = value.toObject();
+            Voice voice;
+            voice.id = QStringLiteral("builtin:pocket:") + v.value("id").toString();
+            voice.pack = pack.id;
+            voice.name = v.value("name").toString();
+            voice.language = v.value("language").toString();
+            voice.gender = v.value("gender").toString();
+            voice.reference = v.value("reference").toString();
+            m_voices.append(voice);
+        }
+    }
+
     const QJsonObject piper = root.value("piper").toObject();
     const QString piperLicense = piper.value("license").toString();
     for (const auto &value : piper.value("voices").toArray()) {
@@ -168,6 +189,13 @@ std::optional<VoicePacks::Model> VoicePacks::model(const QString &voiceId) const
     const QString dir = QDir(m_directory).filePath(m_packs.value(voice->pack).dir);
     auto path = [&dir](const QString &file) { return file.isEmpty() ? QString() : dir + '/' + file; };
     Model model;
+    if (!voice->reference.isEmpty()) {
+        model.kind = QStringLiteral("pocket");
+        model.key = voice->pack;
+        model.dir = dir;
+        model.reference = path(voice->reference);
+        return model;
+    }
     if (voice->pack.startsWith(QStringLiteral("piper:"))) {
         model.kind = QStringLiteral("piper");
         model.key = voice->id;
@@ -200,7 +228,8 @@ QVariantMap VoicePacks::toMap(const Voice &voice) const {
         bytes += m_packs.value(voice.pack).size;
     if (!engineInstalled())
         bytes += m_engine.size;
-    const bool kokoro = voice.pack == QStringLiteral("kokoro-v1.0") || !voice.pack.startsWith(QStringLiteral("piper:"));
+    const bool kokoro = voice.pack == QStringLiteral("kokoro-v1.0") ||
+                        (!voice.pack.startsWith(QStringLiteral("piper:")) && voice.reference.isEmpty());
     return {{"id", voice.id},
             {"name", voice.name},
             {"title", voice.name},

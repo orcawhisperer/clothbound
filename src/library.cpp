@@ -724,7 +724,8 @@ void Library::setBookSetting(int id, const QString &key, const QString &value) {
     query.prepare(QStringLiteral("INSERT OR REPLACE INTO book_settings (book_id, key, value) VALUES (?, ?, ?)"));
     query.addBindValue(id);
     query.addBindValue(key);
-    query.addBindValue(value);
+    // An empty setting is "", never NULL (which the table refuses).
+    query.addBindValue(value.isNull() ? QStringLiteral("") : value);
     exec(query);
 }
 

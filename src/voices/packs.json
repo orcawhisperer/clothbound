@@ -2589,5 +2589,30 @@
     "recommended": true
    }
   ]
+ },
+ "pocket": {
+  "id": "pocket-tts-2026-01-26",
+  "title": "Pocket TTS",
+  "license": "CC-BY-4.0",
+  "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/sherpa-onnx-pocket-tts-int8-2026-01-26.tar.bz2",
+  "size": 98337865,
+  "sha256": "f4da7c7bd465f7b91e89191487fe90504396a51d6f0bcf94d0787633e2657293",
+  "dir": "sherpa-onnx-pocket-tts-int8-2026-01-26",
+  "voices": [
+   {
+    "id": "bria",
+    "name": "Bria",
+    "language": "en-US",
+    "gender": "",
+    "reference": "test_wavs/bria.wav"
+   },
+   {
+    "id": "loona",
+    "name": "Loona",
+    "language": "en-US",
+    "gender": "",
+    "reference": "test_wavs/loona.wav"
+   }
+  ]
  }
 }

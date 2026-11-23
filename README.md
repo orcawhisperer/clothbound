@@ -23,7 +23,7 @@ files.
   - *Gemini voices*: the most natural, with styles (plain, natural,
     dramatic), a narrator designed for the book, and a **full cast** giving
     characters voices of their own. Uses your own Gemini key.
-  - *Built-in voices* (Kokoro and Piper, 42 languages): free, private and
+  - *Built-in voices* (Kokoro, Pocket TTS and Piper, 42 languages): free, private and
     offline, made on this computer.
   - *Studio voices*: from a voice model you run yourself (Qwen3-TTS,
     Kokoro-FastAPI, speaches).
@@ -125,7 +125,8 @@ bin/translate  # translate what's new into Omarchy's languages (needs GEMINI_API
 Dogear is MIT licensed. It reads with Qt (LGPL) and Chromium's engine, and
 sets books in Literata (SIL Open Font License). Built-in voices are made by
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0) with
-[Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0) and
+[Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0),
+[Pocket TTS](https://github.com/kyutai-labs/pocket-tts) by Kyutai (CC BY 4.0) and
 [Piper](https://github.com/rhasspy/piper) voices (each with its own license,
 listed in Intelligence), downloaded only when you choose one; sherpa-onnx's
 espeak-ng is GPL-3.0.

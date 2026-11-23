@@ -1,4 +1,6 @@
 #include "localspeech.h"
+#include "gemini.h"
+#include <QFile>
 
 #include "sherpaonnx.h"
 #include "speech.h"
@@ -166,6 +168,23 @@ QString SherpaEngine::load() {
 QString SherpaEngine::prepare(const VoicePacks::Model &model) {
     if (const QString problem = load(); !problem.isEmpty())
         return problem;
+    // Pocket voices share one model and differ by their recording.
+    if (model.kind == QStringLiteral("pocket") && model.reference != m_referencePath) {
+        QFile wav(model.reference);
+        int rate = 24000;
+        const QByteArray pcm = wav.open(QIODevice::ReadOnly) ? GeminiProvider::pcmFromWav(wav.readAll(), &rate) : QByteArray();
+        if (pcm.isEmpty())
+            return QCoreApplication::translate("LocalSpeech", "The voice couldn't be loaded; it may need downloading again.");
+        m_reference.resize(pcm.size() / 2);
+        const auto *data = reinterpret_cast<const qint16 *>(pcm.constData());
+        for (qsizetype i = 0; i < m_reference.size(); ++i)
+            m_reference[i] = data[i] / 32768.0f;
+        m_referenceRate = rate;
+        m_referencePath = model.reference;
+    } else if (model.kind != QStringLiteral("pocket")) {
+        m_reference.clear();
+        m_referencePath.clear();
+    }
     if (m_tts && m_key == model.key)
         return {};
     if (m_tts) {
@@ -176,9 +195,22 @@ QString SherpaEngine::prepare(const VoicePacks::Model &model) {
     const QByteArray file = model.model.toUtf8(), voices = model.voices.toUtf8(), tokens = model.tokens.toUtf8(),
                      data = model.dataDir.toUtf8(), lexicon = model.lexicon.toUtf8(), lang = model.lang.toUtf8(),
                      dict = model.dictDir.toUtf8();
+    const auto in = [&model](const char *name) { return (model.dir + QLatin1Char('/') + QLatin1String(name)).toUtf8(); };
+    const QByteArray lmFlow = in("lm_flow.int8.onnx"), lmMain = in("lm_main.int8.onnx"), encoder = in("encoder.onnx"),
+                     decoder = in("decoder.int8.onnx"), conditioner = in("text_conditioner.onnx"),
+                     vocab = in("vocab.json"), scores = in("token_scores.json");
     SherpaOnnx::OfflineTtsConfig config;
     std::memset(&config, 0, sizeof config);
-    if (model.kind == QStringLiteral("kokoro")) {
+    if (model.kind == QStringLiteral("pocket")) {
+        config.model.pocket.lm_flow = lmFlow.constData();
+        config.model.pocket.lm_main = lmMain.constData();
+        config.model.pocket.encoder = encoder.constData();
+        config.model.pocket.decoder = decoder.constData();
+        config.model.pocket.text_conditioner = conditioner.constData();
+        config.model.pocket.vocab_json = vocab.constData();
+        config.model.pocket.token_scores_json = scores.constData();
+        config.model.pocket.voice_embedding_cache_capacity = 8;
+    } else if (model.kind == QStringLiteral("kokoro")) {
         config.model.kokoro.model = file.constData();
         config.model.kokoro.voices = voices.constData();
         config.model.kokoro.tokens = tokens.constData();
@@ -215,6 +247,11 @@ QVector<float> SherpaEngine::speak(const QString &text, int speaker, const std::
     config.silence_scale = 0.2f;
     config.speed = 1.0f;
     config.sid = speaker;
+    if (!m_reference.isEmpty()) {
+        config.reference_audio = m_reference.constData();
+        config.reference_audio_len = int32_t(m_reference.size());
+        config.reference_sample_rate = m_referenceRate;
+    }
     const QByteArray utf8 = text.toUtf8();
     // Asked between pieces of work: stop when the listener has moved on.
     SherpaOnnx::ProgressCallback keepGoing = [](const float *, int32_t, float, void *arg) -> int32_t {

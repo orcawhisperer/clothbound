@@ -41,6 +41,10 @@ public:
     static int threads();
 
 private:
+    // A Pocket voice's recording, as samples.
+    QVector<float> m_reference;
+    int m_referenceRate = 24000;
+    QString m_referencePath;
     QString load();
 
     QLibrary m_library;
