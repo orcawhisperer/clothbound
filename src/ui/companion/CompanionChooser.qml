@@ -165,6 +165,7 @@ ColumnLayout {
                 font.weight: Font.Medium
             }
             AbstractButton {
+                id: revealKeyBtn
                 visible: keyField.text.length > 0
                 implicitHeight: 20
                 implicitWidth: revealLabel.implicitWidth + 8
@@ -174,7 +175,7 @@ ColumnLayout {
                 HoverHandler { cursorShape: Qt.PointingHandCursor }
                 background: Rectangle {
                     radius: Ui.radius(4, theme.radius)
-                    color: parent.hovered ? theme.fillHover : "transparent"
+                    color: revealKeyBtn.hovered ? theme.fillHover : "transparent"
                 }
                 contentItem: Label {
                     id: revealLabel

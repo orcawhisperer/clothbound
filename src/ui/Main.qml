@@ -2,7 +2,6 @@ import QtCore
 import QtQuick
 import QtQuick.Controls
 import Qt.labs.platform as Platform
-import QtQuick.Layouts
 import "components"
 import "library"
 import "reader"

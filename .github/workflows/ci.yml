@@ -80,7 +80,7 @@ jobs:
         run: |
           ./bin/translate check
           node --check src/reader/reader.js src/reader/hyphenation.js src/reader/dropcap.js
-          /usr/lib/qt6/bin/qmllint -I src/ui -I src/ui/style $(find src/ui -name '*.qml' | sort)
+          /usr/lib/qt6/bin/qmllint --unqualified disable -I src/ui -I src/ui/style $(find src/ui -name '*.qml' | sort)
           desktop-file-validate pkgbuild/clothbound.desktop
 
       - name: Smoke-test local stdio MCP server

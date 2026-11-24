@@ -1629,6 +1629,7 @@ FocusScope {
                         }
 
                         footer: Item {
+                            id: listFooter
                             readonly property bool showEmpty: panel.listItems.length === 0
                                 && !(panel.source === "gemini" && (voices.loading || !ai.hasKey))
                             readonly property bool showMoreBtn: panel.hiddenBuiltinCount > 0
@@ -1653,7 +1654,7 @@ FocusScope {
                                     Layout.fillWidth: true
                                     Layout.leftMargin: 8
                                     Layout.rightMargin: 8
-                                    visible: parent.parent.showEmpty
+                                    visible: listFooter.showEmpty
                                     spacing: 8
                                     Label {
                                         Layout.fillWidth: true
@@ -1673,7 +1674,7 @@ FocusScope {
                                 }
 
                                 TextButton {
-                                    visible: parent.parent.showMoreBtn
+                                    visible: listFooter.showMoreBtn
                                     size: "compact"
                                     ghost: true
                                     text: panel.allBuiltins ? qsTr("Show fewer voices")
@@ -1684,7 +1685,7 @@ FocusScope {
                                 // Flash Lite (narration.economy) toggle on Gemini tab.
                                 Rectangle {
                                     Layout.fillWidth: true
-                                    visible: parent.parent.showEconomy
+                                    visible: listFooter.showEconomy
                                     radius: Ui.radius(10, theme.radius)
                                     color: Ui.tint(theme.ink1, 0.04)
                                     border.width: 1

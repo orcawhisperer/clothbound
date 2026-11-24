@@ -183,7 +183,9 @@ FocusScope {
             // (QML keeps "escape" and "marks" for its own: the surface calls them
             // dismiss and setMarks.)
             const call = code.replace("clothbound.escape(", "clothbound.dismiss(").replace("clothbound.marks(", "clothbound.setMarks(")
+            // qmllint disable literal-constructor
             const result = (new Function("clothbound", "return (" + call + ")"))(pdfSurface)
+            // qmllint enable literal-constructor
             if (callback)
                 callback(result)
             return

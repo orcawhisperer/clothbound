@@ -73,7 +73,8 @@ T.ComboBox {
     popup: T.Popup {
         y: control.height + 4
         width: Math.max(control.width, 160)
-        height: Math.min(contentItem.implicitHeight + topPadding + bottomPadding, control.Window.height - topMargin - bottomMargin)
+        height: Math.min(contentItem.implicitHeight + topPadding + bottomPadding,
+                         (Window.window ? Window.window.height : 600) - topMargin - bottomMargin)
         topMargin: 6
         bottomMargin: 6
         padding: 5
