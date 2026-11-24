@@ -6,6 +6,16 @@ Clothbound follows your Omarchy theme, language, and window corner rounding (wit
 
 ![Clothbound reading The Time Machine](screenshot.png)
 
+## Contents
+
+- [What's in v0.4.0](#whats-in-v040)
+- [Intelligence: where it runs](#intelligence-where-it-runs)
+- [System requirements](#system-requirements)
+- [Install](#install)
+- [Keyboard shortcuts](#keyboard-shortcuts)
+- [CLI & MCP commands](#cli--mcp-commands)
+- [Credits & License](#credits--license)
+
 ## What's in v0.4.0
 
 ![The Clothbound library: shelves, collections, online catalogs, and Continue reading](screenshot-library.png)
