@@ -26,15 +26,23 @@ Item {
     required property string series
     required property real seriesIndex
     required property int pages
+    required property real addedAt
     required property bool wantToRead
     required property bool listening
 
+    property bool highlighted: false
+    property real nowEpoch: 0
+
     readonly property bool current: GridView.isCurrentItem
     readonly property bool focused: current && GridView.view.activeFocus
+    readonly property bool isNewArrival: !finished && progress <= 0 && addedAt > 0 && nowEpoch > 0 && (nowEpoch - addedAt) <= 172800
     readonly property real pad: 12
 
     signal activated()
     signal detailsRequested()
+    signal dragStarted(int bookId, string title, string cover, real sceneX, real sceneY)
+    signal dragMoved(real sceneX, real sceneY)
+    signal dragEnded()
 
     width: GridView.view.cellWidth
     height: GridView.view.cellHeight
@@ -129,6 +137,7 @@ Item {
 
         // Top-left series number badge (preserved Clothbound feature).
         Label {
+            id: seriesBadge
             visible: card.series !== "" && card.seriesIndex > 0
             x: art.box.x + 8
             y: art.box.y + 8
@@ -146,9 +155,54 @@ Item {
             }
         }
 
+        // Quiet "New" micro-pill on unread books added in the last 48 hours.
+        Label {
+            visible: card.isNewArrival
+            x: art.box.x + 8 + (seriesBadge.visible ? seriesBadge.width + 5 : 0)
+            y: art.box.y + 8
+            text: qsTr("New")
+            font.pixelSize: 9
+            font.weight: Font.DemiBold
+            font.letterSpacing: 0.3
+            color: theme.accentOn
+            leftPadding: 5
+            rightPadding: 5
+            topPadding: 2
+            bottomPadding: 2
+            background: Rectangle {
+                radius: Ui.radius(4, theme.radius)
+                color: theme.accent
+                opacity: 0.92
+            }
+        }
+
+        // Subtle brief accent ring pulse when a newly added book is auto-located.
+        Rectangle {
+            visible: card.highlighted || opacity > 0.01
+            x: art.box.x - 4
+            y: art.box.y - 4
+            width: art.box.width + 8
+            height: art.box.height + 8
+            radius: Ui.radius(art.radius + 4, theme.radius)
+            color: "transparent"
+            border.width: 2.5
+            border.color: theme.accent
+            opacity: card.highlighted ? 1 : 0
+            Behavior on opacity {
+                enabled: !theme.reducedMotion
+                NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+            }
+            SequentialAnimation on opacity {
+                running: card.highlighted && !theme.reducedMotion
+                loops: 2
+                NumberAnimation { from: 0.35; to: 1.0; duration: 420; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 1.0; to: 0.45; duration: 420; easing.type: Easing.InOutSine }
+            }
+        }
+
         // Keyboard focus ring around the cover.
         Rectangle {
-            visible: card.focused
+            visible: card.focused && !card.highlighted
             x: art.box.x - 4
             y: art.box.y - 4
             width: art.box.width + 8
@@ -221,6 +275,24 @@ Item {
         onTapped: {
             card.GridView.view.currentIndex = card.index
             card.detailsRequested()
+        }
+    }
+    DragHandler {
+        target: null
+        acceptedButtons: Qt.LeftButton
+        onActiveChanged: {
+            if (active) {
+                const pt = centroid.scenePosition
+                card.dragStarted(card.bookId, card.title, card.cover, pt.x, pt.y)
+            } else {
+                card.dragEnded()
+            }
+        }
+        onCentroidChanged: {
+            if (active) {
+                const pt = centroid.scenePosition
+                card.dragMoved(pt.x, pt.y)
+            }
         }
     }
 }

@@ -487,6 +487,14 @@ FocusScope {
                             implicitWidth: shelfPillRow.implicitWidth + 20
                             hoverEnabled: true
                             focusPolicy: Qt.TabFocus
+                            Accessible.checkable: true
+                            Accessible.checked: member
+                            Accessible.name: member ? qsTr("Remove from %1").arg(modelData.name)
+                                                    : qsTr("Add to %1").arg(modelData.name)
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 400
+                            ToolTip.text: member ? qsTr("Remove from %1").arg(modelData.name)
+                                                 : qsTr("Add to %1").arg(modelData.name)
                             onClicked: {
                                 if (member)
                                     library.removeFromCollection(details.bookId, modelData.id)
@@ -496,9 +504,9 @@ FocusScope {
                             background: Rectangle {
                                 radius: Ui.radius(15, theme.radius)
                                 color: shelfPill.member ? theme.accentSoft
-                                     : shelfPill.hovered ? Ui.tint(theme.ink1, 0.08) : Ui.tint(theme.ink1, 0.04)
+                                     : shelfPill.hovered ? Ui.tint(theme.ink1, 0.07) : "transparent"
                                 border.width: shelfPill.visualFocus ? 2 : 1
-                                border.color: shelfPill.visualFocus || shelfPill.member ? theme.accent : Ui.tint(theme.ink1, 0.10)
+                                border.color: shelfPill.visualFocus || shelfPill.member ? theme.accent : Ui.tint(theme.ink1, 0.14)
                             }
                             contentItem: Item {
                                 Row {
@@ -511,23 +519,23 @@ FocusScope {
                                         height: 8
                                         radius: Ui.radius(2, theme.radius)
                                         color: Ui.collectionColor(shelfPill.modelData.name)
+                                        opacity: shelfPill.member ? 1.0 : (shelfPill.hovered ? 0.85 : 0.42)
                                     }
                                     Label {
                                         anchors.verticalCenter: parent.verticalCenter
                                         text: shelfPill.modelData.name
                                         textFormat: Text.PlainText
-                                        color: theme.ink1
+                                        color: shelfPill.member ? theme.ink1 : (shelfPill.hovered ? theme.ink1 : theme.ink3)
                                         font.pixelSize: 12
                                         font.weight: shelfPill.member ? Font.Medium : Font.Normal
                                     }
                                     Glyph {
-                                        visible: shelfPill.member
                                         anchors.verticalCenter: parent.verticalCenter
-                                        width: 12
-                                        height: 12
-                                        stroke: 2.3
-                                        path: Icons.check
-                                        color: theme.accentInk
+                                        width: shelfPill.member ? 12 : 10
+                                        height: shelfPill.member ? 12 : 10
+                                        stroke: shelfPill.member ? 2.3 : 2.0
+                                        path: shelfPill.member ? Icons.check : Icons.plus
+                                        color: shelfPill.member ? theme.accentInk : theme.ink4
                                     }
                                 }
                             }

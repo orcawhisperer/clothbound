@@ -25,7 +25,8 @@ class Library : public QObject {
     Q_PROPERTY(int bookCount READ bookCount NOTIFY booksChanged)
     Q_PROPERTY(QStringList folders READ folders NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList collections READ collections NOTIFY collectionsChanged)
-    // {all, reading, want, finished, listening}: how many books each sidebar shelf holds.
+    // {all, reading, recent, want, finished, listening, epub, pdf, downloaded, audiobooks}:
+    // how many books each sidebar shelf holds.
     Q_PROPERTY(QVariantMap shelfCounts READ shelfCounts NOTIFY booksChanged)
     Q_PROPERTY(QVariantMap readingStats READ readingStats NOTIFY readingStatsChanged)
     Q_PROPERTY(bool scanning READ scanning NOTIFY scanningChanged)
@@ -53,7 +54,12 @@ public:
 
     Q_INVOKABLE void addFolder(const QString &path);
     // Files and folders dropped on the window or chosen in a picker.
+    // When a custom collection is active in works(), individual files are also
+    // added directly to that collection (even if already present in the library).
     Q_INVOKABLE void addUrls(const QList<QUrl> &urls);
+    // Adds dropped/selected URLs directly into a specific collection (0 = library only).
+    Q_INVOKABLE void addUrlsToCollection(const QList<QUrl> &urls, int collectionId);
+    Q_INVOKABLE void addFilesToCollection(const QStringList &paths, int collectionId);
     Q_INVOKABLE void removeFolder(const QString &path);
     Q_INVOKABLE QVariantList folderStats() const;
     Q_INVOKABLE void openFolder(const QString &path) const;
@@ -129,6 +135,7 @@ signals:
     void scanProgressChanged();
     void readingSpeedChanged();
     void scanFinished(int added, int updated);
+    void booksAdded(int firstBookId, int count, const QString &firstTitle, int targetCollectionId);
     void problem(const QString &message);
 
 private:
@@ -143,6 +150,42 @@ private:
         QString name;
         qint64 createdAt = 0;
     };
+    struct ImportBatch {
+        int firstBookId = 0;
+        int count = 0;
+        QString firstTitle;
+        int targetCollectionId = 0;
+
+        void record(int bookId, const QString &title, int collectionId) {
+            if (bookId <= 0)
+                return;
+            if (firstBookId == 0) {
+                firstBookId = bookId;
+                firstTitle = title;
+                targetCollectionId = collectionId;
+            } else if (targetCollectionId != collectionId) {
+                targetCollectionId = 0;
+            }
+            ++count;
+        }
+        void merge(const ImportBatch &other) {
+            if (other.count <= 0)
+                return;
+            if (firstBookId == 0) {
+                *this = other;
+            } else {
+                if (targetCollectionId != other.targetCollectionId)
+                    targetCollectionId = 0;
+                count += other.count;
+            }
+        }
+        void clear() {
+            firstBookId = 0;
+            count = 0;
+            firstTitle.clear();
+            targetCollectionId = 0;
+        }
+    };
 
     bool migrate();
     void loadBooks();
@@ -150,6 +193,8 @@ private:
     void loadCollections();
     void loadAudioBadges();
     void syncWorksCollections();
+    void flushNotificationsNow();
+    void addUrlsImpl(const QList<QUrl> &urls, int explicitCollectionId);
     void enrichBookMap(QVariantMap &map, int id) const;
     bool storeInDb(const ScannedBook &book, QList<StagedBook> &staged);
     void applyStaged(const QList<StagedBook> &staged);
@@ -174,6 +219,9 @@ private:
     QSet<int> m_audiobookBooks;
     QStringList m_folders;
     QStringList m_queuedFiles;
+    QHash<QString, int> m_pendingFileCollections;
+    QHash<QString, int> m_pendingFolderCollections;
+    ImportBatch m_importBatch;
     Scanner *m_scanner = nullptr;
     WorksModel *m_works = nullptr;
     QList<ScannedBook> m_pending;

@@ -20,18 +20,31 @@ Rectangle {
     signal toggleRequested()
     signal createCollection()
     signal renameCollection(int id, string name)
+    signal addBooksToCollection(int id)
+    signal bookDroppedOnCollection(int collectionId, string collectionName)
+    signal filterNavigated()
     signal intelligenceRequested()
 
     readonly property var works: library.works
     readonly property var counts: library.shelfCounts
     readonly property bool emptyLibrary: library.bookCount === 0
     readonly property bool onShelf: works.collectionId === 0 && works.formatFilter === "" && works.seriesFilter === ""
+    readonly property bool onFormatShelf: works.collectionId === 0 && works.statusFilter === "" && works.seriesFilter === ""
+    readonly property bool showListeningSection: (counts.downloaded || 0) > 0 || (counts.audiobooks || 0) > 0
+                                                 || works.statusFilter === "downloaded" || works.statusFilter === "audiobooks"
 
     function showShelf(status) {
+        filterNavigated()
         works.clearFilters()
         works.statusFilter = status
     }
+    function showFormat(format) {
+        filterNavigated()
+        works.clearFilters()
+        works.formatFilter = format
+    }
     function showCollection(id) {
+        filterNavigated()
         works.clearFilters()
         works.collectionId = id
     }
@@ -65,6 +78,7 @@ Rectangle {
         property int count: -1
         property bool current: false
         property bool muted: false
+        property bool dropTarget: false
         signal contextRequested()
 
         width: side.width - 20
@@ -78,10 +92,11 @@ Rectangle {
 
         background: Rectangle {
             radius: Ui.radius(7, theme.radius)
-            color: row.current ? theme.accentSoft
+            color: row.dropTarget ? theme.accentSoft
+                 : row.current ? theme.accentSoft
                  : row.pressed ? theme.fillPressed
                  : row.hovered ? theme.fill : "transparent"
-            border.width: row.visualFocus ? 2 : 0
+            border.width: row.visualFocus ? 2 : (row.dropTarget ? 1.5 : 0)
             border.color: theme.accent
         }
         contentItem: Item {
@@ -145,8 +160,9 @@ Rectangle {
     // Sentence-case section label (11/600, +0.02em) — collapses to a subtle rule.
     component GroupLabel: Item {
         property alias text: label.text
+        property bool compact: false
         width: side.width
-        height: side.collapsed ? 18 : 38
+        height: side.collapsed ? (compact ? 6 : 18) : (compact ? 24 : 38)
         Label {
             id: label
             anchors.left: parent.left
@@ -160,7 +176,7 @@ Rectangle {
             font.letterSpacing: 0.22
         }
         Rectangle {
-            visible: side.collapsed
+            visible: side.collapsed && !parent.compact
             anchors.centerIn: parent
             width: 20
             height: 1
@@ -226,8 +242,19 @@ Rectangle {
             width: parent.width
             spacing: 1
 
+            GroupLabel {
+                compact: true
+                text: qsTr("Library")
+            }
             ShelfRow {
-                text: qsTr("Reading now")
+                text: qsTr("All")
+                glyph: Icons.books
+                count: side.counts.all || 0
+                current: side.onShelf && side.works.statusFilter === ""
+                onClicked: side.showShelf("")
+            }
+            ShelfRow {
+                text: qsTr("Reading")
                 glyph: Icons.bookOpen
                 count: side.emptyLibrary ? -1 : (side.counts.reading || 0)
                 muted: side.emptyLibrary
@@ -235,19 +262,28 @@ Rectangle {
                 onClicked: side.showShelf("reading")
             }
             ShelfRow {
-                text: qsTr("All books")
-                glyph: Icons.books
-                count: side.counts.all || 0
-                current: side.onShelf && side.works.statusFilter === ""
-                onClicked: side.showShelf("")
+                text: qsTr("Recently added")
+                glyph: Icons.tray
+                count: side.emptyLibrary ? -1 : (side.counts.recent || 0)
+                muted: side.emptyLibrary
+                current: side.onShelf && side.works.statusFilter === "recent"
+                onClicked: side.showShelf("recent")
             }
             ShelfRow {
-                text: qsTr("Want to read")
-                glyph: Icons.bookmark
-                count: side.emptyLibrary ? -1 : (side.counts.want || 0)
+                text: qsTr("Books")
+                glyph: Icons.book
+                count: side.emptyLibrary ? -1 : (side.counts.epub || 0)
                 muted: side.emptyLibrary
-                current: side.onShelf && side.works.statusFilter === "want"
-                onClicked: side.showShelf("want")
+                current: side.onFormatShelf && side.works.formatFilter === "epub"
+                onClicked: side.showFormat("epub")
+            }
+            ShelfRow {
+                text: qsTr("Papers & PDFs")
+                glyph: Icons.page
+                count: side.emptyLibrary ? -1 : (side.counts.pdf || 0)
+                muted: side.emptyLibrary
+                current: side.onFormatShelf && side.works.formatFilter === "pdf"
+                onClicked: side.showFormat("pdf")
             }
             ShelfRow {
                 text: qsTr("Finished")
@@ -257,30 +293,38 @@ Rectangle {
                 current: side.onShelf && side.works.statusFilter === "finished"
                 onClicked: side.showShelf("finished")
             }
+            ShelfRow {
+                visible: !side.emptyLibrary && ((side.counts.want || 0) > 0 || side.works.statusFilter === "want")
+                text: qsTr("Want to read")
+                glyph: Icons.bookmark
+                count: side.counts.want || 0
+                current: side.onShelf && side.works.statusFilter === "want"
+                onClicked: side.showShelf("want")
+            }
 
-            // Listening section: Downloaded + Audiobooks (01_library.html).
+            // Listening section: shown only when downloaded audio or audiobooks exist.
             GroupLabel {
-                visible: !side.emptyLibrary
+                visible: !side.emptyLibrary && side.showListeningSection
                 text: qsTr("Listening")
             }
             ShelfRow {
-                visible: !side.emptyLibrary
+                visible: !side.emptyLibrary && ((side.counts.downloaded || 0) > 0 || side.works.statusFilter === "downloaded")
                 text: qsTr("Downloaded")
-                glyph: Icons.headphones
+                glyph: Icons.download
                 count: side.counts.downloaded || 0
                 current: side.onShelf && side.works.statusFilter === "downloaded"
                 onClicked: side.showShelf("downloaded")
             }
             ShelfRow {
-                visible: !side.emptyLibrary
+                visible: !side.emptyLibrary && ((side.counts.audiobooks || 0) > 0 || side.works.statusFilter === "audiobooks")
                 text: qsTr("Audiobooks")
-                glyph: Icons.disc
+                glyph: Icons.headphones
                 count: side.counts.audiobooks || 0
                 current: side.onShelf && side.works.statusFilter === "audiobooks"
                 onClicked: side.showShelf("audiobooks")
             }
 
-            // Collections section: color swatches + persistent + New collection.
+            // Collections section: color swatches, drag-drop targets, + New collection.
             GroupLabel {
                 visible: !side.emptyLibrary || library.collections.length > 0
                 text: qsTr("Collections")
@@ -288,15 +332,31 @@ Rectangle {
             Repeater {
                 model: library.collections
                 delegate: ShelfRow {
+                    id: colRow
                     required property var modelData
                     text: modelData.name
                     swatchColor: Ui.collectionColor(modelData.name)
                     count: modelData.count
                     current: side.works.collectionId === modelData.id
+                    dropTarget: colDrop.containsDrag
                     onClicked: side.showCollection(modelData.id)
                     onContextRequested: {
                         collectionMenu.target = modelData
                         collectionMenu.popup()
+                    }
+                    DropArea {
+                        id: colDrop
+                        anchors.fill: parent
+                        keys: ["clothbound/book", "text/uri-list"]
+                        onDropped: (drop) => {
+                            if (drop.hasUrls && drop.urls.length > 0) {
+                                library.addUrlsToCollection(drop.urls, colRow.modelData.id)
+                                drop.acceptProposedAction()
+                            } else if (drop.keys.indexOf("clothbound/book") >= 0) {
+                                side.bookDroppedOnCollection(colRow.modelData.id, colRow.modelData.name)
+                                drop.accept()
+                            }
+                        }
                     }
                 }
             }
@@ -313,6 +373,10 @@ Rectangle {
     Menu {
         id: collectionMenu
         property var target: null
+        MenuItem {
+            text: qsTr("Add books…")
+            onTriggered: if (collectionMenu.target) side.addBooksToCollection(collectionMenu.target.id)
+        }
         MenuItem {
             text: qsTr("Rename…")
             onTriggered: if (collectionMenu.target) side.renameCollection(collectionMenu.target.id, collectionMenu.target.name)
