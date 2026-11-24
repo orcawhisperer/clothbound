@@ -260,6 +260,7 @@ void AudioCache::store(const QString &key, const QByteArray &pcm, int sampleRate
 
     // Without ffmpeg the narration is kept as WAV, larger but just as good.
     if (m_ffmpeg.isEmpty()) {
+        QDir().mkpath(m_directory);
         const QString name = key + QStringLiteral(".wav");
         QSaveFile file(QDir(m_directory).filePath(name));
         if (file.open(QIODevice::WriteOnly) && file.write(Speech::wav(pcm, sampleRate)) >= 0 && file.commit())
@@ -293,6 +294,7 @@ void AudioCache::pumpEncodes() {
         ++m_activeEncodes;
         m_activeEncodeKeys.insert(job.key);
 
+        QDir().mkpath(m_directory);
         const QString name = job.key + QStringLiteral(".opus");
         const QString target = QDir(m_directory).filePath(name);
         const QString partial = QStringLiteral("%1.part.%2.%3")
@@ -369,7 +371,7 @@ void AudioCache::decode(const QString &file, int sampleRate, QObject *context,
             },
             Qt::QueuedConnection);
     };
-    if (sampleRate <= 0) {
+    if (sampleRate <= 0 || !QFileInfo::exists(file)) {
         defer({}, false);
         return;
     }
@@ -426,7 +428,17 @@ void AudioCache::pumpDecodes() {
 }
 
 void AudioCache::syncStats() {
-    QSqlQuery query(QSqlDatabase::database(m_connection));
+    QSqlDatabase db = QSqlDatabase::database(m_connection);
+    // Self-heal if the user deleted ~/.cache/clothbound while Clothbound is running:
+    // recreate the directory and drop stale DB pointers to missing cache files.
+    if (!QDir(m_directory).exists()) {
+        QDir().mkpath(m_directory);
+        QSqlQuery(db).exec(QStringLiteral("DELETE FROM audio_clips"));
+        m_totalBytes = 0;
+        m_clipCount = 0;
+        return;
+    }
+    QSqlQuery query(db);
     if (query.exec(QStringLiteral("SELECT COALESCE(SUM(bytes), 0), COUNT(*) FROM audio_clips")) && query.next()) {
         m_totalBytes = qMax<qint64>(0, query.value(0).toLongLong());
         m_clipCount = qMax(0, query.value(1).toInt());

@@ -335,7 +335,10 @@ ${literaryIndent}
     }
 
     function applyTypography(doc, hyphenOverride) {
-        styleElement(doc, 'cb-typography').textContent = typographyCss(hyphenOverride)
+        const el = styleElement(doc, 'cb-typography')
+        const css = typographyCss(hyphenOverride)
+        if (el.textContent !== css)
+            el.textContent = css
     }
 
     function applyLayoutTo(targetFrame, doc, g, rtlOverride) {
@@ -357,7 +360,10 @@ ${literaryIndent}
         }
         targetFrame.style.width = g.width + 'px'
         targetFrame.style.height = g.height + 'px'
-        styleElement(doc, 'cb-layout').textContent = layoutCss(g, rtlOverride)
+        const layoutEl = styleElement(doc, 'cb-layout')
+        const css = layoutCss(g, rtlOverride)
+        if (layoutEl.textContent !== css)
+            layoutEl.textContent = css
         // Cover pages often size their SVG at 100% of a height that columns
         // don't have; give them the page's.
         for (const svg of doc.querySelectorAll('svg')) {
@@ -386,7 +392,11 @@ ${literaryIndent}
         if (!doc || !g)
             return
         const view = doc.defaultView
-        if (view && !g.scroll && !g.vertical) {
+        const rootEl = doc.documentElement
+        const nowrapChecked = !!(rootEl && rootEl.hasAttribute && rootEl.hasAttribute('data-cb-nowrap-checked'))
+        if (view && !g.scroll && !g.vertical && !nowrapChecked) {
+            if (rootEl && rootEl.setAttribute)
+                rootEl.setAttribute('data-cb-nowrap-checked', '1')
             const nowrapFixes = []
             for (const el of doc.querySelectorAll('body *')) {
                 const tag = el.localName
@@ -572,7 +582,8 @@ ${literaryIndent}
         const s = state.style
         if (s.publisher || s.dropCap === false || rtl || vertical || typeof DropCap === 'undefined')
             return
-        const paragraphs = [...doc.querySelectorAll('p[data-cb-flow]')]
+        const limit = DropCap.lookahead || 8
+        const paragraphs = [...doc.querySelectorAll('p[data-cb-flow]')].slice(0, limit)
         const index = DropCap.choose(paragraphs.map(p => ({
             text: p.textContent,
             excluded: !!p.closest('blockquote, aside, figure, table, nav, header, footer, li, [class*="epigraph" i]'),
@@ -1246,7 +1257,7 @@ ${literaryIndent}
 
     // Pre-render the adjacent chapter into the hidden standby iframe so
     // chapter-crossing page turns execute in 0 ms with zero flash.
-    function scheduleWarm(dirHint = 1) {
+    function scheduleWarm(dirHint = 1, delay = 45) {
         clearTimeout(state.warmTimer)
         state.warmTimer = 0
         const sf = standby()
@@ -1287,7 +1298,7 @@ ${literaryIndent}
                     state.warm = null
                 return null
             })
-        }, 45)
+        }, delay)
     }
 
     // Warm the next chapter in BookScheme and Chromium's memory cache when
@@ -2389,7 +2400,7 @@ ${literaryIndent}
                     markDropCap(doc)
                 if (!layoutChanged) {
                     applyTypography(doc)
-                    scheduleWarm(1)
+                    scheduleWarm(1, 200)
                     return
                 }
                 const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
@@ -2407,17 +2418,23 @@ ${literaryIndent}
                     state.index = buildIndex(doc)
                     restoreDecorations()
                 }
+                if (!prev || prev.publisher !== style.publisher) {
+                    if (doc.documentElement && doc.documentElement.removeAttribute)
+                        doc.documentElement.removeAttribute('data-cb-nowrap-checked')
+                }
                 applyTypography(doc)
                 if (!prev || prev.font !== style.font || prev.publisher !== style.publisher) {
                     try { await doc.fonts.ready } catch (e) { }
                 }
                 applyLayout()
+                clearTimeout(resizeTimer)
+                resizeTimer = 0
                 fitBlocks(doc, state.geometry)
                 measure()
                 const page = pageOfOffset(resolveOffset(place.offset, place.snippet))
                 await turnTo(page, false)
                 report()
-                scheduleWarm(1)
+                scheduleWarm(1, 200)
             })
         },
 

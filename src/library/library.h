@@ -121,6 +121,7 @@ public:
     // Small per-book choices, such as the narrator's voice.
     QString bookSetting(int id, const QString &key) const;
     void setBookSetting(int id, const QString &key, const QString &value);
+    void adjustHighlightCount(int bookId, int delta);
     void setChapterLengths(int id, const QList<int> &lengths);
 
     QSqlDatabase database() const { return QSqlDatabase::database(m_connection); }
@@ -193,6 +194,7 @@ private:
     void loadCollections();
     void loadAudioBadges();
     void loadOnlineMeta();
+    void loadHighlightCounts();
     void refreshArticles();
     bool isArticleRecord(const BookRecord &record) const;
     void syncWorksCollections();
@@ -223,6 +225,8 @@ private:
     QSet<int> m_articleSettingIds;
     QSet<int> m_articles;
     QHash<int, QString> m_sourceUrls;
+    QHash<int, QString> m_voiceNames;
+    QHash<int, int> m_highlightCounts;
     QStringList m_folders;
     QStringList m_queuedFiles;
     QHash<QString, int> m_pendingFileCollections;

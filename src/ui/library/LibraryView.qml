@@ -18,6 +18,7 @@ FocusScope {
     property int statsRevision: 0
     property int pulsedBookId: 0
     property real nowEpoch: Math.floor(Date.now() / 1000)
+    readonly property var continueBooks: library.continueReading
 
     readonly property bool typing: search.activeFocus || collectionDialog.open || details.addingShelf
                                    || addUrlOpen || catalogsOpen
@@ -744,7 +745,7 @@ FocusScope {
         maximumFlickVelocity: 4500
         flickDeceleration: 2200
         pixelAligned: true
-        cacheBuffer: 1200
+        cacheBuffer: 480
         currentIndex: -1
 
         readonly property int columns: Math.max(2, Math.floor((width + 24) / 172))
@@ -754,7 +755,7 @@ FocusScope {
         cellWidth: Math.floor(width / columns)
         cellHeight: Math.round((cellWidth - 24) * 1.5) + 12 + 56
 
-        model: library.works
+        model: view.viewMode === "grid" ? library.works : null
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         SmoothWheel { stepSize: 165 }
@@ -763,7 +764,7 @@ FocusScope {
             width: grid.width
             topPadding: 28
             spacing: 0
-            readonly property bool showShelf: library.continueReading.length > 0
+            readonly property bool showShelf: view.continueBooks.length > 0
                                               && library.works.searchText === ""
                                               && library.works.collectionId === 0
                                               && library.works.formatFilter === ""
@@ -775,7 +776,7 @@ FocusScope {
                 width: grid.width - 24
                 visible: parent.showShelf
                 height: visible ? implicitHeight : 0
-                books: library.continueReading
+                books: grid.visible && parent.showShelf ? view.continueBooks : []
                 onOpen: (bookId) => view.openBook(bookId)
                 onListen: (bookId) => view.listenBook(bookId)
                 onLeaveDown: view.focusGrid()
@@ -881,10 +882,10 @@ FocusScope {
         maximumFlickVelocity: 4500
         flickDeceleration: 2200
         pixelAligned: true
-        cacheBuffer: 640
+        cacheBuffer: 420
         spacing: 2
         currentIndex: -1
-        model: library.works
+        model: view.viewMode === "list" ? library.works : null
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         SmoothWheel { stepSize: 115 }
@@ -894,7 +895,7 @@ FocusScope {
             topPadding: 24
             bottomPadding: 8
             spacing: 0
-            readonly property bool showShelf: library.continueReading.length > 0
+            readonly property bool showShelf: view.continueBooks.length > 0
                                               && library.works.searchText === ""
                                               && library.works.collectionId === 0
                                               && library.works.formatFilter === ""
@@ -906,7 +907,7 @@ FocusScope {
                 width: listView.width - 8
                 visible: parent.showShelf
                 height: visible ? implicitHeight : 0
-                books: library.continueReading
+                books: listView.visible && parent.showShelf ? view.continueBooks : []
                 onOpen: (bookId) => view.openBook(bookId)
                 onListen: (bookId) => view.listenBook(bookId)
                 onLeaveDown: view.focusGrid()
@@ -1338,35 +1339,66 @@ FocusScope {
         }
     }
 
-    BookDetails {
+    Loader {
         id: details
         anchors.fill: parent
         z: 10
-        onRead: (bookId) => { details.close(); view.openBook(bookId) }
-        onListen: (bookId) => { details.close(); view.listenBook(bookId) }
-        onClosed: view.focusGrid()
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        readonly property bool addingShelf: loaded ? !!loaded.addingShelf : false
+        function show(bookId, workKey) {
+            active = true
+            if (loaded)
+                loaded.show(bookId, workKey)
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: BookDetails {
+            anchors.fill: parent
+            onRead: (bookId) => { details.close(); view.openBook(bookId) }
+            onListen: (bookId) => { details.close(); view.listenBook(bookId) }
+            onClosed: view.focusGrid()
+        }
     }
 
     // --- Watched-Folder Manager Sheet ------------------------------------
-    FocusScope {
+    Loader {
         id: foldersSheet
-        property bool open: false
         anchors.fill: parent
         z: 15
-        visible: open
-
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
         function show() {
-            open = true
-            forceActiveFocus()
+            active = true
+            if (loaded)
+                loaded.show()
         }
         function close() {
-            if (!open)
-                return
-            open = false
-            view.focusGrid()
+            if (loaded)
+                loaded.close()
         }
+        sourceComponent: FocusScope {
+            id: foldersInner
+            property bool open: false
+            anchors.fill: parent
+            visible: open
 
-        Keys.onEscapePressed: close()
+            function show() {
+                open = true
+                forceActiveFocus()
+            }
+            function close() {
+                if (!open)
+                    return
+                open = false
+                view.focusGrid()
+            }
+
+            Keys.onEscapePressed: close()
 
         Rectangle {
             anchors.fill: parent
@@ -1527,233 +1559,250 @@ FocusScope {
                 }
             }
         }
+        }
     }
 
     // --- Reading Stats & Insights Sheet ----------------------------------
-    FocusScope {
+    Loader {
         id: statsSheet
-        property bool open: false
-        readonly property var stats: view.statsRevision >= 0 ? library.readingStats : ({})
-        readonly property real maxDaySeconds: {
-            const days = stats.recentDays || []
-            let m = 60
-            for (let i = 0; i < days.length; ++i)
-                if ((days[i].seconds || 0) > m)
-                    m = days[i].seconds
-            return m
-        }
-
         anchors.fill: parent
         z: 16
-        visible: open
-
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
         function show() {
-            open = true
-            forceActiveFocus()
+            active = true
+            if (loaded)
+                loaded.show()
         }
         function close() {
-            if (!open)
-                return
-            open = false
-            view.focusGrid()
+            if (loaded)
+                loaded.close()
         }
+        sourceComponent: FocusScope {
+            id: statsInner
+            property bool open: false
+            readonly property var stats: open && view.statsRevision >= 0 ? library.readingStats : ({})
+            readonly property real maxDaySeconds: {
+                const days = stats.recentDays || []
+                let m = 60
+                for (let i = 0; i < days.length; ++i)
+                    if ((days[i].seconds || 0) > m)
+                        m = days[i].seconds
+                return m
+            }
 
-        Keys.onEscapePressed: close()
-
-        Rectangle {
             anchors.fill: parent
-            color: theme.scrim
-            MouseArea {
-                anchors.fill: parent
-                acceptedButtons: Qt.AllButtons
-                onPressed: statsSheet.close()
-                onWheel: (wheel) => wheel.accepted = true
+            visible: open
+
+            function show() {
+                open = true
+                forceActiveFocus()
             }
-        }
-
-        Rectangle {
-            anchors.centerIn: parent
-            width: Math.min(parent.width - 48, 580)
-            height: Math.min(parent.height - 64, statsCol.implicitHeight + 48)
-            radius: Ui.radius(14, theme.radius)
-            color: theme.raised
-            border.color: Ui.tint(theme.ink1, 0.10)
-
-            MouseArea {
-                anchors.fill: parent
-                acceptedButtons: Qt.AllButtons
-                onWheel: (wheel) => wheel.accepted = true
+            function close() {
+                if (!open)
+                    return
+                open = false
+                view.focusGrid()
             }
 
-            ColumnLayout {
-                id: statsCol
+            Keys.onEscapePressed: close()
+
+            Rectangle {
                 anchors.fill: parent
-                anchors.margins: 24
-                spacing: 16
+                color: theme.scrim
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.AllButtons
+                    onPressed: statsInner.close()
+                    onWheel: (wheel) => wheel.accepted = true
+                }
+            }
 
-                RowLayout {
-                    Layout.fillWidth: true
-                    Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: view.statsIcon; color: theme.accentInk }
-                    Label {
-                        Layout.fillWidth: true
-                        text: qsTr("Reading stats")
-                        color: theme.ink1
-                        font.family: "Literata"
-                        font.pixelSize: 20
-                        font.weight: Font.Medium
-                    }
-                    IconButton {
-                        glyph: Icons.close
-                        tip: qsTr("Close (Esc)")
-                        onClicked: statsSheet.close()
-                    }
+            Rectangle {
+                anchors.centerIn: parent
+                width: Math.min(parent.width - 48, 580)
+                height: Math.min(parent.height - 64, statsCol.implicitHeight + 48)
+                radius: Ui.radius(14, theme.radius)
+                color: theme.raised
+                border.color: Ui.tint(theme.ink1, 0.10)
+
+                MouseArea {
+                    anchors.fill: parent
+                    acceptedButtons: Qt.AllButtons
+                    onWheel: (wheel) => wheel.accepted = true
                 }
 
-                // 4 KPI Cards
-                GridLayout {
-                    Layout.fillWidth: true
-                    columns: 2
-                    columnSpacing: 10
-                    rowSpacing: 10
-
-                    component StatTile: Rectangle {
-                        id: tile
-                        property string label
-                        property string value
-                        property string detail
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 82
-                        radius: Ui.radius(10, theme.radius)
-                        color: Ui.tint(theme.ink1, 0.04)
-                        border.color: Ui.tint(theme.ink1, 0.07)
-
-                        ColumnLayout {
-                            anchors.fill: parent
-                            anchors.margins: 14
-                            spacing: 2
-                            Label {
-                                text: tile.label
-                                color: theme.ink3
-                                font.pixelSize: 12
-                            }
-                            Label {
-                                text: tile.value
-                                color: theme.ink1
-                                font.family: "Literata"
-                                font.pixelSize: 21
-                                font.weight: Font.Medium
-                                font.features: ({ "tnum": 1 })
-                            }
-                            Label {
-                                visible: text !== ""
-                                text: tile.detail
-                                color: theme.ink3
-                                font.pixelSize: 11
-                                font.features: ({ "tnum": 1 })
-                            }
-                        }
-                    }
-
-                    StatTile {
-                        label: qsTr("Total time read")
-                        value: view.formatDurationSeconds(statsSheet.stats.totalSeconds || 0)
-                        detail: qsTr("Today: %1 · Week: %2")
-                            .arg(view.formatDurationSeconds(statsSheet.stats.todaySeconds || 0))
-                            .arg(view.formatDurationSeconds(statsSheet.stats.weekSeconds || 0))
-                    }
-                    StatTile {
-                        label: qsTr("Reading streak")
-                        value: qsTr("%n days", "", statsSheet.stats.streakDays || 0)
-                        detail: (statsSheet.stats.longestStreak || 0) > 0
-                            ? qsTr("Longest: %1 · Active: %2")
-                                .arg(qsTr("%n days", "", statsSheet.stats.longestStreak || 0))
-                                .arg(qsTr("%n days", "", statsSheet.stats.activeDays || 0))
-                            : qsTr("Start reading today")
-                    }
-                    StatTile {
-                        label: qsTr("Books finished")
-                        value: {
-                            const _lang = translator.language
-                            return (statsSheet.stats.finishedBooks || 0).toLocaleString(Qt.locale(), "f", 0)
-                        }
-                        detail: qsTr("%1 reading · %2 unread")
-                            .arg(statsSheet.stats.readingBooks || 0)
-                            .arg(statsSheet.stats.unreadBooks || 0)
-                    }
-                    StatTile {
-                        label: qsTr("Reading pace")
-                        value: {
-                            const _lang = translator.language
-                            return qsTr("%1 wpm").arg((statsSheet.stats.wordsPerMinute || 260).toLocaleString(Qt.locale(), "f", 0))
-                        }
-                        detail: qsTr("Learned from your reading")
-                    }
-                }
-
-                // 14-day activity chart
                 ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 8
+                    id: statsCol
+                    anchors.fill: parent
+                    anchors.margins: 24
+                    spacing: 16
 
-                    Label {
-                        text: qsTr("Last 14 days")
-                        color: theme.ink3
-                        font.pixelSize: 11
-                        font.weight: Font.DemiBold
-                        font.letterSpacing: 0.22
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Glyph { Layout.preferredWidth: 20; Layout.preferredHeight: 20; path: view.statsIcon; color: theme.accentInk }
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Reading stats")
+                            color: theme.ink1
+                            font.family: "Literata"
+                            font.pixelSize: 20
+                            font.weight: Font.Medium
+                        }
+                        IconButton {
+                            glyph: Icons.close
+                            tip: qsTr("Close (Esc)")
+                            onClicked: statsInner.close()
+                        }
                     }
 
-                    Rectangle {
+                    // 4 KPI Cards
+                    GridLayout {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 116
-                        radius: Ui.radius(10, theme.radius)
-                        color: Ui.tint(theme.ink1, 0.03)
-                        border.color: Ui.tint(theme.ink1, 0.07)
+                        columns: 2
+                        columnSpacing: 10
+                        rowSpacing: 10
 
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 12
-                            anchors.rightMargin: 12
-                            anchors.topMargin: 14
-                            anchors.bottomMargin: 10
-                            spacing: 6
+                        component StatTile: Rectangle {
+                            id: tile
+                            property string label
+                            property string value
+                            property string detail
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 82
+                            radius: Ui.radius(10, theme.radius)
+                            color: Ui.tint(theme.ink1, 0.04)
+                            border.color: Ui.tint(theme.ink1, 0.07)
 
-                            Repeater {
-                                model: statsSheet.stats.recentDays || []
-                                delegate: Item {
-                                    id: dayBar
-                                    required property var modelData
-                                    required property int index
-                                    Layout.fillWidth: true
-                                    Layout.fillHeight: true
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 14
+                                spacing: 2
+                                Label {
+                                    text: tile.label
+                                    color: theme.ink3
+                                    font.pixelSize: 12
+                                }
+                                Label {
+                                    text: tile.value
+                                    color: theme.ink1
+                                    font.family: "Literata"
+                                    font.pixelSize: 21
+                                    font.weight: Font.Medium
+                                    font.features: ({ "tnum": 1 })
+                                }
+                                Label {
+                                    visible: text !== ""
+                                    text: tile.detail
+                                    color: theme.ink3
+                                    font.pixelSize: 11
+                                    font.features: ({ "tnum": 1 })
+                                }
+                            }
+                        }
 
-                                    readonly property real secs: modelData.seconds || 0
-                                    readonly property real ratio: secs > 0 ? Math.max(0.08, secs / statsSheet.maxDaySeconds) : 0
+                        StatTile {
+                            label: qsTr("Total time read")
+                            value: view.formatDurationSeconds(statsInner.stats.totalSeconds || 0)
+                            detail: qsTr("Today: %1 · Week: %2")
+                                .arg(view.formatDurationSeconds(statsInner.stats.todaySeconds || 0))
+                                .arg(view.formatDurationSeconds(statsInner.stats.weekSeconds || 0))
+                        }
+                        StatTile {
+                            label: qsTr("Reading streak")
+                            value: qsTr("%n days", "", statsInner.stats.streakDays || 0)
+                            detail: (statsInner.stats.longestStreak || 0) > 0
+                                ? qsTr("Longest: %1 · Active: %2")
+                                    .arg(qsTr("%n days", "", statsInner.stats.longestStreak || 0))
+                                    .arg(qsTr("%n days", "", statsInner.stats.activeDays || 0))
+                                : qsTr("Start reading today")
+                        }
+                        StatTile {
+                            label: qsTr("Books finished")
+                            value: {
+                                const _lang = translator.language
+                                return (statsInner.stats.finishedBooks || 0).toLocaleString(Qt.locale(), "f", 0)
+                            }
+                            detail: qsTr("%1 reading · %2 unread")
+                                .arg(statsInner.stats.readingBooks || 0)
+                                .arg(statsInner.stats.unreadBooks || 0)
+                        }
+                        StatTile {
+                            label: qsTr("Reading pace")
+                            value: {
+                                const _lang = translator.language
+                                return qsTr("%1 wpm").arg((statsInner.stats.wordsPerMinute || 260).toLocaleString(Qt.locale(), "f", 0))
+                            }
+                            detail: qsTr("Learned from your reading")
+                        }
+                    }
 
-                                    Rectangle {
-                                        anchors.bottom: dayLbl.top
-                                        anchors.bottomMargin: 6
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        width: Math.min(20, parent.width - 2)
-                                        height: dayBar.secs > 0 ? Math.max(5, (parent.height - 24) * dayBar.ratio) : 3
-                                        radius: Ui.radius(3, theme.radius)
-                                        color: dayBar.secs > 0 ? theme.accent : Ui.tint(theme.ink1, 0.12)
-                                        opacity: barHover.hovered ? 1.0 : (dayBar.secs > 0 ? 0.85 : 0.5)
+                    // 14-day activity chart
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 8
+
+                        Label {
+                            text: qsTr("Last 14 days")
+                            color: theme.ink3
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                            font.letterSpacing: 0.22
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 116
+                            radius: Ui.radius(10, theme.radius)
+                            color: Ui.tint(theme.ink1, 0.03)
+                            border.color: Ui.tint(theme.ink1, 0.07)
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                anchors.topMargin: 14
+                                anchors.bottomMargin: 10
+                                spacing: 6
+
+                                Repeater {
+                                    model: statsInner.stats.recentDays || []
+                                    delegate: Item {
+                                        id: dayBar
+                                        required property var modelData
+                                        required property int index
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+
+                                        readonly property real secs: modelData.seconds || 0
+                                        readonly property real ratio: secs > 0 ? Math.max(0.08, secs / statsInner.maxDaySeconds) : 0
+
+                                        Rectangle {
+                                            anchors.bottom: dayLbl.top
+                                            anchors.bottomMargin: 6
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            width: Math.min(20, parent.width - 2)
+                                            height: dayBar.secs > 0 ? Math.max(5, (parent.height - 24) * dayBar.ratio) : 3
+                                            radius: Ui.radius(3, theme.radius)
+                                            color: dayBar.secs > 0 ? theme.accent : Ui.tint(theme.ink1, 0.12)
+                                            opacity: barHover.hovered ? 1.0 : (dayBar.secs > 0 ? 0.85 : 0.5)
+                                        }
+
+                                        Label {
+                                            id: dayLbl
+                                            anchors.bottom: parent.bottom
+                                            anchors.horizontalCenter: parent.horizontalCenter
+                                            text: (dayBar.modelData.shortLabel || "").slice(0, 2)
+                                            color: dayBar.index === 13 ? theme.ink1 : theme.ink3
+                                            font.pixelSize: 10
+                                            font.weight: dayBar.index === 13 ? Font.DemiBold : Font.Normal
+                                        }
+
+                                        HoverHandler { id: barHover }
+                                        ToolTip.visible: barHover.hovered
+                                        ToolTip.text: dayBar.modelData.day + " · " + view.formatDurationSeconds(dayBar.secs)
                                     }
-
-                                    Label {
-                                        id: dayLbl
-                                        anchors.bottom: parent.bottom
-                                        anchors.horizontalCenter: parent.horizontalCenter
-                                        text: (dayBar.modelData.shortLabel || "").slice(0, 2)
-                                        color: dayBar.index === 13 ? theme.ink1 : theme.ink3
-                                        font.pixelSize: 10
-                                        font.weight: dayBar.index === 13 ? Font.DemiBold : Font.Normal
-                                    }
-
-                                    HoverHandler { id: barHover }
-                                    ToolTip.visible: barHover.hovered
-                                    ToolTip.text: dayBar.modelData.day + " · " + view.formatDurationSeconds(dayBar.secs)
                                 }
                             }
                         }
@@ -1764,14 +1813,34 @@ FocusScope {
     }
 
     // --- Create / Rename Collection Dialog -------------------------------
-    FocusScope {
+    Loader {
         id: collectionDialog
-        property bool open: false
-        property int editingId: 0
-
         anchors.fill: parent
         z: 18
-        visible: open
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        function showCreate() {
+            active = true
+            if (loaded)
+                loaded.showCreate()
+        }
+        function showRename(id, currentName) {
+            active = true
+            if (loaded)
+                loaded.showRename(id, currentName)
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: FocusScope {
+            id: collectionInner
+            property bool open: false
+            property int editingId: 0
+
+            anchors.fill: parent
+            visible: open
 
         function showCreate() {
             editingId = 0
@@ -1821,7 +1890,7 @@ FocusScope {
             MouseArea {
                 anchors.fill: parent
                 acceptedButtons: Qt.AllButtons
-                onPressed: collectionDialog.close()
+                onPressed: collectionInner.close()
                 onWheel: (wheel) => wheel.accepted = true
             }
         }
@@ -1841,7 +1910,7 @@ FocusScope {
                 spacing: 12
 
                 Label {
-                    text: collectionDialog.editingId > 0 ? qsTr("Rename collection") : qsTr("New collection")
+                    text: collectionInner.editingId > 0 ? qsTr("Rename collection") : qsTr("New collection")
                     color: theme.ink1
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
@@ -1864,9 +1933,9 @@ FocusScope {
                         color: theme.ink1
                         font.pixelSize: 13
                         selectByMouse: true
-                        Keys.onReturnPressed: collectionDialog.submit()
-                        Keys.onEnterPressed: collectionDialog.submit()
-                        Keys.onEscapePressed: collectionDialog.close()
+                        Keys.onReturnPressed: collectionInner.submit()
+                        Keys.onEnterPressed: collectionInner.submit()
+                        Keys.onEscapePressed: collectionInner.close()
                         Text {
                             anchors.fill: parent
                             verticalAlignment: Text.AlignVCenter
@@ -1884,16 +1953,17 @@ FocusScope {
                     TextButton {
                         ghost: true
                         text: qsTr("Cancel")
-                        onClicked: collectionDialog.close()
+                        onClicked: collectionInner.close()
                     }
                     TextButton {
                         primary: true
                         enabled: colNameInput.text.trim() !== ""
-                        text: collectionDialog.editingId > 0 ? qsTr("Save") : qsTr("Create")
-                        onClicked: collectionDialog.submit()
+                        text: collectionInner.editingId > 0 ? qsTr("Save") : qsTr("Create")
+                        onClicked: collectionInner.submit()
                     }
                 }
             }
+        }
         }
     }
 
@@ -1947,33 +2017,63 @@ FocusScope {
         }
     }
 
-    AddUrlSheet {
+    Loader {
         id: addUrlSheet
         anchors.fill: parent
         z: 45
-        onImported: (bookId, title, kind) => {
-            const label = title !== "" ? title : qsTr("book")
-            toast.show(kind === "article" ? qsTr("Saved article “%1”").arg(label)
-                                          : qsTr("Added “%1”").arg(label))
-            if (bookId > 0 && library.works.rowOfBook(bookId) >= 0) {
-                view.select(bookId)
-                view.pulsedBookId = bookId
-                pulseTimer.restart()
-            }
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        function show(initialUrl) {
+            active = true
+            if (loaded)
+                loaded.show(initialUrl || "")
         }
-        onOpenBookRequested: (bookId) => view.openBook(bookId)
-        onClosed: if (view.enabled) view.focusGrid()
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: AddUrlSheet {
+            anchors.fill: parent
+            onImported: (bookId, title, kind) => {
+                const label = title !== "" ? title : qsTr("book")
+                toast.show(kind === "article" ? qsTr("Saved article “%1”").arg(label)
+                                              : qsTr("Added “%1”").arg(label))
+                if (bookId > 0 && library.works.rowOfBook(bookId) >= 0) {
+                    view.select(bookId)
+                    view.pulsedBookId = bookId
+                    pulseTimer.restart()
+                }
+            }
+            onOpenBookRequested: (bookId) => view.openBook(bookId)
+            onClosed: if (view.enabled) view.focusGrid()
+        }
     }
 
-    CatalogsSheet {
+    Loader {
         id: catalogsSheet
         anchors.fill: parent
         z: 46
-        targetCollectionId: library.works.collectionId
-        onOpenBook: (bookId) => {
-            catalogsSheet.close()
-            view.openBook(bookId)
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        function show() {
+            active = true
+            if (loaded)
+                loaded.show()
         }
-        onClosed: if (view.enabled) view.focusGrid()
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: CatalogsSheet {
+            anchors.fill: parent
+            targetCollectionId: library.works.collectionId
+            onOpenBook: (bookId) => {
+                catalogsSheet.close()
+                view.openBook(bookId)
+            }
+            onClosed: if (view.enabled) view.focusGrid()
+        }
     }
 }

@@ -1195,9 +1195,16 @@ Item {
             contentHeight: Math.max(height, (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.contentH : 0) + surface.topRoom + surface.bottomRoom)
             interactive: surface.canPan
             boundsBehavior: Flickable.StopAtBounds
+            maximumFlickVelocity: 4500
+            flickDeceleration: 2200
+            pixelAligned: true
             clip: true
             ScrollBar.vertical: ScrollBar {
                 policy: surface.canPanY ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
+            }
+            SmoothWheel {
+                enabled: surface.canPanY
+                stepSize: 135
             }
             onWidthChanged: {
                 const maxX = Math.max(0, contentWidth - width)
@@ -1312,7 +1319,11 @@ Item {
         cacheBuffer: Math.max(0, height * 2)
         clip: true
         boundsBehavior: Flickable.StopAtBounds
+        maximumFlickVelocity: 4500
+        flickDeceleration: 2200
+        pixelAligned: true
         ScrollBar.vertical: ScrollBar {}
+        SmoothWheel { stepSize: 165 }
         property real panX: 0
         readonly property real roomWidth: Math.max(120, width - 48)
         readonly property real roomHeight: Math.max(120, height - 16)
@@ -1338,8 +1349,13 @@ Item {
             enabled: pageList.maxPanX > 2
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
             acceptedModifiers: Qt.NoModifier
+            orientation: Qt.Horizontal
             onWheel: (event) => {
-                if (Math.abs(event.angleDelta.x) > Math.abs(event.angleDelta.y)) {
+                const px = event.pixelDelta ? event.pixelDelta.x : 0
+                const py = event.pixelDelta ? event.pixelDelta.y : 0
+                if (px !== 0 && Math.abs(px) > Math.abs(py)) {
+                    pageList.panX = Math.max(-pageList.maxPanX, Math.min(pageList.maxPanX, pageList.panX - px * 1.25))
+                } else if (Math.abs(event.angleDelta.x) > Math.abs(event.angleDelta.y)) {
                     pageList.panX = Math.max(-pageList.maxPanX, Math.min(pageList.maxPanX, pageList.panX - event.angleDelta.x * 0.5))
                 } else {
                     event.accepted = false

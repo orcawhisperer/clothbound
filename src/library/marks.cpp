@@ -294,6 +294,8 @@ int Marks::insert(Mark mark) {
     beginInsertRows({}, row, row);
     m_marks.insert(row, mark);
     endInsertRows();
+    if (mark.kind == QLatin1String("highlight"))
+        m_library->adjustHighlightCount(m_bookId, 1);
     emit changed();
     return mark.id;
 }
@@ -302,6 +304,7 @@ void Marks::erase(int id) {
     const int row = rowOf(id);
     if (row < 0)
         return;
+    const bool wasHighlight = (m_marks[row].kind == QLatin1String("highlight"));
     QSqlQuery query(m_library->database());
     query.prepare(QStringLiteral("DELETE FROM annotations WHERE id = ?"));
     query.addBindValue(id);
@@ -312,6 +315,8 @@ void Marks::erase(int id) {
     beginRemoveRows({}, row, row);
     m_marks.removeAt(row);
     endRemoveRows();
+    if (wasHighlight)
+        m_library->adjustHighlightCount(m_bookId, -1);
     emit changed();
 }
 

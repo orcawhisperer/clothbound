@@ -49,7 +49,7 @@ const protoSeoTags = `<meta name="description" content="Explore Clothbound's int
 <meta property="og:description" content="Explore all 18 interactive screens of Clothbound — a native Qt6 EPUB &amp; PDF reader for Linux and Omarchy.">
 <meta property="og:url" content="https://clothbound.app/prototype">
 <meta property="og:image" content="https://clothbound.app/og-card.png">
-<meta property="og:image:alt" content="Clothbound v0.4.0 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
+<meta property="og:image:alt" content="Clothbound v0.4.1 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Clothbound — Interactive 18-Board Design Prototype">
 <meta name="twitter:description" content="Explore all 18 interactive screens of Clothbound — a native Qt6 EPUB &amp; PDF reader for Linux and Omarchy.">
@@ -68,7 +68,7 @@ fs.writeFileSync(path.join(distDir, "install"), installSrc);
 fs.writeFileSync(path.join(distDir, "install.sh"), installSrc);
 
 // 2b. robots.txt, sitemap.xml, and llms.txt for search engines and AI discovery
-const lastmod = "2026-11-24";
+const lastmod = "2026-11-25";
 fs.writeFileSync(
   path.join(distDir, "robots.txt"),
   "User-agent: *\nAllow: /\nSitemap: https://clothbound.app/sitemap.xml\n"
@@ -96,7 +96,7 @@ fs.writeFileSync(
   path.join(distDir, "llms.txt"),
   `# Clothbound
 
-> A calm, local-first native Qt 6 EPUB and PDF reader for Linux, Wayland, and Omarchy (v0.4.0, MIT licensed).
+> A calm, local-first native Qt 6 EPUB and PDF reader for Linux, Wayland, and Omarchy (v0.4.1, MIT licensed).
 
 - Website: https://clothbound.app
 - Interactive 18-board UI Prototype: https://clothbound.app/prototype

@@ -1,19 +1,16 @@
 #pragma once
 
-#include <QAudioDevice>
 #include <QByteArray>
 #include <QList>
-#include <QMediaDevices>
 #include <QMutex>
 #include <QObject>
-#include <QTimer>
+#include <QThread>
 #include <QVector>
 #include <QWaitCondition>
 #include <atomic>
 #include <thread>
 
-class QAudioSink;
-class QIODevice;
+class AudioOutputPump;
 
 // Speech at another pace without another pitch: WSOLA (waveform-similarity
 // overlap-add). Each output frame is cut from the source near where the pace
@@ -45,8 +42,9 @@ private:
 
 // Narration as one continuous stream: clips ("tracks") are queued in order,
 // filled as their audio arrives from the network or the cache, and played
-// back to back with no gap, at the chosen pace. It reports which track is
-// audible and how far into it, so the spoken sentence can be shown.
+// back to back with no gap, at the chosen pace. Both WSOLA stretching and
+// QAudioSink output feeding run off the GUI thread so visual transitions or
+// heavy document loads can never break playback.
 class SpeechPlayer : public QObject {
     Q_OBJECT
 
@@ -86,6 +84,7 @@ signals:
 
 private:
     friend class ClothboundTests;
+    friend class AudioOutputPump;
     struct Track {
         int id = 0;
         QByteArray pcm;
@@ -109,26 +108,20 @@ private:
     void startWorker();
     void stopWorker();
     void workerLoop();
-    void onWorkerReady();
-    void ensureSink();
-    void releaseSink();
-    void handleOutputsChanged();
-    bool flushPending();
-    void fill();
-    void report();
+    void ensureAudioThread();
+    void stopAudioThread();
     Track *trackLocked(int id);
     int trackIndexLocked(int id) const;
     void setStarved(bool starved);
 
     int m_sampleRate;
-    QMediaDevices m_devices;
-    QAudioDevice m_outputDevice;
-    QAudioSink *m_sink = nullptr;
-    QIODevice *m_out = nullptr;
-    QByteArray m_pendingOut;
-    QTimer m_timer;
 
-    // Shared between the GUI thread and the off-thread WSOLA pump.
+    // Dedicated high-priority thread owning QAudioSink, QMediaDevices, and the
+    // 15 ms feed/report timer (started lazily on first non-headless play()).
+    QThread m_audioThread;
+    AudioOutputPump *m_pump = nullptr;
+
+    // Shared between the GUI thread, WSOLA worker thread, and audio output thread.
     mutable QMutex m_mutex;
     QWaitCondition m_cond;
     std::thread m_worker;
@@ -139,21 +132,16 @@ private:
     qint64 m_workerRead = 0;
     bool m_workerFinishedAll = true;
     quint64 m_generation = 0;
+    quint64 m_clearGeneration = 0;
     double m_rate = 1.0;
     bool m_playing = false;
     bool m_headless = false;
     bool m_stopWorker = false;
     std::atomic_bool m_notifyPending{false};
 
-    // GUI thread only.
-    int m_consumedIndex = 0;
-    QList<Mark> m_marks;
-    qint64 m_writtenBytes = 0;
+    // GUI thread state mirrors.
     double m_volume = 1.0;
     bool m_muted = false;
     bool m_starved = false;
-    bool m_recovered = false;
-    int m_lastTrack = -1;
-    qint64 m_lastSample = -1;
     bool m_drained = true;
 };

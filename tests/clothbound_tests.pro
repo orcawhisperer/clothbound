@@ -1,6 +1,6 @@
 QT += core gui qml quick quickcontrols2 testlib dbus sql concurrent network multimedia pdf webenginecore webenginequick webchannel
 CONFIG += c++20 testcase
-DEFINES += CLOTHBOUND_VERSION=\\\"0.4.0\\\" CLOTHBOUND_UNIFIED_TESTS
+DEFINES += CLOTHBOUND_VERSION=\\\"0.4.1\\\" CLOTHBOUND_UNIFIED_TESTS
 TARGET = clothbound_tests
 TEMPLATE = app
 LIBS += -lz
@@ -23,10 +23,12 @@ HEADERS += \
     ../src/app/systemcheck.h \
     ../src/app/theme.h \
     ../src/app/translator.h \
+    ../src/app/trayicon.h \
     ../src/formats/bookinfo.h \
     ../src/formats/bookname.h \
     ../src/formats/bookrecord.h \
     ../src/formats/bookscheme.h \
+    ../src/formats/coverprovider.h \
     ../src/formats/epubbook.h \
     ../src/formats/htmltokenizer.h \
     ../src/formats/pdfbook.h \
@@ -82,9 +84,11 @@ SOURCES += \
     ../src/app/systemcheck.cpp \
     ../src/app/theme.cpp \
     ../src/app/translator.cpp \
+    ../src/app/trayicon.cpp \
     ../src/formats/bookinfo.cpp \
     ../src/formats/bookname.cpp \
     ../src/formats/bookscheme.cpp \
+    ../src/formats/coverprovider.cpp \
     ../src/formats/epubbook.cpp \
     ../src/formats/htmltokenizer.cpp \
     ../src/formats/pdfbook.cpp \

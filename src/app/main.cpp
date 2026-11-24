@@ -4,6 +4,7 @@
 #include "ai/aiservices.h"
 #include "audio/audiocache.h"
 #include "formats/bookscheme.h"
+#include "formats/coverprovider.h"
 #include "ai/gemini.h"
 #include "ai/localmodels.h"
 #include "ai/companion.h"
@@ -35,6 +36,7 @@
 #include "app/surfacewatcher.h"
 #include "app/theme.h"
 #include "app/translator.h"
+#include "app/trayicon.h"
 #include "mcp/mcpserver.h"
 #include "online/opdsclient.h"
 #include "online/webimporter.h"
@@ -46,19 +48,24 @@
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
 #include <QDBusVariant>
+#include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QLoggingCategory>
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlNetworkAccessManagerFactory>
 #include <QQmlExpression>
+#include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
@@ -126,6 +133,48 @@ static void adoptDesktopFont(QObject *context) {
 static bool debugEnabled() {
     return qEnvironmentVariableIsSet("CLOTHBOUND_DEBUG") || qEnvironmentVariableIsSet("DOGEAR_DEBUG");
 }
+
+static bool profileEnabled() {
+    return qEnvironmentVariableIntValue("CLOTHBOUND_PROFILE") > 0;
+}
+
+struct StartupProfiler {
+    bool enabled = false;
+    QElapsedTimer timer;
+    qint64 lastNs = 0;
+
+    explicit StartupProfiler(bool on) : enabled(on) {
+        if (enabled)
+            timer.start();
+    }
+
+    void mark(const char *phase) {
+        if (!enabled)
+            return;
+        const qint64 nowNs = timer.nsecsElapsed();
+        const double elapsedMs = double(nowNs) / 1e6;
+        const double deltaMs = double(nowNs - lastNs) / 1e6;
+        lastNs = nowNs;
+        fprintf(stderr, "PROFILE phase=%s elapsed_ms=%.2f delta_ms=%.2f\n", phase, elapsedMs, deltaMs);
+        fflush(stderr);
+    }
+
+    static double readProcStatusMiB(const char *field) {
+        QFile f(QStringLiteral("/proc/self/status"));
+        if (!f.open(QIODevice::ReadOnly))
+            return -1.0;
+        const QByteArray prefix(field);
+        const QList<QByteArray> lines = f.readAll().split('\n');
+        for (const QByteArray &line : lines) {
+            if (line.startsWith(prefix)) {
+                const QList<QByteArray> parts = line.simplified().split(' ');
+                if (parts.size() >= 2)
+                    return parts[1].toDouble() / 1024.0;
+            }
+        }
+        return -1.0;
+    }
+};
 
 // Book pages and the reading surface are served from one origin, so the
 // surface can lay out and annotate the chapter documents it shows.
@@ -245,6 +294,11 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (!qEnvironmentVariableIsSet("QT_LOGGING_RULES"))
+        QLoggingCategory::setFilterRules(QStringLiteral("qt.pdf.bookmarks.warning=false"));
+
+    StartupProfiler prof(profileEnabled());
+
     // GUI launch (or --screenshot / --run): Qt requires QtWebEngineQuick to be
     // initialized before QGuiApplication is constructed. Keep occluded-workspace
     // surfaces alive in Chromium so returning from another Hyprland workspace
@@ -253,6 +307,7 @@ int main(int argc, char *argv[]) {
     registerBookScheme();
     SurfaceWatcher::applyChromiumFlags();
     QtWebEngineQuick::initialize();
+    prof.mark("webengine_init");
 
     QGuiApplication app(argc, argv);
     // The window can hide while a book is read aloud; Clothbound quits itself
@@ -268,6 +323,7 @@ int main(int argc, char *argv[]) {
     // The name people see, in the bar's tray among others.
     app.setApplicationDisplayName(QStringLiteral("Clothbound"));
     app.setWindowIcon(QIcon::fromTheme(QStringLiteral("clothbound")));
+    prof.mark("qguiapp");
 
     QCommandLineParser args;
     QCommandLineOption runOption("run", "Evaluate a QML expression in the window (repeatable)", "expression");
@@ -314,6 +370,7 @@ int main(int argc, char *argv[]) {
     }
     // Clothbound's own Controls style (src/ui/style/Clothbound), on top of Basic.
     QQuickStyle::setStyle(QStringLiteral("Clothbound"));
+    prof.mark("fonts_and_style");
 
     Theme theme;
     theme.setAppearance(appearance.value(QStringLiteral("appearance/mode"), QStringLiteral("match")).toString());
@@ -325,21 +382,18 @@ int main(int argc, char *argv[]) {
         return 1;
     }
     PortalFilePicker picker;
+    prof.mark("theme_and_library");
 
     // The reading surface's own profile: Qt's default QQuickWebEngineProfile is
     // off-the-record with an in-memory HTTP cache (nothing written to disk, no
-    // cookies), avoids Qt 6.9+'s QQuickWebEngineProfile constructor deprecation
-    // warning, serves books solely from their ZIPs, and blocks all network I/O.
+    // cookies), serves books solely from their ZIPs, and blocks all network I/O.
+    // LazyWebProfile defers creating defaultProfile() (and Chromium's child
+    // processes) until the first EPUB is opened.
     BookScheme bookScheme;
     OfflineInterceptor offline;
-    QQuickWebEngineProfile *profile = QQuickWebEngineProfile::defaultProfile();
-    profile->installUrlSchemeHandler("clothbound", &bookScheme);
-    profile->setUrlRequestInterceptor(&offline);
-    auto detachProfileHandlers = qScopeGuard([profile, &bookScheme] {
-        profile->setUrlRequestInterceptor(nullptr);
-        profile->removeUrlSchemeHandler(&bookScheme);
-    });
+    LazyWebProfile webProfile(&bookScheme, &offline);
     Reader reader(&library, &bookScheme);
+    prof.mark("webengine_profile");
 
     // The composition root for intelligence: Gemini is today's provider,
     // with its key in the keyring. Features only ever see AiServices.
@@ -350,6 +404,7 @@ int main(int argc, char *argv[]) {
     // Models the reader runs on this computer, for text work routed there.
     LocalModels localModels;
     ai.setLocalModels(&localModels);
+    prof.mark("services_ai");
     // Built-in voices: made on this computer, from voices downloaded on request.
     VoicePacks voicePacks(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/voices"));
     LocalSpeech localSpeech(&voicePacks);
@@ -364,11 +419,13 @@ int main(int argc, char *argv[]) {
     // stack unwinding (avoiding dangling m_cast pointers on shutdown).
     Cast cast(&ai, &audioCache, &reader, &library, &voices, &voicePacks);
     Narration narration(&ai, &audioCache, &reader, &library);
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &narration, &Narration::stop);
     Mpris mpris(&narration, &reader, &library);
     Download download(&ai, &audioCache, &reader, &narration);
     narration.setCast(&cast);
     download.setCast(&cast);
     Audiobook audiobook(&audioCache, &download, &reader, &library);
+    prof.mark("services_audio");
     BookSearch bookSearch(&reader);
     bookSearch.setMeaning(&ai, library.database().connectionName());
     Marks marks(&library);
@@ -400,6 +457,7 @@ int main(int argc, char *argv[]) {
     // Every book's words, searchable from the palette, read in gently after
     // start-up and after each scan.
     LibraryIndex libraryIndex;
+    prof.mark("services_reader_online");
     auto indexLibrary = [&library, &libraryIndex] {
         QList<LibraryIndex::Source> books;
         for (const BookRecord &r : library.visibleRecords())
@@ -436,15 +494,17 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("webImporter", &webImporter);
     engine.rootContext()->setContextProperty("opds", &opds);
     Notifier notifier;
+    TrayIcon trayIcon;
     SurfaceWatcher surfaceWatcher;
     engine.rootContext()->setContextProperty("desktop", &notifier);
+    engine.rootContext()->setContextProperty("trayIcon", &trayIcon);
     engine.rootContext()->setContextProperty("instance", &instance);
     engine.rootContext()->setContextProperty("surfaceWatcher", &surfaceWatcher);
     engine.rootContext()->setContextProperty("systemCheck", &systemCheck);
     engine.rootContext()->setContextProperty("localSetup", &localSetup);
     engine.rootContext()->setContextProperty("localSpeech", &localSpeech);
     engine.rootContext()->setContextProperty("audioCache", &audioCache);
-    engine.rootContext()->setContextProperty("readerProfile", profile);
+    engine.rootContext()->setContextProperty("webProfileProvider", &webProfile);
     engine.rootContext()->setContextProperty("debugMode", debugEnabled());
     engine.rootContext()->setContextProperty(
         "settingsUrl", QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
@@ -470,8 +530,11 @@ int main(int argc, char *argv[]) {
     };
     Http1NamFactory qmlNetFactory;
     engine.setNetworkAccessManagerFactory(&qmlNetFactory);
+    engine.rootContext()->setContextProperty("hasCoverProvider", true);
+    engine.addImageProvider(QStringLiteral("cover"), new CoverProvider);
     engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
     engine.load(QUrl("qrc:/ui/Main.qml"));
+    prof.mark("qml_engine_load");
     if (engine.rootObjects().isEmpty())
         return 1;
     if (bookToOpen)
@@ -497,6 +560,98 @@ int main(int argc, char *argv[]) {
     // on return (even when tiled and unfocused).
     if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
         surfaceWatcher.attach(window);
+        if (prof.enabled) {
+            auto firstFrameConn = std::make_shared<QMetaObject::Connection>();
+            *firstFrameConn = QObject::connect(
+                window, &QQuickWindow::frameSwapped, window,
+                [window, &prof, &app, firstFrameConn]() {
+                    QObject::disconnect(*firstFrameConn);
+                    const auto api = window->rendererInterface()
+                                         ? window->rendererInterface()->graphicsApi()
+                                         : QSGRendererInterface::Unknown;
+                    const char *apiName =
+                        api == QSGRendererInterface::OpenGL     ? "OpenGL"
+                        : api == QSGRendererInterface::Vulkan   ? "Vulkan"
+                        : api == QSGRendererInterface::Software ? "Software"
+                        : api == QSGRendererInterface::Metal    ? "Metal"
+                                                                : "Other";
+                    // Emit metrics on the GUI thread right after the first frame swap.
+                    QMetaObject::invokeMethod(
+                        window,
+                        [window, &prof, &app, apiName]() {
+                            prof.mark("first_frame");
+                            const qsizetype qmlObjects = window->findChildren<QObject *>().size();
+                            const qsizetype qmlItems = window->findChildren<QQuickItem *>().size();
+                            const double rssMiB = StartupProfiler::readProcStatusMiB("VmRSS:");
+                            const double hwmMiB = StartupProfiler::readProcStatusMiB("VmHWM:");
+                            fprintf(stderr,
+                                    "PROFILE metrics qml_objects=%lld qml_items=%lld rss_mib=%.2f hwm_mib=%.2f "
+                                    "gfx_api=%s platform=%s a11y_always=%s\n",
+                                    static_cast<long long>(qmlObjects), static_cast<long long>(qmlItems), rssMiB, hwmMiB,
+                                    apiName, qPrintable(QGuiApplication::platformName()),
+                                    qEnvironmentVariable("QT_LINUX_ACCESSIBILITY_ALWAYS_ON").toUtf8().constData());
+                            fflush(stderr);
+                            if (qEnvironmentVariableIntValue("CLOTHBOUND_PROFILE_EXIT_AFTER_FRAME") > 0) {
+                                const int settleMs = qMax(0, qEnvironmentVariableIntValue("CLOTHBOUND_PROFILE_SETTLE_MS"));
+                                if (settleMs > 0) {
+                                    QTimer::singleShot(settleMs, &app, [window, &app]() {
+                                        const qsizetype settledObjects = window->findChildren<QObject *>().size();
+                                        const qsizetype settledItems = window->findChildren<QQuickItem *>().size();
+                                        const double settledRss = StartupProfiler::readProcStatusMiB("VmRSS:");
+                                        const double settledHwm = StartupProfiler::readProcStatusMiB("VmHWM:");
+                                        fprintf(stderr,
+                                                "PROFILE settled qml_objects=%lld qml_items=%lld rss_mib=%.2f hwm_mib=%.2f\n",
+                                                static_cast<long long>(settledObjects),
+                                                static_cast<long long>(settledItems), settledRss, settledHwm);
+                                        fflush(stderr);
+                                        app.exit(0);
+                                    });
+                                } else {
+                                    app.exit(0);
+                                }
+                            } else {
+                                // Interactive profile mode: log animation frame gaps and GUI-thread stalls.
+                                struct FrameProbe {
+                                    QElapsedTimer swapTimer;
+                                    QElapsedTimer logThrottle;
+                                    bool haveSwap = false;
+                                };
+                                auto probe = std::make_shared<FrameProbe>();
+                                probe->logThrottle.start();
+                                QObject::connect(
+                                    window, &QQuickWindow::frameSwapped, window,
+                                    [probe]() {
+                                        if (probe->haveSwap) {
+                                            const double dtMs = double(probe->swapTimer.nsecsElapsed()) / 1e6;
+                                            if (dtMs > 30.0 && dtMs < 1500.0 && probe->logThrottle.elapsed() >= 150) {
+                                                probe->logThrottle.restart();
+                                                fprintf(stderr, "PROFILE frame_jank dt_ms=%.1f\n", dtMs);
+                                                fflush(stderr);
+                                            }
+                                        }
+                                        probe->swapTimer.restart();
+                                        probe->haveSwap = true;
+                                    },
+                                    Qt::DirectConnection);
+                                auto guiClock = std::make_shared<QElapsedTimer>();
+                                guiClock->start();
+                                auto *guiProbe = new QTimer(window);
+                                guiProbe->setInterval(20);
+                                QObject::connect(guiProbe, &QTimer::timeout, window, [guiClock]() {
+                                    const double dtMs = double(guiClock->nsecsElapsed()) / 1e6;
+                                    guiClock->restart();
+                                    if (dtMs > 45.0) {
+                                        fprintf(stderr, "PROFILE gui_stall dt_ms=%.1f\n", dtMs);
+                                        fflush(stderr);
+                                    }
+                                });
+                                guiProbe->start();
+                            }
+                        },
+                        Qt::QueuedConnection);
+                },
+                Qt::DirectConnection);
+        }
         // While debugging, a pointer that --run can move.
         if (debugEnabled())
             engine.rootContext()->setContextProperty("pointer", new PointerDriver(window, &app));

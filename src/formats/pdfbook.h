@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QDateTime>
+#include <QHash>
 #include <QImage>
 #include <QJsonArray>
 #include <QRectF>
@@ -52,6 +53,9 @@ public:
 
     // The page on white, scaled to `size` (or to `height` keeping its shape).
     QImage renderPage(int page, const QSize &size) const;
+    // Raw PDFium render (transparent unpainted background) for fused single-pass
+    // white-compositing and theme recoloring without a second full-page buffer.
+    QImage renderPageRaw(int page, const QSize &size) const;
     // High-DPI cropped region of a page on white, with normalized [0..1] rect.
     QImage renderRegionImage(int pageIndex, double normX, double normY, double normW, double normH,
                              int targetWidthPx = 1400) const;
@@ -108,4 +112,6 @@ private:
     mutable bool m_idsScanned = false;
     mutable QString m_detectedDoi;
     mutable QString m_detectedArxiv;
+    mutable QHash<int, QSizeF> m_pageSizes;
+    mutable QHash<int, QList<PdfLinkEntry>> m_pageLinks;
 };

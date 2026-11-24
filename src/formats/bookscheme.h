@@ -9,6 +9,7 @@
 #include <memory>
 
 class EpubBook;
+class QQuickWebEngineProfile;
 
 // Serves the reading surface and the open books to the web view, all from
 // one origin, clothbound://local, so the surface can lay out and annotate the
@@ -56,4 +57,22 @@ class OfflineInterceptor : public QWebEngineUrlRequestInterceptor {
 public:
     using QWebEngineUrlRequestInterceptor::QWebEngineUrlRequestInterceptor;
     void interceptRequest(QWebEngineUrlRequestInfo &info) override;
+};
+
+// Defers QQuickWebEngineProfile::defaultProfile() (and Chromium's helper
+// process startup) until the first EPUB reading surface is actually created,
+// keeping Library-only and PDF-only sessions free of WebEngine startup & RAM.
+class LazyWebProfile : public QObject {
+    Q_OBJECT
+
+public:
+    LazyWebProfile(BookScheme *scheme, OfflineInterceptor *interceptor, QObject *parent = nullptr);
+    ~LazyWebProfile() override;
+
+    Q_INVOKABLE QQuickWebEngineProfile *ensure();
+
+private:
+    BookScheme *m_scheme = nullptr;
+    OfflineInterceptor *m_interceptor = nullptr;
+    QQuickWebEngineProfile *m_profile = nullptr;
 };

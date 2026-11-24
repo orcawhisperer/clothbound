@@ -26,6 +26,8 @@ bool PdfBook::open() {
     m_idsScanned = false;
     m_detectedDoi.clear();
     m_detectedArxiv.clear();
+    m_pageSizes.clear();
+    m_pageLinks.clear();
     switch (m_document->load(m_path)) {
     case QPdfDocument::Error::None:
         return true;
@@ -122,7 +124,7 @@ QList<PdfOutlineEntry> PdfBook::outline() const {
     return entries;
 }
 
-QImage PdfBook::renderPage(int page, const QSize &size) const {
+QImage PdfBook::renderPageRaw(int page, const QSize &size) const {
     QMutexLocker lock(&m_mutex);
     if (page < 0 || page >= pageCount() || size.width() <= 0 || size.height() <= 0)
         return {};
@@ -135,12 +137,52 @@ QImage PdfBook::renderPage(int page, const QSize &size) const {
         width = qMax(1, int(std::floor(width * scale)));
         height = qMax(1, int(std::floor(height * scale)));
     }
-    const QSize bounded(width, height);
+    return m_document->render(page, QSize(width, height));
+}
+
+QImage PdfBook::renderPage(int page, const QSize &size) const {
     // PDFium leaves unpainted areas transparent; books are printed on white.
-    const QImage rendered = m_document->render(page, bounded);
+    QImage rendered = renderPageRaw(page, size);
     if (rendered.isNull())
         return {};
-    QImage image(bounded, QImage::Format_RGB32);
+    const QImage::Format fmt = rendered.format();
+    if (fmt == QImage::Format_RGB32)
+        return rendered;
+    if (fmt == QImage::Format_ARGB32_Premultiplied || fmt == QImage::Format_ARGB32) {
+        const bool premul = (fmt == QImage::Format_ARGB32_Premultiplied);
+        const int w = rendered.width();
+        const int h = rendered.height();
+        for (int y = 0; y < h; ++y) {
+            auto *line = reinterpret_cast<QRgb *>(rendered.scanLine(y));
+            for (int x = 0; x < w; ++x) {
+                const QRgb px = line[x];
+                const uint32_t a = px >> 24;
+                if (a == 0) {
+                    line[x] = 0xFFFFFFFFu;
+                } else if (a == 255) {
+                    line[x] = px | 0xFF000000u;
+                } else {
+                    const uint32_t inv = 255u - a;
+                    uint32_t r = (px >> 16) & 0xFFu;
+                    uint32_t g = (px >> 8) & 0xFFu;
+                    uint32_t b = px & 0xFFu;
+                    if (premul) {
+                        r = std::min(255u, r + inv);
+                        g = std::min(255u, g + inv);
+                        b = std::min(255u, b + inv);
+                    } else {
+                        r = (r * a + 255u * inv + 127u) / 255u;
+                        g = (g * a + 255u * inv + 127u) / 255u;
+                        b = (b * a + 255u * inv + 127u) / 255u;
+                    }
+                    line[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+                }
+            }
+        }
+        rendered.reinterpretAsFormat(QImage::Format_RGB32);
+        return rendered;
+    }
+    QImage image(rendered.size(), QImage::Format_RGB32);
     image.fill(Qt::white);
     QPainter painter(&image);
     painter.drawImage(0, 0, rendered);
@@ -305,7 +347,13 @@ QString PdfBook::pageTextInBand(int page, double normTop, double normBottom, int
 
 QSizeF PdfBook::pageSize(int page) const {
     QMutexLocker lock(&m_mutex);
-    return m_document->pagePointSize(page);
+    const auto it = m_pageSizes.constFind(page);
+    if (it != m_pageSizes.cend())
+        return *it;
+    const QSizeF sz = m_document->pagePointSize(page);
+    if (sz.isValid() && !sz.isEmpty())
+        m_pageSizes.insert(page, sz);
+    return sz;
 }
 
 QString PdfBook::pageLabel(int page) const {
@@ -556,6 +604,9 @@ PdfBook::Selection PdfBook::selectWord(int page, const QPointF &at) const {
 
 QList<PdfLinkEntry> PdfBook::pageLinks(int page) const {
     QMutexLocker lock(&m_mutex);
+    const auto cached = m_pageLinks.constFind(page);
+    if (cached != m_pageLinks.cend())
+        return *cached;
     QList<PdfLinkEntry> entries;
     const int total = pageCount();
     const QSizeF size = pageSize(page);
@@ -600,6 +651,7 @@ QList<PdfLinkEntry> PdfBook::pageLinks(int page) const {
         if (!entry.rects.isEmpty())
             entries.append(std::move(entry));
     }
+    m_pageLinks.insert(page, entries);
     return entries;
 }
 

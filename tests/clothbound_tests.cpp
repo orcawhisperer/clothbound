@@ -33,6 +33,7 @@
 #include <QtTest>
 
 #include "ai/aiservices.h"
+#include "formats/coverprovider.h"
 #include "mcp/mcpserver.h"
 #include "online/epubwriter.h"
 #include "online/opdsclient.h"
@@ -41,6 +42,7 @@
 #include "ai/aiusage.h"
 #include "formats/bookinfo.h"
 #include "app/cli.h"
+#include "app/trayicon.h"
 #include "fakeserver.h"
 #include "ai/gemini.h"
 #include "ai/localmodels.h"
@@ -1747,6 +1749,83 @@ private slots:
         white.fill(Qt::white);
         PdfPages::recolor(white, Qt::white, Qt::black);
         QCOMPARE(QColor(white.pixel(0, 0)), QColor(Qt::white));
+
+        // Fused single-pass compositeAndRecolor handles transparent PDFium paper,
+        // semi-transparent premultiplied ink, and chromatic illustrations identically.
+        QImage raw(4, 1, QImage::Format_ARGB32_Premultiplied);
+        raw.setPixel(0, 0, qRgba(0, 0, 0, 0));           // transparent paper -> bg
+        raw.setPixel(1, 0, qRgba(0, 0, 0, 255));         // opaque black ink -> fg
+        raw.setPixel(2, 0, qRgba(200, 30, 30, 255));     // chromatic red -> stays red
+        raw.setPixel(3, 0, qRgba(0, 0, 0, 128));         // 50% premul black -> ~mid gray
+        PdfPages::compositeAndRecolor(raw, QColor("#1e1f24"), QColor("#d6d2c9"));
+        QCOMPARE(raw.format(), QImage::Format_RGB32);
+        QCOMPARE(QColor(raw.pixel(0, 0)).name(), QString("#1e1f24"));
+        QCOMPARE(QColor(raw.pixel(1, 0)).name(), QString("#d6d2c9"));
+        QVERIFY(QColor(raw.pixel(2, 0)).red() > QColor(raw.pixel(2, 0)).green() * 2);
+        QVERIFY(QColor(raw.pixel(3, 0)).red() > 0x40 && QColor(raw.pixel(3, 0)).red() < 0xB0);
+
+        // White/black identity composites transparent paper onto pure white.
+        QImage rawIdentity(2, 1, QImage::Format_ARGB32_Premultiplied);
+        rawIdentity.setPixel(0, 0, qRgba(0, 0, 0, 0));
+        rawIdentity.setPixel(1, 0, qRgba(0, 0, 0, 255));
+        PdfPages::compositeAndRecolor(rawIdentity, Qt::white, Qt::black);
+        QCOMPARE(QColor(rawIdentity.pixel(0, 0)), QColor(Qt::white));
+        QCOMPARE(QColor(rawIdentity.pixel(1, 0)), QColor(Qt::black));
+    }
+
+    void coverProviderBakesCornersAndSpineCrease() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString coverPath = dir.filePath(QStringLiteral("cover.png"));
+        QImage src(200, 300, QImage::Format_RGB32);
+        src.fill(QColor(210, 180, 120));
+        QVERIFY(src.save(coverPath, "PNG"));
+
+        const QImage rounded = CoverProvider::renderCoverImage(coverPath, QSize(256, 256), 5.0, 3.0, 160.0);
+        QVERIFY(!rounded.isNull());
+        QCOMPARE(rounded.format(), QImage::Format_ARGB32_Premultiplied);
+        QVERIFY(rounded.width() <= 256 && rounded.height() <= 256);
+        // Outer fore-edge corner is transparent; interior center is opaque cover art.
+        QCOMPARE(qAlpha(rounded.pixel(rounded.width() - 1, 0)), 0);
+        QCOMPARE(qAlpha(rounded.pixel(rounded.width() / 2, rounded.height() / 2)), 255);
+        // Left spine crease darkens x=1 relative to interior center.
+        QVERIFY(qRed(rounded.pixel(1, rounded.height() / 2)) < qRed(rounded.pixel(rounded.width() / 2, rounded.height() / 2)));
+
+        // Sharp mode (radius = 0) stays opaque Format_RGB32 with intact corners.
+        const QImage sharp = CoverProvider::renderCoverImage(coverPath, QSize(256, 256), 0.0, 0.0, 160.0);
+        QVERIFY(!sharp.isNull());
+        QCOMPARE(sharp.format(), QImage::Format_RGB32);
+        QCOMPARE(qAlpha(sharp.pixel(sharp.width() - 1, 0)), 255);
+
+        // Runtime regression: CoverImage.qml loading a non-2:3 local cover via
+        // image://cover must reach loaded=true with ZERO binding-loop warnings.
+        const QString widePath = dir.filePath(QStringLiteral("wide_cover.png"));
+        QImage wideSrc(240, 260, QImage::Format_RGB32);
+        wideSrc.fill(QColor(110, 150, 200));
+        QVERIFY(wideSrc.save(widePath, "PNG"));
+
+        QQmlEngine engine;
+        engine.addImageProvider(QStringLiteral("cover"), new CoverProvider);
+        Theme themeObj;
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &themeObj);
+        engine.rootContext()->setContextProperty(QStringLiteral("hasCoverProvider"), true);
+        QList<QQmlError> warnings;
+        QObject::connect(&engine, &QQmlEngine::warnings, &engine,
+                         [&](const QList<QQmlError> &errs) { warnings.append(errs); });
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QQmlComponent comp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/CoverImage.qml")));
+        QVERIFY2(comp.status() == QQmlComponent::Ready, qPrintable(comp.errorString()));
+        std::unique_ptr<QObject> obj(comp.createWithInitialProperties({
+            {QStringLiteral("width"), 160.0},
+            {QStringLiteral("height"), 240.0},
+            {QStringLiteral("source"), QUrl::fromLocalFile(widePath).toString()},
+            {QStringLiteral("title"), QStringLiteral("Wide Cover")},
+            {QStringLiteral("author"), QStringLiteral("Author")},
+        }));
+        QVERIFY2(obj != nullptr, qPrintable(comp.errorString()));
+        QTRY_COMPARE_WITH_TIMEOUT(obj->property("loaded").toBool(), true, 3000);
+        QCoreApplication::processEvents();
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
     }
 
     // Who speaks: paragraphs out of range, the narrator's, and unknown
@@ -11103,6 +11182,345 @@ Item {
             QVERIFY(cpQml.contains(QStringLiteral("function show(which, focusInput)")));
             QVERIFY(cpQml.contains(QStringLiteral("if (focusInput && !choosing && tab === \"ask\")")));
         }
+    }
+
+    void cacheDirectoryDeletionSelfHeals() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString dataDir = dir.filePath(QStringLiteral("data"));
+        const QString cacheDir = dir.filePath(QStringLiteral("cache"));
+        const QString audioDir = cacheDir + QStringLiteral("/audio");
+        const QString indexPath = cacheDir + QStringLiteral("/index.sqlite");
+        const QString epubPath = dir.filePath(QStringLiteral("book.epub"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(24, 36))));
+
+        Library library(dataDir, cacheDir);
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        const QString coverFile = library.record(bookId).cover;
+        QVERIFY(!coverFile.isEmpty());
+        QVERIFY(QFileInfo::exists(library.coverDirectory() + QLatin1Char('/') + coverFile));
+
+        AudioCache cache(audioDir, library.database().connectionName());
+        const QString key1 = AudioCache::keyFor("builtin", "m", "v", "", "First cached line.");
+        QByteArray pcm(4800, '\x10');
+        {
+            QSignalSpy storedSpy(&cache, &AudioCache::stored);
+            cache.store(key1, pcm, 24000, {});
+            QTRY_VERIFY_WITH_TIMEOUT(storedSpy.count() >= 1, 5000);
+        }
+        QVERIFY(!cache.lookup(key1).isEmpty());
+
+        LibraryIndex index(indexPath);
+        QVERIFY(index.available());
+        QVERIFY(LibraryIndex::indexBook(indexPath, {bookId, epubPath, QStringLiteral("epub"), 100}));
+        QCOMPARE(index.bookCount(), 1);
+
+        // Simulate the user accidentally deleting ~/.cache/clothbound while the app is running!
+        QVERIFY(QDir(cacheDir).removeRecursively());
+        QVERIFY(!QFileInfo::exists(cacheDir));
+
+        // 1. AudioCache misses cleanly, prunes stale stats, recreates dir, and stores new clips.
+        QVERIFY(cache.lookup(key1).isEmpty());
+        cache.refreshStats();
+        QCOMPARE(cache.clipCount(), 0);
+        const QString key2 = AudioCache::keyFor("builtin", "m", "v", "", "Recovered after cache wipe.");
+        {
+            QSignalSpy storedSpy(&cache, &AudioCache::stored);
+            cache.store(key2, pcm, 24000, {});
+            QTRY_VERIFY_WITH_TIMEOUT(storedSpy.count() >= 1, 5000);
+        }
+        QVERIFY(!cache.lookup(key2).isEmpty());
+
+        // 2. LibraryIndex detaches from unlinked inode, recreates index.sqlite, and indexes cleanly.
+        QCOMPARE(index.bookCount(), 0);
+        QVERIFY(QFileInfo::exists(indexPath));
+        QVERIFY(LibraryIndex::indexBook(indexPath, {bookId, epubPath, QStringLiteral("epub"), 100}));
+        QCOMPARE(index.bookCount(), 1);
+
+        // 3. Library::rescan() notices missing cached cover file and automatically re-extracts it.
+        QVERIFY(!QFileInfo::exists(library.coverDirectory() + QLatin1Char('/') + coverFile));
+        QSignalSpy scanDone(&library, &Library::scanFinished);
+        library.rescan();
+        QTRY_VERIFY_WITH_TIMEOUT(scanDone.count() >= 1, 5000);
+        QVERIFY(QFileInfo::exists(library.coverDirectory() + QLatin1Char('/') + library.record(bookId).cover));
+    }
+
+    void trayIconAndShortcutToggleWiring() {
+        TrayIcon tray;
+        QCOMPARE(tray.playing(), false);
+        const TrayMenuLayoutItem pausedLayout = tray.buildMenuLayout(0, 1);
+        QCOMPARE(pausedLayout.children.size(), 6);
+        QCOMPARE(pausedLayout.children.first().variant().value<TrayMenuLayoutItem>().properties.value("label").toString(),
+                 QStringLiteral("Play"));
+        tray.setPlaying(true);
+        const TrayMenuLayoutItem playingLayout = tray.buildMenuLayout(0, 1);
+        QCOMPARE(playingLayout.children.first().variant().value<TrayMenuLayoutItem>().properties.value("label").toString(),
+                 QStringLiteral("Pause"));
+
+        QSignalSpy actSpy(&tray, &TrayIcon::activated);
+        QSignalSpy toggleSpy(&tray, &TrayIcon::togglePlayRequested);
+        QSignalSpy nextSpy(&tray, &TrayIcon::nextRequested);
+        QSignalSpy prevSpy(&tray, &TrayIcon::previousRequested);
+        QSignalSpy quitSpy(&tray, &TrayIcon::quitRequested);
+        tray.handleActivate();
+        tray.handleMenuEvent(1, QStringLiteral("clicked"));
+        tray.handleMenuEvent(2, QStringLiteral("clicked"));
+        tray.handleMenuEvent(3, QStringLiteral("clicked"));
+        tray.handleMenuEvent(5, QStringLiteral("clicked"));
+        tray.handleMenuEvent(6, QStringLiteral("clicked"));
+        QCOMPARE(actSpy.count(), 2);
+        QCOMPARE(toggleSpy.count(), 1);
+        QCOMPARE(nextSpy.count(), 1);
+        QCOMPARE(prevSpy.count(), 1);
+        QCOMPARE(quitSpy.count(), 1);
+
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QFile mainFile(srcRoot + QStringLiteral("/ui/Main.qml"));
+        QVERIFY(mainFile.open(QIODevice::ReadOnly));
+        const QString mainQml = QString::fromUtf8(mainFile.readAll());
+        QVERIFY(!mainQml.contains(QStringLiteral("Qt.labs.platform")));
+        QVERIFY(mainQml.contains(QStringLiteral("sequence: \"Ctrl+Q\"")));
+        QVERIFY(mainQml.contains(QStringLiteral("sequence: \"Ctrl+W\"")));
+        QVERIFY(mainQml.contains(QStringLiteral("function quitApp()")));
+        QVERIFY(mainQml.contains(QStringLiteral("close.accepted = true")));
+        QVERIFY(!mainQml.contains(QStringLiteral("close.accepted = false")));
+
+        // Verify live Ctrl+Q and Ctrl+W ApplicationShortcuts fire unambiguously on every Linux theme.
+        {
+            QQmlEngine qmlEngine;
+            QQmlComponent comp(&qmlEngine);
+            comp.setData(QByteArrayLiteral(R"QML(
+import QtQuick
+Item {
+    id: scRoot
+    width: 200; height: 200
+    focus: true
+    property int quitHits: 0
+    property int closeHits: 0
+    property int ambiguousHits: 0
+    Shortcut {
+        sequence: "Ctrl+Q"
+        context: Qt.ApplicationShortcut
+        onActivated: scRoot.quitHits++
+        onActivatedAmbiguously: scRoot.ambiguousHits++
+    }
+    Shortcut {
+        sequence: "Ctrl+W"
+        context: Qt.ApplicationShortcut
+        onActivated: scRoot.closeHits++
+        onActivatedAmbiguously: scRoot.ambiguousHits++
+    }
+}
+)QML"),
+                         QUrl::fromLocalFile(srcRoot + QStringLiteral("/QuitShortcutHarness.qml")));
+            QVERIFY2(comp.status() == QQmlComponent::Ready, qPrintable(comp.errorString()));
+            std::unique_ptr<QQuickWindow> win(new QQuickWindow);
+            win->resize(200, 200);
+            std::unique_ptr<QObject> obj(comp.create());
+            QVERIFY(obj != nullptr);
+            auto *item = qobject_cast<QQuickItem *>(obj.get());
+            QVERIFY(item != nullptr);
+            item->setParentItem(win->contentItem());
+            win->show();
+            win->requestActivate();
+            QVERIFY(QTest::qWaitForWindowExposed(win.get()));
+            QCoreApplication::processEvents();
+            QTest::keyClick(win.get(), Qt::Key_Q, Qt::ControlModifier);
+            QTest::keyClick(win.get(), Qt::Key_W, Qt::ControlModifier);
+            QCOMPARE(obj->property("quitHits").toInt(), 1);
+            QCOMPARE(obj->property("closeHits").toInt(), 1);
+            QCOMPARE(obj->property("ambiguousHits").toInt(), 0);
+            item->setParentItem(nullptr);
+        }
+
+        QFile erFile(srcRoot + QStringLiteral("/ui/reader/EpubReader.qml"));
+        QVERIFY(erFile.open(QIODevice::ReadOnly));
+        const QString erQml = QString::fromUtf8(erFile.readAll());
+        QVERIFY(erQml.contains(QStringLiteral("appearance.open ? appearance.close() : view.showAppearance()")));
+        QVERIFY(erQml.contains(QStringLiteral("contents.open ? contents.close() : view.showContents()")));
+        QVERIFY(erQml.contains(QStringLiteral("marksPanel.open ? marksPanel.close() : view.showMarks()")));
+        QVERIFY(erQml.contains(QStringLiteral("voicePanel.open ? voicePanel.close() : view.showVoices()")));
+    }
+
+    void pdfPagesRawCacheAndDownscaleReuse() {
+        const QString token = QStringLiteral("test-pdf-reuse");
+        const QString id = token + QStringLiteral("/0?bg=%23111111&fg=%23eeeeee");
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString pdfPath = dir.filePath(QStringLiteral("dummy.pdf"));
+        {
+            QPdfWriter w(pdfPath);
+            w.setPageSize(QPageSize(QPageSize::A4));
+            QPainter p(&w);
+            p.drawText(QRect(40, 40, 200, 50), QStringLiteral("Hello PDF"));
+        }
+        auto book = std::make_shared<PdfBook>(pdfPath);
+        QVERIFY(book->open());
+        PdfPages::add(token, book);
+
+        QImage hi(1408, 2000, QImage::Format_RGB32);
+        hi.fill(QColor(0x11, 0x11, 0x11));
+        const QString hiKey = PdfPages::makeCacheKey(id, QSize(1408, 0));
+        PdfPages::storeCached(token, id, 1408, hiKey, hi);
+
+        // Narrowing (e.g. Companion docking: 1408 -> 1024) reuses the cached hi-res image.
+        const QImage reuse = PdfPages::cachedDownscaleMatch(id, QSize(1024, 0));
+        QCOMPARE(reuse.width(), 1408);
+        // Zooming in (1408 -> 1600) must NOT reuse a smaller image.
+        QVERIFY(PdfPages::cachedDownscaleMatch(id, QSize(1600, 0)).isNull());
+        // Raw cache stores & clears cleanly with remove(token).
+        const QString rawKey = PdfPages::makeRawKey(token, 0, QSize(1408, 0));
+        PdfPages::storeRaw(token, rawKey, hi);
+        QCOMPARE(PdfPages::cachedRaw(rawKey).width(), 1408);
+
+        PdfPages::remove(token);
+        QVERIFY(PdfPages::cached(hiKey).isNull());
+        QVERIFY(PdfPages::cachedRaw(rawKey).isNull());
+        QVERIFY(PdfPages::cachedDownscaleMatch(id, QSize(1024, 0)).isNull());
+    }
+
+    void smoothWheelTrackpadAccelerationAndKineticCoast() {
+        Theme theme;
+        QQmlEngine engine;
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QVERIFY(QFileInfo::exists(srcRoot));
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+
+        // 1. Pure velocity-gain and kinetic coast math.
+        QQmlComponent swComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/components/SmoothWheel.qml")));
+        QVERIFY2(swComp.status() == QQmlComponent::Ready, qPrintable(swComp.errorString()));
+        std::unique_ptr<QObject> swObj(swComp.create());
+        QVERIFY2(swObj != nullptr, qPrintable(swComp.errorString()));
+
+        auto gainFor = [&](double speed) -> double {
+            QVariant ret;
+            QMetaObject::invokeMethod(swObj.get(), "trackpadGainForSpeed", Q_RETURN_ARG(QVariant, ret), Q_ARG(QVariant, speed));
+            return ret.toDouble();
+        };
+        QCOMPARE(gainFor(150.0), 1.0);
+        QVERIFY(gainFor(1200.0) > 1.8);
+        QVERIFY(gainFor(2500.0) >= 2.75);
+
+        auto coastPlan = [&](double curY, double vel, double minY, double maxY) -> QVariantMap {
+            QVariant ret;
+            QMetaObject::invokeMethod(swObj.get(), "computeCoastPlan", Q_RETURN_ARG(QVariant, ret),
+                                      Q_ARG(QVariant, curY), Q_ARG(QVariant, vel),
+                                      Q_ARG(QVariant, minY), Q_ARG(QVariant, maxY));
+            return ret.toMap();
+        };
+        // Below threshold -> zero coast.
+        QCOMPARE(coastPlan(100.0, 150.0, 0.0, 6000.0).value(QStringLiteral("duration")).toInt(), 0);
+        // Brisk downward flick -> substantial smooth coast distance (reaches across long views effortlessly).
+        const QVariantMap brisk = coastPlan(100.0, 3600.0, 0.0, 6000.0);
+        QVERIFY2(brisk.value(QStringLiteral("distance")).toDouble() > 1500.0,
+                 qPrintable(QString::number(brisk.value(QStringLiteral("distance")).toDouble())));
+        QVERIFY(brisk.value(QStringLiteral("duration")).toInt() >= 220);
+        // Clamping near bottom shortens duration proportionally rather than crawling.
+        const QVariantMap nearBottom = coastPlan(5800.0, 4500.0, 0.0, 6000.0);
+        QCOMPARE(nearBottom.value(QStringLiteral("targetY")).toDouble(), 6000.0);
+        QVERIFY(nearBottom.value(QStringLiteral("duration")).toInt() < 350);
+
+        // 2. Live QQuickWindow trackpad flick -> accelerated tracking + kinetic coast on Qt::ScrollEnd,
+        //    immediate stop when fingers touch back down, and zero double-coast on native ScrollMomentum.
+        const QString harnessQml = QStringLiteral(R"QML(
+import QtQuick
+import QtQuick.Controls
+import "ui/components"
+Item {
+    width: 600
+    height: 400
+    property alias flick: flick
+    property alias wheel: sw
+    Flickable {
+        id: flick
+        anchors.fill: parent
+        contentHeight: 8000
+        boundsBehavior: Flickable.StopAtBounds
+        pixelAligned: true
+        ScrollBar.vertical: ScrollBar {}
+        SmoothWheel {
+            id: sw
+            stepSize: 165
+        }
+    }
+}
+)QML");
+        QQmlComponent harnessComp(&engine);
+        harnessComp.setData(harnessQml.toUtf8(), QUrl::fromLocalFile(srcRoot + QStringLiteral("/SmoothWheelTrackpadHarness.qml")));
+        QVERIFY2(harnessComp.status() == QQmlComponent::Ready, qPrintable(harnessComp.errorString()));
+        std::unique_ptr<QQuickWindow> win(new QQuickWindow);
+        win->resize(600, 400);
+        std::unique_ptr<QObject> rootObj(harnessComp.create());
+        QVERIFY2(rootObj != nullptr, qPrintable(harnessComp.errorString()));
+        QQuickItem *rootItem = qobject_cast<QQuickItem *>(rootObj.get());
+        QVERIFY(rootItem != nullptr);
+        rootItem->setParentItem(win->contentItem());
+        win->show();
+        QVERIFY(QTest::qWaitForWindowExposed(win.get()));
+
+        QQuickItem *flickItem = rootObj->property("flick").value<QQuickItem *>();
+        QQuickItem *wheelItem = rootObj->property("wheel").value<QQuickItem *>();
+        QVERIFY(flickItem && wheelItem);
+
+        auto invokeWheel = [&](double ay, double py, int phase, bool isTouchPad) -> bool {
+            QVariant ret;
+            QMetaObject::invokeMethod(wheelItem, "handleWheelEvent", Q_RETURN_ARG(QVariant, ret),
+                                      Q_ARG(QVariant, ay), Q_ARG(QVariant, py),
+                                      Q_ARG(QVariant, phase), Q_ARG(QVariant, isTouchPad));
+            return ret.toBool();
+        };
+
+        // Simulate a brisk 6-frame two-finger flick (14 px per ~10 ms = ~1750 px/s raw).
+        QVERIFY(invokeWheel(0.0, -14.0, int(Qt::ScrollBegin), true));
+        for (int i = 0; i < 5; ++i) {
+            QTest::qWait(10);
+            QVERIFY(invokeWheel(0.0, -14.0, int(Qt::ScrollUpdate), true));
+        }
+        const double atLiftY = flickItem->property("contentY").toDouble();
+        // Adaptive velocity gain should already exceed flat 1.25x (6 * 14 * 1.25 = 105 px).
+        QVERIFY2(atLiftY > 140.0, qPrintable(QStringLiteral("atLiftY=%1").arg(atLiftY)));
+        // Lift fingers -> ScrollEnd immediately kicks off kinetic coasting.
+        QVERIFY(invokeWheel(0.0, 0.0, int(Qt::ScrollEnd), true));
+        QCOMPARE(wheelItem->property("coasting").toBool(), true);
+        const double coastTarget = wheelItem->property("activeTargetY").toDouble();
+        QVERIFY2(coastTarget > atLiftY + 800.0,
+                 qPrintable(QStringLiteral("coastTarget=%1 atLiftY=%2").arg(coastTarget).arg(atLiftY)));
+
+        // Putting fingers back down (ScrollBegin) catches and stops the coast instantly.
+        QTest::qWait(40);
+        QVERIFY(invokeWheel(0.0, 0.0, int(Qt::ScrollBegin), true));
+        QCOMPARE(wheelItem->property("coasting").toBool(), false);
+        QCOMPARE(wheelItem->property("gliding").toBool(), false);
+
+        // Native compositor ScrollMomentum passes through directly without launching synthetic coasting.
+        const double beforeMom = flickItem->property("contentY").toDouble();
+        QVERIFY(invokeWheel(0.0, -20.0, int(Qt::ScrollMomentum), true));
+        QCOMPARE(wheelItem->property("coasting").toBool(), false);
+        QVERIFY2(qAbs(flickItem->property("contentY").toDouble() - (beforeMom + 25.0)) <= 1.0,
+                 qPrintable(QString::number(flickItem->property("contentY").toDouble())));
+        QVERIFY(invokeWheel(0.0, 0.0, int(Qt::ScrollEnd), true));
+        QCOMPARE(wheelItem->property("coasting").toBool(), false);
+
+        // Reduced motion disables kinetic coasting.
+        theme.setReducedMotion(true);
+        QVERIFY(invokeWheel(0.0, -16.0, int(Qt::ScrollBegin), true));
+        for (int i = 0; i < 4; ++i) {
+            QTest::qWait(10);
+            QVERIFY(invokeWheel(0.0, -16.0, int(Qt::ScrollUpdate), true));
+        }
+        QVERIFY(invokeWheel(0.0, 0.0, int(Qt::ScrollEnd), true));
+        QCOMPARE(wheelItem->property("coasting").toBool(), false);
+        rootItem->setParentItem(nullptr);
+
+        // 3. PdfSurface.qml attaches SmoothWheel to both continuous scroll pageList and zoomed pan view.
+        QFile pdfFile(srcRoot + QStringLiteral("/ui/reader/PdfSurface.qml"));
+        QVERIFY(pdfFile.open(QIODevice::ReadOnly));
+        const QString pdfQml = QString::fromUtf8(pdfFile.readAll());
+        QVERIFY(pdfQml.contains(QStringLiteral("SmoothWheel { stepSize: 165 }")));
+        QVERIFY(pdfQml.contains(QStringLiteral("enabled: surface.canPanY")));
     }
 };
 

@@ -12,6 +12,7 @@
 #include <QWebEngineUrlRequestJob>
 #include <QXmlStreamEntityResolver>
 #include <QXmlStreamReader>
+#include <QtWebEngineQuick/QQuickWebEngineProfile>
 
 namespace {
 // Resolves standard HTML/XHTML entities so QXmlStreamReader validates the entire
@@ -221,4 +222,29 @@ void OfflineInterceptor::interceptRequest(QWebEngineUrlRequestInfo &info) {
     if (scheme != QStringLiteral("clothbound") && scheme != QStringLiteral("data") && scheme != QStringLiteral("blob") &&
         scheme != QStringLiteral("about"))
         info.block(true);
+}
+
+LazyWebProfile::LazyWebProfile(BookScheme *scheme, OfflineInterceptor *interceptor, QObject *parent)
+    : QObject(parent), m_scheme(scheme), m_interceptor(interceptor) {}
+
+LazyWebProfile::~LazyWebProfile() {
+    if (m_profile) {
+        m_profile->setUrlRequestInterceptor(nullptr);
+        if (m_scheme)
+            m_profile->removeUrlSchemeHandler(m_scheme);
+        m_profile = nullptr;
+    }
+}
+
+QQuickWebEngineProfile *LazyWebProfile::ensure() {
+    if (!m_profile) {
+        m_profile = QQuickWebEngineProfile::defaultProfile();
+        if (m_profile) {
+            if (m_scheme)
+                m_profile->installUrlSchemeHandler("clothbound", m_scheme);
+            if (m_interceptor)
+                m_profile->setUrlRequestInterceptor(m_interceptor);
+        }
+    }
+    return m_profile;
 }

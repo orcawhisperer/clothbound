@@ -52,8 +52,7 @@ function listening() {
         { keys: ",  .", action: qsTr("Previous / next paragraph") },
         { keys: "⇧ ←  ⇧ →", action: qsTr("Skip back / forward 15 seconds") },
         { keys: "<  >", action: qsTr("Slower / faster") },
-        { keys: "V", action: qsTr("Narrator and style") },
-        { keys: "Super W", action: qsTr("Close the window and keep listening; open Clothbound again to return") }
+        { keys: "V", action: qsTr("Narrator and style") }
     ]
 }
 function everywhere() {
@@ -62,6 +61,6 @@ function everywhere() {
         { keys: "Ctrl ,", action: qsTr("Settings") },
         { keys: "F  F11", action: qsTr("Full screen") },
         { keys: "?", action: qsTr("Show these shortcuts") },
-        { keys: "Q", action: qsTr("Quit") }
+        { keys: "Q  Ctrl Q", action: qsTr("Quit") }
     ]
 }

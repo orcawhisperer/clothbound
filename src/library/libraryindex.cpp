@@ -27,10 +27,15 @@ struct Connection {
     QString name;
     QSqlDatabase db;
     explicit Connection(const QString &path) : name(QUuid::createUuid().toString()) {
+        QDir().mkpath(QFileInfo(path).absolutePath());
         db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
         db.setDatabaseName(path);
         db.open();
         QSqlQuery(db).exec(QStringLiteral("PRAGMA journal_mode = WAL"));
+        QSqlQuery(db).exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+        QSqlQuery(db).exec(QStringLiteral("PRAGMA temp_store = MEMORY"));
+        QSqlQuery(db).exec(QStringLiteral("PRAGMA cache_size = -16000"));
+        QSqlQuery(db).exec(QStringLiteral("PRAGMA mmap_size = 67108864"));
         QSqlQuery(db).exec(QStringLiteral("PRAGMA busy_timeout = 4000"));
     }
     ~Connection() {
@@ -59,6 +64,14 @@ LibraryIndex::LibraryIndex(const QString &path, QObject *parent)
     // Without FTS5 in SQLite, search across books says it isn't available
     // rather than quietly finding nothing.
     m_available = db.open() && createSchema(db);
+    if (m_available) {
+        QSqlQuery pragma(db);
+        pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
+        pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+        pragma.exec(QStringLiteral("PRAGMA temp_store = MEMORY"));
+        pragma.exec(QStringLiteral("PRAGMA cache_size = -16000"));
+        pragma.exec(QStringLiteral("PRAGMA mmap_size = 67108864"));
+    }
 }
 
 LibraryIndex::~LibraryIndex() {
@@ -70,8 +83,34 @@ LibraryIndex::~LibraryIndex() {
     QSqlDatabase::removeDatabase(m_connection);
 }
 
+bool LibraryIndex::ensureDatabase() const {
+    if (m_path.isEmpty())
+        return m_available;
+    QSqlDatabase db = QSqlDatabase::database(m_connection, false);
+    if (m_available && db.isOpen() && QFileInfo::exists(m_path))
+        return true;
+    // Self-heal if ~/.cache/clothbound (and index.sqlite) was deleted while running:
+    // reopen a fresh file instead of remaining attached to an unlinked inode.
+    if (db.isOpen())
+        db.close();
+    QDir().mkpath(QFileInfo(m_path).absolutePath());
+    if (!db.isValid())
+        db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connection);
+    db.setDatabaseName(m_path);
+    m_available = db.open() && createSchema(db);
+    if (m_available) {
+        QSqlQuery pragma(db);
+        pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
+        pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+        pragma.exec(QStringLiteral("PRAGMA temp_store = MEMORY"));
+        pragma.exec(QStringLiteral("PRAGMA cache_size = -16000"));
+        pragma.exec(QStringLiteral("PRAGMA mmap_size = 67108864"));
+    }
+    return m_available;
+}
+
 int LibraryIndex::bookCount() const {
-    if (!m_available)
+    if (!ensureDatabase())
         return 0;
     QSqlQuery q(QSqlDatabase::database(m_connection));
     return q.exec(QStringLiteral("SELECT count(*) FROM indexed")) && q.next() ? q.value(0).toInt() : 0;
@@ -141,7 +180,7 @@ bool LibraryIndex::indexBook(const QString &databasePath, const Source &book, co
 }
 
 void LibraryIndex::update(const QList<Source> &books) {
-    if (!m_available)
+    if (!ensureDatabase())
         return;
     m_last = books;
     QSqlDatabase db = QSqlDatabase::database(m_connection);
@@ -220,7 +259,7 @@ void LibraryIndex::cancel() {
 }
 
 void LibraryIndex::rebuild() {
-    if (!m_available)
+    if (!ensureDatabase())
         return;
     cancel();
     QSqlDatabase db = QSqlDatabase::database(m_connection);
@@ -234,7 +273,7 @@ void LibraryIndex::rebuild() {
 QVariantList LibraryIndex::search(const QString &query, int limit, int bookId) const {
     QVariantList results;
     const QString match = matchExpression(query);
-    if (!m_available || match.isEmpty())
+    if (!ensureDatabase() || match.isEmpty())
         return results;
     QSqlQuery q(QSqlDatabase::database(m_connection));
     if (bookId > 0) {
@@ -272,7 +311,7 @@ QVariantList LibraryIndex::search(const QString &query, int limit, int bookId) c
 }
 
 QString LibraryIndex::passage(int bookId, int chapter, qint64 start, qint64 end) const {
-    if (!m_available || end <= start)
+    if (!ensureDatabase() || end <= start)
         return {};
     QSqlQuery q(QSqlDatabase::database(m_connection));
     q.prepare(QStringLiteral("SELECT substr(body, ?, ?) FROM chapter_text WHERE book = ? AND chapter = ?"));

@@ -39,7 +39,7 @@
 #include <cstdlib>
 
 #ifndef CLOTHBOUND_VERSION
-#define CLOTHBOUND_VERSION "0.4.0"
+#define CLOTHBOUND_VERSION "0.4.1"
 #endif
 
 namespace {

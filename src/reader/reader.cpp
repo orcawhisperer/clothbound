@@ -61,7 +61,6 @@ struct Reader::PageTurnSfx {
         m_idleTimer.setSingleShot(true);
         m_idleTimer.setInterval(kIdleReleaseMs);
         QObject::connect(&m_idleTimer, &QTimer::timeout, m_owner, [this] { releaseSink(); });
-        QObject::connect(&m_devices, &QMediaDevices::audioOutputsChanged, m_owner, [this] { handleOutputsChanged(); });
     }
 
     ~PageTurnSfx() {
@@ -292,6 +291,10 @@ private:
     void ensureSink() {
         if (m_sink)
             return;
+        if (!m_devices) {
+            m_devices = std::make_unique<QMediaDevices>();
+            QObject::connect(m_devices.get(), &QMediaDevices::audioOutputsChanged, m_owner, [this] { handleOutputsChanged(); });
+        }
         const QAudioDevice device = QMediaDevices::defaultAudioOutput();
         if (device.isNull())
             return;
@@ -342,7 +345,7 @@ private:
     }
 
     QObject *m_owner;
-    QMediaDevices m_devices;
+    std::unique_ptr<QMediaDevices> m_devices;
     QAudioDevice m_outputDevice;
     QAudioSink *m_sink = nullptr;
     QBuffer m_buffer;

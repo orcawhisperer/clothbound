@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+# Repeatable performance benchmark suite for Clothbound:
+#   Part A: C++ core micro-benchmarks (PDF render/recolor/spread/crop, 500-book SQLite, FTS5)
+#   Part B: Real GUI cold startup, phase breakdown, QML object count, RSS & idle CPU%
+set -euo pipefail
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+APP="$ROOT/build/clothbound"
+BENCH_DIR="$ROOT/build/bench"
+BENCH_BIN="$BENCH_DIR/clothbound_bench"
+RUNS="${CLOTHBOUND_BENCH_RUNS:-3}"
+BOOK_COUNT="${CLOTHBOUND_BENCH_BOOKS:-500}"
+
+echo "Building release clothbound + clothbound_bench..."
+"$ROOT/bin/build" >/dev/null
+mkdir -p "$BENCH_DIR"
+(
+    cd "$BENCH_DIR"
+    qmake6 "$ROOT/tests/clothbound_bench.pro" >/dev/null
+    make -j"$(nproc)" >/dev/null
+)
+
+echo ""
+QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic "$BENCH_BIN"
+
+echo ""
+echo "=== Clothbound GUI Startup, Memory & Idle CPU ($BOOK_COUNT books, Rounded mode, $RUNS runs) ==="
+
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/clothbound-bench.XXXXXX")"
+trap 'rm -rf "$TMP_ROOT"' EXIT INT TERM
+
+mkdir -p "$TMP_ROOT/home/.config/clothbound" \
+         "$TMP_ROOT/home/.config/omarchy" \
+         "$TMP_ROOT/home/.local/state/omarchy/current/theme" \
+         "$TMP_ROOT/home/.local/share/clothbound" \
+         "$TMP_ROOT/home/.cache/clothbound/covers" \
+         "$TMP_ROOT/books" \
+         "$TMP_ROOT/runtime"
+chmod 700 "$TMP_ROOT/runtime"
+printf 'en\n' > "$TMP_ROOT/home/.config/omarchy/language"
+
+# Mark onboarding complete & set Rounded corners so CoverImage exercises the full mask path.
+VERSION="$("$APP" --version | awk '{print $NF}')"
+cat > "$TMP_ROOT/home/.config/clothbound/settings.ini" <<EOF
+[appearance]
+mode=dark
+corners=rounded
+
+[onboarding]
+welcomed=true
+version=$VERSION
+
+[window]
+width=1280
+height=840
+EOF
+
+# Seed a realistic 500-book library with real cover PNGs + 1 real EPUB + 1 real PDF.
+python3 - "$TMP_ROOT" "$BOOK_COUNT" <<'PY'
+import os, sqlite3, struct, sys, time, zlib, zipfile
+
+root = sys.argv[1]
+count = int(sys.argv[2])
+db_path = os.path.join(root, "home/.local/share/clothbound/library.sqlite")
+covers_dir = os.path.join(root, "home/.cache/clothbound/covers")
+books_dir = os.path.join(root, "books")
+
+def make_png(w, h, r, g, b):
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+    row = b"\x00" + bytes([r, g, b]) * w
+    raw = zlib.compress(row * h, 1)
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", raw) + chunk(b"IEND", b"")
+
+# Generate 24 distinct 240x360 PNG covers reused across the 500-book library.
+cover_paths = []
+for i in range(24):
+    p = os.path.join(covers_dir, f"cover_{i:02d}.png")
+    with open(p, "wb") as f:
+        f.write(make_png(240, 360, (40 + i * 9) % 230, (60 + i * 13) % 220, (90 + i * 17) % 230))
+    cover_paths.append(p)
+
+# Write 1 valid EPUB & 1 valid PDF for real reader-open benchmarks.
+epub_path = os.path.join(books_dir, "sample.epub")
+with zipfile.ZipFile(epub_path, "w") as zf:
+    zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+    zf.writestr("META-INF/container.xml",
+        '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+        '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
+    zf.writestr("OEBPS/content.opf",
+        '<?xml version="1.0" encoding="utf-8"?><package version="2.0" unique-identifier="uid" xmlns="http://www.idpf.org/2007/opf">'
+        '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>Benchmark EPUB</dc:title><dc:creator>Ada Marsh</dc:creator>'
+        '<dc:language>en</dc:language><dc:identifier id="uid">urn:uuid:bench-epub</dc:identifier></metadata>'
+        '<manifest><item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/></manifest>'
+        '<spine><itemref idref="ch1"/></spine></package>')
+    paras = "".join(f"<p>Paragraph {i}: Crisp typography keeps long reading sessions effortless across desktop displays.</p>" for i in range(120))
+    zf.writestr("OEBPS/ch1.xhtml",
+        f'<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml"><head><title>Ch 1</title></head><body><h1>Chapter One</h1>{paras}</body></html>')
+
+pdf_path = os.path.join(books_dir, "sample.pdf")
+# Minimal 4-page PDF
+objs = []
+objs.append("<< /Type /Catalog /Pages 2 0 R >>")
+objs.append("<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R] /Count 4 >>")
+for p in range(4):
+    objs.append(f"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 7 0 R /Resources << /Font << /F1 8 0 R >> >> >>")
+stream = "BT /F1 14 Tf 72 700 Td (Clothbound PDF Benchmark Page) Tj ET"
+objs.append(f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream")
+objs.append("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
+out = bytearray(b"%PDF-1.4\n")
+offsets = []
+for idx, body in enumerate(objs, 1):
+    offsets.append(len(out))
+    out += f"{idx} 0 obj\n{body}\nendobj\n".encode()
+xref = len(out)
+out += f"xref\n0 {len(objs)+1}\n0000000000 65535 f \n".encode()
+for off in offsets:
+    out += f"{off:010d} 00000 n \n".encode()
+out += f"trailer\n<< /Size {len(objs)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
+with open(pdf_path, "wb") as f:
+    f.write(out)
+
+PY
+
+# Initialize real Clothbound schema by adding the 2 real books via CLI fast path.
+XDG_CONFIG_HOME="$TMP_ROOT/home/.config" \
+XDG_DATA_HOME="$TMP_ROOT/home/.local/share" \
+XDG_CACHE_HOME="$TMP_ROOT/home/.cache" \
+HOME="$TMP_ROOT/home" \
+"$APP" add "$TMP_ROOT/books/sample.epub" >/dev/null
+XDG_CONFIG_HOME="$TMP_ROOT/home/.config" \
+XDG_DATA_HOME="$TMP_ROOT/home/.local/share" \
+XDG_CACHE_HOME="$TMP_ROOT/home/.cache" \
+HOME="$TMP_ROOT/home" \
+"$APP" add "$TMP_ROOT/books/sample.pdf" >/dev/null
+
+# Populate remaining synthetic books + annotations directly into library.sqlite.
+python3 - "$TMP_ROOT" "$BOOK_COUNT" <<'PY'
+import os, sqlite3, sys, time
+
+root = sys.argv[1]
+count = int(sys.argv[2])
+db_path = os.path.join(root, "home/.local/share/clothbound/library.sqlite")
+covers_dir = os.path.join(root, "home/.cache/clothbound/covers")
+cover_paths = [os.path.join(covers_dir, f"cover_{i:02d}.png") for i in range(24)]
+
+conn = sqlite3.connect(db_path)
+cur = conn.cursor()
+now = int(time.time())
+existing = cur.execute("SELECT COUNT(*) FROM books").fetchone()[0]
+for i in range(existing + 1, count + 1):
+    fmt = "pdf" if (i % 4 == 0) else "epub"
+    title = f"The Meridian Volume {i}"
+    author = f"Author {i % 50}"
+    opened = (now - i * 3600) if i <= 20 else 0
+    finished = (now - i * 1800) if (10 < i <= 20) else 0
+    progress = 1.0 if finished else (0.35 if opened else 0.0)
+    pos = '{"chapter":1,"offset":120,"title":"Chapter One","snippet":"A calm line of text."}' if opened else ""
+    cur.execute(
+        "INSERT INTO books (path, format, size, mtime, title, sort_title, author, sort_author, "
+        "publisher, year, language, series, series_index, work_key, chapters, pages, length, cover, "
+        "added_at, opened_at, finished_at, progress, position, seconds_read, missing, hidden, loose, want_at, listened_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Harbor', ?, 'en', '', 0, ?, 10, ?, 120000, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0)",
+        (f"/fake/book_{i}.{fmt}", fmt, 200000, now - i * 86400, title, title.lower(), author, author.lower(),
+         1980 + (i % 40), f"work-{i}", 240 if fmt == "pdf" else 0, cover_paths[i % len(cover_paths)],
+         now - i * 3600, opened, finished, progress, pos, 1200 if opened else 0)
+    )
+for i in range(1, min(count, 200) + 1):
+    cur.execute(
+        "INSERT INTO annotations (book_id, kind, chapter, start, finish, text, note, color, label, created_at, updated_at) "
+        "VALUES (?, 'highlight', 0, 10, 80, 'Sample highlight', '', 'yellow', 'Ch 1', ?, ?)",
+        (i, now - i, now - i)
+    )
+conn.commit()
+conn.close()
+PY
+
+run_gui_probe() {
+    local label="$1"
+    local settle_ms="$2"
+    shift 2
+    local log="$TMP_ROOT/${label}.log"
+
+    local use_xvfb=0
+    local platform="offscreen"
+    if command -v xvfb-run >/dev/null 2>&1; then
+        platform="xcb"
+        use_xvfb=1
+    fi
+
+    # Launch app, capture startup profile, and also sample idle CPU + full process-tree RSS during settle.
+    python3 - "$log" "$settle_ms" "$TMP_ROOT" "$platform" "$use_xvfb" "$APP" "$@" <<'PY'
+import os, subprocess, sys, time
+
+log_path, settle_ms, tmp_root, platform, use_xvfb, app = sys.argv[1:7]
+extra_args = sys.argv[7:]
+settle_ms = int(settle_ms)
+use_xvfb = int(use_xvfb)
+
+env = os.environ.copy()
+env.pop("GEMINI_API_KEY", None)
+env.pop("WAYLAND_DISPLAY", None)
+env.pop("HYPRLAND_INSTANCE_SIGNATURE", None)
+env.update({
+    "HOME": os.path.join(tmp_root, "home"),
+    "XDG_CONFIG_HOME": os.path.join(tmp_root, "home/.config"),
+    "XDG_DATA_HOME": os.path.join(tmp_root, "home/.local/share"),
+    "XDG_CACHE_HOME": os.path.join(tmp_root, "home/.cache"),
+    "XDG_RUNTIME_DIR": os.path.join(tmp_root, "runtime"),
+    "QT_QPA_PLATFORM": platform,
+    "QT_QPA_PLATFORMTHEME": "generic",
+    "QT_SCALE_FACTOR": "1",
+    "QTWEBENGINE_DISABLE_SANDBOX": "1",
+    "LIBGL_ALWAYS_SOFTWARE": "1",
+    "CLOTHBOUND_PROFILE": "1",
+    "CLOTHBOUND_PROFILE_EXIT_AFTER_FRAME": "1",
+    "CLOTHBOUND_PROFILE_SETTLE_MS": str(settle_ms),
+})
+
+cmd = []
+if use_xvfb:
+    cmd.extend(["xvfb-run", "-a", "-s", "-screen 0 1280x840x24"])
+cmd.extend(["dbus-run-session", "--", app, *extra_args])
+
+def find_descendants(root_pid):
+    children = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", "r") as f:
+                data = f.read()
+            rparen = data.rfind(")")
+            fields = data[rparen + 2:].split()
+            ppid = int(fields[1])
+            children.setdefault(ppid, []).append(int(entry))
+        except OSError:
+            pass
+    out, stack = [], [root_pid]
+    while stack:
+        p = stack.pop()
+        out.append(p)
+        stack.extend(children.get(p, []))
+    return out
+
+def app_pids(root_pid):
+    pids = []
+    for p in find_descendants(root_pid):
+        try:
+            with open(f"/proc/{p}/cmdline", "rb") as f:
+                cl = f.read().decode("utf-8", "ignore")
+            if "clothbound" in cl or "QtWebEngineProcess" in cl:
+                pids.append((p, "webengine" if "QtWebEngineProcess" in cl else "clothbound"))
+        except OSError:
+            pass
+    return pids
+
+def total_cpu_ticks(pids):
+    ticks = 0
+    for p, _ in pids:
+        try:
+            with open(f"/proc/{p}/stat", "r") as f:
+                data = f.read()
+            rparen = data.rfind(")")
+            fields = data[rparen + 2:].split()
+            ticks += int(fields[11]) + int(fields[12])
+        except OSError:
+            pass
+    return ticks
+
+def tree_rss_mib(pids):
+    main_kb, web_kb, web_procs = 0, 0, 0
+    for p, kind in pids:
+        try:
+            with open(f"/proc/{p}/status", "r") as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        kb = int(line.split()[1])
+                        if kind == "webengine":
+                            web_kb += kb
+                            web_procs += 1
+                        else:
+                            main_kb += kb
+                        break
+        except OSError:
+            pass
+    return main_kb / 1024.0, web_kb / 1024.0, web_procs
+
+clk_tck = os.sysconf("SC_CLK_TCK")
+with open(log_path, "w") as lf:
+    proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env)
+    cpu_sample = None
+    rss_sample = None
+    if settle_ms >= 1500:
+        # Wait for first_frame + 500ms settle, then sample CPU across ~1.2s of idle time.
+        deadline = time.monotonic() + 20.0
+        first_seen = False
+        while proc.poll() is None and time.monotonic() < deadline:
+            try:
+                with open(log_path, "r") as rf:
+                    if "phase=first_frame" in rf.read():
+                        first_seen = True
+                        break
+            except OSError:
+                pass
+            time.sleep(0.05)
+        if first_seen:
+            warmup = 1.6 if extra_args else 0.6
+            sample_dur = max(0.8, (settle_ms / 1000.0) - warmup - 0.25)
+            time.sleep(warmup)
+            p1 = app_pids(proc.pid)
+            t1 = total_cpu_ticks(p1)
+            w1 = time.monotonic()
+            time.sleep(sample_dur)
+            p2 = app_pids(proc.pid)
+            t2 = total_cpu_ticks(p2)
+            w2 = time.monotonic()
+            rss_sample = tree_rss_mib(p2)
+            dt = max(0.01, w2 - w1)
+            cpu_sample = 100.0 * ((t2 - t1) / clk_tck) / dt
+    proc.wait(timeout=30)
+
+with open(log_path, "a") as lf:
+    if rss_sample is not None:
+        lf.write(f"PROFILE tree main_rss_mib={rss_sample[0]:.2f} webengine_rss_mib={rss_sample[1]:.2f} webengine_procs={rss_sample[2]} idle_cpu_pct={cpu_sample:.2f}\n")
+PY
+}
+
+# Run N cold-start Library probes (2200 ms settle on last run for idle CPU% + process tree).
+for i in $(seq 1 "$RUNS"); do
+    settle=200
+    [ "$i" -eq "$RUNS" ] && settle=2200
+    run_gui_probe "library_${i}" "$settle"
+done
+
+# Run 1 direct PDF open and 1 direct EPUB open probe (with 3000ms settle so surfaces finish loading before idle CPU sample).
+run_gui_probe "open_pdf" 3000 "$TMP_ROOT/books/sample.pdf"
+run_gui_probe "open_epub" 3500 "$TMP_ROOT/books/sample.epub"
+
+python3 - "$TMP_ROOT" "$RUNS" <<'PY'
+import re, statistics, sys
+
+tmp_root = sys.argv[1]
+runs = int(sys.argv[2])
+
+def parse_log(path):
+    phases = {}
+    metrics = {}
+    settled = {}
+    tree = {}
+    with open(path) as f:
+        for line in f:
+            m = re.match(r"PROFILE phase=(\S+) elapsed_ms=([0-9.]+) delta_ms=([0-9.]+)", line)
+            if m:
+                phases[m.group(1)] = (float(m.group(2)), float(m.group(3)))
+            m2 = re.match(r"PROFILE (metrics|settled|tree) (.*)", line)
+            if m2:
+                bucket = {"metrics": metrics, "settled": settled, "tree": tree}[m2.group(1)]
+                for kv in m2.group(2).split():
+                    if "=" not in kv:
+                        continue
+                    k, v = kv.split("=", 1)
+                    try:
+                        bucket[k] = float(v)
+                    except ValueError:
+                        bucket[k] = v
+    return phases, metrics, settled, tree
+
+phase_order = [
+    "webengine_init", "qguiapp", "fonts_and_style", "theme_and_library",
+    "webengine_profile", "services_ai", "services_audio", "services_reader_online",
+    "qml_engine_load", "first_frame"
+]
+
+all_runs = [parse_log(f"{tmp_root}/library_{i}.log") for i in range(1, runs + 1)]
+print(f"Library Cold-Start Phase Breakdown (median of {runs} runs):")
+for ph in phase_order:
+    deltas = [r[0][ph][1] for r in all_runs if ph in r[0]]
+    elaps = [r[0][ph][0] for r in all_runs if ph in r[0]]
+    if deltas:
+        print(f"  {ph:<24s} +{statistics.median(deltas):7.2f} ms   (cumulative: {statistics.median(elaps):7.2f} ms)")
+
+last_m, last_s, last_t = all_runs[-1][1], all_runs[-1][2], all_runs[-1][3]
+if last_m:
+    print(f"Library Boot Metrics:  qml_objects={int(last_m.get('qml_objects',0))}  qml_items={int(last_m.get('qml_items',0))}  first_frame_rss={last_m.get('rss_mib',0):.1f} MiB")
+if last_t:
+    print(f"Library Settled Tree:  main_rss={last_t.get('main_rss_mib',0):.1f} MiB  webengine_rss={last_t.get('webengine_rss_mib',0):.1f} MiB ({int(last_t.get('webengine_procs',0))} procs)  idle_cpu={last_t.get('idle_cpu_pct',0):.2f}%")
+
+for name, label in [("open_pdf", "Direct PDF Open"), ("open_epub", "Direct EPUB Open")]:
+    ph, m, s, t = parse_log(f"{tmp_root}/{name}.log")
+    ff = ph.get("first_frame", (0.0, 0.0))[0]
+    print(f"{label:<22s} first_frame={ff:7.1f} ms  qml_objects={int(s.get('qml_objects', m.get('qml_objects', 0)))}  "
+          f"main_rss={t.get('main_rss_mib', s.get('rss_mib', 0)):.1f} MiB  "
+          f"webengine_rss={t.get('webengine_rss_mib', 0):.1f} MiB ({int(t.get('webengine_procs', 0))} procs)  "
+          f"idle_cpu={t.get('idle_cpu_pct', 0):.2f}%")
+PY

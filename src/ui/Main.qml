@@ -1,7 +1,6 @@
 import QtCore
 import QtQuick
 import QtQuick.Controls
-import Qt.labs.platform as Platform
 import "components"
 import "library"
 import "reader"
@@ -84,17 +83,19 @@ ApplicationWindow {
         geometryReady = true
     }
 
-    // Closing the window while a book is read aloud leaves the voice reading:
-    // Clothbound waits in the bar's tray until it's shown again, or the reading
-    // ends. Closed otherwise, it quits.
-    onClosing: (close) => {
+    function quitApp() {
         win.saveWindowGeometry()
-        if (narration.active) {
-            close.accepted = false
-            win.listenInBackground()
-        } else {
-            Qt.quit()
-        }
+        if (narration.active)
+            narration.stop()
+        Qt.quit()
+    }
+
+    // Closing the window always stops audio and quits Clothbound cleanly.
+    // To keep listening in the background intentionally, use the tray button
+    // in the listening bar.
+    onClosing: (close) => {
+        close.accepted = true
+        win.quitApp()
     }
     property bool backgroundTold: false
     function listenInBackground() {
@@ -102,7 +103,7 @@ ApplicationWindow {
         if (!backgroundTold) {
             backgroundTold = true
             desktop.notify(qsTr("Clothbound keeps reading"),
-                           qsTr("Click here, or open Clothbound again, to bring the book back. The media keys and the bar's media panel still control the voice."),
+                           qsTr("Click here, the tray icon, or open Clothbound again to bring the book back. Media keys still control the voice."),
                            true)
         }
     }
@@ -120,34 +121,28 @@ ApplicationWindow {
                 Qt.quit()
         }
     }
-    Platform.SystemTrayIcon {
-        visible: !win.visible && narration.active
-        icon.source: "qrc:/clothbound.svg"
-        tooltip: narration.active ? qsTr("Clothbound is reading %1").arg(reader.title) : "Clothbound"
-        onActivated: win.showAgain()
-        menu: Platform.Menu {
-            Platform.MenuItem {
-                text: narration.playing ? qsTr("Pause") : qsTr("Play")
-                onTriggered: narration.toggle()
-            }
-            Platform.MenuItem {
-                text: qsTr("Next paragraph")
-                onTriggered: narration.nextParagraph()
-            }
-            Platform.MenuItem {
-                text: qsTr("Previous paragraph")
-                onTriggered: narration.previousParagraph()
-            }
-            Platform.MenuSeparator {}
-            Platform.MenuItem {
-                text: qsTr("Show Clothbound")
-                onTriggered: win.showAgain()
-            }
-            Platform.MenuItem {
-                text: qsTr("Stop and quit")
-                onTriggered: Qt.quit()
-            }
-        }
+    Binding {
+        target: trayIcon
+        property: "visible"
+        value: !win.visible && narration.active
+    }
+    Binding {
+        target: trayIcon
+        property: "playing"
+        value: narration.playing
+    }
+    Binding {
+        target: trayIcon
+        property: "tooltip"
+        value: narration.active ? qsTr("Clothbound is reading %1").arg(reader.title) : "Clothbound"
+    }
+    Connections {
+        target: trayIcon
+        function onActivated() { win.showAgain() }
+        function onTogglePlayRequested() { narration.toggle() }
+        function onNextRequested() { narration.nextParagraph() }
+        function onPreviousRequested() { narration.previousParagraph() }
+        function onQuitRequested() { win.quitApp() }
     }
 
     property bool helpVisible: false
@@ -387,8 +382,7 @@ ApplicationWindow {
         } else if (actionId === "help") {
             helpVisible = !helpVisible
         } else if (actionId === "quit") {
-            saveWindowGeometry()
-            Qt.quit()
+            win.quitApp()
         } else if (readerOpen && readerLoader.item) {
             if (actionId === "search-book") {
                 readerLoader.item.searchBar.show()
@@ -459,7 +453,9 @@ ApplicationWindow {
                    : commandPalette.show()
     }
     Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: win.helpVisible = !win.helpVisible }
-    Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: { win.saveWindowGeometry(); Qt.quit() } }
+    Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: win.quitApp() }
+    Shortcut { sequence: "Ctrl+Q"; context: Qt.ApplicationShortcut; onActivated: win.quitApp() }
+    Shortcut { sequence: "Ctrl+W"; context: Qt.ApplicationShortcut; onActivated: win.close() }
     Shortcut { sequences: ["F", "F11"]; context: Qt.ApplicationShortcut; enabled: !win.typing; onActivated: win.toggleFullScreen() }
     Shortcut {
         sequence: "Esc"
@@ -663,73 +659,128 @@ ApplicationWindow {
                            : (readerLoader.item && readerLoader.item.firstBookTipsActive ? 116 : 28)
         }
 
-        SettingsView {
+        Loader {
             id: settingsView
             anchors.fill: parent
             z: 55
-            onClosed: {
-                if (win.readerOpen && readerLoader.item)
-                    readerLoader.item.focusPage()
-                else
-                    libraryView.focusGrid()
+            active: false
+            readonly property var loaded: item
+            readonly property bool open: loaded ? !!loaded.open : false
+            function show(which) {
+                active = true
+                if (loaded)
+                    loaded.show(which)
+            }
+            function close() {
+                if (loaded)
+                    loaded.close()
+            }
+            sourceComponent: SettingsView {
+                anchors.fill: parent
+                onClosed: {
+                    if (win.readerOpen && readerLoader.item)
+                        readerLoader.item.focusPage()
+                    else
+                        libraryView.focusGrid()
+                }
             }
         }
 
-        Welcome {
+        Loader {
             id: welcome
             anchors.fill: parent
             z: 58
-            onAddBooks: picker.chooseFolders()
-            onShowIntelligence: win.showAiSettings()
-            onClosed: {
-                if (win.readerOpen && readerLoader.item)
-                    readerLoader.item.focusPage()
-                else
-                    libraryView.focusGrid()
+            active: false
+            readonly property var loaded: item
+            readonly property bool open: loaded ? !!loaded.open : false
+            function show(mode) {
+                active = true
+                if (loaded)
+                    loaded.show(mode)
+            }
+            function close() {
+                if (loaded)
+                    loaded.close()
+            }
+            sourceComponent: Welcome {
+                anchors.fill: parent
+                onAddBooks: picker.chooseFolders()
+                onShowIntelligence: win.showAiSettings()
+                onClosed: {
+                    if (win.readerOpen && readerLoader.item)
+                        readerLoader.item.focusPage()
+                    else
+                        libraryView.focusGrid()
+                }
             }
         }
 
-        CommandPalette {
+        Loader {
             id: commandPalette
             anchors.fill: parent
             z: 59
-            reading: win.readerOpen
-            currentTheme: readingSettings.theme
-            viewMode: libraryView.viewMode
-            onOpenBook: (bookId) => win.openBook(bookId)
-            onJumpChapter: (chapter, fragment) => {
-                if (win.readerOpen && readerLoader.item)
-                    readerLoader.item.goTo({ chapter: chapter, fragment: fragment, instant: true })
+            active: false
+            readonly property var loaded: item
+            readonly property bool open: loaded ? !!loaded.open : false
+            function show() {
+                active = true
+                if (loaded)
+                    loaded.show()
             }
-            onJumpMark: (bookId, chapter, offset) => win.jumpToMark(bookId, chapter, offset)
-            onJumpTarget: (target) => {
-                if (win.readerOpen && readerLoader.item)
-                    readerLoader.item.goTo(target)
+            function search(text) {
+                active = true
+                if (loaded)
+                    loaded.search(text)
             }
-            onTriggerAction: (actionId) => win.runPaletteAction(actionId)
-            onAskCompanion: (question) => win.askCompanion(question)
-            onClosed: {
-                if (win.readerOpen && readerLoader.item)
-                    readerLoader.item.focusPage()
-                else
-                    libraryView.focusGrid()
+            function close() {
+                if (loaded)
+                    loaded.close()
+            }
+            sourceComponent: CommandPalette {
+                anchors.fill: parent
+                reading: win.readerOpen
+                currentTheme: readingSettings.theme
+                viewMode: libraryView.viewMode
+                onOpenBook: (bookId) => win.openBook(bookId)
+                onJumpChapter: (chapter, fragment) => {
+                    if (win.readerOpen && readerLoader.item)
+                        readerLoader.item.goTo({ chapter: chapter, fragment: fragment, instant: true })
+                }
+                onJumpMark: (bookId, chapter, offset) => win.jumpToMark(bookId, chapter, offset)
+                onJumpTarget: (target) => {
+                    if (win.readerOpen && readerLoader.item)
+                        readerLoader.item.goTo(target)
+                }
+                onTriggerAction: (actionId) => win.runPaletteAction(actionId)
+                onAskCompanion: (question) => win.askCompanion(question)
+                onClosed: {
+                    if (win.readerOpen && readerLoader.item)
+                        readerLoader.item.focusPage()
+                    else
+                        libraryView.focusGrid()
+                }
             }
         }
 
-        HelpOverlay {
+        Loader {
+            id: helpOverlayLoader
             anchors.fill: parent
-            opacity: win.helpVisible ? 1 : 0
-            visible: opacity > 0.01
-            enabled: win.helpVisible
-            Behavior on opacity {
-                NumberAnimation {
-                    duration: theme.reducedMotion ? 90 : (win.helpVisible ? 190 : 145)
-                    easing.type: win.helpVisible ? Easing.OutCubic : Easing.OutQuad
-                }
-            }
-            reading: win.readerOpen
             z: 60
-            onDismissed: win.helpVisible = false
+            active: win.helpVisible || (item !== null && item.opacity > 0.01)
+            sourceComponent: HelpOverlay {
+                anchors.fill: parent
+                opacity: win.helpVisible ? 1 : 0
+                visible: opacity > 0.01
+                enabled: win.helpVisible
+                Behavior on opacity {
+                    NumberAnimation {
+                        duration: theme.reducedMotion ? 90 : (win.helpVisible ? 190 : 145)
+                        easing.type: win.helpVisible ? Easing.OutCubic : Easing.OutQuad
+                    }
+                }
+                reading: win.readerOpen
+                onDismissed: win.helpVisible = false
+            }
         }
     }
 

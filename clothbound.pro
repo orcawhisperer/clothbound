@@ -3,7 +3,7 @@ QT += core gui qml quick quickcontrols2 dbus sql concurrent network multimedia p
 CONFIG += c++20 release
 TARGET = clothbound
 TEMPLATE = app
-DEFINES += CLOTHBOUND_VERSION=\\\"0.4.0\\\"
+DEFINES += CLOTHBOUND_VERSION=\\\"0.4.1\\\"
 
 INCLUDEPATH += $$PWD/src
 
@@ -25,10 +25,12 @@ HEADERS += \
     src/app/systemcheck.h \
     src/app/theme.h \
     src/app/translator.h \
+    src/app/trayicon.h \
     src/formats/bookinfo.h \
     src/formats/bookname.h \
     src/formats/bookrecord.h \
     src/formats/bookscheme.h \
+    src/formats/coverprovider.h \
     src/formats/epubbook.h \
     src/formats/htmltokenizer.h \
     src/formats/pdfbook.h \
@@ -83,9 +85,11 @@ SOURCES += \
     src/app/systemcheck.cpp \
     src/app/theme.cpp \
     src/app/translator.cpp \
+    src/app/trayicon.cpp \
     src/formats/bookinfo.cpp \
     src/formats/bookname.cpp \
     src/formats/bookscheme.cpp \
+    src/formats/coverprovider.cpp \
     src/formats/epubbook.cpp \
     src/formats/htmltokenizer.cpp \
     src/formats/pdfbook.cpp \

@@ -186,6 +186,9 @@ bool Library::open() {
     pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
     pragma.exec(QStringLiteral("PRAGMA synchronous=NORMAL"));
     pragma.exec(QStringLiteral("PRAGMA foreign_keys=ON"));
+    pragma.exec(QStringLiteral("PRAGMA temp_store=MEMORY"));
+    pragma.exec(QStringLiteral("PRAGMA cache_size=-16000"));
+    pragma.exec(QStringLiteral("PRAGMA mmap_size=67108864"));
     if (!migrate())
         return false;
     loadFolders();
@@ -193,6 +196,7 @@ bool Library::open() {
     loadCollections();
     loadAudioBadges();
     loadOnlineMeta();
+    loadHighlightCounts();
     refreshArticles();
     QSqlQuery speed(db);
     speed.exec(QStringLiteral("SELECT value FROM meta WHERE key = 'chars_per_minute'"));
@@ -458,11 +462,12 @@ void Library::loadAudioBadges() {
 void Library::loadOnlineMeta() {
     m_articleSettingIds.clear();
     m_sourceUrls.clear();
+    m_voiceNames.clear();
     if (!database().isOpen())
         return;
     QSqlQuery q(database());
     if (!q.exec(QStringLiteral("SELECT book_id, key, value FROM book_settings "
-                               "WHERE key IN ('content_kind', 'source_url')")))
+                               "WHERE key IN ('content_kind', 'source_url', 'voiceName')")))
         return;
     while (q.next()) {
         const int bookId = q.value(0).toInt();
@@ -474,8 +479,32 @@ void Library::loadOnlineMeta() {
         } else if (key == QLatin1String("source_url")) {
             if (!val.trimmed().isEmpty())
                 m_sourceUrls.insert(bookId, val.trimmed());
+        } else if (key == QLatin1String("voiceName")) {
+            if (!val.isEmpty())
+                m_voiceNames.insert(bookId, val);
         }
     }
+}
+
+void Library::loadHighlightCounts() {
+    m_highlightCounts.clear();
+    if (!database().isOpen())
+        return;
+    QSqlQuery q(database());
+    if (!q.exec(QStringLiteral("SELECT book_id, COUNT(*) FROM annotations WHERE kind = 'highlight' GROUP BY book_id")))
+        return;
+    while (q.next())
+        m_highlightCounts.insert(q.value(0).toInt(), q.value(1).toInt());
+}
+
+void Library::adjustHighlightCount(int bookId, int delta) {
+    if (bookId <= 0 || delta == 0)
+        return;
+    const int next = qMax(0, m_highlightCounts.value(bookId, 0) + delta);
+    if (next == 0)
+        m_highlightCounts.remove(bookId);
+    else
+        m_highlightCounts.insert(bookId, next);
 }
 
 bool Library::isArticleRecord(const BookRecord &record) const {
@@ -794,10 +823,13 @@ void Library::openFolder(const QString &path) const {
 }
 
 void Library::rescan() {
+    QDir().mkpath(m_coverDirectory);
     QStringList loose = m_queuedFiles;
     QHash<QString, QPair<qint64, qint64>> known;
     for (const auto &record : std::as_const(m_books)) {
-        if (!m_fingerprints.value(record.id).isEmpty() || record.missing || !record.problem.isEmpty())
+        const bool coverMissing =
+            !record.cover.isEmpty() && !QFileInfo::exists(m_coverDirectory + QLatin1Char('/') + record.cover);
+        if (!coverMissing && (!m_fingerprints.value(record.id).isEmpty() || record.missing || !record.problem.isEmpty()))
             known.insert(record.path, {record.size, record.mtime});
         if (record.loose && !loose.contains(record.path))
             loose.append(record.path);
@@ -1152,16 +1184,8 @@ QString Library::snippetOf(const BookRecord &r) {
 }
 
 void Library::enrichBookMap(QVariantMap &map, int id) const {
-    int highlights = 0;
-    if (database().isOpen()) {
-        QSqlQuery q(database());
-        q.prepare(QStringLiteral("SELECT COUNT(*) FROM annotations WHERE book_id = ? AND kind = 'highlight'"));
-        q.addBindValue(id);
-        if (q.exec() && q.next())
-            highlights = q.value(0).toInt();
-    }
-    map.insert(QStringLiteral("highlightCount"), highlights);
-    map.insert(QStringLiteral("voiceName"), bookSetting(id, QStringLiteral("voiceName")));
+    map.insert(QStringLiteral("highlightCount"), m_highlightCounts.value(id, 0));
+    map.insert(QStringLiteral("voiceName"), m_voiceNames.value(id));
 }
 
 void Library::setWantToRead(int id, bool want) {
@@ -1823,6 +1847,10 @@ void Library::setBookSetting(int id, const QString &key, const QString &value) {
             emit bookChanged(id);
         }
     } else if (key == QLatin1String("voiceName")) {
+        if (value.isEmpty())
+            m_voiceNames.remove(id);
+        else
+            m_voiceNames.insert(id, value);
         emit bookChanged(id);
         changed();
     }

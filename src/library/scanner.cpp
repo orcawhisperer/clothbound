@@ -101,7 +101,8 @@ ScannedBook Scanner::read(const QString &path, const QString &coverDirectory) {
     book.fingerprint = Scanner::fingerprintFor(book.info.path.isEmpty() ? path : book.info.path);
     if (!book.info.cover.isNull()) {
         // Saved beside its final name and renamed, so a reader of the cache
-        // never sees half a JPEG.
+        // never sees half a JPEG. Recreate the cache dir if deleted mid-session.
+        QDir().mkpath(coverDirectory);
         const QString file = Scanner::coverFileFor(book.info.path.isEmpty() ? path : book.info.path);
         QSaveFile out(QDir(coverDirectory).filePath(file));
         if (out.open(QIODevice::WriteOnly)) {

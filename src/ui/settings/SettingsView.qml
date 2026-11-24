@@ -30,13 +30,28 @@ FocusScope {
     readonly property var currentPage: pages.find(p => p.id === settings.page) || pages[0]
     readonly property bool widePage: settings.page === "intelligence"
 
-    function preparePage(which) {
-        if (which === "intelligence")
-            intelligence.prepare()
+    function ensurePageLoaded(which) {
+        if (which === "general")
+            generalLoader.active = true
+        else if (which === "reading")
+            readingLoader.active = true
         else if (which === "listening")
-            listeningPage.prepare()
+            listeningLoader.active = true
+        else if (which === "intelligence")
+            intelligenceLoader.active = true
+        else if (which === "shortcuts")
+            shortcutsLoader.active = true
         else if (which === "about")
-            aboutPage.prepare()
+            aboutLoader.active = true
+    }
+    function preparePage(which) {
+        ensurePageLoaded(which)
+        if (which === "intelligence" && intelligenceLoader.loaded)
+            intelligenceLoader.loaded.prepare()
+        else if (which === "listening" && listeningLoader.loaded)
+            listeningLoader.loaded.prepare()
+        else if (which === "about" && aboutLoader.loaded)
+            aboutLoader.loaded.prepare()
     }
     function selectPage(which) {
         if (!pages.some(p => p.id === which))
@@ -60,15 +75,15 @@ FocusScope {
     function close() {
         if (!open)
             return
-        if (intelligence.budgetOpen) {
-            intelligence.closeBudget()
+        if (intelligenceLoader.loaded && intelligenceLoader.loaded.budgetOpen) {
+            intelligenceLoader.loaded.closeBudget()
             return
         }
-        if (page === "intelligence" && intelligence.replacing) {
-            intelligence.cancelReplace()
+        if (page === "intelligence" && intelligenceLoader.loaded && intelligenceLoader.loaded.replacing) {
+            intelligenceLoader.loaded.cancelReplace()
             return
         }
-        if (page === "shortcuts" && shortcutsPage.clearFilterIfActive())
+        if (page === "shortcuts" && shortcutsLoader.loaded && shortcutsLoader.loaded.clearFilterIfActive())
             return
         open = false
         closed()
@@ -361,12 +376,54 @@ FocusScope {
                 }
             }
 
-            SettingsGeneral { visible: settings.page === "general"; Layout.fillWidth: true }
-            SettingsReading { visible: settings.page === "reading"; Layout.fillWidth: true }
-            SettingsListening { id: listeningPage; visible: settings.page === "listening"; Layout.fillWidth: true }
-            SettingsIntelligence { id: intelligence; visible: settings.page === "intelligence"; Layout.fillWidth: true }
-            SettingsShortcuts { id: shortcutsPage; visible: settings.page === "shortcuts"; Layout.fillWidth: true }
-            SettingsAbout { id: aboutPage; visible: settings.page === "about"; Layout.fillWidth: true }
+            Loader {
+                id: generalLoader
+                active: false
+                readonly property var loaded: item
+                visible: settings.page === "general"
+                Layout.fillWidth: true
+                sourceComponent: SettingsGeneral {}
+            }
+            Loader {
+                id: readingLoader
+                active: false
+                readonly property var loaded: item
+                visible: settings.page === "reading"
+                Layout.fillWidth: true
+                sourceComponent: SettingsReading {}
+            }
+            Loader {
+                id: listeningLoader
+                active: false
+                readonly property var loaded: item
+                visible: settings.page === "listening"
+                Layout.fillWidth: true
+                sourceComponent: SettingsListening {}
+            }
+            Loader {
+                id: intelligenceLoader
+                active: false
+                readonly property var loaded: item
+                visible: settings.page === "intelligence"
+                Layout.fillWidth: true
+                sourceComponent: SettingsIntelligence {}
+            }
+            Loader {
+                id: shortcutsLoader
+                active: false
+                readonly property var loaded: item
+                visible: settings.page === "shortcuts"
+                Layout.fillWidth: true
+                sourceComponent: SettingsShortcuts {}
+            }
+            Loader {
+                id: aboutLoader
+                active: false
+                readonly property var loaded: item
+                visible: settings.page === "about"
+                Layout.fillWidth: true
+                sourceComponent: SettingsAbout {}
+            }
         }
     }
 }

@@ -62,11 +62,12 @@ signals:
     void progressChanged();
 
 private:
+    bool ensureDatabase() const;
     void next();
 
     QString m_path;
     QString m_connection;
-    bool m_available = false;
+    mutable bool m_available = false;
     bool m_indexing = false;
     int m_done = 0;
     int m_total = 0;

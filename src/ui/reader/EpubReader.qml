@@ -67,16 +67,17 @@ FocusScope {
     readonly property alias marksPanel: marksPanel
     readonly property alias companionPanel: companionPanel
     readonly property alias noteEditor: noteEditor
-    readonly property alias pdfSurface: pdfSurface
+    readonly property var pdfSurface: pdfLoader.item
     readonly property alias listenBar: listenBar
     // Companion docks beside the page on wide screens without a blocking scrim (04_companion).
-    readonly property bool companionDocked: companionPanel.open && view.width >= 860
+    // Wait until the drawer slide settles so WebEngine / PDF never resize & reflow mid-animation.
+    readonly property bool companionDocked: companionPanel.settledOpen && view.width >= 860
     readonly property bool companionResizing: Boolean(companionPanel["resizing"])
     readonly property real companionDockWidth: companionDocked
                                                ? Math.max(0, Math.min(Math.max(0, view.width - 320), companionPanel.width))
                                                : 0
     readonly property bool modalPanelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
-                                           || marksPanel.open || noteEditor.open || (companionPanel.open && !companionDocked)
+                                           || marksPanel.open || noteEditor.open || (companionPanel.open && view.width < 860)
     readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
                                      || marksPanel.open || noteEditor.open || companionPanel.open
     property bool chromeShown: false
@@ -180,6 +181,8 @@ FocusScope {
     // the PDF surface's (which answers the same calls) for a PDF.
     function js(code, callback) {
         if (pdf) {
+            if (!pdfSurface)
+                return
             // (QML keeps "escape" and "marks" for its own: the surface calls them
             // dismiss and setMarks.)
             const call = code.replace("clothbound.escape(", "clothbound.dismiss(").replace("clothbound.marks(", "clothbound.setMarks(")
@@ -249,8 +252,10 @@ FocusScope {
         decoratedChapter = -1
         jumpPillVisible = false
         lightbox.close()
-        pdfSurface.cancelSnip()
-        pdfSurface.closePeek()
+        if (pdfSurface) {
+            pdfSurface.cancelSnip()
+            pdfSurface.closePeek()
+        }
         js("clothbound.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
            + JSON.stringify(style()) + ")")
     }
@@ -260,23 +265,25 @@ FocusScope {
         refreshTimer.stop()
         refreshLater.stop()
         pendingStartListening = false
-        listenOffer.open = false
+        listenOffer.close()
         closePanels()
         lightbox.close()
-        pdfSurface.cancelSnip()
-        pdfSurface.closePeek()
+        if (pdfSurface) {
+            pdfSurface.cancelSnip()
+            pdfSurface.closePeek()
+        }
         jumpPillVisible = false
         selectionBar.visible = false
         view.selection = ({})
         view.lastCompanionTarget = null
         decoratedChapter = -1
-        if (pdf)
+        if (pdf && pdfSurface)
             pdfSurface.clearSelection()
         else if (surfaceReady && web)
             js("clothbound.close()")
     }
     function toggleSnipMode() {
-        if (!pdf || !reader.open)
+        if (!pdf || !reader.open || !pdfSurface)
             return
         const next = !pdfSurface.snipMode
         if (next) {
@@ -304,13 +311,15 @@ FocusScope {
     function prev() { leaveVoice(); js("clothbound.prev()") }
     function pageStep(dir) {
         leaveVoice()
-        if (pdf)
-            pdfSurface.pageStep(dir)
-        else
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.pageStep(dir)
+        } else {
             js(dir > 0 ? "clothbound.next()" : "clothbound.prev()")
+        }
     }
     function scrollVertical(dir) {
-        if (pdf)
+        if (pdf && pdfSurface)
             pdfSurface.scrollVertical(dir)
     }
     function nextChapter() { leaveVoice(); js("clothbound.nextChapter()") }
@@ -352,7 +361,8 @@ FocusScope {
     // Keys and the mouse go back to the page when what was open closes.
     function focusPage() {
         if (pdf) {
-            pdfSurface.forceActiveFocus()
+            if (pdfSurface)
+                pdfSurface.forceActiveFocus()
             return
         }
         if (!modalPanelOpen && web)
@@ -368,10 +378,12 @@ FocusScope {
         noteEditor.close()
         if (searchBar.editing)
             searchBar.close()
-        if (pdf)
-            pdfSurface.forceActiveFocus()
-        else if (web)
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.forceActiveFocus()
+        } else if (web) {
             web.forceActiveFocus()
+        }
     }
     function dismiss() {
         if (lightbox.open) {
@@ -381,16 +393,16 @@ FocusScope {
         }
         // Close ListenOffer on Esc without cancelling an active voice download.
         if (listenOffer.open) {
-            listenOffer.open = false
+            listenOffer.close()
             focusPage()
             return
         }
-        if (pdf && pdfSurface.snipMode) {
+        if (pdf && pdfSurface && pdfSurface.snipMode) {
             pdfSurface.cancelSnip()
             focusPage()
             return
         }
-        if (pdf && pdfSurface.peekOpen) {
+        if (pdf && pdfSurface && pdfSurface.peekOpen) {
             pdfSurface.closePeek()
             focusPage()
             return
@@ -424,7 +436,8 @@ FocusScope {
             return
         const normalized = (mode === "width" || mode === "actual") ? mode : "page"
         setAppearance("pdfFit", normalized)
-        pdfSurface.setFitMode(normalized)
+        if (pdfSurface)
+            pdfSurface.setFitMode(normalized)
         if (normalized !== "page" && !view.panelOpen)
             view.chromeShown = false
         if (announce) {
@@ -444,7 +457,7 @@ FocusScope {
         if (pdf) {
             if (step === 0) {
                 setPdfFit("page", !view.panelOpen)
-            } else {
+            } else if (pdfSurface) {
                 pdfSurface.nudgeZoom(step > 0 ? 1.15 : 1 / 1.15)
                 if (pdfSurface.zoomedIn && !view.panelOpen)
                     view.chromeShown = false
@@ -736,7 +749,8 @@ FocusScope {
         if (!reader.open || !win.visible)
             return
         if (pdf) {
-            surfaceWatcher.forceItemUpdate(pdfSurface)
+            if (pdfSurface)
+                surfaceWatcher.forceItemUpdate(pdfSurface)
             return
         }
         if (!surfaceReady || !web)
@@ -749,7 +763,8 @@ FocusScope {
         if (!reader.open || !win.visible)
             return
         if (pdf) {
-            surfaceWatcher.forceItemUpdate(pdfSurface)
+            if (pdfSurface)
+                surfaceWatcher.forceItemUpdate(pdfSurface)
             return
         }
         if (!surfaceReady || !web)
@@ -839,9 +854,13 @@ FocusScope {
 
     // Keys typed while the page had the focus come back here.
     function pageKey(key, modifiers) {
+        const shift = (modifiers & 1) !== 0, ctrl = (modifiers & 2) !== 0, alt = (modifiers & 4) !== 0, meta = (modifiers & 8) !== 0
+        if (ctrl && !alt && !meta) {
+            if (key === "q" || key === "Q") { win.quitApp(); return }
+            if (key === "w" || key === "W") { win.close(); return }
+        }
         if (win.helpVisible || settingsView.open || welcome.open || win.typing)
             return
-        const shift = (modifiers & 1) !== 0, ctrl = (modifiers & 2) !== 0, alt = (modifiers & 4) !== 0, meta = (modifiers & 8) !== 0
         const plain = !ctrl && !alt && !meta
         if (alt && !ctrl && !meta) {
             if (key === "ArrowLeft") { back(); return }
@@ -881,14 +900,14 @@ FocusScope {
         else if (key === "PageUp" || key === "k" || (key === " " && shift)) pageStep(-1)
         else if (key === "]") nextChapter()
         else if (key === "[") prevChapter()
-        else if (key === "t" || key === "T") showContents()
-        else if (key === "a" || key === "A") showAppearance()
+        else if (key === "t" || key === "T") { contents.open ? contents.close() : showContents() }
+        else if (key === "a" || key === "A") { appearance.open ? appearance.close() : showAppearance() }
         else if (key === "g" || key === "G") goTo.show()
         else if (key === "b" || key === "B") toggleBookmark()
-        else if (key === "m" || key === "M") showMarks()
+        else if (key === "m" || key === "M") { marksPanel.open ? marksPanel.close() : showMarks() }
         else if (key === "c" || key === "C") { companionPanel.open ? companionPanel.close() : showCompanion("ask") }
         else if ((key === "x" || key === "X") && pdf) toggleSnipMode()
-        else if (key === "v" || key === "V") showVoices()
+        else if (key === "v" || key === "V") { voicePanel.open ? voicePanel.close() : showVoices() }
         else if (key === "/") searchBar.show()
         else if (key === "n" && bookSearch.count > 0) searchBar.next()
         else if (key === "N" && bookSearch.count > 0) searchBar.previous()
@@ -907,7 +926,7 @@ FocusScope {
         else if (key === "1" && pdf) setPdfFit("actual", true)
         else if (key === "f" || key === "F" || key === "F11") win.toggleFullScreen()
         else if (key === "?") win.helpVisible = !win.helpVisible
-        else if (key === "q" || key === "Q") Qt.quit()
+        else if (key === "q" || key === "Q") win.quitApp()
     }
 
     Rectangle {
@@ -930,25 +949,30 @@ FocusScope {
         anchors.right: parent.right
         anchors.rightMargin: view.companionDockWidth
 
-        PdfSurface {
-            id: pdfSurface
+        Loader {
+            id: pdfLoader
             anchors.fill: parent
+            active: view.pdf
             visible: view.pdf
-            look: view.look
             focus: view.pdf
-            onContextMenuRequested: (x, y) => {
-                const place = pdfSurface.placeAt(x, y)
-                if (!place)
-                    return
-                pageMenu.place = place
-                pageMenu.popup(pdfSurface, x, y)
-            }
-            onSnipActionTriggered: (action, base64Png, pageIndex, prompt) => {
-                view.showCompanion("ask")
-                if (typeof companion.askAboutSnipBase64 === "function") {
-                    companion.askAboutSnipBase64(base64Png, action, prompt || "", pageIndex)
-                } else {
-                    toast.show(qsTr("Snip captured (p. %1)").arg(pageIndex + 1))
+            sourceComponent: PdfSurface {
+                id: pdfSurfaceItem
+                anchors.fill: parent
+                look: view.look
+                onContextMenuRequested: (x, y) => {
+                    const place = pdfSurfaceItem.placeAt(x, y)
+                    if (!place)
+                        return
+                    pageMenu.place = place
+                    pageMenu.popup(pdfSurfaceItem, x, y)
+                }
+                onSnipActionTriggered: (action, base64Png, pageIndex, prompt) => {
+                    view.showCompanion("ask")
+                    if (typeof companion.askAboutSnipBase64 === "function") {
+                        companion.askAboutSnipBase64(base64Png, action, prompt || "", pageIndex)
+                    } else {
+                        toast.show(qsTr("Snip captured (p. %1)").arg(pageIndex + 1))
+                    }
                 }
             }
         }
@@ -961,6 +985,7 @@ FocusScope {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: view.surfaceNudge && parent.height > 2 ? 1 : 0
             active: view.webNeeded
+            visible: !view.pdf
             opacity: view.pdf ? 0 : 1
             enabled: !view.pdf
             sourceComponent: webComponent
@@ -1022,7 +1047,7 @@ FocusScope {
                 y: 48
                 height: 1
                 color: view.look.line
-                opacity: (view.pdf && pdfSurface.zoomedIn) || activeSettings.layout === "scroll"
+                opacity: (view.pdf && pdfSurface && pdfSurface.zoomedIn) || activeSettings.layout === "scroll"
                          ? chrome.chromeProgress * 0.75 : 0
             }
         }
@@ -1053,8 +1078,8 @@ FocusScope {
             onPointChanged: {
                 const px = point.position.x, py = point.position.y
                 if (readingStage.lastPointerX >= 0 && !view.modalPanelOpen && !narration.active && !lightbox.open
-                    && !(view.pdf && (pdfSurface.snipMode || pdfSurface.peekOpen))) {
-                    const zoomedPdf = view.pdf && pdfSurface.zoomedIn
+                    && !(view.pdf && pdfSurface && (pdfSurface.snipMode || pdfSurface.peekOpen))) {
+                    const zoomedPdf = view.pdf && pdfSurface && pdfSurface.zoomedIn
                     const nearEdge = py <= 64 || py >= readingStage.height - 84
                     const dist = Math.hypot(px - readingStage.lastPointerX, py - readingStage.lastPointerY)
                     if (dist >= 6 && (!zoomedPdf || nearEdge))
@@ -1374,7 +1399,7 @@ FocusScope {
                     tabFocusable: false
                     look: view.look
                     glyph: "M4 8.5 V5.5 Q4 4 5.5 4 H8.5 M15.5 4 H18.5 Q20 4 20 5.5 V8.5 M20 15.5 V18.5 Q20 20 18.5 20 H15.5 M8.5 20 H5.5 Q4 20 4 18.5 V15.5 M12 9 V15 M9 12 H15"
-                    active: pdfSurface.snipMode
+                    active: !!pdfSurface && pdfSurface.snipMode
                     tip: qsTr("Snip region (X)")
                     onClicked: view.toggleSnipMode()
                 }
@@ -1889,22 +1914,38 @@ FocusScope {
         }
 
         // First-listen popover anchored beneath the top-right Listen button (13_j4_first_listen).
-        ListenOffer {
+        Loader {
             id: listenOffer
-            z: 7
-            look: view.look
-            anchors.top: parent.top
-            anchors.topMargin: chrome.height + 6
-            anchors.right: parent.right
-            anchors.rightMargin: 22
-            onMoreVoices: view.showVoices()
-        }
-        Binding {
-            target: listenOffer
-            property: "caretRightOffset"
-            value: Math.max(24, Math.min(Math.max(24, listenOffer.width - 24),
-                            (readingStage.width - 22) - (tools.x + listenButton.x + listenButton.width / 2)))
-            when: listenOffer.hasOwnProperty("caretRightOffset")
+            active: false
+            readonly property var loaded: item
+            readonly property bool open: loaded ? !!loaded.open : false
+            function show() {
+                active = true
+                if (loaded)
+                    loaded.show()
+            }
+            function close() {
+                if (loaded)
+                    loaded.open = false
+            }
+            sourceComponent: ListenOffer {
+                id: listenOfferInner
+                parent: readingStage
+                z: 7
+                look: view.look
+                anchors.top: readingStage.top
+                anchors.topMargin: chrome.height + 6
+                anchors.right: readingStage.right
+                anchors.rightMargin: 22
+                onMoreVoices: view.showVoices()
+                Binding {
+                    target: listenOfferInner
+                    property: "caretRightOffset"
+                    value: Math.max(24, Math.min(Math.max(24, listenOfferInner.width - 24),
+                                    (readingStage.width - 22) - (tools.x + listenButton.x + listenButton.width / 2)))
+                    when: listenOfferInner.hasOwnProperty("caretRightOffset")
+                }
+            }
         }
     }
 
@@ -1948,17 +1989,39 @@ FocusScope {
         id: webComponent
         WebEngineView {
             id: webItem
-            profile: readerProfile
+            profile: typeof webProfileProvider !== "undefined" ? webProfileProvider.ensure() : readerProfile
             visible: win.visible && win.visibility !== Window.Minimized
             backgroundColor: view.look.bg
             function updateLifecycleState() {
-                const target = (!visible && !narration.active && !download.active)
+                // QtWebEngine refuses Active -> Frozen while the view is still visible
+                // in the scene graph (e.g. during readerLoader's close fade). Freeze
+                // only once the item or one of its ancestors is actually hidden.
+                const actuallyVisible = visible && webLoader.visible && view.visible
+                                        && (!view.parent || view.parent.visible)
+                const target = (!actuallyVisible && !narration.active && !download.active)
                     ? WebEngineView.LifecycleState.Frozen : WebEngineView.LifecycleState.Active
                 if (lifecycleState !== target)
                     lifecycleState = target
             }
             onVisibleChanged: updateLifecycleState()
             Component.onCompleted: updateLifecycleState()
+            Connections {
+                target: webLoader
+                function onVisibleChanged() { webItem.updateLifecycleState() }
+            }
+            Connections {
+                target: view
+                function onVisibleChanged() { webItem.updateLifecycleState() }
+            }
+            Connections {
+                target: view.parent
+                enabled: !!view.parent
+                function onVisibleChanged() { webItem.updateLifecycleState() }
+            }
+            Connections {
+                target: reader
+                function onBookChanged() { webItem.updateLifecycleState() }
+            }
             // Chromium only takes the mouse (selecting words, a tap on the
             // margin) when it has focus; the window's shortcuts still come first.
             activeFocusOnPress: true
@@ -2064,83 +2127,135 @@ FocusScope {
         }
     }
 
-    ListenBar {
+    Loader {
         id: listenBar
-        z: 9
-        showBookInfo: false
-        // Centered in the room the side panels leave (VoicePanel is a centered modal sheet).
-        readonly property real leftInset: contents.open ? contents.width : 0
-        readonly property real rightInset: marksPanel.open ? marksPanel.width
-                                         : companionPanel.open ? companionPanel.width
-                                         : appearance.open ? appearance.width : 0
-        availableWidth: Math.max(320, parent.width - leftInset - rightInset)
-        animateSize: !view.companionResizing
+        active: narration.active
+        readonly property var loaded: item
+        readonly property bool menuOpen: loaded ? !!loaded.menuOpen : false
+        // Preserve height on Loader for Main.qml's Toast bottomClearance binding.
+        height: loaded ? loaded.height : 0
+        sourceComponent: ListenBar {
+            parent: view
+            z: 9
+            showBookInfo: false
+            // Centered in the room the side panels leave (VoicePanel is a centered modal sheet).
+            readonly property real leftInset: contents.open ? contents.width : 0
+            readonly property real rightInset: marksPanel.open ? marksPanel.width
+                                             : companionPanel.open ? companionPanel.width
+                                             : appearance.open ? appearance.width : 0
+            availableWidth: Math.max(320, view.width - leftInset - rightInset)
+            animateSize: !view.companionResizing
 
-        // Animate horizontal center for panel open/close (paused during live
-        // Companion resize) and slide progress for narration start/stop, so
-        // the pill's own width/height morph expands symmetrically upward with
-        // its bottom edge locked 14 px above the viewport floor.
-        property real centerX: leftInset + (parent.width - leftInset - rightInset) / 2
-        Behavior on centerX {
-            enabled: !theme.reducedMotion && !view.companionResizing
-            NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+            // Animate horizontal center for panel open/close (paused during live
+            // Companion resize) and slide progress for narration start/stop, so
+            // the pill's own width/height morph expands symmetrically upward with
+            // its bottom edge locked 14 px above the viewport floor.
+            property real centerX: leftInset + (view.width - leftInset - rightInset) / 2
+            Behavior on centerX {
+                enabled: !theme.reducedMotion && !view.companionResizing
+                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+            }
+            property real showProgress: narration.active ? 1 : 0
+            Behavior on showProgress {
+                enabled: !theme.reducedMotion
+                NumberAnimation { duration: 240; easing.type: Easing.OutQuart }
+            }
+            x: Math.round(centerX - width / 2)
+            y: Math.round((view.height - height - 14) + (1 - showProgress) * (height + 30))
+            visible: showProgress > 0.005
+            look: view.look
+            onFollowRequested: narration.following = true
+            onVoiceRequested: voicePanel.open ? voicePanel.close() : view.showVoices()
         }
-        property real showProgress: narration.active ? 1 : 0
-        Behavior on showProgress {
-            enabled: !theme.reducedMotion
-            NumberAnimation { duration: 240; easing.type: Easing.OutQuart }
-        }
-        x: Math.round(centerX - width / 2)
-        y: Math.round((parent.height - height - 14) + (1 - showProgress) * (height + 30))
-        visible: showProgress > 0.005
-        look: view.look
-        onFollowRequested: narration.following = true
-        onVoiceRequested: voicePanel.open ? voicePanel.close() : view.showVoices()
     }
 
-    ContentsPanel {
+    Loader {
         id: contents
-        z: 10
-        onClosed: view.focusPage()
-        height: parent.height
-        look: view.look
-        onChosen: (chapter, fragment) => view.goTo({ chapter: chapter, fragment: fragment, instant: true })
-    }
-
-    VoicePanel {
-        id: voicePanel
-        z: 12
-        onClosed: view.focusPage()
-        height: parent.height
-        look: view.look
-        onSampleWanted: view.js("clothbound.sampleText()", function(text) {
-            voicePanel.sample = text || ""
-            if (debugMode)
-                console.log("voice sample:", voicePanel.sample)
-        })
-    }
-    Connections {
-        target: voicePanel
-        ignoreUnknownSignals: true
-        function onListenRequested() {
-            voicePanel.close()
-            view.startListening()
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        width: loaded ? loaded.width : 0
+        function show() {
+            active = true
+            if (loaded)
+                loaded.show()
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: ContentsPanel {
+            parent: view
+            z: 10
+            height: view.height
+            look: view.look
+            onClosed: view.focusPage()
+            onChosen: (chapter, fragment) => view.goTo({ chapter: chapter, fragment: fragment, instant: true })
         }
     }
 
-    AppearancePanel {
+    Loader {
+        id: voicePanel
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        function show() {
+            active = true
+            if (loaded)
+                loaded.show()
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: VoicePanel {
+            id: voicePanelInner
+            parent: view
+            z: 12
+            height: view.height
+            look: view.look
+            onClosed: view.focusPage()
+            onSampleWanted: view.js("clothbound.sampleText()", function(text) {
+                voicePanelInner.sample = text || ""
+                if (debugMode)
+                    console.log("voice sample:", voicePanelInner.sample)
+            })
+            onListenRequested: {
+                voicePanelInner.close()
+                view.startListening()
+            }
+        }
+    }
+
+    Loader {
         id: appearance
-        z: 10
-        onClosed: view.focusPage()
-        height: parent.height
-        look: view.look
-        settings: activeSettings
-        pdf: view.pdf
-        pdfSurface: pdfSurface
-        bookOverride: reader.bookAppearanceOverride
-        onSettingChanged: (key, value) => view.setAppearance(key, value)
-        onPdfFitChosen: (mode) => view.setPdfFit(mode, false)
-        onBookOverrideToggled: (enabled) => view.setBookOverride(enabled)
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        width: loaded ? loaded.width : 0
+        function show() {
+            active = true
+            if (loaded)
+                loaded.show()
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: AppearancePanel {
+            parent: view
+            z: 10
+            height: view.height
+            look: view.look
+            settings: activeSettings
+            pdf: view.pdf
+            pdfSurface: view.pdfSurface
+            bookOverride: reader.bookAppearanceOverride
+            onClosed: view.focusPage()
+            onSettingChanged: (key, value) => view.setAppearance(key, value)
+            onPdfFitChosen: (mode) => view.setPdfFit(mode, false)
+            onBookOverrideToggled: (enabled) => view.setBookOverride(enabled)
+        }
     }
 
     Menu {
@@ -2260,321 +2375,444 @@ FocusScope {
         }
     }
 
-    NoteEditor {
+    Loader {
         id: noteEditor
-        onClosed: view.focusPage()
-        anchors.centerIn: parent
-        z: 14
-        look: view.look
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        function show(id) {
+            active = true
+            if (loaded)
+                loaded.show(id)
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: NoteEditor {
+            parent: view
+            anchors.centerIn: view
+            z: 14
+            onClosed: view.focusPage()
+            look: view.look
+        }
     }
 
-    CompanionPanel {
+    Loader {
         id: companionPanel
-        z: 10
-        onClosed: view.focusPage()
-        height: parent.height
-        look: view.look
-    }
-    Connections {
-        target: companionPanel
-        ignoreUnknownSignals: true
-        function onJumpRequested(chapter, offset) {
-            view.goTo({ chapter: chapter, offset: offset, instant: true })
-        }
-        function onSaveAsNote(quote, note) {
-            if (!reader.open)
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        readonly property bool settledOpen: loaded ? !!loaded.settledOpen : false
+        readonly property bool resizing: loaded ? Boolean(loaded["resizing"]) : false
+        width: loaded ? loaded.width : 0
+        property bool pendingOpen: false
+        property string pendingTab: "ask"
+        property bool pendingFocus: false
+        function show(tab, focusInput) {
+            if (active && loaded) {
+                pendingOpen = false
+                loaded.show(tab, !!focusInput)
                 return
-            const trimmedQuote = (quote || "").trim()
-            const trimmedNote = (note || "").trim()
-            if (trimmedQuote === "" && trimmedNote === "")
-                return
-            const matchTarget = view.selection && view.selection.text && view.selection.text.trim() === trimmedQuote
-                ? view.selection
-                : (view.lastCompanionTarget && view.lastCompanionTarget.text && view.lastCompanionTarget.text.trim() === trimmedQuote
-                   ? view.lastCompanionTarget : null)
-            let id = 0
-            if (matchTarget && matchTarget.end > matchTarget.start) {
-                id = marks.addHighlight(matchTarget.chapter, matchTarget.start, matchTarget.end,
-                                        trimmedQuote, "blue", reader.titleOfChapter(matchTarget.chapter))
-            } else {
-                const label = reader.titleOfChapter(reader.chapter)
-                const excerpt = trimmedQuote !== "" ? trimmedQuote : (reader.snippet !== "" ? reader.snippet : label)
-                id = marks.addBookmark(reader.chapter, reader.pageStart, excerpt, label)
             }
-            if (id > 0) {
-                if (trimmedNote !== "")
-                    marks.setNote(id, trimmedNote)
-                toast.show(qsTr("Saved as note"))
+            pendingTab = tab || "ask"
+            pendingFocus = !!focusInput
+            pendingOpen = true
+            active = true
+            // Start the first slide-in on the next frame so initial QML
+            // instantiation never eats the beginning of the slide animation.
+            Qt.callLater(() => {
+                if (pendingOpen && loaded) {
+                    pendingOpen = false
+                    loaded.show(pendingTab, pendingFocus)
+                }
+            })
+        }
+        function close() {
+            pendingOpen = false
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: CompanionPanel {
+            parent: view
+            z: 10
+            height: view.height
+            look: view.look
+            onClosed: view.focusPage()
+            onJumpRequested: (chapter, offset) => view.goTo({ chapter: chapter, offset: offset, instant: true })
+            onSaveAsNote: (quote, note) => {
+                if (!reader.open)
+                    return
+                const trimmedQuote = (quote || "").trim()
+                const trimmedNote = (note || "").trim()
+                if (trimmedQuote === "" && trimmedNote === "")
+                    return
+                const matchTarget = view.selection && view.selection.text && view.selection.text.trim() === trimmedQuote
+                    ? view.selection
+                    : (view.lastCompanionTarget && view.lastCompanionTarget.text && view.lastCompanionTarget.text.trim() === trimmedQuote
+                       ? view.lastCompanionTarget : null)
+                let id = 0
+                if (matchTarget && matchTarget.end > matchTarget.start) {
+                    id = marks.addHighlight(matchTarget.chapter, matchTarget.start, matchTarget.end,
+                                            trimmedQuote, "blue", reader.titleOfChapter(matchTarget.chapter))
+                } else {
+                    const label = reader.titleOfChapter(reader.chapter)
+                    const excerpt = trimmedQuote !== "" ? trimmedQuote : (reader.snippet !== "" ? reader.snippet : label)
+                    id = marks.addBookmark(reader.chapter, reader.pageStart, excerpt, label)
+                }
+                if (id > 0) {
+                    if (trimmedNote !== "")
+                        marks.setNote(id, trimmedNote)
+                    toast.show(qsTr("Saved as note"))
+                }
             }
         }
     }
 
     // Inline EPUB image/SVG lightbox with zoom, wheel zoom, drag-to-pan, and caption.
-    FocusScope {
+    Loader {
         id: lightbox
         anchors.fill: parent
         z: 50
-        property bool open: false
-        property string source: ""
-        property string caption: ""
-        property real zoom: 1.0
-        Behavior on zoom {
-            enabled: !theme.reducedMotion && lightbox.open
-            NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-        }
-        property real panX: 0
-        property real panY: 0
-        property real reveal: open ? 1 : 0
-        Behavior on reveal {
-            NumberAnimation {
-                duration: theme.reducedMotion ? 90 : (lightbox.open ? 220 : 160)
-                easing.type: lightbox.open ? Easing.OutCubic : Easing.OutQuad
-            }
-        }
-        visible: reveal > 0.01
-        opacity: reveal
-
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        readonly property real zoom: loaded ? loaded.zoom : 1.0
         function openImage(src, cap) {
             if (!src || src === "")
                 return
-            source = src
-            caption = cap || ""
-            zoom = 1.0
-            panX = 0
-            panY = 0
-            open = true
-            forceActiveFocus()
+            active = true
+            if (loaded)
+                loaded.openImage(src, cap)
         }
         function close() {
-            if (!open)
-                return
-            open = false
-            zoom = 1.0
-            panX = 0
-            panY = 0
+            if (loaded)
+                loaded.close()
         }
         function setZoom(next) {
-            zoom = Math.max(1.0, Math.min(5.0, Math.round(next * 100) / 100))
-            if (zoom <= 1.01) {
+            if (loaded)
+                loaded.setZoom(next)
+        }
+        sourceComponent: FocusScope {
+            id: lightboxInner
+            anchors.fill: parent
+            property bool open: false
+            property string source: ""
+            property string caption: ""
+            property real zoom: 1.0
+            Behavior on zoom {
+                enabled: !theme.reducedMotion && lightboxInner.open
+                NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
+            }
+            property real panX: 0
+            property real panY: 0
+            property real reveal: open ? 1 : 0
+            Behavior on reveal {
+                NumberAnimation {
+                    duration: theme.reducedMotion ? 90 : (lightboxInner.open ? 220 : 160)
+                    easing.type: lightboxInner.open ? Easing.OutCubic : Easing.OutQuad
+                }
+            }
+            visible: reveal > 0.01
+            opacity: reveal
+
+            function openImage(src, cap) {
+                if (!src || src === "")
+                    return
+                source = src
+                caption = cap || ""
+                zoom = 1.0
                 panX = 0
                 panY = 0
-            } else {
-                clampPan()
+                open = true
+                forceActiveFocus()
             }
-        }
-        function clampPan() {
-            const maxX = Math.max(0, (lightboxImage.paintedWidth * zoom - width + 96) / 2)
-            const maxY = Math.max(0, (lightboxImage.paintedHeight * zoom - height + 140) / 2)
-            panX = Math.max(-maxX, Math.min(maxX, panX))
-            panY = Math.max(-maxY, Math.min(maxY, panY))
-        }
-
-        Keys.onEscapePressed: { close(); view.focusPage() }
-        Keys.onPressed: (event) => {
-            if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) { setZoom(zoom * 1.25); event.accepted = true }
-            else if (event.key === Qt.Key_Minus) { setZoom(zoom / 1.25); event.accepted = true }
-            else if (event.key === Qt.Key_0) { setZoom(1.0); event.accepted = true }
-        }
-
-        Rectangle {
-            anchors.fill: parent
-            color: Ui.tint("black", 0.86)
-        }
-
-        MouseArea {
-            id: lightboxPan
-            anchors.fill: parent
-            acceptedButtons: Qt.LeftButton
-            cursorShape: lightbox.zoom > 1.01 ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
-            property bool dragged: false
-            property real startX: 0
-            property real startY: 0
-            property real startPanX: 0
-            property real startPanY: 0
-            onPressed: (event) => {
-                dragged = false
-                startX = event.x
-                startY = event.y
-                startPanX = lightbox.panX
-                startPanY = lightbox.panY
+            function close() {
+                if (!open)
+                    return
+                open = false
+                zoom = 1.0
+                panX = 0
+                panY = 0
             }
-            onPositionChanged: (event) => {
-                if (!pressed || lightbox.zoom <= 1.01)
-                    return
-                const dx = event.x - startX, dy = event.y - startY
-                if (!dragged && Math.abs(dx) + Math.abs(dy) < 4)
-                    return
-                dragged = true
-                lightbox.panX = startPanX + dx
-                lightbox.panY = startPanY + dy
-                lightbox.clampPan()
-            }
-            onDoubleClicked: lightbox.setZoom(lightbox.zoom > 1.2 ? 1.0 : 2.0)
-            onClicked: (event) => {
-                if (dragged)
-                    return
-                const hitW = lightboxImage.paintedWidth * lightbox.zoom
-                const hitH = lightboxImage.paintedHeight * lightbox.zoom
-                const cx = lightbox.width / 2 + lightbox.panX
-                const cy = lightbox.height / 2 + lightbox.panY
-                const onImage = event.x >= cx - hitW / 2 && event.x <= cx + hitW / 2
-                                && event.y >= cy - hitH / 2 && event.y <= cy + hitH / 2
-                if (!onImage) {
-                    lightbox.close()
-                    view.focusPage()
+            function setZoom(next) {
+                zoom = Math.max(1.0, Math.min(5.0, Math.round(next * 100) / 100))
+                if (zoom <= 1.01) {
+                    panX = 0
+                    panY = 0
+                } else {
+                    clampPan()
                 }
             }
-            onWheel: (wheel) => {
-                wheel.accepted = true
-                const factor = wheel.angleDelta.y > 0 ? 1.15 : (1 / 1.15)
-                lightbox.setZoom(lightbox.zoom * factor)
+            function clampPan() {
+                const maxX = Math.max(0, (lightboxImage.paintedWidth * zoom - width + 96) / 2)
+                const maxY = Math.max(0, (lightboxImage.paintedHeight * zoom - height + 140) / 2)
+                panX = Math.max(-maxX, Math.min(maxX, panX))
+                panY = Math.max(-maxY, Math.min(maxY, panY))
             }
-        }
 
-        Image {
-            id: lightboxImage
-            anchors.centerIn: parent
-            anchors.horizontalCenterOffset: lightbox.panX
-            anchors.verticalCenterOffset: lightbox.panY
-            width: Math.max(120, lightbox.width - 96)
-            height: Math.max(120, lightbox.height - (lightbox.caption !== "" ? 156 : 112))
-            source: lightbox.visible ? lightbox.source : ""
-            fillMode: Image.PreserveAspectFit
-            asynchronous: true
-            smooth: true
-            mipmap: true
-            scale: lightbox.zoom * (theme.reducedMotion ? 1.0 : (0.94 + 0.06 * lightbox.reveal))
-        }
+            Keys.onEscapePressed: { close(); view.focusPage() }
+            Keys.onPressed: (event) => {
+                if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) { setZoom(zoom * 1.25); event.accepted = true }
+                else if (event.key === Qt.Key_Minus) { setZoom(zoom / 1.25); event.accepted = true }
+                else if (event.key === Qt.Key_0) { setZoom(1.0); event.accepted = true }
+            }
 
-        // Top-right floating zoom & close controls.
-        Rectangle {
-            anchors.top: parent.top
-            anchors.right: parent.right
-            anchors.topMargin: 20
-            anchors.rightMargin: 20
-            width: lightboxControls.implicitWidth + 14
-            height: 40
-            radius: Ui.radius(20, theme.radius)
-            color: Ui.tint("#1c1c1e", 0.9)
-            border.color: Ui.tint("white", 0.16)
+            Rectangle {
+                anchors.fill: parent
+                color: Ui.tint("black", 0.86)
+            }
 
-            Row {
-                id: lightboxControls
-                anchors.centerIn: parent
-                spacing: 4
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    glyph: Icons.zoomOut
-                    tone: "white"
-                    enabled: lightbox.zoom > 1.01
-                    tip: qsTr("Zoom out (−)")
-                    onClicked: lightbox.setZoom(lightbox.zoom / 1.25)
+            MouseArea {
+                id: lightboxPan
+                anchors.fill: parent
+                acceptedButtons: Qt.LeftButton
+                cursorShape: lightboxInner.zoom > 1.01 ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
+                property bool dragged: false
+                property real startX: 0
+                property real startY: 0
+                property real startPanX: 0
+                property real startPanY: 0
+                onPressed: (event) => {
+                    dragged = false
+                    startX = event.x
+                    startY = event.y
+                    startPanX = lightboxInner.panX
+                    startPanY = lightboxInner.panY
                 }
-                AbstractButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    implicitWidth: 48
-                    implicitHeight: 30
-                    hoverEnabled: true
-                    focusPolicy: Qt.NoFocus
-                    onClicked: lightbox.setZoom(1.0)
-                    background: Rectangle {
-                        radius: Ui.radius(6, theme.radius)
-                        color: parent.hovered ? Ui.tint("white", 0.12) : "transparent"
+                onPositionChanged: (event) => {
+                    if (!pressed || lightboxInner.zoom <= 1.01)
+                        return
+                    const dx = event.x - startX, dy = event.y - startY
+                    if (!dragged && Math.abs(dx) + Math.abs(dy) < 4)
+                        return
+                    dragged = true
+                    lightboxInner.panX = startPanX + dx
+                    lightboxInner.panY = startPanY + dy
+                    lightboxInner.clampPan()
+                }
+                onDoubleClicked: lightboxInner.setZoom(lightboxInner.zoom > 1.2 ? 1.0 : 2.0)
+                onClicked: (event) => {
+                    if (dragged)
+                        return
+                    const hitW = lightboxImage.paintedWidth * lightboxInner.zoom
+                    const hitH = lightboxImage.paintedHeight * lightboxInner.zoom
+                    const cx = lightboxInner.width / 2 + lightboxInner.panX
+                    const cy = lightboxInner.height / 2 + lightboxInner.panY
+                    const onImage = event.x >= cx - hitW / 2 && event.x <= cx + hitW / 2
+                                    && event.y >= cy - hitH / 2 && event.y <= cy + hitH / 2
+                    if (!onImage) {
+                        lightboxInner.close()
+                        view.focusPage()
                     }
-                    contentItem: Label {
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                        text: Math.round(lightbox.zoom * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
-                        color: "white"
-                        font.pixelSize: 12
-                        font.features: ({ "tnum": 1 })
-                    }
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 600
-                    ToolTip.text: qsTr("Reset zoom (0)")
                 }
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    glyph: Icons.zoomIn
-                    tone: "white"
-                    enabled: lightbox.zoom < 4.99
-                    tip: qsTr("Zoom in (+)")
-                    onClicked: lightbox.setZoom(lightbox.zoom * 1.25)
-                }
-                Rectangle {
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 1
-                    height: 18
-                    color: Ui.tint("white", 0.18)
-                }
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    glyph: Icons.close
-                    tone: "white"
-                    tip: qsTr("Close (Esc)")
-                    onClicked: { lightbox.close(); view.focusPage() }
+                onWheel: (wheel) => {
+                    wheel.accepted = true
+                    const factor = wheel.angleDelta.y > 0 ? 1.15 : (1 / 1.15)
+                    lightboxInner.setZoom(lightboxInner.zoom * factor)
                 }
             }
-        }
 
-        // Caption pill shown when the image has alt text or a figcaption.
-        Rectangle {
-            visible: lightbox.caption !== ""
-            anchors.bottom: parent.bottom
-            anchors.bottomMargin: 24
-            anchors.horizontalCenter: parent.horizontalCenter
-            width: Math.min(parent.width - 64, captionText.implicitWidth + 32)
-            height: captionText.implicitHeight + 18
-            radius: Ui.radius(10, theme.radius)
-            color: Ui.tint("#1c1c1e", 0.88)
-            border.color: Ui.tint("white", 0.14)
-            Label {
-                id: captionText
+            Image {
+                id: lightboxImage
                 anchors.centerIn: parent
-                width: Math.min(implicitWidth, lightbox.width - 96)
-                text: lightbox.caption
-                color: "#f2f0eb"
-                font.pixelSize: 13
-                wrapMode: Text.Wrap
-                horizontalAlignment: Text.AlignHCenter
-                maximumLineCount: 4
-                elide: Text.ElideRight
+                anchors.horizontalCenterOffset: lightboxInner.panX
+                anchors.verticalCenterOffset: lightboxInner.panY
+                width: Math.max(120, lightboxInner.width - 96)
+                height: Math.max(120, lightboxInner.height - (lightboxInner.caption !== "" ? 156 : 112))
+                source: lightboxInner.visible ? lightboxInner.source : ""
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                smooth: true
+                mipmap: true
+                scale: lightboxInner.zoom * (theme.reducedMotion ? 1.0 : (0.94 + 0.06 * lightboxInner.reveal))
+            }
+
+            // Top-right floating zoom & close controls.
+            Rectangle {
+                anchors.top: parent.top
+                anchors.right: parent.right
+                anchors.topMargin: 20
+                anchors.rightMargin: 20
+                width: lightboxControls.implicitWidth + 14
+                height: 40
+                radius: Ui.radius(20, theme.radius)
+                color: Ui.tint("#1c1c1e", 0.9)
+                border.color: Ui.tint("white", 0.16)
+
+                Row {
+                    id: lightboxControls
+                    anchors.centerIn: parent
+                    spacing: 4
+                    IconButton {
+                        anchors.verticalCenter: parent.verticalCenter
+                        glyph: Icons.zoomOut
+                        tone: "white"
+                        enabled: lightboxInner.zoom > 1.01
+                        tip: qsTr("Zoom out (−)")
+                        onClicked: lightboxInner.setZoom(lightboxInner.zoom / 1.25)
+                    }
+                    AbstractButton {
+                        anchors.verticalCenter: parent.verticalCenter
+                        implicitWidth: 48
+                        implicitHeight: 30
+                        hoverEnabled: true
+                        focusPolicy: Qt.NoFocus
+                        onClicked: lightboxInner.setZoom(1.0)
+                        background: Rectangle {
+                            radius: Ui.radius(6, theme.radius)
+                            color: parent.hovered ? Ui.tint("white", 0.12) : "transparent"
+                        }
+                        contentItem: Label {
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                            text: Math.round(lightboxInner.zoom * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
+                            color: "white"
+                            font.pixelSize: 12
+                            font.features: ({ "tnum": 1 })
+                        }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: qsTr("Reset zoom (0)")
+                    }
+                    IconButton {
+                        anchors.verticalCenter: parent.verticalCenter
+                        glyph: Icons.zoomIn
+                        tone: "white"
+                        enabled: lightboxInner.zoom < 4.99
+                        tip: qsTr("Zoom in (+)")
+                        onClicked: lightboxInner.setZoom(lightboxInner.zoom * 1.25)
+                    }
+                    Rectangle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 1
+                        height: 18
+                        color: Ui.tint("white", 0.18)
+                    }
+                    IconButton {
+                        anchors.verticalCenter: parent.verticalCenter
+                        glyph: Icons.close
+                        tone: "white"
+                        tip: qsTr("Close (Esc)")
+                        onClicked: { lightboxInner.close(); view.focusPage() }
+                    }
+                }
+            }
+
+            // Caption pill shown when the image has alt text or a figcaption.
+            Rectangle {
+                visible: lightboxInner.caption !== ""
+                anchors.bottom: parent.bottom
+                anchors.bottomMargin: 24
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: Math.min(parent.width - 64, captionText.implicitWidth + 32)
+                height: captionText.implicitHeight + 18
+                radius: Ui.radius(10, theme.radius)
+                color: Ui.tint("#1c1c1e", 0.88)
+                border.color: Ui.tint("white", 0.14)
+                Label {
+                    id: captionText
+                    anchors.centerIn: parent
+                    width: Math.min(implicitWidth, lightboxInner.width - 96)
+                    text: lightboxInner.caption
+                    color: "#f2f0eb"
+                    font.pixelSize: 13
+                    wrapMode: Text.Wrap
+                    horizontalAlignment: Text.AlignHCenter
+                    maximumLineCount: 4
+                    elide: Text.ElideRight
+                }
             }
         }
     }
 
-    MarksPanel {
+    Loader {
         id: marksPanel
-        z: 10
-        onClosed: view.focusPage()
-        height: parent.height
-        look: view.look
-        onChosen: (chapter, offset) => view.goTo({ chapter: chapter, offset: offset, instant: true })
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        width: loaded ? loaded.width : 0
+        function show() {
+            active = true
+            if (loaded)
+                loaded.show()
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: MarksPanel {
+            parent: view
+            z: 10
+            height: view.height
+            look: view.look
+            onClosed: view.focusPage()
+            onChosen: (chapter, offset) => view.goTo({ chapter: chapter, offset: offset, instant: true })
+        }
     }
 
-    SearchBar {
+    Loader {
         id: searchBar
-        onClosed: view.focusPage()
-        anchors.horizontalCenter: readingStage.horizontalCenter
-        y: 64
-        z: 14
-        look: view.look
-        onJumped: (hit) => view.showFound(hit)
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        readonly property bool editing: loaded ? !!loaded.editing : false
+        function show() {
+            active = true
+            if (loaded)
+                loaded.show()
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        function next() {
+            if (loaded)
+                loaded.next()
+        }
+        function previous() {
+            if (loaded)
+                loaded.previous()
+        }
+        sourceComponent: SearchBar {
+            parent: view
+            anchors.horizontalCenter: readingStage.horizontalCenter
+            y: 64
+            z: 14
+            onClosed: view.focusPage()
+            look: view.look
+            onJumped: (hit) => view.showFound(hit)
+        }
     }
 
-    GoToBox {
+    Loader {
         id: goTo
-        onClosed: view.focusPage()
-        anchors.horizontalCenter: readingStage.horizontalCenter
-        y: 96
-        z: 14
-        look: view.look
-        onGo: (target) => view.goTo(target)
+        active: false
+        readonly property var loaded: item
+        readonly property bool open: loaded ? !!loaded.open : false
+        function show() {
+            active = true
+            if (loaded)
+                loaded.show()
+        }
+        function close() {
+            if (loaded)
+                loaded.close()
+        }
+        sourceComponent: GoToBox {
+            parent: view
+            anchors.horizontalCenter: readingStage.horizontalCenter
+            y: 96
+            z: 14
+            onClosed: view.focusPage()
+            look: view.look
+            onGo: (target) => view.goTo(target)
+        }
     }
 
     // --- Keys ----------------------------------------------------------------
     readonly property bool modalOpen: win.helpVisible || settingsView.open || welcome.open || (typeof commandPalette !== "undefined" && commandPalette.open)
-    readonly property bool keys: reader.open && visible && !modalPanelOpen && !modalOpen && !win.typing && !lightbox.open && !(pdf && pdfSurface.snipMode)
+    readonly property bool keys: reader.open && visible && !modalPanelOpen && !modalOpen && !win.typing && !lightbox.open && !(pdf && pdfSurface && pdfSurface.snipMode)
     // Listening keys work with a panel open too, unless a field is taking typing.
     readonly property bool typing: win.typing
     readonly property bool listenKeys: reader.open && visible && !modalOpen && !win.typing && !lightbox.open
@@ -2599,13 +2837,28 @@ FocusScope {
     Shortcut { sequence: "Alt+Right"; context: Qt.ApplicationShortcut; enabled: view.keys && reader.canGoForward; onActivated: view.forward() }
     Shortcut { sequence: "Shift+Left"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: if (typeof narration.skipSeconds === "function") narration.skipSeconds(-15) }
     Shortcut { sequence: "Shift+Right"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: if (typeof narration.skipSeconds === "function") narration.skipSeconds(15) }
-    Shortcut { sequence: "T"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showContents() }
-    Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showAppearance() }
+    Shortcut {
+        sequence: "T"
+        context: Qt.ApplicationShortcut
+        enabled: view.keys || (reader.open && view.visible && contents.open && !view.modalOpen && !win.typing && !lightbox.open)
+        onActivated: contents.open ? contents.close() : view.showContents()
+    }
+    Shortcut {
+        sequence: "A"
+        context: Qt.ApplicationShortcut
+        enabled: view.keys || (reader.open && view.visible && appearance.open && !view.modalOpen && !win.typing && !lightbox.open)
+        onActivated: appearance.open ? appearance.close() : view.showAppearance()
+    }
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: goTo.show() }
     Shortcut { sequence: "B"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.toggleBookmark() }
-    Shortcut { sequence: "M"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showMarks() }
+    Shortcut {
+        sequence: "M"
+        context: Qt.ApplicationShortcut
+        enabled: view.keys || (reader.open && view.visible && marksPanel.open && !view.modalOpen && !win.typing && !lightbox.open)
+        onActivated: marksPanel.open ? marksPanel.close() : view.showMarks()
+    }
     Shortcut { sequences: [StandardKey.Redo]; context: Qt.ApplicationShortcut; enabled: view.keys && marks.canRedo; onActivated: marks.redo() }
-    Shortcut { sequences: [StandardKey.Copy]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && view.pdf && !!pdfSurface.selection && !view.modalOpen && !win.typing; onActivated: { reader.copyText(pdfSurface.selection.text); toast.show(qsTr("Copied")) } }
+    Shortcut { sequences: [StandardKey.Copy]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && view.pdf && !!pdfSurface && !!pdfSurface.selection && !view.modalOpen && !win.typing; onActivated: { reader.copyText(pdfSurface.selection.text); toast.show(qsTr("Copied")) } }
     Shortcut { sequences: ["/", StandardKey.Find]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: searchBar.show() }
     Shortcut { sequence: "N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.next() }
     Shortcut { sequence: "Shift+N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.previous() }
@@ -2621,7 +2874,12 @@ FocusScope {
     // P listens from the page in view, then pauses and goes on; ⇧P stops.
     Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.listenKeys; onActivated: narration.active ? narration.toggle() : view.listen() }
     Shortcut { sequence: "Shift+P"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.stop() }
-    Shortcut { sequence: "V"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.showVoices() }
+    Shortcut {
+        sequence: "V"
+        context: Qt.ApplicationShortcut
+        enabled: view.keys || (reader.open && view.visible && voicePanel.open && !view.modalOpen && !win.typing && !lightbox.open)
+        onActivated: voicePanel.open ? voicePanel.close() : view.showVoices()
+    }
     Shortcut { sequence: ","; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.previousParagraph() }
     Shortcut { sequence: "."; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.nextParagraph() }
     Shortcut { sequences: ["<", "Shift+,"]; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.rate = narration.rate - 0.1 }

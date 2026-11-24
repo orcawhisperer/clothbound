@@ -2,6 +2,27 @@
 
 All notable changes to Clothbound are documented in this file.
 
+## [0.4.1] — 2026-11-25
+
+Performance, scrolling, narration stability, and desktop reliability release for Linux, Wayland, and Omarchy.
+
+### Performance
+- **Faster Cold Start (~30% faster)**: Deferred Qt WebEngine profile & child-process creation (`LazyWebProfile`), lazy-loaded `SettingsView`, `Welcome`, `CommandPalette`, `HelpOverlay`, reader panels, and library modals on first use, and deferred `QMediaDevices` enumeration until audio actually plays.
+- **Smoother Library & Covers**: Added off-thread asynchronous `CoverProvider` (`image://cover/...`), eliminated redundant SQL queries during library map enrichment (`Library::enrichBookMap`), and fixed a `CoverImage` binding loop on startup.
+- **Heavy PDF Optimization**: Fused PDF page alpha compositing and theme LUT recoloring into a single pass, added a 32 MiB raw-render cache (instant theme switches on scanned JPEG2000/JBIG2 PDFs), added hi-res downscale cache reuse when docking Companion, cached per-page PDF sizes & links, and lowered background prefetch thread priority.
+- **Reader & Companion Responsiveness**: Decoupled Companion docking layout until its slide animation settles, cached `fitBlocks()` whitespace scans and skipped no-op `<style>` rewrites in `reader.js`, and added `CLOTHBOUND_PROFILE=1` startup/frame-jank telemetry plus `./bin/bench` micro-benchmarks.
+
+### Improved
+- **Effortless Two-Finger Trackpad Scrolling**: Added velocity-adaptive trackpad gain and kinetic momentum coasting (with flick compounding, instant catch-on-touch, native `Qt.ScrollMomentum` passthrough, and `reducedMotion` support) to `SmoothWheel`, and attached `SmoothWheel` to PDF continuous scroll and zoomed pan views.
+- **Dedicated High-Priority Audio Thread**: Moved `QAudioSink`, `QMediaDevices`, and the 15 ms feed loop onto a dedicated `QThread::HighPriority` audio output thread (`AudioOutputPump`) so UI transitions and page renders never starve narration playback.
+- **Native Wayland System Tray**: Replaced `Qt.labs.platform` `SystemTrayIcon` with a native D-Bus `org.kde.StatusNotifierItem` + `com.canonical.dbusmenu` implementation (zero `QtWidgets` dependency, zero private Qt ABI).
+- **Self-Healing Cache Recovery**: Deleting `~/.cache/clothbound` while Clothbound is running now recovers gracefully across audio cache, full-text SQLite index (`LibraryIndex::ensureDatabase()`), and book cover extraction.
+
+### Fixed
+- **Clean Quit While Playing**: Closing the window (`Super+W` / `Ctrl+W` / WM Close) or pressing `Ctrl+Q` / `Q` now always stops narration immediately and exits Clothbound cleanly (background listening remains explicitly available via the ListenBar tray button).
+- **Panel Shortcuts**: `A` (Appearance), `T` (Contents), `M` (Marks), and `V` (Voices) now toggle open and closed symmetrically alongside `C` (Companion).
+- Eliminated `setLifecycleState: Active -> Frozen` warnings on hidden WebEngine views, silenced noisy `qt.pdf.bookmarks` invalid-zoom log spam by default, and fixed cross-thread `QTimer` affinity on `AudioOutputPump`.
+
 ## [0.4.0] — 2026-11-24
 
 Clothbound's v0.4.0 public launch release: native Qt6 desktop craft for Linux, Wayland, and Omarchy, bringing online-to-offline acquisition, Study Companion, academic PDF research tools, and local MCP integration together in one calm reader.

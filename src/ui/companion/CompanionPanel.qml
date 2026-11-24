@@ -333,7 +333,7 @@ FocusScope {
         void(reader.chapter); void(reader.pageEnd); void(reader.progress)
         void(ai.preset); void(ai.localUrl); void(ai.localTextModel); void(ai.hasKey); void(ai.overrideCount)
         void(companion.scope); void(companion.hasPendingSnip)
-        return panel.open ? companion.askEstimate() : ({})
+        return (panel.open && (question.text !== "" || companion.hasPendingSnip)) ? companion.askEstimate() : ({})
     }
     readonly property string effectiveTrustScope: {
         if (panel.tab === "ask")
@@ -435,16 +435,27 @@ FocusScope {
             close()
     }
 
+    // Updated only after the drawer finishes sliding so readingStage / WebEngine
+    // never resize or reflow mid-animation.
+    property bool settledOpen: false
+
     onOpenChanged: {
         if (!open)
             resizeDrag.active = false
+        if (theme.reducedMotion)
+            settledOpen = open
     }
 
     property real slideProgress: open ? 1 : 0
     Behavior on slideProgress {
         NumberAnimation {
-            duration: theme.reducedMotion ? 150 : 350
-            easing.type: Easing.OutQuart
+            id: slideAnim
+            duration: theme.reducedMotion ? 110 : (panel.open ? 260 : 210)
+            easing.type: panel.open ? Easing.OutQuint : Easing.OutCubic
+            onRunningChanged: {
+                if (!running)
+                    panel.settledOpen = panel.open
+            }
         }
     }
 
@@ -453,7 +464,7 @@ FocusScope {
     x: theme.reducedMotion
        ? (parent ? parent.width - width : 0)
        : (parent ? parent.width - width + slideTravel * (1 - slideProgress) : 0)
-    opacity: theme.reducedMotion ? slideProgress : 1
+    opacity: theme.reducedMotion ? slideProgress : Math.min(1, slideProgress * 2.5)
     visible: theme.reducedMotion ? opacity > 0.01 : slideProgress > 0.005
 
     // Soft shadow toward the page.
@@ -1764,7 +1775,7 @@ FocusScope {
             bottomMargin: 16
             clip: true
             spacing: 16
-            model: illustrator.pictures
+            model: (!panel.choosing && panel.tab === "pictures") ? illustrator.pictures : []
             boundsBehavior: Flickable.StopAtBounds
             maximumFlickVelocity: 4500
             flickDeceleration: 2200
@@ -1839,10 +1850,11 @@ FocusScope {
                         anchors.fill: parent
                         readonly property real corner: Ui.radius(12, theme.radius)
                         readonly property color strokeColor: Ui.tint(theme.ink1, 0.24)
-                        onWidthChanged: requestPaint()
-                        onHeightChanged: requestPaint()
-                        onCornerChanged: requestPaint()
-                        onStrokeColorChanged: requestPaint()
+                        onVisibleChanged: if (visible) requestPaint()
+                        onWidthChanged: if (visible) requestPaint()
+                        onHeightChanged: if (visible) requestPaint()
+                        onCornerChanged: if (visible) requestPaint()
+                        onStrokeColorChanged: if (visible) requestPaint()
                         onPaint: {
                             const g = getContext("2d")
                             g.reset()
@@ -2171,7 +2183,7 @@ FocusScope {
             bottomMargin: 10
             clip: true
             spacing: 0
-            model: companion.people
+            model: (!panel.choosing && panel.tab === "whoswho") ? companion.people : []
             boundsBehavior: Flickable.StopAtBounds
             maximumFlickVelocity: 4500
             flickDeceleration: 2200

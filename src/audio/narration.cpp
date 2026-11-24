@@ -11,6 +11,7 @@
 #include "audio/speechplayer.h"
 #include "audio/voicepacks.h"
 
+#include <QAudioDevice>
 #include <QFile>
 #include <QGuiApplication>
 #include <QJsonArray>

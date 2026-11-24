@@ -1,12 +1,12 @@
 import QtQuick
-import QtQuick.Effects
 import QtQuick.Window
 
 import "../components/Ui.js" as Ui
 
 // A book's cover at its own shape, standing on the bottom edge of its box
 // as books stand on a shelf. Asymmetric book corners (3 px spine, 5 px edge;
-// strictly 0 in sharp mode) and a subtle 3 px spine crease.
+// strictly 0 in sharp mode) and a subtle 3 px spine crease are baked once off-
+// thread by CoverProvider (image://cover/…) — zero GPU FBO layers or shaders.
 Item {
     id: cover
 
@@ -17,10 +17,24 @@ Item {
     readonly property int spineRadius: radius > 0 ? Math.min(3, radius) : 0
 
     readonly property bool loaded: image.status === Image.Ready
-    readonly property bool useRoundedMask: cover.radius > 0 && frame.width > 0 && frame.height > 0
     // Bucket decode size in 128px steps (capped at 640px) so multi-MB covers never
     // decode at full resolution for small library tiles and resizes avoid thrashing.
     readonly property int decodeLimit: Math.max(128, Math.min(640, Math.ceil((Math.max(cover.width, cover.height) * (Screen.devicePixelRatio || 1)) / 128) * 128))
+    // Bucket logical box width in 16px steps from the cover's layout size (never
+    // from cover.box, which depends on loaded/aspect and would form a binding loop).
+    readonly property real nominalWidth: cover.height > 0 ? Math.min(cover.width, cover.height * 0.75) : cover.width
+    readonly property int widthBucket: Math.max(32, Math.round(Math.max(1, nominalWidth) / 16) * 16)
+    readonly property bool localCover: cover.source !== ""
+                                       && (cover.source.startsWith("file://") || cover.source.startsWith("/"))
+    readonly property bool useCoverProvider: typeof hasCoverProvider !== "undefined" && hasCoverProvider && localCover
+    readonly property string effectiveSource: {
+        if (cover.width <= 0 || cover.height <= 0 || cover.source === "")
+            return ""
+        if (useCoverProvider)
+            return "image://cover/" + encodeURIComponent(cover.source)
+                   + "?r=" + cover.radius + "&sr=" + cover.spineRadius + "&bw=" + cover.widthBucket
+        return cover.source
+    }
     // Width over height of what's shown; generated covers are 2:3.
     readonly property real aspect: loaded && image.implicitHeight > 0
                                    ? Math.max(0.45, Math.min(1.2, image.implicitWidth / image.implicitHeight)) : 2 / 3
@@ -36,19 +50,11 @@ Item {
         y: cover.box.y
         width: cover.box.width
         height: cover.box.height
-        layer.enabled: cover.useRoundedMask
-        layer.smooth: true
-        layer.effect: MultiEffect {
-            autoPaddingEnabled: false
-            maskEnabled: true
-            maskSource: mask
-            maskThresholdMin: 0.5
-            maskSpreadAtMin: 1.0
-        }
 
         GeneratedCover {
             anchors.fill: parent
             visible: !cover.loaded
+            radius: cover.radius
             title: cover.title
             author: cover.author
         }
@@ -56,7 +62,7 @@ Item {
         Image {
             id: image
             anchors.fill: parent
-            source: cover.width > 0 && cover.height > 0 ? cover.source : ""
+            source: cover.effectiveSource
             asynchronous: true
             cache: true
             fillMode: Image.Stretch
@@ -72,40 +78,16 @@ Item {
             }
         }
 
-        // Subtle left-edge spine crease on every cover (inset 3px 0 0 rgba(0,0,0,0.22)).
+        // Spine crease overlay only when not already baked by CoverProvider
+        // (generated covers or remote fallback).
         Rectangle {
+            visible: !cover.loaded || !cover.useCoverProvider
             anchors.left: parent.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             width: Math.max(2, Math.min(3, parent.width * 0.04))
-            color: Qt.rgba(0, 0, 0, 0.22)
-        }
-    }
-
-    // Offscreen mask giving 3 px left (spine) and 5 px right (fore-edge) corners.
-    Item {
-        id: mask
-        width: frame.width
-        height: frame.height
-        visible: false
-        layer.enabled: cover.useRoundedMask
-        layer.smooth: true
-        Rectangle {
-            anchors.fill: parent
-            radius: cover.radius
-        }
-        Rectangle {
-            anchors.left: parent.left
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: Math.min(parent.width / 2, Math.max(6, cover.radius + 2))
             radius: cover.spineRadius
-        }
-        Rectangle {
-            x: cover.spineRadius
-            anchors.top: parent.top
-            anchors.bottom: parent.bottom
-            width: Math.min(parent.width / 2, Math.max(0, cover.radius))
+            color: Qt.rgba(0, 0, 0, 0.22)
         }
     }
 }
