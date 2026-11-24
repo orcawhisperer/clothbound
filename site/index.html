@@ -3,25 +3,63 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Clothbound — a calm, fast native Qt6 EPUB and PDF reader for Linux and Omarchy with zero-flash page turns, smart PDF fit presets, save-from-URL articles &amp; OPDS catalogs, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server.">
+<meta name="description" content="Clothbound is a fast, local-first Qt6 EPUB and PDF reader for Linux &amp; Omarchy with OPDS catalogs, PDF Snip &amp; Peek, offline voices, Study Companion, and MCP.">
+<meta name="robots" content="index,follow,max-image-preview:large">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#FAF8F4" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#1C1B19" media="(prefers-color-scheme: dark)">
 <meta property="og:type" content="website">
+<meta property="og:locale" content="en_US">
 <meta property="og:site_name" content="Clothbound">
-<meta property="og:title" content="Clothbound — Read deeply. Think clearly.">
+<meta property="og:title" content="Clothbound — Native EPUB &amp; PDF Reader for Linux &amp; Omarchy">
 <meta property="og:description" content="A calm, local-first Qt6 EPUB &amp; PDF reader for Linux and Omarchy with zero-flash spreads, save-from-URL articles, OPDS catalogs, Study Companion, PDF Snip &amp; Explain, and a built-in local MCP server.">
 <meta property="og:url" content="https://clothbound.app/">
 <meta property="og:image" content="https://clothbound.app/og-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Clothbound v0.4.0 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Clothbound — Read deeply. Think clearly.">
+<meta name="twitter:title" content="Clothbound — Native EPUB &amp; PDF Reader for Linux &amp; Omarchy">
 <meta name="twitter:description" content="A calm, local-first Qt6 EPUB &amp; PDF reader for Linux and Omarchy with Study Companion, PDF Snip &amp; Explain, OPDS catalogs, natural read-aloud, and local MCP.">
 <meta name="twitter:image" content="https://clothbound.app/og-card.png">
+<meta name="twitter:image:alt" content="Clothbound v0.4.0 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
 <link rel="canonical" href="https://clothbound.app/">
-<title>Clothbound — Read deeply. Think clearly.</title>
+<title>Clothbound — Native EPUB &amp; PDF Reader for Linux &amp; Omarchy</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+<link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Clothbound",
+  "headline": "Native EPUB & PDF Reader for Linux & Omarchy",
+  "description": "A calm, local-first Qt6 EPUB and PDF reader for Linux, Wayland, and Omarchy with zero-flash spreads, save-from-URL articles, OPDS 1.2/2.0 catalogs, PDF Snip & Explain, Quick-Look citation peek, offline neural voices, an adaptive Story & Study Companion, and a built-in local MCP server.",
+  "url": "https://clothbound.app/",
+  "downloadUrl": "https://github.com/orcawhisperer/clothbound/releases/tag/v0.4.0",
+  "installUrl": "https://clothbound.app/#install",
+  "codeRepository": "https://github.com/orcawhisperer/clothbound",
+  "license": "https://opensource.org/licenses/MIT",
+  "softwareVersion": "0.4.0",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "Linux, Arch Linux, Omarchy, Wayland",
+  "image": "https://clothbound.app/og-card.png",
+  "screenshot": "https://clothbound.app/og-card.png",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  },
+  "featureList": [
+    "Zero-flash EPUB spreads and theme-recolored academic PDF reading",
+    "Live Omarchy theme, language, and Hyprland corner rounding sync (Rounded / Sharp overrides)",
+    "Add from URL offline article archival and OPDS 1.2/2.0 catalog browsing",
+    "PDF Preset View Modes (Fit page, Fit width, Actual), Visual Snip & Explain, and Quick-Look citation peek",
+    "Offline neural read-aloud voices (Kokoro, Pocket TTS, Piper) and M4B audiobook export",
+    "Adaptive Story & Study Companion with Smart Scope and offline LaTeX math",
+    "Built-in read-only local stdio MCP server (clothbound mcp)"
+  ]
+}
+</script>
 <style>
 /* ============================================================================
    clothbound.app — Museum-Grade Static Landing Page
@@ -935,7 +973,7 @@ html[data-theme="dusk"] .arxiv-badge {
   border-bottom: 1px solid rgba(38, 34, 29, 0.10);
   padding-bottom: 5px;
 }
-.pdf-page-card h4 {
+.pdf-page-card .pdf-sec-title {
   margin: 2px 0 0;
   font-size: 13.5px;
   font-weight: 700;
@@ -2426,7 +2464,7 @@ kbd {
                   <span>NIPS 2017 · Section 3.2</span>
                   <span class="tnum">p. 4</span>
                 </div>
-                <h4>3.2.1 &nbsp; Scaled Dot-Product Attention</h4>
+                <div class="pdf-sec-title">3.2.1 &nbsp; Scaled Dot-Product Attention</div>
                 <p>The input consists of queries and keys of dimension <em>d<sub>k</sub></em>, and values of dimension <em>d<sub>v</sub></em>. We compute the dot products of the query with all keys, divide each by √<em>d<sub>k</sub></em>, and apply a softmax function to obtain the weights on the values.</p>
                 <div class="pdf-eq-box">
                   <div class="pdf-eq-formula">
