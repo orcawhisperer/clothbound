@@ -2,5 +2,10 @@
 /pkgbuild/pkg/
 /pkgbuild/src/
 /pkgbuild/clothbound/
+/site/node_modules/
+/site/dist/
+/site/.cloudflare/
+.env
+.env.*
 *.pkg.tar.*
 *.user

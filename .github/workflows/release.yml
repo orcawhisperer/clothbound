@@ -1,0 +1,78 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  arch-package:
+    name: Build Arch Package
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install build & runtime dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git \
+            qt6-base \
+            qt6-declarative \
+            qt6-wayland \
+            qt6-webengine \
+            qt6-webchannel \
+            qt6-svg \
+            qt6-multimedia \
+            libsecret \
+            xdg-desktop-portal \
+            zlib \
+            tar \
+            bzip2 \
+            nodejs \
+            python \
+            desktop-file-utils \
+            xorg-server-xvfb
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run tests before packaging
+        run: |
+          ./bin/test
+          ./bin/translate check
+          desktop-file-validate pkgbuild/clothbound.desktop
+
+      - name: Build Arch package with makepkg
+        run: |
+          useradd -m builder
+          mkdir -p /tmp/pkg-out /tmp/pkg-build
+          chown -R builder:builder /tmp/pkg-out /tmp/pkg-build "$GITHUB_WORKSPACE"
+          su builder -c "cd '$GITHUB_WORKSPACE/pkgbuild' && BUILDDIR=/tmp/pkg-build PKGDEST=/tmp/pkg-out makepkg -f --skipchecksums"
+          ls -lh /tmp/pkg-out/
+          mkdir -p /tmp/pkg-check
+          tar -xf /tmp/pkg-out/clothbound-*.pkg.tar.zst -C /tmp/pkg-check
+          count=$(readelf -Ws /tmp/pkg-check/usr/bin/clothbound | grep -c '@Qt_6_PRIVATE_API' || true)
+          test "$count" -eq 0
+          (cd /tmp/pkg-out && sha256sum clothbound-*.pkg.tar.zst > SHA256SUMS)
+          cat /tmp/pkg-out/SHA256SUMS
+
+      - name: Upload Arch package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clothbound-arch-package
+          path: |
+            /tmp/pkg-out/clothbound-*.pkg.tar.zst
+            /tmp/pkg-out/SHA256SUMS
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            /tmp/pkg-out/clothbound-*.pkg.tar.zst
+            /tmp/pkg-out/SHA256SUMS

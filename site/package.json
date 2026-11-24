@@ -1,0 +1,13 @@
+{
+  "name": "clothbound-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "deploy:dry-run": "npm run build && npx cf deploy dist --dry-run",
+    "deploy": "npm run build && npx cf deploy dist"
+  },
+  "devDependencies": {
+    "cf": "^1.0.0-rc.4"
+  }
+}

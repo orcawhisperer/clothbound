@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "clothbound.pro"
+      - "pkgbuild/**"
+      - "bin/**"
+      - ".github/workflows/ci.yml"
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "clothbound.pro"
+      - "pkgbuild/**"
+      - "bin/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Arch Linux Qt6 Build & Tests
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git \
+            qt6-base \
+            qt6-declarative \
+            qt6-wayland \
+            qt6-webengine \
+            qt6-webchannel \
+            qt6-svg \
+            qt6-multimedia \
+            qt6-tools \
+            libsecret \
+            zlib \
+            tar \
+            bzip2 \
+            nodejs \
+            python \
+            desktop-file-utils \
+            xorg-server-xvfb
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Clothbound (-Wall -Wextra)
+        run: |
+          mkdir -p build
+          cd build
+          qmake6 ../clothbound.pro "QMAKE_CXXFLAGS+=-Wall -Wextra -Werror=return-type"
+          make -j"$(nproc)"
+
+      - name: Verify zero private Qt6 ABI symbols
+        run: |
+          count=$(readelf -Ws build/clothbound | grep -c '@Qt_6_PRIVATE_API' || true)
+          echo "PRIVATE_API symbol count: $count"
+          test "$count" -eq 0
+
+      - name: Run unit and QML smoke tests
+        run: ./bin/test
+
+      - name: Validate translations, JS, QML lint, and desktop entry
+        run: |
+          ./bin/translate check
+          node --check src/reader/reader.js src/reader/hyphenation.js src/reader/dropcap.js
+          /usr/lib/qt6/bin/qmllint -I src/ui -I src/ui/style $(find src/ui -name '*.qml' | sort)
+          desktop-file-validate pkgbuild/clothbound.desktop
+
+      - name: Smoke-test local stdio MCP server
+        run: |
+          XDG_DATA_HOME=$(mktemp -d) XDG_CONFIG_HOME=$(mktemp -d) XDG_CACHE_HOME=$(mktemp -d) \
+          python3 -c '
+          import json, subprocess
+          reqs = [
+              {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "ci", "version": "1"}}},
+              {"jsonrpc": "2.0", "method": "notifications/initialized"},
+              {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+          ]
+          p = subprocess.run(["./build/clothbound", "mcp"], input="\n".join(json.dumps(r) for r in reqs) + "\n", capture_output=True, text=True, timeout=15)
+          assert p.returncode == 0, p.stderr
+          assert p.stderr == "", f"unexpected stderr: {p.stderr}"
+          lines = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+          assert len(lines) == 2 and len(lines[1]["result"]["tools"]) == 6
+          print("MCP stdio smoke OK:", [t["name"] for t in lines[1]["result"]["tools"]])
+          '

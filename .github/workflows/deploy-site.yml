@@ -1,0 +1,61 @@
+name: Deploy clothbound.app
+
+on:
+  pull_request:
+    paths:
+      - "site/**"
+      - "docs/clothbound-prototype.html"
+      - ".github/workflows/deploy-site.yml"
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - "site/**"
+      - "docs/clothbound-prototype.html"
+      - ".github/workflows/deploy-site.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-clothbound-site-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  deploy:
+    name: Build & Deploy (Cloudflare)
+    runs-on: ubuntu-latest
+    env:
+      CF_SEND_TELEMETRY: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+
+      - name: Install Cloudflare CLI dependencies
+        working-directory: site
+        run: npm ci
+
+      - name: Build and validate static site bundle
+        working-directory: site
+        run: npm run build
+
+      - name: Validate Cloudflare deploy (dry run)
+        working-directory: site
+        run: npx cf deploy dist --dry-run
+
+      - name: Deploy to clothbound.app
+        if: github.event_name != 'pull_request'
+        working-directory: site
+        run: npx cf deploy dist
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
