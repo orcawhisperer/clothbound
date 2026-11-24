@@ -63,6 +63,10 @@ class Narration : public QObject {
     // head start first, so it then plays through without pausing.
     Q_PROPERTY(bool preparing READ preparing NOTIFY stateChanged)
     Q_PROPERTY(int preparedPercent READ preparedPercent NOTIFY positionChanged)
+    // One-shot speech playback for Companion responses (reuses the active/default voice).
+    Q_PROPERTY(bool speakingResponse READ speakingResponse NOTIFY responseSpeechChanged)
+    Q_PROPERTY(bool responseBuffering READ responseBuffering NOTIFY responseSpeechChanged)
+    Q_PROPERTY(QString speakingResponseId READ speakingResponseId NOTIFY responseSpeechChanged)
 
 public:
     Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, QObject *parent = nullptr);
@@ -103,6 +107,9 @@ public:
     bool hasPendingStart() const { return m_pendingStart; }
     bool preparing() const { return m_holdSamples > 0; }
     int preparedPercent() const;
+    bool speakingResponse() const { return m_responseActive; }
+    bool responseBuffering() const { return m_responseBuffering; }
+    QString speakingResponseId() const { return m_responseId; }
 
     // Starts reading the open book at a chapter and offset.
     Q_INVOKABLE void start(int chapter, qint64 offset);
@@ -111,6 +118,9 @@ public:
     Q_INVOKABLE void pause();
     Q_INVOKABLE void resume();
     Q_INVOKABLE void stop();
+    Q_INVOKABLE void speakResponse(const QString &markdownOrText, const QString &itemId);
+    Q_INVOKABLE void stopResponse();
+    static QString cleanSpeechText(const QString &markdownOrText);
     Q_INVOKABLE void nextParagraph();
     Q_INVOKABLE void previousParagraph();
     Q_INVOKABLE void nextSentence();
@@ -148,9 +158,23 @@ signals:
     void needsKey();
     // The chosen built-in voice has to be downloaded first.
     void voiceMissing();
+    void responseSpeechChanged();
+    void responseSpeechProblem(const QString &message);
 
 private:
     friend class ClothboundTests;
+    struct ResponseChunk {
+        enum State { Waiting, Working, Complete, Failed };
+        int trackId = 0;
+        QString text;
+        QStringList sentences;
+        QString voice;
+        QString key;
+        State state = Waiting;
+        bool queued = false;
+        QByteArray pcm;
+        QPointer<Ai::Reply> reply;
+    };
     struct Clip : SpeechClip {
         // Waiting: not started. Working: its audio is arriving (from the
         // network, or being decoded from the cache). Complete: all of it is
@@ -213,6 +237,14 @@ private:
     Ai::SpeechSynthesizer *speaker() const;
     int nextChapterAfter(int chapter) const;
     void loadVoice();
+    QString resolveResponseVoice() const;
+    int indexOfResponseChunk(int trackId) const;
+    void pumpResponse();
+    void fetchResponse(int index);
+    void decodeResponse(int index, const QString &file);
+    void queueResponse();
+    void failResponse(const QString &message);
+    void setResponseBuffering(bool buffering);
 
     AiServices *m_ai;
     AudioCache *m_cache;
@@ -278,4 +310,15 @@ private:
     bool m_sleepPausedRestore = false;
     double m_preFadeVolume = -1.0;
     bool m_sleepAtChapterEnd = false;
+
+    QList<ResponseChunk> m_responseChunks;
+    quint64 m_responseSession = 0;
+    int m_responseCurrent = 0;
+    int m_responseQueued = -1;
+    bool m_responseActive = false;
+    bool m_responseBuffering = false;
+    bool m_responseHeadless = false;
+    QString m_responseId;
+    QString m_responseVoice;
+    bool m_bookPlayerDirty = false;
 };

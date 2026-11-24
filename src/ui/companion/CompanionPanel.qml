@@ -23,6 +23,15 @@ FocusScope {
     property bool recapCopied: false
     property bool selectionCopied: false
 
+    readonly property int defaultWidth: 384
+    readonly property int minWidth: 320
+    readonly property int maxWidth: Math.max(minWidth, Math.min(760, Math.floor((parent ? parent.width : 1280) * 0.56)))
+    property real preferredWidth: uiSettings.companionWidth
+    readonly property bool resizing: resizeDrag.active
+
+    // Crisp 24x24 speaker glyph for response read-aloud actions (matches Icons.js grid).
+    readonly property string speakerIcon: "M4.5 9.5 H8.5 L13.5 5.5 V18.5 L8.5 14.5 H4.5 Z M16.5 9 A4.2 4.2 0 0 1 16.5 15 M19 6.5 A7.5 7.5 0 0 1 19 17.5"
+
     signal closed()
     signal jumpRequested(int chapter, int offset)
     signal saveAsNote(string quote, string note)
@@ -54,6 +63,27 @@ FocusScope {
         category: "companion"
         property bool notNow: false
     }
+    Settings {
+        id: uiSettings
+        location: settingsUrl
+        category: "ui"
+        property int companionWidth: 384
+    }
+    Connections {
+        target: uiSettings
+        function onCompanionWidthChanged() {
+            if (!panel.resizing && !snapWidthAnim.running)
+                panel.preferredWidth = uiSettings.companionWidth
+        }
+    }
+    NumberAnimation {
+        id: snapWidthAnim
+        target: panel
+        property: "preferredWidth"
+        duration: theme.reducedMotion ? 0 : 180
+        easing.type: Easing.OutCubic
+        onFinished: uiSettings.companionWidth = Math.round(panel.width)
+    }
 
     function openIntelligenceSettings() {
         if (typeof win !== "undefined" && win && typeof win.showAiSettings === "function")
@@ -77,6 +107,7 @@ FocusScope {
     function close() {
         if (!open)
             return
+        resizeDrag.active = false
         clearConfirmOpen = false
         if (picturePreview.opened)
             picturePreview.close()
@@ -349,6 +380,14 @@ FocusScope {
     }
 
     Connections {
+        target: narration
+        function onResponseSpeechProblem(message) {
+            if (message && message !== "")
+                toast.show(message)
+        }
+    }
+
+    Connections {
         target: illustrator
         function onSavedCopy(path) {
             toast.show(qsTr("Saved to %1").arg(path.replace(/^.*\/(Pictures\/)/, "$1")))
@@ -397,18 +436,26 @@ FocusScope {
             close()
     }
 
-    width: Math.min(384, parent.width - 16)
-    x: theme.reducedMotion ? parent.width - width : (open ? parent.width - width : parent.width + 24)
-    Behavior on x {
-        enabled: !theme.reducedMotion
-        NumberAnimation { duration: 350; easing.type: Easing.OutQuart }
+    onOpenChanged: {
+        if (!open)
+            resizeDrag.active = false
     }
-    opacity: theme.reducedMotion ? (open ? 1 : 0) : 1
-    Behavior on opacity {
-        enabled: theme.reducedMotion
-        NumberAnimation { duration: 150 }
+
+    property real slideProgress: open ? 1 : 0
+    Behavior on slideProgress {
+        NumberAnimation {
+            duration: theme.reducedMotion ? 150 : 350
+            easing.type: Easing.OutQuart
+        }
     }
-    visible: theme.reducedMotion ? opacity > 0 : x < parent.width + 20
+
+    width: Math.max(minWidth, Math.min(maxWidth, Math.round(preferredWidth)))
+    readonly property real slideTravel: width + 24
+    x: theme.reducedMotion
+       ? (parent ? parent.width - width : 0)
+       : (parent ? parent.width - width + slideTravel * (1 - slideProgress) : 0)
+    opacity: theme.reducedMotion ? slideProgress : 1
+    visible: theme.reducedMotion ? opacity > 0.01 : slideProgress > 0.005
 
     // Soft shadow toward the page.
     Rectangle {
@@ -434,6 +481,79 @@ FocusScope {
         anchors.fill: parent
         acceptedButtons: Qt.AllButtons
         onWheel: (wheel) => wheel.accepted = true
+    }
+
+    // Invisible 6px left-edge resize sash with a quiet 2px accent hairline on hover/drag.
+    MouseArea {
+        id: resizeDrag
+        property bool active: false
+        property real startParentX: 0
+        property real startWidth: 384
+        x: -3
+        y: 0
+        width: 6
+        height: parent.height
+        z: 20
+        enabled: panel.open
+        hoverEnabled: true
+        acceptedButtons: Qt.LeftButton
+        cursorShape: Qt.SizeHorCursor
+
+        onPressed: (mouse) => {
+            if (!panel.parent)
+                return
+            snapWidthAnim.stop()
+            const pt = mapToItem(panel.parent, mouse.x, mouse.y)
+            startParentX = pt.x
+            startWidth = panel.width
+            active = true
+        }
+        onPositionChanged: (mouse) => {
+            if (!active || !pressed || !panel.parent)
+                return
+            const pt = mapToItem(panel.parent, mouse.x, mouse.y)
+            const delta = startParentX - pt.x
+            const clamped = Math.max(panel.minWidth, Math.min(panel.maxWidth, Math.round(startWidth + delta)))
+            panel.preferredWidth = clamped
+        }
+        onReleased: {
+            if (!active)
+                return
+            active = false
+            uiSettings.companionWidth = Math.round(panel.width)
+        }
+        onCanceled: {
+            if (!active)
+                return
+            active = false
+            uiSettings.companionWidth = Math.round(panel.width)
+        }
+        onDoubleClicked: {
+            active = false
+            const target = Math.max(panel.minWidth, Math.min(panel.maxWidth, panel.defaultWidth))
+            if (theme.reducedMotion) {
+                panel.preferredWidth = target
+                uiSettings.companionWidth = target
+            } else {
+                snapWidthAnim.stop()
+                snapWidthAnim.from = panel.width
+                snapWidthAnim.to = target
+                snapWidthAnim.start()
+            }
+        }
+
+        Rectangle {
+            x: 2
+            y: 0
+            width: 2
+            height: parent.height
+            color: theme.accent
+            opacity: resizeDrag.active ? 0.85 : (resizeDrag.containsMouse ? 0.55 : 0)
+            Behavior on opacity {
+                enabled: !theme.reducedMotion
+                NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+            }
+        }
     }
 
     component JumpChip: AbstractButton {
@@ -507,6 +627,107 @@ FocusScope {
             font.weight: Font.Medium
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
+        }
+    }
+    // Understated Listen / Stop response speech button (inline 22px in Ask, 28px in Brief/Selection).
+    component SpeakButton: AbstractButton {
+        id: speakBtn
+        property string itemId: ""
+        property string responseText: ""
+        property bool inlineMode: false
+
+        readonly property bool isThisItem: itemId !== "" && narration.speakingResponseId === itemId
+        readonly property bool bufferingThis: isThisItem && narration.responseBuffering
+        readonly property bool activeThis: isThisItem && narration.speakingResponse
+        readonly property bool stopping: activeThis && !bufferingThis
+
+        implicitHeight: inlineMode ? 22 : 28
+        implicitWidth: speakRow.implicitWidth + (inlineMode ? 12 : 20)
+        hoverEnabled: true
+        focusPolicy: Qt.TabFocus
+        Accessible.name: activeThis ? qsTr("Stop reading response") : qsTr("Listen to response")
+        HoverHandler { cursorShape: Qt.PointingHandCursor }
+        ToolTip.visible: hovered
+        ToolTip.delay: 500
+        ToolTip.text: bufferingThis ? qsTr("Preparing voice…")
+                    : stopping ? qsTr("Stop reading aloud")
+                    : qsTr("Read response aloud")
+
+        onClicked: {
+            if (speakBtn.activeThis || speakBtn.bufferingThis)
+                narration.stopResponse()
+            else
+                narration.speakResponse(speakBtn.responseText, speakBtn.itemId)
+        }
+
+        background: Rectangle {
+            radius: Ui.radius(speakBtn.inlineMode ? 5 : 7, theme.radius)
+            color: speakBtn.activeThis
+                 ? (speakBtn.pressed ? Ui.tint(theme.accent, 0.28)
+                    : speakBtn.hovered ? Ui.tint(theme.accent, 0.22) : theme.accentSoft)
+                 : speakBtn.inlineMode
+                 ? (speakBtn.pressed ? theme.fillPressed
+                    : speakBtn.hovered ? theme.fillHover : "transparent")
+                 : (speakBtn.pressed ? Ui.tint(theme.ink1, 0.16)
+                    : speakBtn.hovered ? Ui.tint(theme.ink1, 0.12) : Ui.tint(theme.ink1, 0.08))
+            border.width: speakBtn.activeThis ? 1 : 0
+            border.color: Ui.tint(theme.accent, 0.42)
+            Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
+            Rectangle {
+                anchors.fill: parent
+                anchors.margins: speakBtn.inlineMode ? -2 : -3
+                visible: speakBtn.visualFocus
+                radius: Ui.radius(speakBtn.inlineMode ? 7 : 10, theme.radius)
+                color: "transparent"
+                border.width: 2
+                border.color: theme.accent
+            }
+        }
+
+        contentItem: Item {
+            Row {
+                id: speakRow
+                anchors.centerIn: parent
+                spacing: speakBtn.inlineMode ? 4 : 6
+
+                Glyph {
+                    visible: !speakBtn.activeThis && !speakBtn.bufferingThis
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: speakBtn.inlineMode ? 12 : 14
+                    height: speakBtn.inlineMode ? 12 : 14
+                    stroke: 1.85
+                    path: panel.speakerIcon
+                    color: speakBtn.inlineMode
+                         ? (speakBtn.hovered ? theme.ink1 : theme.ink4)
+                         : theme.ink1
+                }
+                BusyIndicator {
+                    visible: speakBtn.bufferingThis
+                    running: visible
+                    anchors.verticalCenter: parent.verticalCenter
+                    padding: 0
+                    implicitWidth: speakBtn.inlineMode ? 13 : 15
+                    implicitHeight: speakBtn.inlineMode ? 13 : 15
+                    palette.highlight: theme.accentInk
+                }
+                Rectangle {
+                    visible: speakBtn.stopping
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: speakBtn.inlineMode ? 8 : 9
+                    height: speakBtn.inlineMode ? 8 : 9
+                    radius: 2
+                    color: theme.accentInk
+                }
+                Label {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: speakBtn.activeThis ? qsTr("Stop") : qsTr("Listen")
+                    color: speakBtn.activeThis ? theme.accentInk
+                         : speakBtn.inlineMode ? (speakBtn.hovered ? theme.ink1 : theme.ink4)
+                         : theme.ink1
+                    font.pixelSize: speakBtn.inlineMode ? 11 : 12
+                    font.weight: speakBtn.activeThis ? Font.DemiBold : Font.Medium
+                }
+            }
         }
     }
     // Words to read, selectable for copying (Literata for Previously… & selection prose).
@@ -1017,7 +1238,7 @@ FocusScope {
 
                                 Rectangle {
                                     id: bubbleRect
-                                    readonly property real maxBubbleW: Math.min(280, parent.width * 0.88)
+                                    readonly property real maxBubbleW: Math.min(Math.max(280, parent.width * 0.78), parent.width * 0.88)
                                     width: turnBox.modelData.fromUser
                                            ? (turnBox.hasUserSnip
                                               ? maxBubbleW
@@ -1119,6 +1340,11 @@ FocusScope {
                                             copyReset.restart()
                                             toast.show(qsTr("Copied"))
                                         }
+                                    }
+                                    SpeakButton {
+                                        inlineMode: true
+                                        itemId: "ask-" + turnBox.index
+                                        responseText: turnBox.modelData.text
                                     }
                                     SmallAction {
                                         text: qsTr("Save as note")
@@ -1481,6 +1707,10 @@ FocusScope {
                             }
                             toast.show(qsTr("Copied"))
                         }
+                    }
+                    SpeakButton {
+                        itemId: proseColumn.isRecap ? "recap" : "selection"
+                        responseText: proseColumn.displayAnswer
                     }
                     TextButton {
                         size: "compact"
