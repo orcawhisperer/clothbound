@@ -38,7 +38,7 @@ jobs:
             xorg-server-xvfb
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Run tests before packaging
         run: |
@@ -49,30 +49,50 @@ jobs:
       - name: Build Arch package with makepkg
         run: |
           useradd -m builder
-          mkdir -p /tmp/pkg-out /tmp/pkg-build
-          chown -R builder:builder /tmp/pkg-out /tmp/pkg-build "$GITHUB_WORKSPACE"
-          su builder -c "cd '$GITHUB_WORKSPACE/pkgbuild' && BUILDDIR=/tmp/pkg-build PKGDEST=/tmp/pkg-out makepkg -f --skipchecksums"
+          rm -rf /tmp/pkg-src /tmp/pkg-out /tmp/pkg-build /tmp/pkg-check
+          mkdir -p /tmp/pkg-out /tmp/pkg-build /tmp/pkg-check
+          cp -a "$GITHUB_WORKSPACE" /tmp/pkg-src
+          chown -R builder:builder /tmp/pkg-src /tmp/pkg-out /tmp/pkg-build
+          su builder -c "cd /tmp/pkg-src/pkgbuild && BUILDDIR=/tmp/pkg-build PKGDEST=/tmp/pkg-out PKGEXT='.pkg.tar.zst' makepkg -f --skipchecksums"
           ls -lh /tmp/pkg-out/
-          mkdir -p /tmp/pkg-check
-          tar -xf /tmp/pkg-out/clothbound-*.pkg.tar.zst -C /tmp/pkg-check
+          pkg=$(find /tmp/pkg-out -maxdepth 1 -name 'clothbound-[0-9]*.pkg.tar.zst' | head -n 1)
+          test -n "$pkg"
+          bsdtar -xf "$pkg" -C /tmp/pkg-check
           count=$(readelf -Ws /tmp/pkg-check/usr/bin/clothbound | grep -c '@Qt_6_PRIVATE_API' || true)
+          echo "PRIVATE_API symbol count: $count"
           test "$count" -eq 0
-          (cd /tmp/pkg-out && sha256sum clothbound-*.pkg.tar.zst > SHA256SUMS)
+          (cd /tmp/pkg-out && sha256sum "$(basename "$pkg")" > SHA256SUMS)
           cat /tmp/pkg-out/SHA256SUMS
 
+      - name: Extract release notes from CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          python3 -c '
+          import os, re
+          ver = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          text = open("CHANGELOG.md", encoding="utf-8").read()
+          m = re.search(rf"^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
+          body = m.group(1).strip() if m else ""
+          if body:
+              body += f"\n\n---\n\n### Install on Arch Linux / Omarchy\n```sh\nsudo pacman -U https://github.com/orcawhisperer/clothbound/releases/download/v{ver}/clothbound-{ver}-1-x86_64.pkg.tar.zst\n```\n"
+          open("/tmp/release-notes.md", "w", encoding="utf-8").write(body)
+          print("Release notes bytes:", len(body))
+          '
+
       - name: Upload Arch package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: clothbound-arch-package
           path: |
-            /tmp/pkg-out/clothbound-*.pkg.tar.zst
+            /tmp/pkg-out/clothbound-[0-9]*.pkg.tar.zst
             /tmp/pkg-out/SHA256SUMS
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
+          body_path: /tmp/release-notes.md
           generate_release_notes: true
           files: |
-            /tmp/pkg-out/clothbound-*.pkg.tar.zst
+            /tmp/pkg-out/clothbound-[0-9]*.pkg.tar.zst
             /tmp/pkg-out/SHA256SUMS

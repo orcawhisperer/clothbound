@@ -12,6 +12,7 @@ optdepends=('ffmpeg: keep listened narration small (Opus), and save downloads as
             'ollama: run local text, vision, and embedding models on this computer'
             'llama.cpp: run text, embedding and voice models on this computer')
 makedepends=('gcc' 'make' 'pkgconf')
+options=('!debug' '!lto')
 source=()
 sha256sums=()
 
