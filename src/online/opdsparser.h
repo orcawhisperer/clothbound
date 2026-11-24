@@ -47,6 +47,7 @@ struct OpdsEntry {
     QString groupUrl;
     QList<OpdsLink> acquisitions;
     bool isNavigation = false;
+    bool borrowOnly = false;
 
     QVariantMap toVariantMap() const;
 };

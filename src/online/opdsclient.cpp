@@ -18,6 +18,7 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QStandardPaths>
+#include <QUrlQuery>
 #include <QUuid>
 #include <functional>
 
@@ -837,7 +838,7 @@ void OpdsClient::fetchFeed(const QUrl &url, bool appendMode, int hops, const QUr
     const QUrl catalogOrigin = cat ? QUrl(cat->url) : url;
 
     QNetworkRequest req = makeBaseRequest(
-        url, "application/opds+json, application/atom+xml;profile=opds-catalog, application/atom+xml, application/xml;q=0.9, */*;q=0.5");
+        url, "application/opds+json, application/opds-publication+json, application/atom+xml;profile=opds-catalog, application/atom+xml, application/xml;q=0.9, */*;q=0.5");
     applyAuthIfAllowed(req, url, catalogOrigin, initialOrigin, m_activeCatalogId);
 
     const quint64 gen = m_feedGeneration;
@@ -1168,8 +1169,8 @@ void OpdsClient::cancelDownload(const QString &acquisitionUrl) {
 }
 
 void OpdsClient::startDownloadRequest(const std::shared_ptr<ActiveDownload> &dl) {
-    const QUrl url(dl->currentUrl);
-    if (!OpdsParser::isAllowedHttpUrl(url)) {
+    QUrl reqUrl(dl->currentUrl);
+    if (!OpdsParser::isAllowedHttpUrl(reqUrl)) {
         const QString err = tr("Download redirected to an unsupported address.");
         m_activeDownloads.remove(dl->acquisitionUrl);
         setDownloadState(dl->acquisitionUrl, QStringLiteral("error"), 0.0, 0, err);
@@ -1177,8 +1178,21 @@ void OpdsClient::startDownloadRequest(const std::shared_ptr<ActiveDownload> &dl)
         return;
     }
 
-    QNetworkRequest req = makeBaseRequest(url, "application/epub+zip, application/pdf, application/octet-stream;q=0.8, */*;q=0.5");
-    applyAuthIfAllowed(req, url, dl->catalogOrigin, dl->initialOrigin, dl->catalogId);
+    // Standard Ebooks serves an HTML interstitial on /downloads/*.epub unless ?source= is present
+    // (Open Library OPDS book manifests link the bare URL without ?source=download).
+    const QString hostLower = reqUrl.host().toLower();
+    if ((hostLower == QLatin1String("standardebooks.org") || hostLower == QLatin1String("www.standardebooks.org")) &&
+        reqUrl.path().contains(QLatin1String("/downloads/"), Qt::CaseInsensitive) &&
+        reqUrl.path().endsWith(QLatin1String(".epub"), Qt::CaseInsensitive)) {
+        QUrlQuery q(reqUrl);
+        if (!q.hasQueryItem(QStringLiteral("source"))) {
+            q.addQueryItem(QStringLiteral("source"), QStringLiteral("download"));
+            reqUrl.setQuery(q);
+        }
+    }
+
+    QNetworkRequest req = makeBaseRequest(reqUrl, "application/epub+zip, application/pdf, application/octet-stream;q=0.8, */*;q=0.5");
+    applyAuthIfAllowed(req, reqUrl, dl->catalogOrigin, dl->initialOrigin, dl->catalogId);
 
     dl->bytesReceived = 0;
     dl->bytesTotal = -1;

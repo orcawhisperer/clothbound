@@ -1370,13 +1370,15 @@ FocusScope {
                                 }
                             }
 
-                            // Navigation subsection row.
+                            // Navigation subsection or book-detail row.
                             AbstractButton {
                                 id: navRow
+                                readonly property bool isBookNav: (entryWrap.modelData.thumbnailUrl || "") !== ""
+                                                                  || (entryWrap.modelData.author || "") !== ""
                                 visible: !!entryWrap.modelData.isNavigation
                                 x: 12
                                 width: parent.width - 24
-                                height: visible ? (navSub.visible ? 56 : 44) : 0
+                                height: visible ? (isBookNav ? 64 : (navSub.visible ? 56 : 44)) : 0
                                 hoverEnabled: true
                                 focusPolicy: Qt.TabFocus
                                 Accessible.role: Accessible.ListItem
@@ -1398,12 +1400,35 @@ FocusScope {
                                         anchors.left: parent.left
                                         anchors.leftMargin: 10
                                         anchors.verticalCenter: parent.verticalCenter
-                                        width: 28
-                                        height: 28
-                                        radius: Ui.radius(6, theme.radius)
+                                        width: navRow.isBookNav ? 34 : 28
+                                        height: navRow.isBookNav ? 48 : 28
+                                        radius: Ui.radius(navRow.isBookNav ? 4 : 6, theme.radius)
                                         color: Ui.tint(theme.ink1, 0.06)
+                                        clip: true
+
+                                        GeneratedCover {
+                                            anchors.fill: parent
+                                            visible: navRow.isBookNav && navCoverImg.status !== Image.Ready
+                                            title: entryWrap.modelData.title || ""
+                                            author: entryWrap.modelData.author || ""
+                                        }
+                                        Image {
+                                            id: navCoverImg
+                                            anchors.fill: parent
+                                            visible: navRow.isBookNav
+                                            source: navRow.isBookNav ? (entryWrap.modelData.thumbnailUrl || entryWrap.modelData.coverUrl || "") : ""
+                                            asynchronous: true
+                                            cache: true
+                                            fillMode: Image.PreserveAspectCrop
+                                            smooth: true
+                                            mipmap: true
+                                            sourceSize.width: 96
+                                            sourceSize.height: 140
+                                            opacity: status === Image.Ready ? 1 : 0
+                                        }
                                         Glyph {
                                             anchors.centerIn: parent
+                                            visible: !navRow.isBookNav
                                             width: 14
                                             height: 14
                                             stroke: 1.7
@@ -1423,6 +1448,7 @@ FocusScope {
                                             text: entryWrap.modelData.title || ""
                                             textFormat: Text.PlainText
                                             color: theme.ink1
+                                            font.family: navRow.isBookNav ? "Literata" : Qt.application.font.family
                                             font.pixelSize: 14
                                             font.weight: Font.Medium
                                             elide: Text.ElideRight
@@ -1431,7 +1457,7 @@ FocusScope {
                                             id: navSub
                                             visible: text !== ""
                                             width: parent.width
-                                            text: entryWrap.modelData.subtitle || entryWrap.modelData.summary || ""
+                                            text: entryWrap.modelData.subtitle || entryWrap.modelData.author || entryWrap.modelData.summary || ""
                                             textFormat: Text.PlainText
                                             color: theme.ink3
                                             font.pixelSize: 12
@@ -1688,7 +1714,7 @@ FocusScope {
                                             color: theme.ink3
                                             font.pixelSize: 12
                                             wrapMode: Text.Wrap
-                                            maximumLineCount: 2
+                                            maximumLineCount: opds.entries && opds.entries.length === 1 ? 6 : 2
                                             elide: Text.ElideRight
                                             lineHeight: 1.38
                                         }
@@ -1792,7 +1818,7 @@ FocusScope {
                                         Label {
                                             visible: pubCard.primaryUrl === ""
                                             Layout.alignment: Qt.AlignRight
-                                            text: qsTr("No EPUB/PDF")
+                                            text: entryWrap.modelData.borrowOnly ? qsTr("Borrow only") : qsTr("No EPUB/PDF")
                                             color: theme.ink4
                                             font.pixelSize: 11
                                         }

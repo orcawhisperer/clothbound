@@ -330,7 +330,7 @@ bool isRasterImageType(const QString &rawType) {
            mt == QLatin1String("image/gif");
 }
 
-OpdsEntry parseOpds2Publication(const QJsonObject &pub, const QUrl &baseUrl) {
+OpdsEntry parseOpds2Publication(const QJsonObject &pub, const QUrl &baseUrl, bool standalone = false) {
     OpdsEntry entry;
     const QJsonObject meta = pub.value(QStringLiteral("metadata")).toObject();
 
@@ -360,7 +360,7 @@ OpdsEntry parseOpds2Publication(const QJsonObject &pub, const QUrl &baseUrl) {
     entry.publisher = publishers.join(QStringLiteral(", "));
     entry.categories = extractJsonNames(meta.value(QStringLiteral("subject")));
 
-    // Images: prefer thumbnail / reasonable cover raster images.
+    // Images: prefer thumbnail / reasonable cover raster images (accept both int and string widths).
     struct ImageCandidate {
         QString url;
         QString type;
@@ -368,6 +368,13 @@ OpdsEntry parseOpds2Publication(const QJsonObject &pub, const QUrl &baseUrl) {
         bool explicitThumb = false;
         bool explicitCover = false;
         bool raster = false;
+    };
+    auto jsonIntWidth = [](const QJsonValue &v) -> int {
+        if (v.isDouble())
+            return v.toInt(0);
+        if (v.isString())
+            return v.toString().trimmed().toInt();
+        return 0;
     };
     QList<ImageCandidate> candidates;
     const QJsonArray images = asJsonArray(pub.value(QStringLiteral("images")));
@@ -379,7 +386,7 @@ OpdsEntry parseOpds2Publication(const QJsonObject &pub, const QUrl &baseUrl) {
         ImageCandidate c;
         c.url = href;
         c.type = imgObj.value(QStringLiteral("type")).toString().trimmed();
-        c.width = imgObj.value(QStringLiteral("width")).toInt(0);
+        c.width = jsonIntWidth(imgObj.value(QStringLiteral("width")));
         c.raster = c.type.isEmpty() || isRasterImageType(c.type);
         const QStringList rels = extractJsonRels(imgObj);
         for (const QString &r : rels) {
@@ -389,6 +396,119 @@ OpdsEntry parseOpds2Publication(const QJsonObject &pub, const QUrl &baseUrl) {
                 c.explicitCover = true;
         }
         candidates.append(c);
+    }
+
+    // Acquisition and edition/fallback links.
+    int bestNavScore = -1;
+    bool hasOpenAccessOffer = false;
+    bool hasBorrowOffer = false;
+
+    const QJsonArray links = asJsonArray(pub.value(QStringLiteral("links")));
+    for (const QJsonValue &linkVal : links) {
+        const QJsonObject linkObj = linkVal.toObject();
+        const QString rawHref = linkObj.value(QStringLiteral("href")).toString();
+        const QString href = OpdsParser::resolveHref(baseUrl, rawHref);
+        if (href.isEmpty())
+            continue;
+        const QString type = linkObj.value(QStringLiteral("type")).toString().trimmed();
+        const QString baseMt = baseMediaType(type);
+        const QString title = linkObj.value(QStringLiteral("title")).toString().trimmed();
+        const QStringList rels = extractJsonRels(linkObj);
+        const QJsonObject props = linkObj.value(QStringLiteral("properties")).toObject();
+        const QJsonObject editionObj = props.value(QStringLiteral("edition")).toObject();
+
+        // Open Library embeds edition covers inside properties.edition.cover on publication links.
+        if (candidates.isEmpty() && !editionObj.isEmpty()) {
+            const QJsonObject edCover = editionObj.value(QStringLiteral("cover")).toObject();
+            const QString coverHref = OpdsParser::resolveHref(baseUrl, edCover.value(QStringLiteral("href")).toString());
+            if (!coverHref.isEmpty()) {
+                ImageCandidate c;
+                c.url = coverHref;
+                c.type = edCover.value(QStringLiteral("type")).toString().trimmed();
+                c.width = jsonIntWidth(edCover.value(QStringLiteral("width")));
+                c.raster = c.type.isEmpty() || isRasterImageType(c.type);
+                c.explicitCover = true;
+                candidates.append(c);
+            }
+        }
+
+        const QString offerRel = editionObj.value(QStringLiteral("offer")).toObject()
+                                     .value(QStringLiteral("rel")).toString().trimmed().toLower();
+        if (offerRel.endsWith(QLatin1String("/open-access")))
+            hasOpenAccessOffer = true;
+        else if (offerRel.endsWith(QLatin1String("/borrow")))
+            hasBorrowOffer = true;
+
+        const QString fmt = acquisitionFormatFor(type, href);
+        bool acqRel = false;
+        bool borrowRel = false;
+        QString chosenRel;
+        for (const QString &r : rels) {
+            if (isAcquisitionRel(r)) {
+                acqRel = true;
+                chosenRel = r;
+                if (r.endsWith(QLatin1String("/borrow")))
+                    borrowRel = true;
+                else if (r.endsWith(QLatin1String("/open-access")))
+                    hasOpenAccessOffer = true;
+                break;
+            }
+        }
+        if (borrowRel)
+            hasBorrowOffer = true;
+
+        if (!fmt.isEmpty() && (acqRel || rels.isEmpty())) {
+            OpdsLink link;
+            link.href = href;
+            link.rel = chosenRel.isEmpty() ? QStringLiteral("http://opds-spec.org/acquisition") : chosenRel;
+            link.type = type;
+            link.title = title;
+            link.format = fmt;
+            const QJsonObject priceObj = props.value(QStringLiteral("price")).toObject();
+            if (!priceObj.isEmpty()) {
+                const QString currency = priceObj.value(QStringLiteral("currency")).toString().trimmed();
+                const QJsonValue val = priceObj.value(QStringLiteral("value"));
+                const QString num = val.isString() ? val.toString().trimmed()
+                                                   : (val.isDouble() ? QString::number(val.toDouble(), 'f', 2) : QString());
+                if (!num.isEmpty())
+                    link.price = currency.isEmpty() ? num : (currency + QLatin1Char(' ') + num);
+            }
+            link.openAccess = isOpenAccessRel(link.rel, link.price);
+            if (link.openAccess)
+                hasOpenAccessOffer = true;
+            entry.acquisitions.append(link);
+        } else if (!standalone && isFeedMediaType(type)) {
+            bool skip = borrowRel;
+            bool isSubsection = false;
+            for (const QString &r : rels) {
+                if (r == QLatin1String("self") || r == QLatin1String("up") || r == QLatin1String("next") ||
+                    r == QLatin1String("previous") || r == QLatin1String("related") ||
+                    r == QLatin1String("collection") || r.endsWith(QLatin1String("/borrow")) ||
+                    r.endsWith(QLatin1String("/buy")) || r.endsWith(QLatin1String("/subscribe"))) {
+                    skip = true;
+                } else if (r == QLatin1String("subsection")) {
+                    isSubsection = true;
+                }
+            }
+            if (!skip) {
+                const bool isPubDoc = (baseMt == QLatin1String("application/opds-publication+json"));
+                int score = isPubDoc ? 40 : (isSubsection ? 20 : 10);
+                if (isPubDoc) {
+                    if (offerRel.endsWith(QLatin1String("/open-access"))) {
+                        score += 80;
+                        if (href.contains(QLatin1String("/opds/books/")))
+                            score += 20;
+                    } else if (offerRel.endsWith(QLatin1String("/borrow"))) {
+                        score -= 15;
+                    }
+                }
+                if (score > bestNavScore) {
+                    bestNavScore = score;
+                    entry.navigationUrl = href;
+                    entry.navigationType = type;
+                }
+            }
+        }
     }
 
     if (!candidates.isEmpty()) {
@@ -414,7 +534,6 @@ OpdsEntry parseOpds2Publication(const QJsonObject &pub, const QUrl &baseUrl) {
                                           });
         entry.thumbnailUrl = bestThumb->url;
         entry.coverUrl = bestThumb->url;
-        // If an explicit full cover exists separately from thumbnail, preserve coverUrl if thumbnail wasn't preferred.
         for (const ImageCandidate &c : candidates) {
             if (c.explicitCover && c.raster && !bestThumb->explicitThumb && c.width >= bestThumb->width) {
                 entry.coverUrl = c.url;
@@ -423,63 +542,17 @@ OpdsEntry parseOpds2Publication(const QJsonObject &pub, const QUrl &baseUrl) {
         }
     }
 
-    // Acquisition and fallback links.
-    const QJsonArray links = asJsonArray(pub.value(QStringLiteral("links")));
-    for (const QJsonValue &linkVal : links) {
-        const QJsonObject linkObj = linkVal.toObject();
-        const QString rawHref = linkObj.value(QStringLiteral("href")).toString();
-        const QString href = OpdsParser::resolveHref(baseUrl, rawHref);
-        if (href.isEmpty())
-            continue;
-        const QString type = linkObj.value(QStringLiteral("type")).toString().trimmed();
-        const QString title = linkObj.value(QStringLiteral("title")).toString().trimmed();
-        const QStringList rels = extractJsonRels(linkObj);
-
-        const QString fmt = acquisitionFormatFor(type, href);
-        bool acqRel = false;
-        QString chosenRel;
-        for (const QString &r : rels) {
-            if (isAcquisitionRel(r)) {
-                acqRel = true;
-                chosenRel = r;
-                break;
-            }
-        }
-
-        if (!fmt.isEmpty() && (acqRel || rels.isEmpty())) {
-            OpdsLink link;
-            link.href = href;
-            link.rel = chosenRel.isEmpty() ? QStringLiteral("http://opds-spec.org/acquisition") : chosenRel;
-            link.type = type;
-            link.title = title;
-            link.format = fmt;
-            const QJsonObject props = linkObj.value(QStringLiteral("properties")).toObject();
-            const QJsonObject priceObj = props.value(QStringLiteral("price")).toObject();
-            if (!priceObj.isEmpty()) {
-                const QString currency = priceObj.value(QStringLiteral("currency")).toString().trimmed();
-                const QJsonValue val = priceObj.value(QStringLiteral("value"));
-                const QString num = val.isString() ? val.toString().trimmed()
-                                                   : (val.isDouble() ? QString::number(val.toDouble(), 'f', 2) : QString());
-                if (!num.isEmpty())
-                    link.price = currency.isEmpty() ? num : (currency + QLatin1Char(' ') + num);
-            }
-            link.openAccess = isOpenAccessRel(link.rel, link.price);
-            entry.acquisitions.append(link);
-        } else if (entry.navigationUrl.isEmpty() && isFeedMediaType(type)) {
-            bool skip = false;
-            for (const QString &r : rels) {
-                if (r == QLatin1String("self") || r == QLatin1String("up") || r == QLatin1String("next"))
-                    skip = true;
-            }
-            if (!skip) {
-                entry.navigationUrl = href;
-                entry.navigationType = type;
-            }
-        }
-    }
-
     sortAcquisitions(entry.acquisitions);
-    entry.isNavigation = entry.acquisitions.isEmpty() && !entry.navigationUrl.isEmpty();
+    entry.isNavigation = !standalone && entry.acquisitions.isEmpty() && !entry.navigationUrl.isEmpty();
+    entry.borrowOnly = entry.acquisitions.isEmpty() && hasBorrowOffer && !hasOpenAccessOffer;
+    if (entry.isNavigation && entry.subtitle.isEmpty() && !entry.author.isEmpty()) {
+        if (hasOpenAccessOffer)
+            entry.subtitle = entry.author + QStringLiteral(" \u00B7 Free ebook");
+        else if (entry.borrowOnly)
+            entry.subtitle = entry.author + QStringLiteral(" \u00B7 Borrow only");
+        else
+            entry.subtitle = entry.author;
+    }
     return entry;
 }
 
@@ -537,6 +610,7 @@ QVariantMap OpdsEntry::toVariantMap() const {
         {QStringLiteral("groupTitle"), groupTitle},
         {QStringLiteral("groupUrl"), groupUrl},
         {QStringLiteral("isNavigation"), isNavigation},
+        {QStringLiteral("borrowOnly"), borrowOnly},
         {QStringLiteral("hasAcquisition"), !acquisitions.isEmpty()},
         {QStringLiteral("primaryAcquisitionUrl"), acquisitions.isEmpty() ? QString() : acquisitions.first().href},
         {QStringLiteral("primaryFormat"), acquisitions.isEmpty() ? QString() : acquisitions.first().format},
@@ -1178,6 +1252,18 @@ OpdsFeed OpdsParser::parseOpds2(const QByteArray &jsonData, const QUrl &baseUrl)
 
         if (!groupTitle.isEmpty() || !groupSelfUrl.isEmpty())
             feed.groups.append(OpdsGroup{groupTitle, groupSelfUrl, addedInGroup});
+    }
+
+    // Standalone OPDS 2.0 publication manifest (application/opds-publication+json),
+    // as returned by Open Library (/opds/books/...) and Internet Archive webpub endpoints.
+    if (feed.entries.isEmpty() && !meta.isEmpty() &&
+        (root.contains(QStringLiteral("links")) || root.contains(QStringLiteral("images")))) {
+        OpdsEntry pubEntry = parseOpds2Publication(root, baseUrl, true);
+        if (!pubEntry.title.isEmpty() || !pubEntry.acquisitions.isEmpty()) {
+            if (feed.title.isEmpty())
+                feed.title = pubEntry.title;
+            feed.entries.append(std::move(pubEntry));
+        }
     }
 
     return feed;

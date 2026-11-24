@@ -134,6 +134,7 @@ private slots:
     void clientBuiltInsCustomServersAndKeyringSecurity();
     void endToEndBrowseSearchAuthCrossOriginRedirectAndDownload();
     void catalogsSheetQmlSmokeTest();
+    void opds2StandalonePublicationAndOpenLibrary();
 };
 
 void OpdsTests::opds1NavigationAndAcquisitionParsing() {
@@ -859,6 +860,122 @@ void OpdsTests::catalogsSheetQmlSmokeTest() {
         QMetaObject::invokeMethod(obj.get(), "close");
         QCOMPARE(obj->property("open").toBool(), false);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+}
+
+void OpdsTests::opds2StandalonePublicationAndOpenLibrary() {
+        const QUrl base(QStringLiteral("https://openlibrary.org/opds/search?sort=trending&category=classics"));
+
+        // 1. Open Library list item with both open-access and borrow edition links + related/collection links:
+        //    parser must prefer the open-access opds-publication+json link and extract edition cover.
+        const QByteArray olListJson = R"JSON({
+  "metadata": {"title": "Classics"},
+  "publications": [
+    {
+      "metadata": {
+        "title": "White Fang",
+        "author": [{"name": "Jack London"}],
+        "description": "A wolfdog in the Yukon."
+      },
+      "links": [
+        {"href": "https://openlibrary.org/opds/search?work=OL74504W&edition=OL32941311M", "type": "application/opds-publication+json", "rel": "self"},
+        {"href": "https://archive.org/services/loans/loan/?action=webpub&identifier=whitefang_borrow&opds=1", "type": "application/opds-publication+json", "rel": "alternate",
+         "properties": {"edition": {"offer": {"rel": "http://opds-spec.org/acquisition/borrow"}}}},
+        {"href": "https://openlibrary.org/opds/books/OL32941311M", "type": "application/opds-publication+json", "rel": "alternate",
+         "properties": {"edition": {"cover": {"href": "https://covers.openlibrary.org/b/id/12185971-M.jpg", "type": "image/jpeg", "width": 180},
+                                    "offer": {"rel": "http://opds-spec.org/acquisition/open-access"}}}},
+        {"href": "https://archive.org/services/opds", "type": "application/opds+json", "rel": "collection"},
+        {"href": "https://openlibrary.org/opds/authors/OL44633A/books", "type": "application/opds+json", "rel": "related"}
+      ]
+    }
+  ]
+})JSON";
+
+        const OpdsFeed listFeed = OpdsParser::parse(olListJson, base, QStringLiteral("application/opds+json"));
+        QVERIFY(listFeed.isValid());
+        QCOMPARE(listFeed.entries.size(), 1);
+        const OpdsEntry &wf = listFeed.entries[0];
+        QVERIFY(wf.isNavigation);
+        QVERIFY(!wf.borrowOnly);
+        QCOMPARE(wf.navigationUrl, QStringLiteral("https://openlibrary.org/opds/books/OL32941311M"));
+        QCOMPARE(wf.thumbnailUrl, QStringLiteral("https://covers.openlibrary.org/b/id/12185971-M.jpg"));
+        QVERIFY(wf.subtitle.contains(QStringLiteral("Jack London")));
+
+        // 2. Standalone Open Library book manifest (application/opds-publication+json) with EPUB acquisition.
+        const QByteArray olBookJson = R"JSON({
+  "metadata": {
+    "title": "White Fang",
+    "published": "2016-01-01",
+    "author": [{"name": "Jack London"}],
+    "description": "The story of a wolfdog."
+  },
+  "links": [
+    {"href": "https://openlibrary.org/opds/books/OL32941311M", "type": "application/opds-publication+json", "rel": "self"},
+    {"href": "https://standardebooks.org/ebooks/jack-london/white-fang/downloads/jack-london_white-fang.epub",
+     "type": "application/epub+zip", "rel": "http://opds-spec.org/acquisition/open-access"}
+  ],
+  "images": [
+    {"href": "https://covers.openlibrary.org/b/id/12185971-L.jpg", "type": "image/jpeg", "rel": "cover", "width": 333}
+  ]
+})JSON";
+
+        const OpdsFeed bookFeed = OpdsParser::parse(
+            olBookJson, QUrl(QStringLiteral("https://openlibrary.org/opds/books/OL32941311M")),
+            QStringLiteral("application/opds-publication+json"));
+        QVERIFY(bookFeed.isValid());
+        QCOMPARE(bookFeed.entries.size(), 1);
+        QCOMPARE(bookFeed.title, QStringLiteral("White Fang"));
+        QVERIFY(!bookFeed.entries[0].isNavigation);
+        QCOMPARE(bookFeed.entries[0].acquisitions.size(), 1);
+        QCOMPARE(bookFeed.entries[0].acquisitions[0].format, QStringLiteral("epub"));
+        QCOMPARE(bookFeed.entries[0].coverUrl, QStringLiteral("https://covers.openlibrary.org/b/id/12185971-L.jpg"));
+
+        // 3. Standalone Internet Archive webpub manifest with string image widths and open-access PDF.
+        const QByteArray iaPdfJson = R"JSON({
+  "metadata": {
+    "title": "The sleeper awakes",
+    "author": [{"name": "H. G. Wells"}],
+    "published": "[pref. 1921]"
+  },
+  "links": [
+    {"rel": "self", "href": "https://archive.org/services/loans/loan?action=webpub&identifier=sleeperawakes&opds=1", "type": "application/opds-publication+json"},
+    {"rel": "http://opds-spec.org/acquisition/open-access", "href": "https://archive.org/details/sleeperawakes?view=theater", "type": "text/html"},
+    {"rel": "http://opds-spec.org/acquisition/open-access", "href": "https://archive.org/download/sleeperawakes/sleeperawakes.pdf", "type": "application/pdf"}
+  ],
+  "images": [
+    {"href": "https://archive.org/download/sleeperawakes/cover_large.jpg", "type": "image/jpeg", "width": "1600", "rel": "cover"},
+    {"href": "https://archive.org/download/sleeperawakes/cover_small.jpg", "type": "image/jpeg", "width": "400", "rel": "cover"}
+  ]
+})JSON";
+
+        const OpdsFeed iaFeed = OpdsParser::parse(
+            iaPdfJson, QUrl(QStringLiteral("https://archive.org/services/loans/loan/?action=webpub&identifier=sleeperawakes&opds=1")),
+            QStringLiteral("application/opds-publication+json"));
+        QVERIFY(iaFeed.isValid());
+        QCOMPARE(iaFeed.entries.size(), 1);
+        QVERIFY(!iaFeed.entries[0].isNavigation);
+        QCOMPARE(iaFeed.entries[0].acquisitions.size(), 1);
+        QCOMPARE(iaFeed.entries[0].acquisitions[0].format, QStringLiteral("pdf"));
+        QCOMPARE(iaFeed.entries[0].year, 1921);
+        QCOMPARE(iaFeed.entries[0].thumbnailUrl, QStringLiteral("https://archive.org/download/sleeperawakes/cover_small.jpg"));
+
+        // 4. Standalone borrow-only DRM publication renders as a non-navigation card flagged borrowOnly
+        //    (never an empty feed and never a navigation loop).
+        const QByteArray iaBorrowJson = R"JSON({
+  "metadata": {"title": "The subversive", "author": [{"name": "Jose Rizal"}]},
+  "links": [
+    {"rel": "self", "href": "https://archive.org/services/loans/loan?action=webpub&identifier=subversive&opds=1", "type": "application/opds-publication+json"},
+    {"rel": "http://opds-spec.org/acquisition/borrow", "href": "https://archive.org/services/loans/loan?action=browse_book&identifier=subversive&opds=1", "type": "application/opds-publication+json"}
+  ]
+})JSON";
+
+        const OpdsFeed borrowFeed = OpdsParser::parse(
+            iaBorrowJson, QUrl(QStringLiteral("https://archive.org/services/loans/loan/?action=webpub&identifier=subversive&opds=1")),
+            QStringLiteral("application/opds-publication+json"));
+        QVERIFY(borrowFeed.isValid());
+        QCOMPARE(borrowFeed.entries.size(), 1);
+        QVERIFY(!borrowFeed.entries[0].isNavigation);
+        QVERIFY(borrowFeed.entries[0].acquisitions.isEmpty());
+        QVERIFY(borrowFeed.entries[0].borrowOnly);
 }
 
 #ifndef CLOTHBOUND_UNIFIED_TESTS
