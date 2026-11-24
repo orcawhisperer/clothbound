@@ -1,0 +1,31 @@
+name: Feature request
+description: Suggest an improvement or new capability for Clothbound
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Clothbound aims to stay calm, local-first, keyboard-friendly, and respectful of your files. Tell us about the reading or research workflow you'd like to improve.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What reading or workflow problem does this solve?
+      placeholder: When I am reading / researching...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: How would you expect this to look or work in Clothbound?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or context
+      description: Optional screenshots, mockups, or notes on how other readers handle this.

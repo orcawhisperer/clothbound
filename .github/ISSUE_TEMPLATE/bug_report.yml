@@ -1,0 +1,63 @@
+name: Bug report
+description: Report a bug, crash, or visual issue in Clothbound
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue with Clothbound. Please fill in what applies — skip anything that doesn't.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Library & Collections
+        - EPUB Reader
+        - PDF Reader (Fit / Snip / Peek)
+        - Add from URL / Articles
+        - OPDS Catalogs
+        - Read Aloud & Voices
+        - Story & Study Companion
+        - Local MCP / CLI
+        - Settings, Themes & Corners
+        - Build / Packaging
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected to happen instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open...
+        2. Press / click...
+        3. Observe...
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include Clothbound version, distro/desktop, architecture, and Qt6 version if known.
+      placeholder: |
+        - Clothbound version: v0.4.0
+        - OS / Desktop: Omarchy / Arch Linux (Hyprland / Wayland)
+        - Architecture: x86_64 / aarch64
+        - Qt6 version:
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Optional output from running with `CLOTHBOUND_DEBUG=1 clothbound` or a screenshot. Please remove any API keys or private paths first.
+      render: shell

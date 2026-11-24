@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Clothbound Website
+    url: https://clothbound.app
+    about: Overview, keyboard shortcuts, and install guide
+  - name: Interactive Design Prototype
+    url: https://clothbound.app/prototype
+    about: Explore all 18 UI boards before proposing layout changes
