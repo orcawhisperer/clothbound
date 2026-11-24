@@ -1,0 +1,35 @@
+# Maintainer: orcawhisperer <orcawhisperer@proton.me>
+pkgname=clothbound
+pkgver=0.4.0
+pkgrel=1
+pkgdesc='A calm, local-first EPUB and PDF reader with read-aloud, Study Companion, PDF Snip & Explain, and local MCP'
+arch=('x86_64' 'aarch64')
+url='https://clothbound.app'
+license=('MIT' 'OFL-1.1')
+depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-webengine' 'qt6-webchannel' 'qt6-svg'
+         'qt6-multimedia' 'libsecret' 'xdg-desktop-portal' 'zlib' 'tar' 'bzip2')
+optdepends=('ffmpeg: keep listened narration small (Opus), and save downloads as M4B audiobooks'
+            'sdcv: look words up in your own StarDict dictionaries, offline'
+            'ollama: run local text, vision, and embedding models on this computer'
+            'llama.cpp: run text, embedding and voice models on this computer')
+makedepends=('gcc' 'make' 'pkgconf')
+options=('!debug' '!lto')
+source=("$pkgname-$pkgver.tar.gz::https://github.com/orcawhisperer/clothbound/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('4be3df7b840b0ac212711730da395c67a35af457ae67a552ae159502dfb55487')
+
+build() {
+  mkdir -p build
+  cd build
+  qmake6 "../$pkgname-$pkgver/clothbound.pro"
+  make -j"$(nproc)"
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 ../build/clothbound "$pkgdir/usr/bin/clothbound"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 src/fonts/OFL.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-Literata.txt"
+  install -Dm644 src/fonts/Inter-OFL.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-Inter.txt"
+  install -Dm644 pkgbuild/clothbound.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/clothbound.svg"
+  install -Dm644 pkgbuild/clothbound.desktop "$pkgdir/usr/share/applications/clothbound.desktop"
+}

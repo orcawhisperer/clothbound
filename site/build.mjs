@@ -37,6 +37,11 @@ if (!fs.existsSync(protoPath)) {
 }
 fs.copyFileSync(protoPath, path.join(distDir, "prototype.html"));
 
+// 2a. One-line installer, served at /install and /install.sh
+const installSrc = fs.readFileSync(path.join(siteDir, "install.sh"));
+fs.writeFileSync(path.join(distDir, "install"), installSrc);
+fs.writeFileSync(path.join(distDir, "install.sh"), installSrc);
+
 // 2b. Minimal robots.txt and sitemap.xml for search discovery
 fs.writeFileSync(
   path.join(distDir, "robots.txt"),
@@ -64,6 +69,14 @@ const headers = `/*
 
 /og-card.png
   Cache-Control: public, max-age=86400
+
+/install
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
+
+/install.sh
+  Content-Type: text/plain; charset=utf-8
+  Cache-Control: public, max-age=300
 `;
 fs.writeFileSync(path.join(distDir, "_headers"), headers);
 

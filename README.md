@@ -68,22 +68,21 @@ Clothbound never bundles a language model or sends book text without consent. Cl
 
 ### Arch Linux & Omarchy
 
-Clone the repository and build + install the native package (binary, `.desktop` entry, and icon):
+One line, on x86_64 or aarch64:
+
+```sh
+curl -fsSL https://clothbound.app/install | bash
+```
+
+On x86_64 it downloads the [release package](https://github.com/orcawhisperer/clothbound/releases), verifies its checksum, and installs it with pacman; on aarch64 (for example Asahi Linux) it builds the same release from source. [Read the script](site/install.sh) first if you like.
+
+Or build and install from a clone (binary, `.desktop` entry, and icon):
 
 ```sh
 git clone https://github.com/orcawhisperer/clothbound.git
 cd clothbound
 ./bin/install
 ```
-
-Or, on x86_64, install the prebuilt package from [GitHub Releases](https://github.com/orcawhisperer/clothbound/releases). Download it first, because `pacman -U <url>` insists on a signature file and the package is unsigned:
-
-```sh
-curl -LO https://github.com/orcawhisperer/clothbound/releases/download/v0.4.0/clothbound-0.4.0-1-x86_64.pkg.tar.zst
-sudo pacman -U ./clothbound-0.4.0-1-x86_64.pkg.tar.zst
-```
-
-On aarch64 (for example Asahi Linux), use `./bin/install` above.
 
 ### Build & test from source
 
