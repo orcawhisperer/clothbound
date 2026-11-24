@@ -397,6 +397,12 @@ ApplicationWindow {
                 readerLoader.item.showContents()
             } else if (actionId === "appearance") {
                 readerLoader.item.showAppearance()
+            } else if (actionId === "pdf-fit-page") {
+                readerLoader.item.setPdfFit("page", true)
+            } else if (actionId === "pdf-fit-width") {
+                readerLoader.item.setPdfFit("width", true)
+            } else if (actionId === "pdf-fit-actual") {
+                readerLoader.item.setPdfFit("actual", true)
             } else if (actionId === "marks") {
                 readerLoader.item.showMarks()
             } else if (actionId === "bookmark") {
@@ -814,6 +820,7 @@ ApplicationWindow {
         property bool publisher: false
         property bool pdfCrop: true
         property bool pdfOriginalColors: false
+        property string pdfFit: "page"
     }
 
     Connections {

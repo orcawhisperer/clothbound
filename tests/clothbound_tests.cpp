@@ -10775,6 +10775,208 @@ Item {
                      1);
         }
     }
+
+    void pdfPresetViewModes() {
+        QTemporaryDir dir;
+        const QString pdfPath = dir.filePath(QStringLiteral("paper.pdf"));
+        QVERIFY(TestBooks::write(pdfPath, TestBooks::pdf("Preset Modes", "Ada Marsh")));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(pdfPath);
+        QVERIFY(bookId > 0);
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+        QCOMPARE(reader.format(), QStringLiteral("pdf"));
+
+        Marks marks(&library);
+        BookSearch bookSearch(&reader);
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        Theme theme;
+
+        const QVariantMap mockReadingSettings{
+            {QStringLiteral("pageTurnSound"), true},
+            {QStringLiteral("pdfFit"), QStringLiteral("page")},
+        };
+
+        QQmlEngine engine;
+        engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QVERIFY(QFileInfo::exists(srcRoot));
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+        engine.rootContext()->setContextProperty(QStringLiteral("marks"), &marks);
+        engine.rootContext()->setContextProperty(QStringLiteral("bookSearch"), &bookSearch);
+        engine.rootContext()->setContextProperty(QStringLiteral("narration"), &narration);
+        engine.rootContext()->setContextProperty(QStringLiteral("readingSettings"), mockReadingSettings);
+
+        QList<QQmlError> warnings;
+        QObject::connect(&engine, &QQmlEngine::warnings, &engine,
+                         [&](const QList<QQmlError> &list) { warnings.append(list); });
+
+        // 1. Live PdfSurface.qml fit modes: Fit page, Fit width (+ live resize/Companion dock), Actual, and Custom zoom.
+        QQmlComponent surfComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/PdfSurface.qml")));
+        QVERIFY2(surfComp.status() == QQmlComponent::Ready, qPrintable(surfComp.errorString()));
+        const QVariantMap look{
+            {QStringLiteral("bg"), QStringLiteral("#FAF6EE")},
+            {QStringLiteral("fg"), QStringLiteral("#26221D")},
+            {QStringLiteral("muted"), QStringLiteral("#787066")},
+            {QStringLiteral("line"), QStringLiteral("#E2DCD0")},
+            {QStringLiteral("popover"), QStringLiteral("#FDFAF3")},
+            {QStringLiteral("link"), QStringLiteral("#8A5A12")},
+            {QStringLiteral("dark"), false},
+        };
+        std::unique_ptr<QObject> surfObj(surfComp.createWithInitialProperties({
+            {QStringLiteral("width"), 1000.0},
+            {QStringLiteral("height"), 760.0},
+            {QStringLiteral("look"), look},
+        }));
+        QVERIFY2(surfObj != nullptr, qPrintable(surfComp.errorString()));
+
+        QVariantMap styleMap{
+            {QStringLiteral("layout"), QStringLiteral("single")},
+            {QStringLiteral("pdfCrop"), false},
+            {QStringLiteral("pdfOriginalColors"), false},
+            {QStringLiteral("pdfFit"), QStringLiteral("page")},
+            {QStringLiteral("marginTop"), 60.0},
+            {QStringLiteral("marginBottom"), 76.0},
+            {QStringLiteral("animate"), false},
+        };
+        const QVariantMap posMap{{QStringLiteral("chapter"), 0}};
+        QMetaObject::invokeMethod(surfObj.get(), "open",
+                                  Q_ARG(QVariant, reader.manifest()),
+                                  Q_ARG(QVariant, posMap),
+                                  Q_ARG(QVariant, styleMap));
+        QCoreApplication::processEvents();
+
+        // Default Fit page: fits inside 1000x760 with zero panning and 1.0 effectiveZoom.
+        QCOMPARE(surfObj->property("fitMode").toString(), QStringLiteral("page"));
+        QVERIFY(qAbs(surfObj->property("effectiveZoom").toDouble() - 1.0) < 0.02);
+        QCOMPARE(surfObj->property("canPanX").toBool(), false);
+        QCOMPARE(surfObj->property("canPanY").toBool(), false);
+        const double fitPageW = surfObj->property("activeDisplayWidth").toDouble();
+        QVERIFY2(fitPageW > 200.0 && fitPageW < 700.0, qPrintable(QString::number(fitPageW)));
+
+        // Fit width: fills roomWidth (1000 - 48 = 952), zero horizontal overflow, vertical scroll active.
+        QMetaObject::invokeMethod(surfObj.get(), "setFitMode", Q_ARG(QVariant, QStringLiteral("width")));
+        QCoreApplication::processEvents();
+        QCOMPARE(surfObj->property("fitMode").toString(), QStringLiteral("width"));
+        QVERIFY2(qAbs(surfObj->property("activeDisplayWidth").toDouble() - 952.0) < 1.5,
+                 qPrintable(QString::number(surfObj->property("activeDisplayWidth").toDouble())));
+        QCOMPARE(surfObj->property("canPanX").toBool(), false);
+        QCOMPARE(surfObj->property("canPanY").toBool(), true);
+        QCOMPARE(surfObj->property("zoomedIn").toBool(), true);
+        const double widthScale = surfObj->property("effectiveZoom").toDouble();
+        QVERIFY2(widthScale > 1.3, qPrintable(QString::number(widthScale)));
+
+        // Live auto-refit when window tiles or Companion drawer docks (1000 -> 680 px).
+        surfObj->setProperty("width", 680.0);
+        QCoreApplication::processEvents();
+        QVERIFY2(qAbs(surfObj->property("activeDisplayWidth").toDouble() - 632.0) < 1.5,
+                 qPrintable(QString::number(surfObj->property("activeDisplayWidth").toDouble())));
+        QCOMPARE(surfObj->property("canPanX").toBool(), false);
+        surfObj->setProperty("width", 1000.0);
+        QCoreApplication::processEvents();
+
+        // Actual (1:1 print scale): 96/72 logical pixels per PDF point.
+        QMetaObject::invokeMethod(surfObj.get(), "setFitMode", Q_ARG(QVariant, QStringLiteral("actual")));
+        QCoreApplication::processEvents();
+        QCOMPARE(surfObj->property("fitMode").toString(), QStringLiteral("actual"));
+        const QVariantMap pts = reader.pdfPageSize(0);
+        const double expectedActualW = pts.value(QStringLiteral("width")).toDouble() * (96.0 / 72.0);
+        QVERIFY2(qAbs(surfObj->property("activeDisplayWidth").toDouble() - expectedActualW) < 1.5,
+                 qPrintable(QStringLiteral("got=%1 expected=%2")
+                                .arg(surfObj->property("activeDisplayWidth").toDouble())
+                                .arg(expectedActualW)));
+
+        // Nudging zoom from Fit width transitions smoothly to custom without jumping back to 1.0x.
+        QMetaObject::invokeMethod(surfObj.get(), "setFitMode", Q_ARG(QVariant, QStringLiteral("width")));
+        QCoreApplication::processEvents();
+        const double beforeNudge = surfObj->property("effectiveZoom").toDouble();
+        QMetaObject::invokeMethod(surfObj.get(), "nudgeZoom", Q_ARG(QVariant, 1.15));
+        QCoreApplication::processEvents();
+        QCOMPARE(surfObj->property("fitMode").toString(), QStringLiteral("custom"));
+        QVERIFY2(surfObj->property("effectiveZoom").toDouble() > beforeNudge * 1.10,
+                 qPrintable(QStringLiteral("before=%1 after=%2")
+                                .arg(beforeNudge)
+                                .arg(surfObj->property("effectiveZoom").toDouble())));
+
+        // Unrelated setStyle() update (same pdfFit) preserves active custom zoom.
+        styleMap[QStringLiteral("pdfFit")] = QStringLiteral("width");
+        styleMap[QStringLiteral("pdfOriginalColors")] = true;
+        QMetaObject::invokeMethod(surfObj.get(), "setStyle", Q_ARG(QVariant, styleMap));
+        QCoreApplication::processEvents();
+        QCOMPARE(surfObj->property("fitMode").toString(), QStringLiteral("custom"));
+
+        // Explicit pdfFit change in setStyle() snaps to the new preset.
+        styleMap[QStringLiteral("pdfFit")] = QStringLiteral("page");
+        QMetaObject::invokeMethod(surfObj.get(), "setStyle", Q_ARG(QVariant, styleMap));
+        QCoreApplication::processEvents();
+        QCOMPARE(surfObj->property("fitMode").toString(), QStringLiteral("page"));
+
+        // Scroll layout also honors Fit width with zero horizontal overflow.
+        styleMap[QStringLiteral("layout")] = QStringLiteral("scroll");
+        styleMap[QStringLiteral("pdfFit")] = QStringLiteral("width");
+        QMetaObject::invokeMethod(surfObj.get(), "setStyle", Q_ARG(QVariant, styleMap));
+        QCoreApplication::processEvents();
+        QCOMPARE(surfObj->property("fitMode").toString(), QStringLiteral("width"));
+        QVERIFY2(qAbs(surfObj->property("activeDisplayWidth").toDouble() - 952.0) < 1.5,
+                 qPrintable(QString::number(surfObj->property("activeDisplayWidth").toDouble())));
+        QCOMPARE(surfObj->property("canPanX").toBool(), false);
+
+        // 2. Per-book appearance override persists pdfFit cleanly across Reader reload.
+        reader.saveBookAppearance(QVariantMap{
+            {QStringLiteral("pdfFit"), QStringLiteral("width")},
+            {QStringLiteral("pdfCrop"), true},
+        });
+        QVERIFY(reader.bookAppearanceOverride());
+        QCOMPARE(reader.bookAppearance().value(QStringLiteral("pdfFit")).toString(), QStringLiteral("width"));
+        Reader reloaded(&library, &scheme);
+        QVERIFY(reloaded.openBook(bookId));
+        QVERIFY(reloaded.bookAppearanceOverride());
+        QCOMPARE(reloaded.bookAppearance().value(QStringLiteral("pdfFit")).toString(), QStringLiteral("width"));
+
+        // 3. AppearancePanel.qml instantiates cleanly for PDFs with Fit presets and emits pdfFitChosen.
+        QQmlComponent apComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/AppearancePanel.qml")));
+        QVERIFY2(apComp.status() == QQmlComponent::Ready, qPrintable(apComp.errorString()));
+        const QVariantMap apSettings{
+            {QStringLiteral("theme"), QStringLiteral("paper")},
+            {QStringLiteral("font"), QStringLiteral("Literata")},
+            {QStringLiteral("fontScale"), 1.15},
+            {QStringLiteral("fontWeight"), 400},
+            {QStringLiteral("lineHeight"), 1.62},
+            {QStringLiteral("paragraphSpacing"), 0.0},
+            {QStringLiteral("margins"), QStringLiteral("normal")},
+            {QStringLiteral("justify"), true},
+            {QStringLiteral("hyphenate"), true},
+            {QStringLiteral("dropCap"), true},
+            {QStringLiteral("layout"), QStringLiteral("auto")},
+            {QStringLiteral("animate"), true},
+            {QStringLiteral("publisher"), false},
+            {QStringLiteral("pdfCrop"), true},
+            {QStringLiteral("pdfOriginalColors"), false},
+            {QStringLiteral("pdfFit"), QStringLiteral("width")},
+        };
+        std::unique_ptr<QObject> apObj(apComp.createWithInitialProperties({
+            {QStringLiteral("height"), 760.0},
+            {QStringLiteral("look"), look},
+            {QStringLiteral("settings"), apSettings},
+            {QStringLiteral("pdf"), true},
+            {QStringLiteral("pdfSurface"), QVariant::fromValue(surfObj.get())},
+            {QStringLiteral("bookOverride"), false},
+        }));
+        QVERIFY2(apObj != nullptr, qPrintable(apComp.errorString()));
+        QCoreApplication::processEvents();
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+    }
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

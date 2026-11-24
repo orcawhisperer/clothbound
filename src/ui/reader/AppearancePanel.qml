@@ -20,6 +20,7 @@ SidePanel {
     property bool bookOverride: false
 
     signal settingChanged(string key, var value)
+    signal pdfFitChosen(string mode)
     signal bookOverrideToggled(bool enabled)
 
     function update(key, value) {
@@ -299,6 +300,18 @@ SidePanel {
                 }
             }
 
+            Heading { visible: panel.pdf; text: qsTr("Fit") }
+            Segmented {
+                visible: panel.pdf
+                Layout.fillWidth: true
+                compact: true
+                model: [{ value: "page", label: qsTr("Fit page") },
+                        { value: "width", label: qsTr("Fit width") },
+                        { value: "actual", label: qsTr("Actual") }]
+                current: panel.pdfSurface ? panel.pdfSurface.fitMode : (panel.settings.pdfFit || "page")
+                onActivated: (value) => panel.pdfFitChosen(value)
+            }
+
             Heading { visible: panel.pdf; text: qsTr("Zoom") }
             RowLayout {
                 visible: panel.pdf && panel.pdfSurface !== null
@@ -308,27 +321,27 @@ SidePanel {
                     look: panel.look
                     glyph: Icons.zoomOut
                     tip: qsTr("Smaller (−)")
-                    onClicked: if (panel.pdfSurface) panel.pdfSurface.zoom = Math.max(1, Math.round(panel.pdfSurface.zoom / 1.15 * 100) / 100)
+                    onClicked: if (panel.pdfSurface) panel.pdfSurface.nudgeZoom(1 / 1.15)
                 }
                 Slider {
                     Layout.fillWidth: true
-                    from: 1.0
+                    from: 0.5
                     to: 4.0
-                    stepSize: 0.1
-                    value: panel.pdfSurface ? panel.pdfSurface.zoom : 1.0
+                    stepSize: 0.05
+                    value: panel.pdfSurface ? panel.pdfSurface.effectiveZoom : 1.0
                     focusPolicy: Qt.TabFocus
-                    onMoved: if (panel.pdfSurface) panel.pdfSurface.zoom = Math.round(value * 100) / 100
+                    onMoved: if (panel.pdfSurface) panel.pdfSurface.setCustomZoom(value)
                 }
                 IconButton {
                     look: panel.look
                     glyph: Icons.zoomIn
                     tip: qsTr("Larger (+)")
-                    onClicked: if (panel.pdfSurface) panel.pdfSurface.zoom = Math.min(4, Math.round(panel.pdfSurface.zoom * 1.15 * 100) / 100)
+                    onClicked: if (panel.pdfSurface) panel.pdfSurface.nudgeZoom(1.15)
                 }
                 Label {
                     Layout.preferredWidth: 42
                     horizontalAlignment: Text.AlignRight
-                    text: Math.round((panel.pdfSurface ? panel.pdfSurface.zoom : 1.0) * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
+                    text: Math.round((panel.pdfSurface ? panel.pdfSurface.effectiveZoom : 1.0) * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
                     color: panel.look.muted
                     font.pixelSize: 12
                     font.features: ({ "tnum": 1 })

@@ -28,11 +28,27 @@ Item {
                                    && (layout === "double" || (layout === "auto" && width > height * 1.3))
     readonly property int step: spread ? 2 : 1
     property real zoom: 1.0
+    property string fitMode: "page"
+    property string styleFitMode: "page"
     property bool cropping: style.pdfCrop !== undefined ? !!style.pdfCrop : true
     readonly property bool originalColors: !!style.pdfOriginalColors
     readonly property rect crop: cropping ? reader.pdfCrop : Qt.rect(0, 0, 1, 1)
     readonly property real topRoom: style.marginTop || 54
     readonly property real bottomRoom: style.marginBottom || 54
+    readonly property real baseFitPageWidth: scrolling
+        ? pageList.currentFitPageWidth
+        : (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.fitPageWidth : 100)
+    readonly property real activeDisplayWidth: scrolling
+        ? pageList.currentDisplayWidth
+        : (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.fitWidth : 100)
+    readonly property real effectiveZoom: fitMode === "custom" ? zoom
+        : (baseFitPageWidth > 0 ? Math.max(0.25, Math.min(4.0, activeDisplayWidth / baseFitPageWidth)) : 1.0)
+    readonly property bool canPanX: scrolling
+        ? pageList.maxPanX > 2
+        : (zoomed.contentWidth > zoomed.width + 2)
+    readonly property bool canPanY: !scrolling && (zoomed.contentHeight > zoomed.height + 2)
+    readonly property bool canPan: canPanX || canPanY
+    readonly property bool zoomedIn: canPan || (fitMode === "custom" && zoom > 1.01)
 
     // What's drawn over the pages.
     property var foundHits: []
@@ -64,18 +80,78 @@ Item {
                                      : ("?bg=" + encodeURIComponent(look ? look.bg : "#ffffff")
                                         + "&fg=" + encodeURIComponent(look ? look.fg : "#000000"))
 
-    onZoomChanged: if (zoom <= 1.01) pageList.panX = 0
+    onZoomChanged: {
+        if (!canPanX)
+            pageList.panX = 0
+        prefetchTimer.restart()
+    }
+    onFitModeChanged: {
+        if (!canPanX)
+            pageList.panX = 0
+        prefetchTimer.restart()
+    }
+
+    function fitPageWidthFor(pageIndex, pageCount, roomW, roomH, cropRect) {
+        const idx = pageIndex >= 0 ? pageIndex : 0
+        const size = reader.pdfPageSize(idx)
+        const cw = cropRect && cropRect.width > 0 ? cropRect.width : 1
+        const ch = cropRect && cropRect.height > 0 ? cropRect.height : 1
+        const aspect = ((size.height || 792) * ch) / ((size.width || 612) * cw)
+        const count = Math.max(1, pageCount || 1)
+        return Math.max(100, Math.min(roomW / count, roomH / aspect))
+    }
+    function displayWidthFor(pageIndex, pageCount, roomW, roomH, mode, customZoom, cropRect) {
+        const base = fitPageWidthFor(pageIndex, pageCount, roomW, roomH, cropRect)
+        const count = Math.max(1, pageCount || 1)
+        if (mode === "width")
+            return Math.max(100, roomW / count)
+        if (mode === "actual") {
+            const idx = pageIndex >= 0 ? pageIndex : 0
+            const size = reader.pdfPageSize(idx)
+            const cw = cropRect && cropRect.width > 0 ? cropRect.width : 1
+            return Math.max(100, (size.width || 612) * (96.0 / 72.0) * cw)
+        }
+        if (mode === "custom")
+            return Math.max(100, base * Math.max(0.5, Math.min(4.0, customZoom || 1.0)))
+        return base
+    }
+    function setFitMode(mode) {
+        const normalized = (mode === "width" || mode === "actual") ? mode : "page"
+        styleFitMode = normalized
+        fitMode = normalized
+        zoom = 1.0
+        pageList.panX = 0
+        zoomed.contentX = 0
+        zoomed.contentY = 0
+        prefetchTimer.restart()
+    }
+    function setCustomZoom(targetZoom) {
+        const clamped = Math.max(0.5, Math.min(4.0, Math.round(targetZoom * 100) / 100))
+        fitMode = "custom"
+        zoom = clamped
+        prefetchTimer.restart()
+    }
+    function nudgeZoom(factor) {
+        const base = effectiveZoom > 0 ? effectiveZoom : 1.0
+        setCustomZoom(base * factor)
+    }
 
     // --- The surface's calls --------------------------------------------------
 
     function open(manifest, position, newStyle) {
         style = newStyle
+        const savedFit = (newStyle && (newStyle.pdfFit === "width" || newStyle.pdfFit === "actual"))
+            ? newStyle.pdfFit : "page"
+        styleFitMode = savedFit
+        fitMode = savedFit
         history = []
         forwardHistory = []
         justJumped = false
         current = 0
         zoom = 1.0
         pageList.panX = 0
+        zoomed.contentX = 0
+        zoomed.contentY = 0
         foundHits = []
         foundCurrent = null
         foundVersion++
@@ -87,10 +163,29 @@ Item {
         goTo(Object.assign({}, position || ({ chapter: 0 }), { quiet: true, instant: true }))
         return Promise.resolve(true)
     }
-    function setStyle(newStyle) { style = newStyle; prefetchTimer.restart(); report() }
+    function setStyle(newStyle) {
+        style = newStyle
+        const incomingFit = (newStyle && (newStyle.pdfFit === "width" || newStyle.pdfFit === "actual"))
+            ? newStyle.pdfFit : "page"
+        if (incomingFit !== styleFitMode) {
+            styleFitMode = incomingFit
+            fitMode = incomingFit
+            zoom = 1.0
+            pageList.panX = 0
+            zoomed.contentX = 0
+            zoomed.contentY = 0
+        }
+        prefetchTimer.restart()
+        report()
+    }
     function next() {
         if (scrolling) {
             pageList.contentY = Math.min(Math.max(0, pageList.contentHeight - pageList.height), pageList.contentY + pageList.height * 0.9)
+            return
+        }
+        const maxY = Math.max(0, zoomed.contentHeight - zoomed.height)
+        if (maxY > 8 && zoomed.contentY < maxY - 8) {
+            zoomed.contentY = Math.min(maxY, zoomed.contentY + Math.max(120, zoomed.height * 0.82))
             return
         }
         const from = firstOfSpread(current)
@@ -103,6 +198,11 @@ Item {
     function prev() {
         if (scrolling) {
             pageList.contentY = Math.max(0, pageList.contentY - pageList.height * 0.9)
+            return
+        }
+        const maxY = Math.max(0, zoomed.contentHeight - zoomed.height)
+        if (maxY > 8 && zoomed.contentY > 8) {
+            zoomed.contentY = Math.max(0, zoomed.contentY - Math.max(120, zoomed.height * 0.82))
             return
         }
         const from = firstOfSpread(current)
@@ -723,7 +823,7 @@ Item {
             anchors.fill: parent
             hoverEnabled: true
             acceptedButtons: Qt.LeftButton | Qt.RightButton
-            cursorShape: surface.zoom > 1.01
+            cursorShape: surface.canPanX
                 ? (pressed && panning ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
                 : (hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor)
             preventStealing: true
@@ -759,7 +859,7 @@ Item {
                 skipRelease = false
                 from = Qt.point(pageItem.toPageX(event.x), pageItem.toPageY(event.y))
                 dragged = false
-                panning = surface.zoom > 1.01 && !(event.modifiers & Qt.ShiftModifier)
+                panning = surface.canPanX && !(event.modifiers & Qt.ShiftModifier)
                 if (panning) {
                     panStart = mouse.mapToItem(surface, event.x, event.y)
                     startContentX = surface.scrolling ? pageList.panX : zoomed.contentX
@@ -883,18 +983,22 @@ Item {
         readonly property bool ready: pages.length > 0 && leftPageItem.imageReady && rightPageItem.imageReady
         readonly property alias leftPage: leftPageItem
         readonly property alias rightPage: rightPageItem
+        readonly property real fitPageWidth: {
+            const first = p0 >= 0 ? p0 : surface.firstOfSpread(surface.current)
+            const pageCount = pages.length > 1 ? 2 : 1
+            return surface.fitPageWidthFor(first, pageCount, spreadRow.roomWidth, spreadRow.roomHeight, surface.crop)
+        }
         readonly property real fitWidth: {
             const first = p0 >= 0 ? p0 : surface.firstOfSpread(surface.current)
-            const size = reader.pdfPageSize(first)
-            const aspect = ((size.height || 792) * surface.crop.height) / ((size.width || 612) * surface.crop.width)
             const pageCount = pages.length > 1 ? 2 : 1
-            const each = Math.min(spreadRow.roomWidth / pageCount, spreadRow.roomHeight / aspect)
-            return Math.max(100, each) * surface.zoom
+            return surface.displayWidthFor(first, pageCount, spreadRow.roomWidth, spreadRow.roomHeight, surface.fitMode, surface.zoom, surface.crop)
         }
+        readonly property real contentW: (p0 >= 0 ? leftPageItem.width : 0) + (p1 >= 0 ? rightPageItem.width : 0)
+        readonly property real contentH: Math.max(p0 >= 0 ? leftPageItem.height : 0, p1 >= 0 ? rightPageItem.height : 0)
         visible: pages.length > 0
         enabled: !isStandby
-        x: Math.max(24, (zoomed.width - width) / 2) + slideOffset
-        y: Math.max(surface.topRoom, (zoomed.height - height) / 2)
+        x: Math.max(24, (zoomed.width - contentW) / 2) + slideOffset
+        y: Math.max(surface.topRoom, (zoomed.height - contentH) / 2)
 
         Page {
             id: leftPageItem
@@ -1004,6 +1108,8 @@ Item {
             const doAnim = pendingAnimate && surface.style.animate !== false
             pendingPages = []
             activeSlot = 1 - activeSlot
+            zoomed.contentX = 0
+            zoomed.contentY = 0
             if (!doAnim) {
                 incoming.slideOffset = 0
                 incoming.opacity = 1
@@ -1044,11 +1150,34 @@ Item {
         Flickable {
             id: zoomed
             anchors.fill: parent
-            contentWidth: Math.max(width, (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.width : 0) + 48)
-            contentHeight: Math.max(height, (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.height : 0) + surface.topRoom + surface.bottomRoom)
-            interactive: surface.zoom > 1.01
+            contentWidth: Math.max(width, (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.contentW : 0) + 48)
+            contentHeight: Math.max(height, (spreadRow.activeSlotItem ? spreadRow.activeSlotItem.contentH : 0) + surface.topRoom + surface.bottomRoom)
+            interactive: surface.canPan
             boundsBehavior: Flickable.StopAtBounds
             clip: true
+            ScrollBar.vertical: ScrollBar {
+                policy: surface.canPanY ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
+            }
+            onWidthChanged: {
+                const maxX = Math.max(0, contentWidth - width)
+                if (contentX > maxX)
+                    contentX = maxX
+            }
+            onHeightChanged: {
+                const maxY = Math.max(0, contentHeight - height)
+                if (contentY > maxY)
+                    contentY = maxY
+            }
+            onContentWidthChanged: {
+                const maxX = Math.max(0, contentWidth - width)
+                if (contentX > maxX)
+                    contentX = maxX
+            }
+            onContentHeightChanged: {
+                const maxY = Math.max(0, contentHeight - height)
+                if (contentY > maxY)
+                    contentY = maxY
+            }
 
             SpreadSlot {
                 id: spreadSlotA
@@ -1068,7 +1197,7 @@ Item {
             WheelHandler {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 acceptedModifiers: Qt.ControlModifier
-                onWheel: (event) => surface.zoom = Math.max(1, Math.min(4, surface.zoom * (event.angleDelta.y > 0 ? 1.1 : 0.9)))
+                onWheel: (event) => surface.nudgeZoom(event.angleDelta.y > 0 ? 1.1 : 0.9)
             }
         }
 
@@ -1105,7 +1234,7 @@ Item {
         }
         WheelHandler {
             id: spreadWheel
-            enabled: surface.zoom <= 1.01 && !surface.snipMode && !surface.peekOpen
+            enabled: !surface.canPan && !surface.snipMode && !surface.peekOpen
             acceptedModifiers: Qt.NoModifier
             property real gathered: 0
             property double quietUntil: 0
@@ -1144,16 +1273,19 @@ Item {
         boundsBehavior: Flickable.StopAtBounds
         ScrollBar.vertical: ScrollBar {}
         property real panX: 0
-        readonly property real baseWidth: Math.min(Math.max(120, width - 48), 920)
-        readonly property real maxPanX: Math.max(0, (baseWidth * surface.zoom - Math.max(120, width - 48)) / 2)
+        readonly property real roomWidth: Math.max(120, width - 48)
+        readonly property real roomHeight: Math.max(120, height - 16)
+        readonly property real currentFitPageWidth: surface.fitPageWidthFor(surface.current, 1, roomWidth, roomHeight, surface.crop)
+        readonly property real currentDisplayWidth: surface.displayWidthFor(surface.current, 1, roomWidth, roomHeight, surface.fitMode, surface.zoom, surface.crop)
+        readonly property real maxPanX: Math.max(0, (currentDisplayWidth - roomWidth) / 2)
         onMaxPanXChanged: panX = Math.max(-maxPanX, Math.min(maxPanX, panX))
         WheelHandler {
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
             acceptedModifiers: Qt.ControlModifier
-            onWheel: (event) => surface.zoom = Math.max(1, Math.min(4, surface.zoom * (event.angleDelta.y > 0 ? 1.1 : 0.9)))
+            onWheel: (event) => surface.nudgeZoom(event.angleDelta.y > 0 ? 1.1 : 0.9)
         }
         WheelHandler {
-            enabled: surface.zoom > 1.01
+            enabled: pageList.maxPanX > 2
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
             acceptedModifiers: Qt.ShiftModifier
             onWheel: (event) => {
@@ -1162,7 +1294,7 @@ Item {
             }
         }
         WheelHandler {
-            enabled: surface.zoom > 1.01
+            enabled: pageList.maxPanX > 2
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
             acceptedModifiers: Qt.NoModifier
             onWheel: (event) => {
@@ -1185,7 +1317,7 @@ Item {
                 id: inner
                 page: index
                 x: (parent.width - width) / 2 - pageList.panX
-                fullWidth: pageList.baseWidth * surface.zoom / surface.crop.width
+                fullWidth: surface.displayWidthFor(index, 1, pageList.roomWidth, pageList.roomHeight, surface.fitMode, surface.zoom, surface.crop) / surface.crop.width
             }
         }
         onContentYChanged: reportTimer.restart()

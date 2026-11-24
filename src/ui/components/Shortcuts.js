@@ -34,6 +34,7 @@ function reading() {
         { keys: "X", action: qsTr("Snip equation, chart, or table (PDFs)") },
         { keys: "A", action: qsTr("Typography and theme") },
         { keys: "+  −  0", action: qsTr("Larger, smaller, default text or zoom") },
+        { keys: "W  1", action: qsTr("Fit width or actual size (PDFs)") },
         { keys: "D", action: qsTr("Next reading theme") },
         { keys: "G", action: qsTr("Go to a page or percentage") },
         { keys: "Ctrl C", action: qsTr("Copy selected text") },

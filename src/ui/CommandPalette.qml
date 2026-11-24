@@ -176,6 +176,11 @@ FocusScope {
             list.push({ id: "voices", title: qsTr("Voice & narration panel"), subtitle: qsTr("Narrator, style, full cast, audiobook"), hint: "V", glyph: Icons.headphones })
             list.push({ id: "listen", title: narration.active ? qsTr("Stop listening") : qsTr("Listen from here"), subtitle: voiceSubtitle(), hint: "P", glyph: Icons.headphones })
             list.push({ id: "appearance", title: qsTr("Typography & appearance"), subtitle: qsTr("Typeface, spacing, margins, layout"), hint: "A", glyph: Icons.book })
+            if (reader.format === "pdf") {
+                list.push({ id: "pdf-fit-page", title: qsTr("PDF: Fit page"), subtitle: qsTr("Show the whole page inside the window"), hint: "0", glyph: Icons.page })
+                list.push({ id: "pdf-fit-width", title: qsTr("PDF: Fit width"), subtitle: qsTr("Fill the reading stage width and scroll"), hint: "W", glyph: Icons.columns })
+                list.push({ id: "pdf-fit-actual", title: qsTr("PDF: Actual size"), subtitle: qsTr("True 1:1 print scale"), hint: "1", glyph: Icons.zoomIn })
+            }
             list.push({ id: "toggle-theme", title: qsTr("Cycle reading theme"), subtitle: Themes.name(currentTheme), hint: "D", glyph: Icons.sun })
             if (marks.count > 0) {
                 list.push({ id: "export-notes-file", title: qsTr("Export notes to Markdown file"), subtitle: qsTr("Obsidian & Readwise format"), hint: "", glyph: Icons.download })

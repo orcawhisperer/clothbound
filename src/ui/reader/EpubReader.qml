@@ -43,6 +43,7 @@ FocusScope {
         readonly property bool publisher: !!pick("publisher", view.settings.publisher)
         readonly property bool pdfCrop: !!pick("pdfCrop", view.settings.pdfCrop)
         readonly property bool pdfOriginalColors: !!pick("pdfOriginalColors", view.settings.pdfOriginalColors)
+        readonly property string pdfFit: String(pick("pdfFit", view.settings.pdfFit || "page"))
     }
     Settings {
         id: folioSettings
@@ -142,6 +143,7 @@ FocusScope {
             publisher: activeSettings.publisher,
             pdfCrop: activeSettings.pdfCrop,
             pdfOriginalColors: activeSettings.pdfOriginalColors,
+            pdfFit: activeSettings.pdfFit,
         }
     }
     function setAppearance(key, value) {
@@ -224,6 +226,7 @@ FocusScope {
             publisher: activeSettings.publisher,
             pdfCrop: activeSettings.pdfCrop,
             pdfOriginalColors: activeSettings.pdfOriginalColors,
+            pdfFit: activeSettings.pdfFit,
             marginTop: topMargin,
             // Room for the bottom footer or the floating slim listening pill.
             marginBottom: bottomMargin,
@@ -403,16 +406,36 @@ FocusScope {
         setAppearance("theme", nextTheme)
         toast.show(qsTr("%1 theme").arg(Themes.name(nextTheme)))
     }
+    function setPdfFit(mode, announce) {
+        if (!pdf)
+            return
+        const normalized = (mode === "width" || mode === "actual") ? mode : "page"
+        setAppearance("pdfFit", normalized)
+        pdfSurface.setFitMode(normalized)
+        if (normalized !== "page" && !view.panelOpen)
+            view.chromeShown = false
+        if (announce) {
+            const label = normalized === "width" ? qsTr("Fit to width")
+                        : normalized === "actual" ? qsTr("Actual size")
+                        : qsTr("Fit to page")
+            toast.show(label)
+        }
+    }
     function resize(step) {
         if (lightbox.open) {
             lightbox.setZoom(step === 0 ? 1.0 : lightbox.zoom * (step > 0 ? 1.25 : 1 / 1.25))
             return
         }
-        // A PDF's text is its pages: it zooms.
+        // A PDF's text is its pages: 0 fits the whole page, +/− zoom smoothly
+        // from the current fit scale.
         if (pdf) {
-            pdfSurface.zoom = step === 0 ? 1 : Math.max(1, Math.min(4, pdfSurface.zoom * (step > 0 ? 1.15 : 1 / 1.15)))
-            if (pdfSurface.zoom > 1.01 && !view.panelOpen)
-                view.chromeShown = false
+            if (step === 0) {
+                setPdfFit("page", !view.panelOpen)
+            } else {
+                pdfSurface.nudgeZoom(step > 0 ? 1.15 : 1 / 1.15)
+                if (pdfSurface.zoomedIn && !view.panelOpen)
+                    view.chromeShown = false
+            }
             return
         }
         setAppearance("fontScale", step === 0 ? 1.15 : Math.max(0.7, Math.min(2.0, Math.round((activeSettings.fontScale + step) * 100) / 100)))
@@ -623,6 +646,7 @@ FocusScope {
         function onPublisherChanged() { styleTimer.restart() }
         function onPdfCropChanged() { styleTimer.restart() }
         function onPdfOriginalColorsChanged() { styleTimer.restart() }
+        function onPdfFitChanged() { styleTimer.restart() }
     }
 
     Connections {
@@ -772,7 +796,7 @@ FocusScope {
         function onBookChanged() {
             if (reader.open) {
                 if (reader.format === "pdf")
-                    win.tip("pdf", qsTr("PDF pages follow your reading theme. + and − zoom, and the layout (A) shows one page, two, or scrolling."))
+                    win.tip("pdf", qsTr("PDF pages follow your reading theme. W fits width, 0 fits page, 1 is actual size, and + / − zoom."))
                 else
                     view.webNeeded = true
                 view.closePanels()
@@ -817,6 +841,7 @@ FocusScope {
             else if (key === "+" || key === "=") resize(0.05)
             else if (key === "-") resize(-0.05)
             else if (key === "0") resize(0)
+            else if (key === "1" && pdf) setPdfFit("actual", true)
             else if (key === ",") settingsView.open ? settingsView.close() : settingsView.show()
             else if ((key === "z" || key === "Z") && shift && marks.canRedo) marks.redo()
             else if ((key === "z" || key === "Z") && !shift && marks.canUndo) {
@@ -857,6 +882,8 @@ FocusScope {
         else if (key === "+" || key === "=") resize(0.05)
         else if (key === "-") resize(-0.05)
         else if (key === "0") resize(0)
+        else if ((key === "w" || key === "W") && pdf) setPdfFit("width", true)
+        else if (key === "1" && pdf) setPdfFit("actual", true)
         else if (key === "f" || key === "F" || key === "F11") win.toggleFullScreen()
         else if (key === "?") win.helpVisible = !win.helpVisible
         else if (key === "q" || key === "Q") Qt.quit()
@@ -974,7 +1001,7 @@ FocusScope {
                 y: 48
                 height: 1
                 color: view.look.line
-                opacity: (view.pdf && pdfSurface.zoom > 1.01) || activeSettings.layout === "scroll"
+                opacity: (view.pdf && pdfSurface.zoomedIn) || activeSettings.layout === "scroll"
                          ? chrome.chromeProgress * 0.75 : 0
             }
         }
@@ -1006,7 +1033,7 @@ FocusScope {
                 const px = point.position.x, py = point.position.y
                 if (readingStage.lastPointerX >= 0 && !view.modalPanelOpen && !narration.active && !lightbox.open
                     && !(view.pdf && (pdfSurface.snipMode || pdfSurface.peekOpen))) {
-                    const zoomedPdf = view.pdf && pdfSurface.zoom > 1.01
+                    const zoomedPdf = view.pdf && pdfSurface.zoomedIn
                     const nearEdge = py <= 64 || py >= readingStage.height - 84
                     const dist = Math.hypot(px - readingStage.lastPointerX, py - readingStage.lastPointerY)
                     if (dist >= 6 && (!zoomedPdf || nearEdge))
@@ -2082,6 +2109,7 @@ FocusScope {
         pdfSurface: pdfSurface
         bookOverride: reader.bookAppearanceOverride
         onSettingChanged: (key, value) => view.setAppearance(key, value)
+        onPdfFitChosen: (mode) => view.setPdfFit(mode, false)
         onBookOverrideToggled: (enabled) => view.setBookOverride(enabled)
     }
 
@@ -2546,6 +2574,8 @@ FocusScope {
     Shortcut { sequences: ["+", "=", "Ctrl++", "Ctrl+="]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0.05) }
     Shortcut { sequences: ["-", "Ctrl+-"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(-0.05) }
     Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0) }
+    Shortcut { sequence: "W"; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.setPdfFit("width", true) }
+    Shortcut { sequences: ["1", "Ctrl+1"]; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.setPdfFit("actual", true) }
     Shortcut { sequence: "Tab"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
     Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen; onActivated: view.dismiss() }
     // Listening.

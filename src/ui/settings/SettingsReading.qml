@@ -58,6 +58,7 @@ ColumnLayout {
         readingSettings.publisher = false
         readingSettings.pdfCrop = true
         readingSettings.pdfOriginalColors = false
+        readingSettings.pdfFit = "page"
         if (hasPageTurnSoundProp)
             readingSettings.pageTurnSound = true
         else
@@ -446,6 +447,19 @@ ColumnLayout {
         title: qsTr("PDFs")
         glyph: Icons.crop
 
+        SettingsRow {
+            title: qsTr("Default view mode")
+            description: qsTr("How PDF pages fit the window when opened (0 Fit page, W Fit width, 1 Actual).")
+            Segmented {
+                compact: true
+                model: [{ value: "page", label: qsTr("Fit page") },
+                        { value: "width", label: qsTr("Fit width") },
+                        { value: "actual", label: qsTr("Actual") }]
+                current: readingSettings.pdfFit || "page"
+                onActivated: (value) => readingSettings.pdfFit = value
+            }
+        }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.hairline }
         SettingsRow {
             title: qsTr("Crop white margins")
             description: qsTr("Trim empty outer borders on PDF pages so text fills more of the window.")
