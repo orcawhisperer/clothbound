@@ -10932,6 +10932,75 @@ Item {
                  qPrintable(QString::number(surfObj->property("activeDisplayWidth").toDouble())));
         QCOMPARE(surfObj->property("canPanX").toBool(), false);
 
+        // 1b. Two-page spread Fit width: next()/prev() (Left/Right arrows) turn immediately on a single press
+        //     without vertically shifting first, while scrollVertical() scrolls tall pages cleanly.
+        {
+            const QString multiPath = dir.filePath(QStringLiteral("multi.pdf"));
+            {
+                QPdfWriter writer(multiPath);
+                writer.setPageSize(QPageSize(QPageSize::Letter));
+                writer.setResolution(72);
+                QPainter p(&writer);
+                for (int i = 0; i < 5; ++i) {
+                    if (i > 0)
+                        writer.newPage();
+                    p.drawText(QPointF(72, 100), QStringLiteral("Page %1").arg(i + 1));
+                }
+            }
+            const int multiId = library.addBookFile(multiPath);
+            QVERIFY(multiId > 0);
+            QVERIFY(reader.openBook(multiId));
+            QCOMPARE(reader.chapterCount(), 5);
+
+            surfObj->setProperty("width", 1280.0);
+            surfObj->setProperty("height", 800.0);
+            QVariantMap spreadStyle{
+                {QStringLiteral("layout"), QStringLiteral("double")},
+                {QStringLiteral("pdfCrop"), false},
+                {QStringLiteral("pdfOriginalColors"), false},
+                {QStringLiteral("pdfFit"), QStringLiteral("width")},
+                {QStringLiteral("marginTop"), 60.0},
+                {QStringLiteral("marginBottom"), 76.0},
+                {QStringLiteral("animate"), false},
+            };
+            const QVariantMap startPos{{QStringLiteral("chapter"), 0}};
+            QMetaObject::invokeMethod(surfObj.get(), "open",
+                                      Q_ARG(QVariant, reader.manifest()),
+                                      Q_ARG(QVariant, startPos),
+                                      Q_ARG(QVariant, spreadStyle));
+            QCoreApplication::processEvents();
+            QCOMPARE(surfObj->property("spread").toBool(), true);
+            QCOMPARE(surfObj->property("current").toInt(), 0);
+            QCOMPARE(surfObj->property("canPanY").toBool(), true);
+
+            // Single press of next() turns from cover [0] -> spread [1, 2] -> spread [3, 4].
+            QMetaObject::invokeMethod(surfObj.get(), "next");
+            QCoreApplication::processEvents();
+            QCOMPARE(surfObj->property("current").toInt(), 1);
+            QCOMPARE(surfObj->property("canPanY").toBool(), true);
+            QMetaObject::invokeMethod(surfObj.get(), "next");
+            QCoreApplication::processEvents();
+            QCOMPARE(surfObj->property("current").toInt(), 3);
+
+            // Single press of prev() turns straight back [3, 4] -> [1, 2] -> [0].
+            QMetaObject::invokeMethod(surfObj.get(), "prev");
+            QCoreApplication::processEvents();
+            QCOMPARE(surfObj->property("current").toInt(), 1);
+            QMetaObject::invokeMethod(surfObj.get(), "prev");
+            QCoreApplication::processEvents();
+            QCOMPARE(surfObj->property("current").toInt(), 0);
+
+            // scrollVertical(1) scrolls vertically down the tall page without turning pages.
+            QVariant scrolled;
+            QMetaObject::invokeMethod(surfObj.get(), "scrollVertical",
+                                      Q_RETURN_ARG(QVariant, scrolled), Q_ARG(QVariant, 1));
+            QCOMPARE(scrolled.toBool(), true);
+            QCOMPARE(surfObj->property("current").toInt(), 0);
+
+            // Switch back to original single-page PDF for remaining per-book checks.
+            QVERIFY(reader.openBook(bookId));
+        }
+
         // 2. Per-book appearance override persists pdfFit cleanly across Reader reload.
         reader.saveBookAppearance(QVariantMap{
             {QStringLiteral("pdfFit"), QStringLiteral("width")},

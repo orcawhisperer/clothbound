@@ -91,17 +91,23 @@ Item {
         prefetchTimer.restart()
     }
 
-    function fitPageWidthFor(pageIndex, pageCount, roomW, roomH, cropRect) {
+    function fitPageWidthFor(pageIndex, pageCount, roomW, roomH, cropRect, secondPage) {
         const idx = pageIndex >= 0 ? pageIndex : 0
-        const size = reader.pdfPageSize(idx)
         const cw = cropRect && cropRect.width > 0 ? cropRect.width : 1
         const ch = cropRect && cropRect.height > 0 ? cropRect.height : 1
-        const aspect = ((size.height || 792) * ch) / ((size.width || 612) * cw)
+        const size0 = reader.pdfPageSize(idx)
+        let aspect = ((size0.height || 792) * ch) / ((size0.width || 612) * cw)
+        if (secondPage !== undefined && secondPage >= 0 && pageCount > 1) {
+            const size1 = reader.pdfPageSize(secondPage)
+            const aspect1 = ((size1.height || 792) * ch) / ((size1.width || 612) * cw)
+            if (aspect1 > aspect)
+                aspect = aspect1
+        }
         const count = Math.max(1, pageCount || 1)
         return Math.max(100, Math.min(roomW / count, roomH / aspect))
     }
-    function displayWidthFor(pageIndex, pageCount, roomW, roomH, mode, customZoom, cropRect) {
-        const base = fitPageWidthFor(pageIndex, pageCount, roomW, roomH, cropRect)
+    function displayWidthFor(pageIndex, pageCount, roomW, roomH, mode, customZoom, cropRect, secondPage) {
+        const base = fitPageWidthFor(pageIndex, pageCount, roomW, roomH, cropRect, secondPage)
         const count = Math.max(1, pageCount || 1)
         if (mode === "width")
             return Math.max(100, roomW / count)
@@ -178,18 +184,57 @@ Item {
         prefetchTimer.restart()
         report()
     }
+    function scrollVertical(dir) {
+        if (scrolling) {
+            const maxY = Math.max(0, pageList.contentHeight - pageList.height)
+            const target = Math.max(0, Math.min(maxY, pageList.contentY + dir * pageList.height * 0.72))
+            if (Math.abs(target - pageList.contentY) < 1)
+                return false
+            pageList.contentY = target
+            return true
+        }
+        const maxY = Math.max(0, zoomed.contentHeight - zoomed.height)
+        if (maxY <= 4)
+            return false
+        const stepY = Math.max(120, zoomed.height * 0.72)
+        const target = Math.max(0, Math.min(maxY, zoomed.contentY + dir * stepY))
+        if (Math.abs(target - zoomed.contentY) < 1)
+            return false
+        zoomed.contentY = target
+        return true
+    }
+    function pageStep(dir) {
+        if (scrolling) {
+            if (dir > 0)
+                next()
+            else
+                prev()
+            return
+        }
+        const maxY = Math.max(0, zoomed.contentHeight - zoomed.height)
+        if (maxY > 40) {
+            if (dir > 0 && zoomed.contentY < maxY - 8) {
+                zoomed.contentY = Math.min(maxY, zoomed.contentY + Math.max(120, zoomed.height * 0.82))
+                return
+            }
+            if (dir < 0 && zoomed.contentY > 8) {
+                zoomed.contentY = Math.max(0, zoomed.contentY - Math.max(120, zoomed.height * 0.82))
+                return
+            }
+        }
+        if (dir > 0)
+            next()
+        else
+            prev()
+    }
     function next() {
         if (scrolling) {
             pageList.contentY = Math.min(Math.max(0, pageList.contentHeight - pageList.height), pageList.contentY + pageList.height * 0.9)
             return
         }
-        const maxY = Math.max(0, zoomed.contentHeight - zoomed.height)
-        if (maxY > 8 && zoomed.contentY < maxY - 8) {
-            zoomed.contentY = Math.min(maxY, zoomed.contentY + Math.max(120, zoomed.height * 0.82))
-            return
-        }
         const from = firstOfSpread(current)
-        const target = Math.min(count - 1, from + step)
+        const advance = (spread && from === 0) ? 1 : step
+        const target = Math.min(count - 1, from + advance)
         if (target !== from && typeof reader.notifyPageTurn === "function")
             reader.notifyPageTurn(1)
         show(target, false, target !== from ? 1 : 0, true)
@@ -198,11 +243,6 @@ Item {
     function prev() {
         if (scrolling) {
             pageList.contentY = Math.max(0, pageList.contentY - pageList.height * 0.9)
-            return
-        }
-        const maxY = Math.max(0, zoomed.contentHeight - zoomed.height)
-        if (maxY > 8 && zoomed.contentY > 8) {
-            zoomed.contentY = Math.max(0, zoomed.contentY - Math.max(120, zoomed.height * 0.82))
             return
         }
         const from = firstOfSpread(current)
@@ -986,12 +1026,12 @@ Item {
         readonly property real fitPageWidth: {
             const first = p0 >= 0 ? p0 : surface.firstOfSpread(surface.current)
             const pageCount = pages.length > 1 ? 2 : 1
-            return surface.fitPageWidthFor(first, pageCount, spreadRow.roomWidth, spreadRow.roomHeight, surface.crop)
+            return surface.fitPageWidthFor(first, pageCount, spreadRow.roomWidth, spreadRow.roomHeight, surface.crop, p1)
         }
         readonly property real fitWidth: {
             const first = p0 >= 0 ? p0 : surface.firstOfSpread(surface.current)
             const pageCount = pages.length > 1 ? 2 : 1
-            return surface.displayWidthFor(first, pageCount, spreadRow.roomWidth, spreadRow.roomHeight, surface.fitMode, surface.zoom, surface.crop)
+            return surface.displayWidthFor(first, pageCount, spreadRow.roomWidth, spreadRow.roomHeight, surface.fitMode, surface.zoom, surface.crop, p1)
         }
         readonly property real contentW: (p0 >= 0 ? leftPageItem.width : 0) + (p1 >= 0 ? rightPageItem.width : 0)
         readonly property real contentH: Math.max(p0 >= 0 ? leftPageItem.height : 0, p1 >= 0 ? rightPageItem.height : 0)

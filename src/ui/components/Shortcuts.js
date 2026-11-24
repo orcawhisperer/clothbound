@@ -24,6 +24,7 @@ function reading() {
     return [
         { keys: "Space  →  PgDn  l  j", action: qsTr("Next page") },
         { keys: "⇧ Space  ←  PgUp  h  k", action: qsTr("Previous page") },
+        { keys: "↑  ↓", action: qsTr("Scroll tall or zoomed page (PDFs)") },
         { keys: "[  ]", action: qsTr("Previous / next chapter") },
         { keys: "T", action: qsTr("Contents") },
         { keys: "/  Ctrl F", action: qsTr("Search in the book") },

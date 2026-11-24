@@ -300,6 +300,17 @@ FocusScope {
     }
     function next() { leaveVoice(); js("clothbound.next()") }
     function prev() { leaveVoice(); js("clothbound.prev()") }
+    function pageStep(dir) {
+        leaveVoice()
+        if (pdf)
+            pdfSurface.pageStep(dir)
+        else
+            js(dir > 0 ? "clothbound.next()" : "clothbound.prev()")
+    }
+    function scrollVertical(dir) {
+        if (pdf)
+            pdfSurface.scrollVertical(dir)
+    }
     function nextChapter() { leaveVoice(); js("clothbound.nextChapter()") }
     function prevChapter() { leaveVoice(); js("clothbound.prevChapter()") }
     function back() { leaveVoice(); jumpPillVisible = false; js("clothbound.back()") }
@@ -856,8 +867,12 @@ FocusScope {
             return
         if (key === "ArrowRight") { reader.rtl ? prev() : next() }
         else if (key === "ArrowLeft") { reader.rtl ? next() : prev() }
-        else if (key === "PageDown" || key === "l" || key === "j" || (key === " " && !shift)) next()
-        else if (key === "PageUp" || key === "h" || key === "k" || (key === " " && shift)) prev()
+        else if (key === "ArrowDown" && pdf) scrollVertical(1)
+        else if (key === "ArrowUp" && pdf) scrollVertical(-1)
+        else if (key === "l") next()
+        else if (key === "h") prev()
+        else if (key === "PageDown" || key === "j" || (key === " " && !shift)) pageStep(1)
+        else if (key === "PageUp" || key === "k" || (key === " " && shift)) pageStep(-1)
         else if (key === "]") nextChapter()
         else if (key === "[") prevChapter()
         else if (key === "t" || key === "T") showContents()
@@ -2552,8 +2567,12 @@ FocusScope {
     Shortcut { sequence: "X"; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && view.pdf && !view.modalPanelOpen && !view.modalOpen && !win.typing && !lightbox.open; onActivated: view.toggleSnipMode() }
     Shortcut { sequence: "Right"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.prev() : view.next() }
     Shortcut { sequence: "Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.next() : view.prev() }
-    Shortcut { sequences: ["PgDown", "L", "J", "Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.next() }
-    Shortcut { sequences: ["PgUp", "H", "K", "Shift+Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prev() }
+    Shortcut { sequence: "Down"; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.scrollVertical(1) }
+    Shortcut { sequence: "Up"; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.scrollVertical(-1) }
+    Shortcut { sequence: "L"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.next() }
+    Shortcut { sequence: "H"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prev() }
+    Shortcut { sequences: ["PgDown", "J", "Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.pageStep(1) }
+    Shortcut { sequences: ["PgUp", "K", "Shift+Space"]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.pageStep(-1) }
     Shortcut { sequence: "]"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.nextChapter() }
     Shortcut { sequence: "["; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.prevChapter() }
     Shortcut { sequence: "Alt+Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.back() }
