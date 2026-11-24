@@ -190,6 +190,10 @@ FocusScope {
     visible: reveal > 0.005
     opacity: reveal
 
+    Keys.onShortcutOverride: (event) => {
+        if (sheet.open && sheet.busy && event.key === Qt.Key_Escape)
+            event.accepted = true
+    }
     Keys.onEscapePressed: {
         if (busy && hasImporter)
             webImporter.cancel()

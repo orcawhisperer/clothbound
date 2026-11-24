@@ -34,6 +34,9 @@
 
 #include "ai/aiservices.h"
 #include "mcp/mcpserver.h"
+#include "online/epubwriter.h"
+#include "online/opdsclient.h"
+#include "online/webimporter.h"
 #include "audio/audiocache.h"
 #include "ai/aiusage.h"
 #include "formats/bookinfo.h"
@@ -10566,7 +10569,218 @@ Item {
         const QString compQml = readQml(QStringLiteral("ui/companion/CompanionPanel.qml"));
         QVERIFY(compQml.count(QStringLiteral("SmoothWheel { stepSize: 115 }")) >= 4);
     }
+
+    void articlesShelfAndDesktopV040Wiring() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString dataDir = dir.filePath(QStringLiteral("data"));
+        const QString cacheDir = dir.filePath(QStringLiteral("cache"));
+
+        // 1. Articles shelf detection across all 3 sources, epub split, sourceUrl, and schema v4 invariant.
+        {
+            Library library(dataDir, cacheDir);
+            QVERIFY(library.open());
+            QCOMPARE(library.schemaVersion(), 4);
+
+            const QString bookEpub = dir.filePath(QStringLiteral("regular-novel.epub"));
+            const QString settingArtEpub = dir.filePath(QStringLiteral("setting-article.epub"));
+            const QString subjectArtEpub = dir.filePath(QStringLiteral("subject-article.epub"));
+            const QString dirArtEpub = dataDir + QStringLiteral("/articles/dir-article.epub");
+            const QString samplePdf = dir.filePath(QStringLiteral("paper.pdf"));
+
+            auto writeSimpleEpub = [](const QString &path, const QByteArray &title, const QByteArray &author) {
+                const QByteArray opf =
+                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+                    "<package version=\"3.0\" unique-identifier=\"uid\" xmlns=\"http://www.idpf.org/2007/opf\">"
+                    "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">"
+                    "<dc:identifier id=\"uid\">urn:test:" + title + "</dc:identifier>"
+                    "<dc:title>" + title + "</dc:title>"
+                    "<dc:creator>" + author + "</dc:creator>"
+                    "<dc:language>en</dc:language>"
+                    "</metadata>"
+                    "<manifest><item id=\"c\" href=\"c.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>"
+                    "<spine><itemref idref=\"c\"/></spine></package>";
+                return TestBooks::write(
+                    path, TestBooks::epub({{"OEBPS/content.opf", opf},
+                                           {"OEBPS/c.xhtml", TestBooks::chapter(title, "<p>Body prose.</p>")}}));
+            };
+
+            QVERIFY(writeSimpleEpub(bookEpub, "Regular Novel", "Ada Lovelace"));
+            QVERIFY(writeSimpleEpub(settingArtEpub, "Setting Essay", "Grace Hopper"));
+            QVERIFY(TestBooks::write(samplePdf, TestBooks::pdf("Research Paper", "Alan Turing")));
+
+            EpubArticle art;
+            art.title = QStringLiteral("Subject Article");
+            art.author = QStringLiteral("Alan Kay");
+            art.sourceUrl = QStringLiteral("https://example.org/subject-article");
+            art.subjects = {QStringLiteral("Clothbound Article")};
+            art.bodyXhtml = QStringLiteral("<p>Readable article prose packaged offline.</p>");
+            QString writeErr;
+            QVERIFY2(EpubWriter::writeArticle(subjectArtEpub, art, &writeErr), qPrintable(writeErr));
+
+            QVERIFY(QDir().mkpath(dataDir + QStringLiteral("/articles")));
+            QVERIFY(writeSimpleEpub(dirArtEpub, "Folder Article", "Donald Knuth"));
+
+            const int idBook = library.addBookFile(bookEpub);
+            const int idSettingArt = library.addBookFile(settingArtEpub);
+            const int idSubjectArt = library.addBookFile(subjectArtEpub);
+            const int idDirArt = library.addBookFile(dirArtEpub);
+            const int idPdf = library.addBookFile(samplePdf);
+            QVERIFY(idBook > 0 && idSettingArt > 0 && idSubjectArt > 0 && idDirArt > 0 && idPdf > 0);
+
+            library.setBookSetting(idSettingArt, QStringLiteral("content_kind"), QStringLiteral("article"));
+            library.setBookSetting(idSettingArt, QStringLiteral("source_url"), QStringLiteral("https://example.org/essay"));
+            library.setBookSetting(idSubjectArt, QStringLiteral("source_url"), QStringLiteral("https://example.org/subject-article"));
+            library.works()->setGrouped(false);
+
+            QVariantMap counts = library.shelfCounts();
+            QCOMPARE(counts.value(QStringLiteral("all")).toInt(), 5);
+            QCOMPARE(counts.value(QStringLiteral("epub")).toInt(), 1);
+            QCOMPARE(counts.value(QStringLiteral("pdf")).toInt(), 1);
+            QCOMPARE(counts.value(QStringLiteral("articles")).toInt(), 3);
+
+            // Articles shelf shows all 3 articles and marks ArticleRole == true.
+            library.works()->setStatusFilter(QStringLiteral("articles"));
+            QCOMPARE(library.works()->count(), 3);
+            for (int row = 0; row < library.works()->count(); ++row)
+                QCOMPARE(library.works()->get(row).value(QStringLiteral("article")).toBool(), true);
+
+            // Books (epub) shelf excludes articles so Books and Articles stay mutually distinct.
+            library.works()->clearFilters();
+            library.works()->setFormatFilter(QStringLiteral("epub"));
+            QCOMPARE(library.works()->count(), 1);
+            QCOMPARE(library.works()->get(0).value(QStringLiteral("bookId")).toInt(), idBook);
+            QCOMPARE(library.works()->get(0).value(QStringLiteral("article")).toBool(), false);
+
+            // Library::toMap() & Library::book() expose isArticle & sourceUrl.
+            const QVariantMap artMap = library.book(idSettingArt);
+            QCOMPARE(artMap.value(QStringLiteral("isArticle")).toBool(), true);
+            QCOMPARE(artMap.value(QStringLiteral("sourceUrl")).toString(), QStringLiteral("https://example.org/essay"));
+            const QVariantMap regularMap = library.book(idBook);
+            QCOMPARE(regularMap.value(QStringLiteral("isArticle")).toBool(), false);
+            QCOMPARE(regularMap.value(QStringLiteral("sourceUrl")).toString(), QString());
+
+            // Clearing content_kind on setting-only article moves it back into Books (epub).
+            library.setBookSetting(idSettingArt, QStringLiteral("content_kind"), QString());
+            counts = library.shelfCounts();
+            QCOMPARE(counts.value(QStringLiteral("epub")).toInt(), 2);
+            QCOMPARE(counts.value(QStringLiteral("articles")).toInt(), 2);
+            library.setBookSetting(idSettingArt, QStringLiteral("content_kind"), QStringLiteral("article"));
+            QCOMPARE(library.shelfCounts().value(QStringLiteral("articles")).toInt(), 3);
+        }
+
+        // 2. Persistence across reopen preserves schemaVersion() == 4, Articles shelf, and sourceUrl.
+        {
+            Library reopened(dataDir, cacheDir);
+            QVERIFY(reopened.open());
+            QCOMPARE(reopened.schemaVersion(), 4);
+            const QVariantMap counts = reopened.shelfCounts();
+            QCOMPARE(counts.value(QStringLiteral("all")).toInt(), 5);
+            QCOMPARE(counts.value(QStringLiteral("epub")).toInt(), 1);
+            QCOMPARE(counts.value(QStringLiteral("pdf")).toInt(), 1);
+            QCOMPARE(counts.value(QStringLiteral("articles")).toInt(), 3);
+
+            reopened.works()->setGrouped(false);
+            reopened.works()->setStatusFilter(QStringLiteral("articles"));
+            QCOMPARE(reopened.works()->count(), 3);
+            const int idSettingArt = reopened.idForPath(dir.filePath(QStringLiteral("setting-article.epub")));
+            QVERIFY(idSettingArt > 0);
+            QCOMPARE(reopened.book(idSettingArt).value(QStringLiteral("isArticle")).toBool(), true);
+            QCOMPARE(reopened.book(idSettingArt).value(QStringLiteral("sourceUrl")).toString(),
+                     QStringLiteral("https://example.org/essay"));
+        }
+
+        // 3. Live QML smoke test for AddUrlSheet.qml, LibraryView.qml (with Online section & sheets),
+        //    and BookDetails.qml (with Source URL row & Web article label) — zero runtime QML warnings.
+        {
+            Library library(dataDir, cacheDir);
+            QVERIFY(library.open());
+            BookScheme scheme;
+            Reader reader(&library, &scheme);
+            GeminiProvider gemini;
+            MemoryKeyStore keys;
+            AiServices ai(&gemini, &keys, library.database().connectionName());
+            LibraryFinder finder;
+            PortalFilePicker picker;
+            Theme theme(dir.filePath(QStringLiteral("no-omarchy")));
+            Translator translator;
+            WebImporter webImporter(&library, dataDir);
+            OpdsClient opds(&library, &keys, dataDir, dir.filePath(QStringLiteral("opds.ini")));
+
+            QQmlEngine engine;
+            const QString srcRoot = QFINDTESTDATA("../src");
+            QVERIFY(QFileInfo::exists(srcRoot));
+            engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+            engine.rootContext()->setContextProperty(QStringLiteral("translator"), &translator);
+            engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+            engine.rootContext()->setContextProperty(QStringLiteral("library"), &library);
+            engine.rootContext()->setContextProperty(QStringLiteral("libraryFinder"), &finder);
+            engine.rootContext()->setContextProperty(QStringLiteral("picker"), &picker);
+            engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+            engine.rootContext()->setContextProperty(QStringLiteral("ai"), &ai);
+            engine.rootContext()->setContextProperty(QStringLiteral("webImporter"), &webImporter);
+            engine.rootContext()->setContextProperty(QStringLiteral("opds"), &opds);
+
+            QList<QQmlError> warnings;
+            QObject::connect(&engine, &QQmlEngine::warnings, &engine,
+                             [&](const QList<QQmlError> &errs) { warnings.append(errs); });
+
+            QQmlComponent addUrlComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/AddUrlSheet.qml")));
+            QVERIFY2(addUrlComp.status() == QQmlComponent::Ready, qPrintable(addUrlComp.errorString()));
+            std::unique_ptr<QObject> addUrlObj(addUrlComp.create());
+            QVERIFY2(addUrlObj != nullptr, qPrintable(addUrlComp.errorString()));
+            QMetaObject::invokeMethod(addUrlObj.get(), "show", Q_ARG(QVariant, QStringLiteral("https://arxiv.org/abs/2301.00001")),
+                                      Q_ARG(QVariant, 0));
+            QCOMPARE(addUrlObj->property("open").toBool(), true);
+            QCOMPARE(addUrlObj->property("detectedKind").toString(), QStringLiteral("arxiv"));
+            QMetaObject::invokeMethod(addUrlObj.get(), "close");
+            QCOMPARE(addUrlObj->property("open").toBool(), false);
+
+            QQmlComponent libComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/LibraryView.qml")));
+            QVERIFY2(libComp.status() == QQmlComponent::Ready, qPrintable(libComp.errorString()));
+            std::unique_ptr<QObject> libObj(libComp.create());
+            QVERIFY2(libObj != nullptr, qPrintable(libComp.errorString()));
+            QCOMPARE(libObj->property("addUrlOpen").toBool(), false);
+            QCOMPARE(libObj->property("catalogsOpen").toBool(), false);
+            QMetaObject::invokeMethod(libObj.get(), "openAddUrl", Q_ARG(QVariant, QString()));
+            QCOMPARE(libObj->property("addUrlOpen").toBool(), true);
+            QCOMPARE(libObj->property("typing").toBool(), true);
+            QMetaObject::invokeMethod(libObj.get(), "closeAddUrl");
+            QCOMPARE(libObj->property("addUrlOpen").toBool(), false);
+            QMetaObject::invokeMethod(libObj.get(), "openCatalogs");
+            QCOMPARE(libObj->property("catalogsOpen").toBool(), true);
+            QCOMPARE(libObj->property("typing").toBool(), true);
+            QMetaObject::invokeMethod(libObj.get(), "closeCatalogs");
+            QCOMPARE(libObj->property("catalogsOpen").toBool(), false);
+
+            const int idSettingArt = library.idForPath(dir.filePath(QStringLiteral("setting-article.epub")));
+            QMetaObject::invokeMethod(libObj.get(), "showDetails", Q_ARG(QVariant, 0));
+            QQmlComponent detComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/BookDetails.qml")));
+            QVERIFY2(detComp.status() == QQmlComponent::Ready, qPrintable(detComp.errorString()));
+            std::unique_ptr<QObject> detObj(detComp.create());
+            QVERIFY2(detObj != nullptr, qPrintable(detComp.errorString()));
+            QMetaObject::invokeMethod(detObj.get(), "show", Q_ARG(QVariant, idSettingArt), Q_ARG(QVariant, QString()));
+            QCoreApplication::processEvents();
+            QMetaObject::invokeMethod(detObj.get(), "close");
+
+            QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+        }
+
+        // 4. CLI `clothbound add <url>` routes http(s):// and arxiv: arguments through WebImporter.
+        {
+            QVERIFY(cliSummary().contains(QStringLiteral("add <folder|book|url>")));
+            // Private/loopback URL is rejected by UrlGuard (proving WebImporter ran instead of local file check).
+            QCOMPARE(runCli({QStringLiteral("clothbound"), QStringLiteral("add"), QStringLiteral("--json"),
+                             QStringLiteral("http://127.0.0.1/blocked.epub")}),
+                     1);
+        }
+    }
 };
+
+#ifdef CLOTHBOUND_UNIFIED_TESTS
+std::unique_ptr<QObject> createOnlineIngestTests();
+std::unique_ptr<QObject> createOpdsTests();
+#endif
 
 int main(int argc, char *argv[]) {
     // Always avoid GTK3 platform theme (crashes headless without a display).
@@ -10587,7 +10801,50 @@ int main(int argc, char *argv[]) {
     app.setAttribute(Qt::AA_Use96Dpi, true);
     QQuickStyle::setStyle(QStringLiteral("Clothbound"));
     QTEST_SET_MAIN_SOURCE_PATH
-    ClothboundTests tc;
-    return QTest::qExec(&tc, argc, argv);
+
+    std::vector<std::unique_ptr<QObject>> suites;
+    suites.push_back(std::make_unique<ClothboundTests>());
+#ifdef CLOTHBOUND_UNIFIED_TESTS
+    suites.push_back(createOnlineIngestTests());
+    suites.push_back(createOpdsTests());
+#endif
+
+    // Collect non-flag positional test function filters (e.g. `./bin/test myTest`).
+    QStringList filterNames;
+    for (int i = 1; i < argc; ++i) {
+        const QString arg = QString::fromLocal8Bit(argv[i]);
+        if (arg.startsWith(QLatin1Char('-'))) {
+            // Skip value of two-token QtTest flags like `-o file,txt`.
+            if (arg == QLatin1String("-o") || arg == QLatin1String("-eventdelay") || arg == QLatin1String("-keydelay") ||
+                arg == QLatin1String("-mousedelay") || arg == QLatin1String("-maxwarnings") ||
+                arg == QLatin1String("-iterations") || arg == QLatin1String("-minimumvalue") ||
+                arg == QLatin1String("-minimumtotal"))
+                ++i;
+            continue;
+        }
+        filterNames.append(arg.section(QLatin1Char(':'), 0, 0));
+    }
+
+    auto hasAnySlot = [](QObject *obj, const QStringList &names) {
+        const QMetaObject *mo = obj->metaObject();
+        for (const QString &name : names) {
+            const QByteArray sig = (name + QStringLiteral("()")).toLatin1();
+            if (mo->indexOfSlot(sig.constData()) >= 0)
+                return true;
+        }
+        return false;
+    };
+
+    int rc = 0;
+    bool ranAny = false;
+    for (auto &suite : suites) {
+        if (!filterNames.isEmpty() && !hasAnySlot(suite.get(), filterNames))
+            continue;
+        ranAny = true;
+        rc |= QTest::qExec(suite.get(), argc, argv);
+    }
+    if (!ranAny && !suites.empty())
+        rc = QTest::qExec(suites.front().get(), argc, argv);
+    return rc;
 }
 #include "clothbound_tests.moc"

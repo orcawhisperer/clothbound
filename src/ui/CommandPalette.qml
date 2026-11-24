@@ -181,12 +181,16 @@ FocusScope {
                 list.push({ id: "export-notes-file", title: qsTr("Export notes to Markdown file"), subtitle: qsTr("Obsidian & Readwise format"), hint: "", glyph: Icons.download })
                 list.push({ id: "copy-notes", title: qsTr("Copy notes as Markdown"), subtitle: qsTr("Copy all marks to clipboard"), hint: "", glyph: Icons.copy })
             }
+            list.push({ id: "add-url", title: qsTr("Add from URL"), subtitle: qsTr("Save a web article, arXiv paper, EPUB, or PDF"), hint: "Ctrl ⇧ U", glyph: Icons.link })
+            list.push({ id: "browse-catalogs", title: qsTr("Browse catalogs"), subtitle: qsTr("Public OPDS catalogs and your servers"), hint: "Ctrl ⇧ O", glyph: Icons.globe })
             list.push({ id: "close-book", title: qsTr("Back to library"), subtitle: qsTr("Close current book"), hint: "Esc", glyph: Icons.back })
         } else {
             if (library.lastOpenedBook() > 0)
                 list.push({ id: "continue-reading", title: qsTr("Continue reading"), subtitle: qsTr("Resume your last opened book"), hint: "Space", glyph: Icons.book })
             list.push({ id: "add-folder", title: qsTr("Add folder of books…"), subtitle: qsTr("Watch a folder for EPUB & PDF books"), hint: "A", glyph: Icons.folder })
             list.push({ id: "add-books", title: qsTr("Add individual books…"), subtitle: qsTr("Pick EPUB or PDF files"), hint: "", glyph: Icons.plus })
+            list.push({ id: "add-url", title: qsTr("Add from URL"), subtitle: qsTr("Save a web article, arXiv paper, EPUB, or PDF"), hint: "Ctrl ⇧ U", glyph: Icons.link })
+            list.push({ id: "browse-catalogs", title: qsTr("Browse catalogs"), subtitle: qsTr("Public OPDS catalogs and your servers"), hint: "Ctrl ⇧ O", glyph: Icons.globe })
             list.push({ id: "manage-folders", title: qsTr("Manage watched folders…"), subtitle: qsTr("%1 watched").arg(library.folders.length), hint: "", glyph: Icons.folder })
             list.push({ id: "rescan", title: qsTr("Rescan library"), subtitle: qsTr("Check watched folders for new or moved books"), hint: "", glyph: refreshIcon })
             list.push({ id: "toggle-view", title: viewMode === "grid" ? qsTr("Switch to list view") : qsTr("Switch to cover grid"), subtitle: qsTr("Library layout"), hint: "V", glyph: viewMode === "grid" ? Icons.list : Icons.grid })

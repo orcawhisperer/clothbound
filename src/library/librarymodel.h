@@ -49,6 +49,7 @@ public:
         ListeningRole,
         DownloadedRole,
         AudiobookRole,
+        ArticleRole,
     };
 
     explicit WorksModel(Library *library);
@@ -83,6 +84,7 @@ public:
     void setBooks(const QHash<int, BookRecord> &books);
     void setCollections(const QHash<int, QSet<int>> &collectionBooks, bool rebuildNow = true);
     void setAudioSets(const QSet<int> &downloaded, const QSet<int> &audiobooks);
+    void setArticleSet(const QSet<int> &articles);
     // Fast in-place update for progress/position changes without rebuilding the
     // whole grid unless sort order or visibility is affected.
     void updateBook(const BookRecord &book);
@@ -124,6 +126,7 @@ private:
     QHash<int, QSet<int>> m_collectionBooks;
     QSet<int> m_downloaded;
     QSet<int> m_audiobooks;
+    QSet<int> m_articles;
     QHash<int, QString> m_searchable;
     QHash<int, int> m_bookRow;
     QList<Work> m_works;

@@ -15,6 +15,7 @@
 #include "formats/pdfbook.h"
 #include "audio/speech.h"
 #include "audio/voicepacks.h"
+#include "online/webimporter.h"
 
 #include <QCommandLineParser>
 #include <QDir>
@@ -37,6 +38,7 @@
 #include <QUuid>
 #include <algorithm>
 #include <cstdio>
+#include <memory>
 
 namespace {
 McpRunner g_mcpRunner = nullptr;
@@ -210,14 +212,22 @@ QJsonObject bookJson(const Library &library, const BookRecord &book) {
     return object;
 }
 
+bool isRemoteUrlArg(const QString &arg) {
+    const QString trimmed = arg.trimmed();
+    return trimmed.startsWith(QLatin1String("http://"), Qt::CaseInsensitive) ||
+           trimmed.startsWith(QLatin1String("https://"), Qt::CaseInsensitive) ||
+           trimmed.startsWith(QLatin1String("arxiv:"), Qt::CaseInsensitive);
+}
+
 int add(const QStringList &arguments) {
-    Command command("add", "Add folders or book files to the library and read them in. Files are never changed.",
-                    "<folder-or-book>...");
+    Command command("add",
+                    "Add folders, book files, or web/arXiv URLs to the library. Local files are never changed.",
+                    "<folder|book|url>...");
     command.json();
     command.parser.process(arguments);
     const QStringList paths = command.parser.positionalArguments().mid(1);
     if (paths.isEmpty())
-        return fail("Name a folder of books, or a book.");
+        return fail("Name a folder of books, a book file, or a URL.");
     Library library;
     if (!openLibrary(library))
         return 1;
@@ -234,9 +244,39 @@ int add(const QStringList &arguments) {
             fprintf(stderr, "\rReading %d of %d books…", library.scanDone(), library.scanTotal());
         });
 
+    std::unique_ptr<WebImporter> importer;
+    QJsonArray importedUrls;
     QList<QUrl> folderUrls;
     int fileAdded = 0, fileUpdated = 0;
     for (const QString &path : paths) {
+        if (isRemoteUrlArg(path)) {
+            if (!importer)
+                importer = std::make_unique<WebImporter>(
+                    &library, QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+            if (!command.asJson())
+                fprintf(stderr, "Importing %s…\n", qPrintable(path));
+            const int beforeCount = library.bookCount();
+            int bookId = 0;
+            QString kind, err;
+            if (importer->importUrlSync(path, &bookId, &kind, &err)) {
+                if (library.bookCount() > beforeCount)
+                    ++fileAdded;
+                else
+                    ++fileUpdated;
+                const BookRecord rec = library.record(bookId);
+                importedUrls.append(QJsonObject{{QStringLiteral("id"), bookId},
+                                                {QStringLiteral("title"), rec.title},
+                                                {QStringLiteral("kind"), kind},
+                                                {QStringLiteral("url"), path}});
+                if (!command.asJson())
+                    print(stdout, QStringLiteral("Saved “%1” (%2)").arg(rec.title, kind));
+            } else {
+                print(stderr, path + QStringLiteral(": ") +
+                                  (err.isEmpty() ? QStringLiteral("Could not import URL.") : err));
+                ok = false;
+            }
+            continue;
+        }
         const QFileInfo fi(path);
         if (fi.isDir()) {
             folderUrls.append(QUrl::fromLocalFile(fi.absoluteFilePath()));
@@ -277,8 +317,11 @@ int add(const QStringList &arguments) {
     const int added = scanAdded + fileAdded;
     const int updated = scanUpdated + fileUpdated;
     if (command.asJson()) {
-        print(QJsonObject{{"added", added}, {"updated", updated}, {"books", library.bookCount()},
-                          {"folders", QJsonArray::fromStringList(library.folders())}});
+        QJsonObject out{{"added", added}, {"updated", updated}, {"books", library.bookCount()},
+                        {"folders", QJsonArray::fromStringList(library.folders())}};
+        if (!importedUrls.isEmpty())
+            out.insert(QStringLiteral("imported"), importedUrls);
+        print(out);
     } else {
         print(stdout, QString("Added %1, updated %2; %3 books in the library.")
                           .arg(added).arg(updated).arg(library.bookCount()));
@@ -1059,7 +1102,7 @@ QString cliSummary() {
     return "Reader:\n"
            "  open [book...]                         Open the library, or books where you left off\n\n"
            "Commands that need no display (clothbound help <command> for options):\n"
-           "  add <folder-or-book>...                Add books to the library; files are never changed\n"
+           "  add <folder|book|url>...               Add folders, books, or web/arXiv URLs to the library\n"
            "  list                                   The books in the library, with reading progress\n"
            "  info <book>                            Metadata and table of contents of an EPUB or PDF\n"
            "  search <query>                         Full-text search across the library (or one book)\n"

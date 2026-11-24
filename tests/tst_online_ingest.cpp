@@ -795,6 +795,7 @@ void TestOnlineIngest::webImporterRejectsOversizedPayload() {
     QCOMPARE(library.bookCount(), 0);
 }
 
+#ifndef CLOTHBOUND_UNIFIED_TESTS
 int main(int argc, char *argv[]) {
     qputenv("QT_QPA_PLATFORMTHEME", "generic");
     QTemporaryDir testXdg;
@@ -811,4 +812,7 @@ int main(int argc, char *argv[]) {
     TestOnlineIngest tc;
     return QTest::qExec(&tc, argc, argv);
 }
+#else
+std::unique_ptr<QObject> createOnlineIngestTests() { return std::make_unique<TestOnlineIngest>(); }
+#endif
 #include "tst_online_ingest.moc"

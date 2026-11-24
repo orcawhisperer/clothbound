@@ -751,7 +751,8 @@ void OpdsTests::catalogsSheetQmlSmokeTest() {
         QTemporaryDir dir;
         QVERIFY(dir.isValid());
 
-        QQuickStyle::setStyle(QStringLiteral("Clothbound"));
+        if (QQuickStyle::name() != QLatin1String("Clothbound"))
+            QQuickStyle::setStyle(QStringLiteral("Clothbound"));
         Library lib(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
         QVERIFY(lib.open());
         MemoryKeyStore keys;
@@ -835,5 +836,9 @@ void OpdsTests::catalogsSheetQmlSmokeTest() {
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
 }
 
+#ifndef CLOTHBOUND_UNIFIED_TESTS
 QTEST_MAIN(OpdsTests)
+#else
+std::unique_ptr<QObject> createOpdsTests() { return std::make_unique<OpdsTests>(); }
+#endif
 #include "tst_opds.moc"

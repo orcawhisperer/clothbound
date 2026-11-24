@@ -25,7 +25,7 @@ class Library : public QObject {
     Q_PROPERTY(int bookCount READ bookCount NOTIFY booksChanged)
     Q_PROPERTY(QStringList folders READ folders NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList collections READ collections NOTIFY collectionsChanged)
-    // {all, reading, recent, want, finished, listening, epub, pdf, downloaded, audiobooks}:
+    // {all, reading, recent, want, finished, listening, epub, pdf, articles, downloaded, audiobooks}:
     // how many books each sidebar shelf holds.
     Q_PROPERTY(QVariantMap shelfCounts READ shelfCounts NOTIFY booksChanged)
     Q_PROPERTY(QVariantMap readingStats READ readingStats NOTIFY readingStatsChanged)
@@ -192,6 +192,9 @@ private:
     void loadFolders();
     void loadCollections();
     void loadAudioBadges();
+    void loadOnlineMeta();
+    void refreshArticles();
+    bool isArticleRecord(const BookRecord &record) const;
     void syncWorksCollections();
     void flushNotificationsNow();
     void addUrlsImpl(const QList<QUrl> &urls, int explicitCollectionId);
@@ -217,6 +220,9 @@ private:
     QHash<int, QSet<int>> m_bookCollections;
     QSet<int> m_downloadedBooks;
     QSet<int> m_audiobookBooks;
+    QSet<int> m_articleSettingIds;
+    QSet<int> m_articles;
+    QHash<int, QString> m_sourceUrls;
     QStringList m_folders;
     QStringList m_queuedFiles;
     QHash<QString, int> m_pendingFileCollections;

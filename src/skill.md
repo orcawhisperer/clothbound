@@ -75,8 +75,10 @@ agents (MCP)**; toggle **Enable local MCP server** there at any time.)
 - `clothbound passage <book_id> [--chapter <n> | --page <n>] [--page-end <n>] [--max-chars <n>] [--json]`:
   print exact verbatim text from an EPUB chapter or PDF page with a citation
   header.
-- `clothbound add <folder-or-book>... [--json]`: add watched folders or book files
-  to the library (files are never changed).
+- `clothbound add <folder|book|url>... [--json]`: add watched folders, local
+  EPUB/PDF files, or remote URLs (web articles packaged offline as EPUBs,
+  `arxiv:` / arXiv papers with metadata, and direct EPUB/PDF links). Local files
+  are never changed.
 - `clothbound info <book> [--json]`: title, author, edition (editor, publisher,
   year), series, language, description, chapters, pages, and table of contents.
 - `clothbound list [--json]`: the books in the library, with reading progress.
@@ -91,7 +93,13 @@ agents (MCP)**; toggle **Enable local MCP server** there at any time.)
   cost this month, where text work runs, and the model servers found on this
   computer (Ollama, llama.cpp, LM Studio, MLX, vLLM).
 
-## Reader capabilities (v0.3.0+)
+## Reader capabilities (v0.4.0+)
+
+- **Online-to-offline ingest (`Ctrl+Shift+U`) & OPDS catalogs (`Ctrl+Shift+O`)**:
+  save web articles offline as EPUBs (with dedicated **Articles** shelf), fetch
+  arXiv papers with Atom metadata, download direct EPUB/PDF links, and browse
+  built-in public or self-hosted OPDS 1.2 & 2.0 catalogs (Calibre-Web, Kavita,
+  Komga, etc.).
 
 - **Command Palette (`Ctrl+K`)**: fuzzy search across all books, current book
   chapters, cross-book highlights & notes, page/percentage jumps, and actions.

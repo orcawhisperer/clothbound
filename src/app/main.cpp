@@ -36,6 +36,8 @@
 #include "app/theme.h"
 #include "app/translator.h"
 #include "mcp/mcpserver.h"
+#include "online/opdsclient.h"
+#include "online/webimporter.h"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -369,6 +371,10 @@ int main(int argc, char *argv[]) {
     Companion companion(&ai, &reader, library.database().connectionName());
     Illustrator illustrator(&ai, &reader, library.database().connectionName(),
                             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/illustrations"));
+    // Declared after `library` and `keys` so both are destroyed first on shutdown.
+    const QString onlineStorageDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    WebImporter webImporter(&library, onlineStorageDir);
+    OpdsClient opds(&library, &keys, onlineStorageDir);
     QObject::connect(&reader, &Reader::bookChanged, &marks, [&marks, &reader] { marks.setBook(reader.bookId()); });
 
     // Books named on the command line join the library (they may live
@@ -423,6 +429,8 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("audiobook", &audiobook);
     engine.rootContext()->setContextProperty("illustrator", &illustrator);
     engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
+    engine.rootContext()->setContextProperty("webImporter", &webImporter);
+    engine.rootContext()->setContextProperty("opds", &opds);
     Notifier notifier;
     SurfaceWatcher surfaceWatcher;
     engine.rootContext()->setContextProperty("desktop", &notifier);

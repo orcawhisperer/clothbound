@@ -71,6 +71,9 @@ var arrowUp = "M12 19 V5 M5 12 L12 5 L19 12"
 var picture = "M5 4 H19 Q21 4 21 6 V18 Q21 20 19 20 H5 Q3 20 3 18 V6 Q3 4 5 4 Z M11 10 A2 2 0 1 1 7 10 A2 2 0 1 1 11 10 Z M21 16 L16 11 L7 20"
 var chevronsUpDown = "M7 9 L12 4 L17 9 M7 15 L12 20 L17 15"
 var infoCircle = "M20 12 A8 8 0 1 1 4 12 A8 8 0 1 1 20 12 Z M12 8 V13 M12 16 H12.01"
+var link = "M10 13 A4 4 0 0 0 15.6 13 L18 10.6 A4 4 0 0 0 12.4 5 L11 6.4 M14 11 A4 4 0 0 0 8.4 11 L6 13.4 A4 4 0 0 0 11.6 19 L13 17.6"
+var globe = "M12 3 A9 9 0 1 1 12 21 A9 9 0 1 1 12 3 Z M3.6 9 H20.4 M3.6 15 H20.4 M12 3 C14.8 6 14.8 18 12 21 C9.2 18 9.2 6 12 3 Z"
+var article = "M5 5.5 H19 Q20 5.5 20 6.5 V17.5 Q20 18.5 19 18.5 H5 Q4 18.5 4 17.5 V6.5 Q4 5.5 5 5.5 Z M8 9.5 H16 M8 12.5 H16 M8 15.5 H12.5"
 
 // Solid filled transport icons (drawn with Glyph { filled: true }).
 var playSolid = "M8 5 V19 L19 12 Z"

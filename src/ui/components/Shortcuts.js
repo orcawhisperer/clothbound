@@ -13,6 +13,8 @@ function library() {
         { keys: "S", action: qsTr("Change the order") },
         { keys: "G", action: qsTr("Group or separate editions") },
         { keys: "A", action: qsTr("Add a folder of books") },
+        { keys: "Ctrl ⇧ U", action: qsTr("Add from URL") },
+        { keys: "Ctrl ⇧ O", action: qsTr("Browse catalogs") },
         { keys: "V", action: qsTr("Covers or a list") },
         { keys: "Ctrl B", action: qsTr("Show or hide the sidebar") },
         { keys: "Ctrl Z", action: qsTr("Undo") }

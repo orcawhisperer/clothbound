@@ -158,6 +158,11 @@ FocusScope {
     visible: reveal > 0.005
     opacity: reveal
 
+    Keys.onShortcutOverride: (event) => {
+        if (sheet.open && event.key === Qt.Key_Escape
+                && (confirmRemoveId !== "" || addingServer || (searchField.activeFocus && searchField.text !== "")))
+            event.accepted = true
+    }
     Keys.onEscapePressed: (event) => {
         if (confirmRemoveId !== "") {
             confirmRemoveId = ""
