@@ -136,9 +136,17 @@ Library::Library(const QString &dataDirectory, const QString &cacheDirectory, QO
     connect(m_scanner, &Scanner::finished, this, [this] {
         flushPending();
         m_queuedFiles.clear();
+        m_pendingFileCollections.clear();
+        m_pendingFolderCollections.clear();
         m_scanning = false;
         emit scanningChanged();
+        const ImportBatch batch = m_importBatch;
+        m_importBatch.clear();
+        if (batch.count > 0)
+            flushNotificationsNow();
         emit scanFinished(m_added, m_updated);
+        if (batch.count > 0)
+            emit booksAdded(batch.firstBookId, batch.count, batch.firstTitle, batch.targetCollectionId);
     });
 }
 
@@ -396,7 +404,29 @@ void Library::loadCollections() {
 }
 
 void Library::syncWorksCollections() {
-    m_works->setCollections(m_collectionBooks);
+    if (m_worksDirty) {
+        m_worksDirty = false;
+        m_works->setCollections(m_collectionBooks, false);
+        m_works->setBooks(m_books);
+    } else {
+        m_works->setCollections(m_collectionBooks);
+    }
+}
+
+void Library::flushNotificationsNow() {
+    const bool hadNotify = m_notify.isActive();
+    if (hadNotify)
+        m_notify.stop();
+    if (m_worksDirty) {
+        m_worksDirty = false;
+        m_works->setCollections(m_collectionBooks, false);
+        m_works->setBooks(m_books);
+    }
+    if (hadNotify) {
+        emit booksChanged();
+        emit collectionsChanged();
+        emit readingStatsChanged();
+    }
 }
 
 void Library::loadAudioBadges() {
@@ -530,6 +560,27 @@ void Library::addFolder(const QString &path) {
 }
 
 void Library::addUrls(const QList<QUrl> &urls) {
+    addUrlsImpl(urls, -1);
+}
+
+void Library::addUrlsToCollection(const QList<QUrl> &urls, int collectionId) {
+    addUrlsImpl(urls, qMax(0, collectionId));
+}
+
+void Library::addFilesToCollection(const QStringList &paths, int collectionId) {
+    QList<QUrl> urls;
+    urls.reserve(paths.size());
+    for (const QString &path : paths)
+        if (!path.trimmed().isEmpty())
+            urls.append(QUrl::fromLocalFile(path));
+    addUrlsToCollection(urls, collectionId);
+}
+
+void Library::addUrlsImpl(const QList<QUrl> &urls, int explicitCollectionId) {
+    const int fileTargetCol = (explicitCollectionId >= 0) ? explicitCollectionId : (m_works ? m_works->collectionId() : 0);
+    const int validFileCol = (fileTargetCol > 0 && m_collections.contains(fileTargetCol)) ? fileTargetCol : 0;
+    const int validFolderCol = (explicitCollectionId > 0 && m_collections.contains(explicitCollectionId)) ? explicitCollectionId : 0;
+
     QStringList folders, files;
     for (const QUrl &url : urls) {
         if (!url.isLocalFile())
@@ -548,20 +599,45 @@ void Library::addUrls(const QList<QUrl> &urls) {
         emit problem(tr("Clothbound reads EPUB and PDF books."));
         return;
     }
+
+    QSet<int> immediateIds;
+    ImportBatch immediateBatch;
     bool needScan = false;
     for (const QString &file : std::as_const(files)) {
         const QFileInfo info(file);
         if (const int id = idForPath(file)) {
+            if (validFileCol > 0)
+                addToCollection(id, validFileCol);
             const BookRecord &record = m_books[id];
-            if (record.size == info.size() && record.mtime == info.lastModified().toSecsSinceEpoch() && !record.missing)
+            if (record.size == info.size() && record.mtime == info.lastModified().toSecsSinceEpoch() && !record.missing) {
+                if (!immediateIds.contains(id)) {
+                    immediateIds.insert(id);
+                    immediateBatch.record(id, record.title, validFileCol);
+                }
                 continue;
+            }
         }
+        if (validFileCol > 0)
+            m_pendingFileCollections.insert(file, validFileCol);
         if (!m_queuedFiles.contains(file))
             m_queuedFiles.append(file);
         needScan = true;
     }
+
     bool foldersAdded = false;
     for (const QString &folder : std::as_const(folders)) {
+        if (validFolderCol > 0) {
+            m_pendingFolderCollections.insert(folder, validFolderCol);
+            for (const BookRecord &record : std::as_const(m_books)) {
+                if (record.visible() && isUnder(record.path, folder)) {
+                    addToCollection(record.id, validFolderCol);
+                    if (!immediateIds.contains(record.id)) {
+                        immediateIds.insert(record.id);
+                        immediateBatch.record(record.id, record.title, validFolderCol);
+                    }
+                }
+            }
+        }
         if (m_folders.contains(folder))
             continue;
         QSqlQuery query(database());
@@ -577,8 +653,18 @@ void Library::addUrls(const QList<QUrl> &urls) {
         emit foldersChanged();
     if (!folders.isEmpty())
         needScan = true;
-    if (needScan)
+
+    if (needScan) {
+        if (immediateBatch.count > 0) {
+            flushNotificationsNow();
+            m_importBatch.merge(immediateBatch);
+        }
         rescan();
+    } else if (immediateBatch.count > 0) {
+        flushNotificationsNow();
+        emit booksAdded(immediateBatch.firstBookId, immediateBatch.count, immediateBatch.firstTitle,
+                        immediateBatch.targetCollectionId);
+    }
 }
 
 void Library::removeFolder(const QString &path) {
@@ -681,6 +767,9 @@ void Library::cancelScan() {
     m_flush.stop();
     flushPending();
     m_queuedFiles.clear();
+    m_pendingFileCollections.clear();
+    m_pendingFolderCollections.clear();
+    m_importBatch.clear();
     m_scanning = false;
     emit scanningChanged();
     emit scanProgressChanged();
@@ -872,6 +961,21 @@ void Library::flushPending() {
     applyStaged(staged);
     m_pending.clear();
     changed();
+    for (const StagedBook &entry : std::as_const(staged)) {
+        int colId = m_pendingFileCollections.take(entry.record.path);
+        if (colId <= 0 && !m_pendingFolderCollections.isEmpty()) {
+            for (auto it = m_pendingFolderCollections.cbegin(); it != m_pendingFolderCollections.cend(); ++it) {
+                if (isUnder(entry.record.path, it.key())) {
+                    colId = it.value();
+                    break;
+                }
+            }
+        }
+        if (colId > 0 && m_collections.contains(colId))
+            addToCollection(entry.record.id, colId);
+        if (!entry.updated || colId > 0)
+            m_importBatch.record(entry.record.id, entry.record.title, colId);
+    }
 }
 
 int Library::addBookFile(const QString &path) {
@@ -885,12 +989,20 @@ int Library::addBookFile(const QString &path) {
         m_error = tr("Clothbound reads EPUB and PDF books.");
         return 0;
     }
+    bool wasHidden = false;
     if (const int id = idForPath(file)) {
-        if (m_books[id].hidden)
+        if (m_books[id].hidden) {
             setHidden(id, false);
+            wasHidden = true;
+        }
         const BookRecord &record = m_books[id];
-        if (record.size == info.size() && record.mtime == info.lastModified().toSecsSinceEpoch() && !record.missing)
+        if (record.size == info.size() && record.mtime == info.lastModified().toSecsSinceEpoch() && !record.missing) {
+            if (wasHidden) {
+                flushNotificationsNow();
+                emit booksAdded(id, 1, record.title, 0);
+            }
             return id;
+        }
     }
     const ScannedBook scanned = Scanner::read(file, m_coverDirectory);
     QSqlDatabase db = database();
@@ -900,9 +1012,15 @@ int Library::addBookFile(const QString &path) {
     QList<StagedBook> staged;
     if (!storeInDb(scanned, staged) || !sp.commit())
         return 0;
+    const bool isNew = !staged.isEmpty() && !staged.first().updated;
     applyStaged(staged);
     changed();
-    return idForPath(file);
+    const int id = idForPath(file);
+    if (id > 0 && (isNew || wasHidden)) {
+        flushNotificationsNow();
+        emit booksAdded(id, 1, m_books.value(id).title, 0);
+    }
+    return id;
 }
 
 QVariantMap Library::toMap(const BookRecord &r) const {
@@ -1016,13 +1134,19 @@ void Library::markListened(int id) {
 // How many books each shelf of the sidebar holds: visible books only, a
 // work's editions counted once each as the grid shows them ungrouped.
 QVariantMap Library::shelfCounts() const {
-    int all = 0, reading = 0, want = 0, finished = 0, listening = 0, pdf = 0, downloaded = 0, audiobooks = 0;
+    int all = 0, reading = 0, recent = 0, want = 0, finished = 0, listening = 0, epub = 0, pdf = 0, downloaded = 0,
+        audiobooks = 0;
+    const qint64 recentCutoff = now() - WorksModel::recentWindowSecs;
     for (const auto &r : std::as_const(m_books)) {
         if (!r.visible())
             continue;
         ++all;
-        if (r.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0)
+        if (r.format.compare(QLatin1String("epub"), Qt::CaseInsensitive) == 0)
+            ++epub;
+        else if (r.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0)
             ++pdf;
+        if (r.addedAt > 0 && r.addedAt >= recentCutoff)
+            ++recent;
         if (r.finishedAt > 0)
             ++finished;
         else if (r.openedAt > 0)
@@ -1038,9 +1162,11 @@ QVariantMap Library::shelfCounts() const {
     }
     return {{"all", all},
             {"reading", reading},
+            {"recent", recent},
             {"want", want},
             {"finished", finished},
             {"listening", listening},
+            {"epub", epub},
             {"pdf", pdf},
             {"downloaded", downloaded},
             {"audiobooks", audiobooks}};
@@ -1115,6 +1241,7 @@ int Library::createCollection(const QString &name) {
     col.name = cleaned;
     col.createdAt = createdAt;
     m_collections.insert(col.id, col);
+    syncWorksCollections();
     emit collectionsChanged();
     return col.id;
 }
@@ -1178,8 +1305,11 @@ bool Library::deleteCollection(int id) {
 bool Library::addToCollection(int bookId, int collectionId) {
     if (!m_books.contains(bookId) || !m_collections.contains(collectionId) || !database().isOpen())
         return false;
-    if (m_collectionBooks.value(collectionId).contains(bookId))
+    if (m_collectionBooks.value(collectionId).contains(bookId)) {
+        if (m_worksDirty)
+            syncWorksCollections();
         return true;
+    }
     QSqlQuery query(database());
     query.prepare(QStringLiteral("INSERT OR IGNORE INTO book_collections (book_id, collection_id, added_at) VALUES (?, ?, ?)"));
     query.addBindValue(bookId);

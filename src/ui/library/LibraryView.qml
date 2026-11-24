@@ -16,6 +16,8 @@ FocusScope {
 
     property string viewMode: "grid"
     property int statsRevision: 0
+    property int pulsedBookId: 0
+    property real nowEpoch: Math.floor(Date.now() / 1000)
 
     readonly property bool typing: search.activeFocus || collectionDialog.open || details.addingShelf
     readonly property bool detailsOpen: details.open
@@ -28,16 +30,28 @@ FocusScope {
     // also searches inside every book.
     readonly property string searchText: search.text
     function toggleSidebar() { sidebarCollapsed = !sidebarCollapsed }
+    readonly property string activeCollectionName: {
+        const cid = library.works.collectionId
+        if (cid <= 0)
+            return ""
+        const col = library.collections.find(c => c.id === cid)
+        return col ? col.name : qsTr("Collection")
+    }
     // The toolbar names what the grid shows: a shelf, a collection, or a search.
     readonly property string sectionTitle: {
         const works = library.works
         if (works.searchText !== "")
             return qsTr("Search")
-        if (works.collectionId !== 0) {
-            const col = library.collections.find(c => c.id === works.collectionId)
-            return col ? col.name : qsTr("Collection")
+        if (works.collectionId !== 0)
+            return view.activeCollectionName
+        if (works.statusFilter === "" && works.seriesFilter === "") {
+            if (works.formatFilter === "epub")
+                return qsTr("Books")
+            if (works.formatFilter === "pdf")
+                return qsTr("Papers & PDFs")
         }
-        return works.statusFilter === "reading" ? qsTr("Reading now")
+        return works.statusFilter === "reading" ? qsTr("Reading")
+             : works.statusFilter === "recent" ? qsTr("Recently added")
              : works.statusFilter === "want" ? qsTr("Want to read")
              : works.statusFilter === "finished" ? qsTr("Finished")
              : works.statusFilter === "downloaded" ? qsTr("Downloaded")
@@ -50,6 +64,8 @@ FocusScope {
     readonly property string booksCountSummary: {
         const _lang = translator.language
         const works = library.works
+        if (works.formatFilter === "pdf" && works.collectionId === 0 && works.statusFilter === "" && works.searchText === "")
+            return qsTr("%n PDFs", "", works.count)
         const pdfs = library.shelfCounts.pdf || 0
         const showPdfs = !works.hasActiveFilters && works.searchText === "" && pdfs > 0
         const base = works.grouped && !works.hasActiveFilters && works.searchText === ""
@@ -65,10 +81,77 @@ FocusScope {
     signal listenBook(int bookId)
     signal paletteRequested(string text)
 
+    Timer {
+        id: pulseTimer
+        interval: 2200
+        onTriggered: view.pulsedBookId = 0
+    }
+    Timer {
+        interval: 60000
+        repeat: true
+        running: view.visible
+        onTriggered: view.nowEpoch = Math.floor(Date.now() / 1000)
+    }
+
+    function startBookDrag(bookId, title, cover, sceneX, sceneY) {
+        const local = view.mapFromItem(null, sceneX, sceneY)
+        bookDragProxy.dragBookId = bookId
+        bookDragProxy.dragBookTitle = title
+        bookDragProxy.dragBookCover = cover
+        bookDragProxy.x = local.x - bookDragProxy.width / 2
+        bookDragProxy.y = local.y - bookDragProxy.height / 2
+        bookDragProxy.dragging = true
+    }
+    function moveBookDrag(sceneX, sceneY) {
+        if (!bookDragProxy.dragging)
+            return
+        const local = view.mapFromItem(null, sceneX, sceneY)
+        bookDragProxy.x = local.x - bookDragProxy.width / 2
+        bookDragProxy.y = local.y - bookDragProxy.height / 2
+    }
+    function finishBookDrag() {
+        if (!bookDragProxy.dragging)
+            return
+        bookDragProxy.Drag.drop()
+        bookDragProxy.dragging = false
+        bookDragProxy.dragBookId = 0
+    }
+
     Connections {
         target: library
-        function onBooksChanged() { view.statsRevision++ }
+        function onBooksChanged() {
+            view.statsRevision++
+            view.nowEpoch = Math.floor(Date.now() / 1000)
+        }
         function onReadingStatsChanged() { view.statsRevision++ }
+        function onBooksAdded(firstBookId, count, firstTitle, targetCollectionId) {
+            view.nowEpoch = Math.floor(Date.now() / 1000)
+            if (typeof win !== "undefined" && win.readerOpen)
+                return
+            const col = targetCollectionId > 0 ? library.collections.find(c => c.id === targetCollectionId) : null
+            const title = firstTitle !== "" ? firstTitle : qsTr("book")
+            if (count === 1) {
+                toast.show(col ? qsTr("Added “%1” to %2").arg(title).arg(col.name)
+                               : qsTr("Added “%1”").arg(title))
+            } else if (count > 1) {
+                toast.show(col ? qsTr("Added %1 books to %2").arg(count).arg(col.name)
+                               : qsTr("Added %n books", "", count))
+            }
+            if (firstBookId > 0) {
+                if (targetCollectionId > 0 && library.works.collectionId === targetCollectionId
+                        && library.works.rowOfBook(firstBookId) < 0) {
+                    if (search.text !== "")
+                        search.text = ""
+                    library.works.clearFilters()
+                    library.works.collectionId = targetCollectionId
+                }
+                if (library.works.rowOfBook(firstBookId) >= 0) {
+                    view.select(firstBookId)
+                    view.pulsedBookId = firstBookId
+                    pulseTimer.restart()
+                }
+            }
+        }
     }
 
     // A work with several editions asks which one; a single one opens.
@@ -208,6 +291,27 @@ FocusScope {
         onToggleRequested: view.toggleSidebar()
         onCreateCollection: collectionDialog.showCreate()
         onRenameCollection: (id, name) => collectionDialog.showRename(id, name)
+        onAddBooksToCollection: (id) => {
+            if (search.text !== "")
+                search.text = ""
+            library.works.clearFilters()
+            library.works.collectionId = id
+            picker.chooseBooks()
+        }
+        onBookDroppedOnCollection: (collectionId, collectionName) => {
+            if (bookDragProxy.dragBookId > 0) {
+                const bid = bookDragProxy.dragBookId
+                const title = bookDragProxy.dragBookTitle !== "" ? bookDragProxy.dragBookTitle : qsTr("book")
+                if (library.addToCollection(bid, collectionId))
+                    toast.show(qsTr("Added “%1” to %2").arg(title).arg(collectionName))
+            }
+        }
+        onFilterNavigated: {
+            if (search.text !== "")
+                search.text = ""
+            grid.positionViewAtBeginning()
+            listView.positionViewAtBeginning()
+        }
         onIntelligenceRequested: win.showAiSettings()
     }
 
@@ -331,10 +435,10 @@ FocusScope {
                 onActivated: view.toggleViewMode()
             }
 
-            // Sort dropdown (Recent ▾)
+            // Sort dropdown (Recent ▾); hidden on Recently added (always newest-first).
             AbstractButton {
                 id: sortButton
-                visible: library.bookCount > 0
+                visible: library.bookCount > 0 && library.works.statusFilter !== "recent"
                 Layout.preferredHeight: 28
                 implicitWidth: sortRow.implicitWidth + 20
                 hoverEnabled: true
@@ -408,7 +512,8 @@ FocusScope {
                 id: filterButton
                 visible: library.bookCount > 0
                 glyph: Icons.filter
-                active: library.works.formatFilter !== "" || library.works.seriesFilter !== ""
+                active: library.works.seriesFilter !== ""
+                        || (library.works.formatFilter !== "" && (library.works.collectionId > 0 || library.works.statusFilter !== ""))
                 tip: qsTr("Filter by format or series")
                 onClicked: filterMenu.opened ? filterMenu.close() : filterMenu.open()
 
@@ -485,12 +590,27 @@ FocusScope {
                         MenuRow { text: qsTr("Watched folders…"); onClicked: { moreMenu.close(); view.openFolders() } }
                         MenuRow { text: qsTr("Look for new books"); onClicked: { moreMenu.close(); library.rescan() } }
                         MenuSeparator { width: parent.width }
-                        MenuRow { text: qsTr("Add books…"); onClicked: { moreMenu.close(); picker.chooseBooks() } }
+                        MenuRow {
+                            text: library.works.collectionId > 0
+                                  ? qsTr("Add books to %1…").arg(view.activeCollectionName)
+                                  : qsTr("Add books…")
+                            onClicked: { moreMenu.close(); picker.chooseBooks() }
+                        }
                     }
                 }
             }
 
+            TextButton {
+                visible: library.works.collectionId > 0
+                size: "compact"
+                glyph: Icons.plus
+                text: qsTr("Add books")
+                Accessible.name: qsTr("Add books to %1").arg(view.activeCollectionName)
+                onClicked: picker.chooseBooks()
+            }
+
             IconButton {
+                visible: library.works.collectionId === 0
                 glyph: Icons.plus
                 tip: qsTr("Add books or folders (A)")
                 onClicked: picker.chooseFolders()
@@ -643,8 +763,13 @@ FocusScope {
         }
 
         delegate: BookCard {
+            nowEpoch: view.nowEpoch
+            highlighted: bookId === view.pulsedBookId
             onActivated: view.activate(index)
             onDetailsRequested: view.showDetails(index)
+            onDragStarted: (id, title, cover, sx, sy) => view.startBookDrag(id, title, cover, sx, sy)
+            onDragMoved: (sx, sy) => view.moveBookDrag(sx, sy)
+            onDragEnded: view.finishBookDrag()
         }
 
         // Reserve scroll height for any extra skeleton rows below arrived books.
@@ -728,9 +853,9 @@ FocusScope {
                 spacing: 12
                 Label {
                     Layout.fillWidth: true
-                    text: (library.works.searchText !== "" || library.works.hasActiveFilters)
+                    text: library.works.searchText !== ""
                           ? qsTr("%n matches", "", library.works.count)
-                          : qsTr("All books")
+                          : view.sectionTitle
                     color: theme.ink1
                     font.pixelSize: 15
                     font.weight: Font.DemiBold
@@ -761,8 +886,12 @@ FocusScope {
             required property string series
             required property real seriesIndex
             required property int minutesLeft
+            required property real addedAt
 
             readonly property bool selected: ListView.isCurrentItem && listView.activeFocus
+            readonly property bool highlighted: bookId === view.pulsedBookId
+            readonly property bool isNewArrival: !finished && progress <= 0 && addedAt > 0
+                                                 && view.nowEpoch > 0 && (view.nowEpoch - addedAt) <= 172800
 
             width: listView.width
             height: 68
@@ -770,10 +899,15 @@ FocusScope {
             Rectangle {
                 anchors.fill: parent
                 radius: Ui.radius(8, theme.radius)
-                color: listRow.selected ? Ui.tint(theme.accent, theme.light ? 0.14 : 0.2)
+                color: listRow.highlighted ? Ui.tint(theme.accent, theme.light ? 0.16 : 0.24)
+                     : listRow.selected ? Ui.tint(theme.accent, theme.light ? 0.14 : 0.2)
                      : rowHover.hovered ? Ui.tint(theme.ink1, 0.05) : "transparent"
-                border.width: listRow.selected ? 1 : 0
+                border.width: listRow.highlighted ? 1.5 : (listRow.selected ? 1 : 0)
                 border.color: theme.accent
+                Behavior on color {
+                    enabled: !theme.reducedMotion
+                    ColorAnimation { duration: 220 }
+                }
             }
 
             RowLayout {
@@ -815,6 +949,21 @@ FocusScope {
                             font.pixelSize: 14
                             font.weight: Font.Medium
                             elide: Text.ElideRight
+                        }
+                        Label {
+                            visible: listRow.isNewArrival
+                            text: qsTr("New")
+                            color: theme.accentInk
+                            font.pixelSize: 10
+                            font.weight: Font.DemiBold
+                            leftPadding: 6
+                            rightPadding: 6
+                            topPadding: 1.5
+                            bottomPadding: 1.5
+                            background: Rectangle {
+                                radius: Ui.radius(8, theme.radius)
+                                color: theme.accentSoft
+                            }
                         }
                         Label {
                             visible: listRow.series !== ""
@@ -959,6 +1108,24 @@ FocusScope {
                     view.showDetails(listRow.index)
                 }
             }
+            DragHandler {
+                target: null
+                acceptedButtons: Qt.LeftButton
+                onActiveChanged: {
+                    if (active) {
+                        const pt = centroid.scenePosition
+                        view.startBookDrag(listRow.bookId, listRow.title, listRow.cover, pt.x, pt.y)
+                    } else {
+                        view.finishBookDrag()
+                    }
+                }
+                onCentroidChanged: {
+                    if (active) {
+                        const pt = centroid.scenePosition
+                        view.moveBookDrag(pt.x, pt.y)
+                    }
+                }
+            }
         }
 
         Keys.onReturnPressed: view.activate(currentIndex)
@@ -966,25 +1133,77 @@ FocusScope {
         onActiveFocusChanged: if (activeFocus && currentIndex < 0 && count > 0) currentIndex = 0
     }
 
-    // Empty filter / search state
+    // Empty collection / shelf / filter / search state
     Column {
+        id: emptyFilterState
         anchors.centerIn: contentArea
+        width: Math.min(420, contentArea.width - 48)
         visible: library.bookCount > 0 && library.works.count === 0
         spacing: 12
 
+        readonly property bool isEmptyCollection: library.works.collectionId > 0
+                                                  && library.works.searchText === ""
+                                                  && library.works.statusFilter === ""
+                                                  && library.works.formatFilter === ""
+                                                  && library.works.seriesFilter === ""
+        readonly property bool isEmptyRecent: library.works.collectionId === 0
+                                              && library.works.statusFilter === "recent"
+                                              && library.works.searchText === ""
+        readonly property bool isEmptyPdfs: library.works.collectionId === 0
+                                            && library.works.formatFilter === "pdf"
+                                            && library.works.statusFilter === ""
+                                            && library.works.searchText === ""
+        readonly property bool isEmptyEpubs: library.works.collectionId === 0
+                                             && library.works.formatFilter === "epub"
+                                             && library.works.statusFilter === ""
+                                             && library.works.searchText === ""
+
         Label {
-            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
             text: library.works.searchText !== ""
                 ? qsTr("No books match “%1”").arg(library.works.searchText)
+                : emptyFilterState.isEmptyCollection
+                  ? qsTr("No books in “%1” yet").arg(view.activeCollectionName)
+                : emptyFilterState.isEmptyRecent
+                  ? qsTr("Nothing added in the last 14 days")
+                : emptyFilterState.isEmptyPdfs
+                  ? qsTr("No papers or PDFs yet")
+                : emptyFilterState.isEmptyEpubs
+                  ? qsTr("No EPUB books yet")
                 : qsTr("No books match these filters")
-            color: theme.ink2
+            color: theme.ink1
             font.pixelSize: 15
+            font.weight: Font.Medium
         }
-        TextButton {
+        Label {
+            width: parent.width
+            visible: emptyFilterState.isEmptyCollection
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.Wrap
+            text: qsTr("Add files here, drop books on the window, or drag any cover onto this collection.")
+            color: theme.ink3
+            font.pixelSize: 13
+            lineHeight: 1.45
+        }
+        Row {
             anchors.horizontalCenter: parent.horizontalCenter
-            visible: library.works.hasActiveFilters
-            text: qsTr("Clear filters")
-            onClicked: library.works.clearFilters()
+            spacing: 8
+            TextButton {
+                visible: emptyFilterState.isEmptyCollection || emptyFilterState.isEmptyPdfs || emptyFilterState.isEmptyEpubs
+                primary: true
+                glyph: Icons.plus
+                text: emptyFilterState.isEmptyPdfs ? qsTr("Add PDFs…") : qsTr("Add books…")
+                onClicked: picker.chooseBooks()
+            }
+            TextButton {
+                visible: library.works.hasActiveFilters
+                text: (emptyFilterState.isEmptyCollection || emptyFilterState.isEmptyRecent
+                       || emptyFilterState.isEmptyPdfs || emptyFilterState.isEmptyEpubs)
+                      ? qsTr("Browse all books") : qsTr("Clear filters")
+                onClicked: library.works.clearFilters()
+            }
         }
     }
 
@@ -1501,7 +1720,13 @@ FocusScope {
             } else {
                 const id = library.createCollection(name)
                 if (id > 0) {
+                    if (search.text !== "")
+                        search.text = ""
+                    library.works.searchText = ""
+                    library.works.clearFilters()
                     library.works.collectionId = id
+                    grid.positionViewAtBeginning()
+                    listView.positionViewAtBeginning()
                     toast.show(qsTr("Created collection “%1”").arg(name))
                 }
             }
@@ -1586,6 +1811,56 @@ FocusScope {
                         onClicked: collectionDialog.submit()
                     }
                 }
+            }
+        }
+    }
+
+    // Floating drag proxy when dragging a cover/row onto a Collection in the sidebar.
+    Rectangle {
+        id: bookDragProxy
+        property bool dragging: false
+        property int dragBookId: 0
+        property string dragBookTitle: ""
+        property string dragBookCover: ""
+
+        visible: dragging
+        z: 30
+        width: Math.min(220, dragRow.implicitWidth + 20)
+        height: 44
+        radius: Ui.radius(10, theme.radius)
+        color: theme.overlay
+        border.width: 1.5
+        border.color: theme.accent
+        opacity: 0.94
+
+        Drag.active: dragging
+        Drag.keys: ["clothbound/book"]
+        Drag.hotSpot.x: width / 2
+        Drag.hotSpot.y: height / 2
+
+        Row {
+            id: dragRow
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.left: parent.left
+            anchors.leftMargin: 8
+            spacing: 8
+            CoverImage {
+                anchors.verticalCenter: parent.verticalCenter
+                width: 22
+                height: 32
+                source: bookDragProxy.dragBookCover
+                title: bookDragProxy.dragBookTitle
+                author: ""
+            }
+            Label {
+                anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(168, implicitWidth)
+                text: bookDragProxy.dragBookTitle
+                textFormat: Text.PlainText
+                color: theme.ink1
+                font.pixelSize: 12
+                font.weight: Font.Medium
+                elide: Text.ElideRight
             }
         }
     }

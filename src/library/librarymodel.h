@@ -53,6 +53,9 @@ public:
 
     explicit WorksModel(Library *library);
 
+    // Books added within the last 14 days appear in the "Recently added" smart shelf.
+    static constexpr qint64 recentWindowSecs = 14LL * 24 * 3600;
+
     int rowCount(const QModelIndex &parent = {}) const override;
     QVariant data(const QModelIndex &index, int role) const override;
     QHash<int, QByteArray> roleNames() const override;
@@ -78,7 +81,7 @@ public:
     Q_INVOKABLE void clearFilters();
 
     void setBooks(const QHash<int, BookRecord> &books);
-    void setCollections(const QHash<int, QSet<int>> &collectionBooks);
+    void setCollections(const QHash<int, QSet<int>> &collectionBooks, bool rebuildNow = true);
     void setAudioSets(const QSet<int> &downloaded, const QSet<int> &audiobooks);
     // Fast in-place update for progress/position changes without rebuilding the
     // whole grid unless sort order or visibility is affected.

@@ -2,6 +2,7 @@
 
 #include "library/library.h"
 
+#include <QDateTime>
 #include <algorithm>
 #include <tuple>
 
@@ -206,9 +207,9 @@ void WorksModel::setBooks(const QHash<int, BookRecord> &books) {
     rebuild();
 }
 
-void WorksModel::setCollections(const QHash<int, QSet<int>> &collectionBooks) {
+void WorksModel::setCollections(const QHash<int, QSet<int>> &collectionBooks, bool rebuildNow) {
     m_collectionBooks = collectionBooks;
-    if (m_collectionId > 0)
+    if (rebuildNow && m_collectionId > 0)
         rebuild();
 }
 
@@ -265,6 +266,10 @@ bool WorksModel::passesFilters(const BookRecord &book) const {
     if (!m_statusFilter.isEmpty()) {
         if (m_statusFilter == QLatin1String("reading")) {
             if (book.finishedAt > 0 || book.openedAt <= 0)
+                return false;
+        } else if (m_statusFilter == QLatin1String("recent")) {
+            const qint64 cutoff = QDateTime::currentSecsSinceEpoch() - recentWindowSecs;
+            if (book.addedAt <= 0 || book.addedAt < cutoff)
                 return false;
         } else if (m_statusFilter == QLatin1String("unread")) {
             if (book.finishedAt > 0 || book.openedAt > 0)
@@ -373,7 +378,13 @@ void WorksModel::rebuild() {
         const int c = title(a).localeAwareCompare(title(b));
         return c != 0 ? c < 0 : a.key < b.key;
     };
-    if (m_sort == "title") {
+    if (m_statusFilter == QLatin1String("recent")) {
+        std::sort(works.begin(), works.end(), [&](const Work &a, const Work &b) {
+            if (a.addedAt != b.addedAt)
+                return a.addedAt > b.addedAt;
+            return a.representative != b.representative ? a.representative > b.representative : byTitle(a, b);
+        });
+    } else if (m_sort == "title") {
         std::sort(works.begin(), works.end(), byTitle);
     } else if (m_sort == "author") {
         std::sort(works.begin(), works.end(), [&](const Work &a, const Work &b) {
