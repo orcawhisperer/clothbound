@@ -2258,6 +2258,7 @@ kbd {
       <a href="#study-pdf">Study &amp; PDF</a>
       <a href="#mcp">Local MCP</a>
       <a href="#install">Install</a>
+      <a href="/read">Read in browser</a>
     </nav>
 
     <div class="nav-actions">
@@ -2289,11 +2290,11 @@ kbd {
         <span>Native Qt6 · Wayland &amp; Omarchy · Local-First</span>
       </div>
       <h1>Read deeply. Think clearly.</h1>
-      <p class="hero-sub">A calm, fast EPUB and PDF reader for Linux — zero-flash page turns, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server for your coding and research agents.</p>
+      <p class="hero-sub">A calm, fast EPUB and PDF reader for Linux — zero-flash page turns, natural read-aloud, an adaptive Study Companion, save-from-URL articles &amp; OPDS catalogs, and a built-in local MCP server. Or try the zero-upload web reader right away.</p>
       <div class="hero-ctas">
         <a class="btn btn-primary" href="#install">Install on Arch / Omarchy</a>
-        <a class="btn btn-secondary" href="../docs/clothbound-prototype.html">Explore Interactive Prototype</a>
-        <a class="btn btn-quiet" href="#mcp">Local MCP Config</a>
+        <a class="btn btn-secondary" href="/read">Read in browser</a>
+        <a class="btn btn-quiet" href="../docs/clothbound-prototype.html">Interactive Prototype</a>
       </div>
     </div>
 
@@ -2631,6 +2632,10 @@ kbd {
           </li>
           <li>
             <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Online-to-offline reading &amp; OPDS catalogs</strong> — save clean web articles from any URL, browse open OPDS shelves, or read EPUBs directly in your browser at <a href="/read" style="color:var(--accent);text-underline-offset:3px">clothbound.app/read</a> with zero server uploads.</span>
+          </li>
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
             <span><strong>Live desktop matching &amp; 50 languages</strong> — follows Omarchy themes automatically and ships localized across 50 interface languages.</span>
           </li>
         </ul>
@@ -2703,7 +2708,8 @@ kbd {
 
           <div class="craft-chips">
             <span class="meta-chip">Zero-flash double buffer</span>
-            <span class="meta-chip">50 UI languages</span>
+            <span class="meta-chip">Add from URL &amp; OPDS</span>
+            <span class="meta-chip">Zero-upload Web Reader</span>
             <span class="meta-chip">M4B audiobook export</span>
             <span class="meta-chip">Ctrl+K Command Palette</span>
           </div>
@@ -3032,7 +3038,10 @@ kbd {
 
     <div class="install-foot reveal">
       <span><strong>Dependencies:</strong> Qt6 (<code class="mono" style="font-size:12px">qt6-base</code>, <code class="mono" style="font-size:12px">qt6-declarative</code>, <code class="mono" style="font-size:12px">qt6-wayland</code>, <code class="mono" style="font-size:12px">qt6-webengine</code>). Optional: <code class="mono" style="font-size:12px">ffmpeg</code>, <code class="mono" style="font-size:12px">sdcv</code>, <code class="mono" style="font-size:12px">ollama</code>.</span>
-      <a class="btn btn-secondary" style="height:34px;padding:0 14px;font-size:13px" href="../docs/clothbound-prototype.html">Open Full Interactive Prototype →</a>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <a class="btn btn-primary" style="height:34px;padding:0 14px;font-size:13px" href="/read">Read in browser →</a>
+        <a class="btn btn-secondary" style="height:34px;padding:0 14px;font-size:13px" href="../docs/clothbound-prototype.html">Interactive Prototype</a>
+      </div>
     </div>
   </div>
 </section>
@@ -3071,6 +3080,7 @@ kbd {
           <a href="#study-pdf">Study &amp; PDF</a>
           <a href="#mcp">Local MCP</a>
           <a href="#install">Install</a>
+          <a href="/read">Read in browser</a>
           <a href="../docs/clothbound-prototype.html">Interactive Prototype</a>
         </div>
         <div>MIT License · Bundled Literata &amp; Inter under SIL OFL-1.1</div>

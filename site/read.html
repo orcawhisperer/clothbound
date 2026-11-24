@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="paper" data-dropcap="true" data-font="literata">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Clothbound Web — 100% client-side, zero-upload EPUB and PDF reader in your browser. Everything stays locally in IndexedDB.">
+<meta name="color-scheme" content="light dark">
+<title>Clothbound Web — Local-only EPUB &amp; PDF Reader</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/read/reader.css">
+<script>
+/* Apply saved theme & font prefs synchronously before first paint (zero flash) */
+(function () {
+  var validThemes = { paper: 1, sepia: 1, dusk: 1, charcoal: 1 };
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var qTheme = params.get("theme");
+    var raw = window.localStorage.getItem("clothbound-web-prefs-v1");
+    var prefs = raw ? JSON.parse(raw) : null;
+    var siteTheme = window.localStorage.getItem("clothbound-site-theme");
+    var theme = (qTheme && validThemes[qTheme])
+      ? qTheme
+      : (prefs && validThemes[prefs.theme])
+        ? prefs.theme
+        : (siteTheme === "dusk" || siteTheme === "paper")
+          ? siteTheme
+          : "paper";
+    document.documentElement.setAttribute("data-theme", theme);
+    if (prefs && typeof prefs.dropCap === "boolean") {
+      document.documentElement.setAttribute("data-dropcap", prefs.dropCap ? "true" : "false");
+    }
+    if (prefs && (prefs.fontFamily === "literata" || prefs.fontFamily === "sans")) {
+      document.documentElement.setAttribute("data-font", prefs.fontFamily);
+    }
+  } catch (e) {
+    document.documentElement.setAttribute("data-theme", "paper");
+  }
+})();
+</script>
+</head>
+<body data-view="shelf">
+
+<!-- Full-window Drag & Drop Overlay -->
+<div class="drop-overlay" id="dropOverlay" aria-hidden="true">
+  <div class="drop-overlay-card">
+    <div class="drop-overlay-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+        <path d="M12 7v6M9 10l3-3 3 3"/>
+      </svg>
+    </div>
+    <p class="drop-overlay-title serif">Drop your EPUB or PDF to open locally</p>
+    <p class="drop-overlay-sub">Parsed in your browser and saved only to your local IndexedDB. Zero server upload.</p>
+  </div>
+</div>
+
+<!-- Hidden File Picker -->
+<input type="file" id="fileInput" accept=".epub,.pdf,application/epub+zip,application/pdf" multiple hidden>
+
+<!-- =========================================================================
+     VIEW 1: ZERO-CLUTTER SHELF VIEW
+     ========================================================================= -->
+<div class="shelf-view" id="shelfView">
+  <header class="shelf-nav">
+    <div class="shelf-container shelf-nav-inner">
+      <div class="shelf-nav-left">
+        <a class="brand" href="/read" id="shelfBrandLink" aria-label="Clothbound Web shelf">
+          <svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true">
+            <g transform="translate(8 -10)">
+              <rect x="104" y="64" width="316" height="392" rx="26" fill="#202e4a" stroke="#18233a" stroke-width="6"/>
+              <path d="M126 420 H392 Q408 420 408 404 V90 Q408 76 394 76 H380 V410 Q380 426 364 426 H126 Z" fill="#f4ede0"/>
+              <path d="M294 416 V490 L322 468 L350 490 V416 Z" fill="#E8B339"/>
+              <rect x="92" y="56" width="298" height="364" rx="22" fill="#2c3e63" stroke="#1f2d49" stroke-width="5"/>
+              <path d="M114 56 H148 V420 H114 Q92 420 92 398 V78 Q92 56 114 56 Z" fill="#202e4a"/>
+              <rect x="176" y="88" width="184" height="300" rx="10" fill="none" stroke="#E8B339" stroke-width="6" opacity="0.55"/>
+              <rect x="206" y="148" width="124" height="18" rx="9" fill="#f4ede0"/>
+              <rect x="226" y="184" width="84" height="14" rx="7" fill="#E8B339"/>
+              <path d="M268 256 L284 272 L268 288 L252 272 Z" fill="#E8B339"/>
+            </g>
+          </svg>
+          <span class="brand-word">Clothbound <span>Web</span></span>
+        </a>
+        <span class="privacy-pill" title="Files stay inside your browser's IndexedDB and are never sent to any server">
+          <span class="status-dot" aria-hidden="true"></span>
+          <span>Local only · Nothing uploaded</span>
+        </span>
+      </div>
+
+      <div class="shelf-nav-right">
+        <button type="button" class="nav-pill-btn" id="shelfThemeBtn" aria-label="Cycle reading theme">
+          <span class="theme-swatch-dot" id="shelfThemeDot" aria-hidden="true"></span>
+          <span id="shelfThemeLabel">Paper</span>
+        </button>
+        <a class="nav-link-home" href="/">clothbound.app</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="shelf-main">
+    <div class="shelf-container">
+      <!-- Compact Editorial Intro + Dropzone -->
+      <section class="shelf-hero" aria-label="Open a local book">
+        <div class="shelf-hero-copy">
+          <h1 class="serif">Calm bookcraft, right in your browser.</h1>
+          <p>Open any DRM-free EPUB or PDF instantly. Zero accounts, zero trackers, zero external fonts — your books stay strictly on this device.</p>
+        </div>
+
+        <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="Open or drop an EPUB or PDF file">
+          <div class="dropzone-left">
+            <div class="dropzone-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="17 8 12 3 7 8"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+              </svg>
+            </div>
+            <div class="dropzone-text">
+              <strong>Drop an EPUB or PDF anywhere</strong>
+              <span>Stored locally in IndexedDB · works offline once opened</span>
+            </div>
+          </div>
+          <button type="button" class="btn-open" id="openFileBtn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+            </svg>
+            <span>Open EPUB or PDF</span>
+          </button>
+        </div>
+      </section>
+
+      <!-- User's Local IndexedDB Shelf -->
+      <section class="shelf-section" aria-labelledby="libraryHeading">
+        <div class="shelf-section-head">
+          <h2 id="libraryHeading">Your browser library</h2>
+          <span class="shelf-count tnum" id="libraryCount">0 books</span>
+        </div>
+        <div class="library-grid" id="libraryGrid"></div>
+        <div class="library-empty" id="libraryEmpty">
+          <p>No local files opened yet. Drop an <code>.epub</code> or <code>.pdf</code> above, or open one of the public domain classics below.</p>
+        </div>
+      </section>
+
+      <!-- Built-in Public Domain Classics -->
+      <section class="shelf-section" aria-labelledby="classicsHeading">
+        <div class="shelf-section-head">
+          <h2 id="classicsHeading">Read right away — Public domain classics</h2>
+          <span class="shelf-count">Instant EPUB · Offline</span>
+        </div>
+        <div class="classics-grid" id="classicsGrid"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Quiet Honest Native App Bridge -->
+  <footer class="native-bridge">
+    <div class="shelf-container native-bridge-inner">
+      <p>Everything here stays in your browser. Want offline neural Read Aloud, local Ollama VLM PDF Snip &amp; Explain, OPDS catalogs, and Local MCP?</p>
+      <a class="bridge-cta" href="/#install">Get Clothbound for Linux →</a>
+    </div>
+  </footer>
+</div>
+
+<!-- =========================================================================
+     VIEW 2: CALM READING VIEW (EPUB + PDF)
+     ========================================================================= -->
+<div class="reader-view" id="readerView" aria-hidden="true">
+  <!-- Calm Top Chrome -->
+  <header class="reader-bar" id="readerBar">
+    <div class="reader-bar-left">
+      <button type="button" class="icon-pill-btn" id="backToShelfBtn" title="Back to Shelf (Esc)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>
+        <span class="btn-label">Shelf</span>
+      </button>
+      <div class="reader-title-wrap">
+        <span class="reader-book-title" id="readerBookTitle">Book Title</span>
+        <span class="reader-sep" id="readerSep" aria-hidden="true">·</span>
+        <span class="reader-chapter-title" id="readerChapterTitle">Chapter</span>
+      </div>
+    </div>
+
+    <div class="reader-bar-right">
+      <button type="button" class="tool-btn epub-only" id="tocBtn" aria-expanded="false" aria-controls="tocDrawer" title="Contents (T)">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><circle cx="4" cy="6" r="1"/><circle cx="4" cy="12" r="1"/><circle cx="4" cy="18" r="1"/></svg>
+        <span class="tool-label">Contents</span>
+      </button>
+
+      <button type="button" class="tool-btn epub-only" id="searchBtn" aria-expanded="false" aria-controls="searchDrawer" title="Search book (/)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <span class="tool-label">Search</span>
+      </button>
+
+      <button type="button" class="tool-btn epub-only" id="bookmarkBtn" aria-pressed="false" title="Toggle bookmark (B)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+      </button>
+
+      <button type="button" class="tool-btn epub-only" id="marksBtn" aria-expanded="false" aria-controls="marksDrawer" title="Bookmarks &amp; Highlights (M)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
+        <span class="tool-label">Marks</span>
+        <span class="marks-badge tnum" id="marksBadge" hidden>0</span>
+      </button>
+
+      <button type="button" class="tool-btn aa-btn" id="aaBtn" aria-expanded="false" aria-controls="aaPopover" title="Typography &amp; Theme (A)">
+        <span class="serif">Aa</span>
+      </button>
+
+      <button type="button" class="tool-btn" id="fullscreenBtn" aria-pressed="false" title="Fullscreen (F)">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Corner Bookmark Fold Indicator (EPUB) -->
+  <button type="button" class="bookmark-fold epub-only" id="bookmarkFold" aria-label="Toggle page bookmark" aria-pressed="false" title="Bookmark this page (B)"></button>
+
+  <!-- EPUB Reading Surface -->
+  <div class="epub-surface" id="epubSurface">
+    <button type="button" class="page-arrow prev" id="prevPageBtn" aria-label="Previous page">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+
+    <div class="epub-stage" id="epubStage">
+      <div class="epub-viewport" id="epubViewport" data-cols="2">
+        <div class="epub-columns cb-epub-content" id="epubColumns" tabindex="-1"></div>
+      </div>
+    </div>
+
+    <button type="button" class="page-arrow next" id="nextPageBtn" aria-label="Next page">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+    </button>
+
+    <!-- Bottom Progress Scrubber & Folio -->
+    <footer class="reader-folio" id="readerFolio">
+      <div class="scrubber-wrap">
+        <div class="scrubber-track" id="scrubberTrack" role="slider" tabindex="0" aria-label="Reading progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="scrubber-fill" id="scrubberFill"></div>
+          <div class="scrubber-ticks" id="scrubberTicks"></div>
+          <div class="scrubber-thumb" id="scrubberThumb"></div>
+        </div>
+      </div>
+      <div class="folio-meta tnum">
+        <span id="folioLeft">Page 1 of 1 · 0% · ~1 min left</span>
+        <span class="folio-shortcuts">
+          <kbd>←</kbd><kbd>→</kbd> turn · <kbd>T</kbd> contents · <kbd>A</kbd> appearance · <kbd>D</kbd> theme
+        </span>
+      </div>
+    </footer>
+  </div>
+
+  <!-- PDF Reading Surface -->
+  <div class="pdf-surface" id="pdfSurface" hidden>
+    <div class="pdf-frame-wrap">
+      <iframe class="pdf-frame" id="pdfFrame" title="Local PDF Reader"></iframe>
+    </div>
+    <div class="pdf-footer-note">
+      <span>Stored locally in your browser · Nothing uploaded.</span>
+      <span>Two-column PDF Snip &amp; Explain + local Ollama vision models live in <a href="/#install">Clothbound for Linux →</a></span>
+    </div>
+  </div>
+
+  <!-- Dynamic Scoped Publisher Stylesheet Container -->
+  <style id="epubBookCss"></style>
+
+  <!-- Floating Text Selection Mini-Bar -->
+  <div class="selection-bar" id="selectionBar" role="toolbar" aria-label="Selection actions" hidden>
+    <span class="sel-label">Highlight</span>
+    <button type="button" class="sel-swatch amber" data-hl-color="amber" aria-label="Highlight in amber" title="Highlight Amber"></button>
+    <button type="button" class="sel-swatch sage" data-hl-color="sage" aria-label="Highlight in sage" title="Highlight Sage"></button>
+    <button type="button" class="sel-swatch cobalt" data-hl-color="cobalt" aria-label="Highlight in cobalt" title="Highlight Cobalt"></button>
+    <button type="button" class="sel-swatch rose" data-hl-color="rose" aria-label="Highlight in rose" title="Highlight Rose"></button>
+    <span class="sel-divider" aria-hidden="true"></span>
+    <button type="button" class="sel-copy-btn" id="selCopyBtn">Copy</button>
+  </div>
+
+  <!-- Typography & Theme Popover (Aa) -->
+  <div class="popover aa-popover" id="aaPopover" role="dialog" aria-label="Typography and theme" hidden>
+    <div class="pop-section">
+      <div class="pop-label">Theme</div>
+      <div class="theme-grid" id="themePicker" role="radiogroup" aria-label="Reading theme">
+        <button type="button" class="theme-chip" data-theme-choice="paper" aria-checked="true">
+          <span class="swatch-preview paper serif">Aa</span><span>Paper</span>
+        </button>
+        <button type="button" class="theme-chip" data-theme-choice="sepia" aria-checked="false">
+          <span class="swatch-preview sepia serif">Aa</span><span>Sepia</span>
+        </button>
+        <button type="button" class="theme-chip" data-theme-choice="dusk" aria-checked="false">
+          <span class="swatch-preview dusk serif">Aa</span><span>Dusk</span>
+        </button>
+        <button type="button" class="theme-chip" data-theme-choice="charcoal" aria-checked="false">
+          <span class="swatch-preview charcoal serif">Aa</span><span>Charcoal</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="pop-section epub-only">
+      <div class="pop-label">Typeface</div>
+      <div class="seg-control" id="fontPicker" role="radiogroup" aria-label="Typeface">
+        <button type="button" data-font-choice="literata" class="serif">Literata</button>
+        <button type="button" data-font-choice="sans">Inter Sans</button>
+      </div>
+    </div>
+
+    <div class="pop-section epub-only">
+      <div class="pop-row">
+        <span class="pop-label">Text size</span>
+        <div class="stepper">
+          <button type="button" id="fontDecBtn" aria-label="Decrease font size">A−</button>
+          <span class="stepper-val tnum" id="fontSizeVal">19px</span>
+          <button type="button" id="fontIncBtn" aria-label="Increase font size">A+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="pop-section epub-only">
+      <div class="pop-row">
+        <span class="pop-label">Line spacing</span>
+        <div class="stepper">
+          <button type="button" id="lineDecBtn" aria-label="Tighter line spacing">−</button>
+          <span class="stepper-val tnum" id="lineHeightVal">1.68</span>
+          <button type="button" id="lineIncBtn" aria-label="Wider line spacing">+</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="pop-section epub-only">
+      <div class="pop-label">Page layout</div>
+      <div class="seg-control" id="spreadPicker" role="radiogroup" aria-label="Column spread">
+        <button type="button" data-spread-choice="auto">Auto</button>
+        <button type="button" data-spread-choice="single">Single</button>
+        <button type="button" data-spread-choice="two">Two-page</button>
+      </div>
+    </div>
+
+    <div class="pop-section epub-only">
+      <div class="pop-row">
+        <span class="pop-label">Chapter drop cap</span>
+        <button type="button" class="toggle-switch" id="dropCapToggle" role="switch" aria-checked="true" aria-label="Toggle chapter drop cap"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drawer Backdrop -->
+  <div class="drawer-backdrop" id="drawerBackdrop" hidden></div>
+
+  <!-- Contents Drawer (T) -->
+  <aside class="drawer drawer-left" id="tocDrawer" role="dialog" aria-label="Table of contents" hidden>
+    <div class="drawer-head">
+      <div>
+        <h2 class="drawer-title">Contents</h2>
+        <p class="drawer-sub" id="tocBookMeta"></p>
+      </div>
+      <button type="button" class="drawer-close" data-close-drawer aria-label="Close contents">✕</button>
+    </div>
+    <div class="drawer-body">
+      <nav class="toc-list" id="tocList" aria-label="Book chapters"></nav>
+    </div>
+  </aside>
+
+  <!-- Search Drawer (/) -->
+  <aside class="drawer drawer-right" id="searchDrawer" role="dialog" aria-label="Search book" hidden>
+    <div class="drawer-head">
+      <h2 class="drawer-title">Search</h2>
+      <button type="button" class="drawer-close" data-close-drawer aria-label="Close search">✕</button>
+    </div>
+    <div class="drawer-search-box">
+      <input type="search" id="searchInput" placeholder="Search words or phrases…" autocomplete="off" spellcheck="false">
+      <span class="search-status tnum" id="searchStatus">Type at least 2 characters</span>
+    </div>
+    <div class="drawer-body">
+      <div class="search-results" id="searchResults"></div>
+    </div>
+  </aside>
+
+  <!-- Bookmarks & Highlights Drawer (M) -->
+  <aside class="drawer drawer-right" id="marksDrawer" role="dialog" aria-label="Bookmarks and highlights" hidden>
+    <div class="drawer-head">
+      <h2 class="drawer-title">Marks</h2>
+      <button type="button" class="drawer-close" data-close-drawer aria-label="Close marks">✕</button>
+    </div>
+    <div class="marks-tabs" role="tablist">
+      <button type="button" class="marks-tab active" role="tab" aria-selected="true" data-marks-tab="highlights">Highlights</button>
+      <button type="button" class="marks-tab" role="tab" aria-selected="false" data-marks-tab="bookmarks">Bookmarks</button>
+    </div>
+    <div class="drawer-body">
+      <div class="marks-list" id="marksList"></div>
+    </div>
+  </aside>
+</div>
+
+<!-- Subtle Toast Feedback -->
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<script type="module" src="/read/app.js"></script>
+</body>
+</html>
