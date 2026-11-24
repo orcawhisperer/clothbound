@@ -1,4 +1,4 @@
-name: Deploy clothbound.app
+name: Validate clothbound.app
 
 on:
   pull_request:
@@ -20,12 +20,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: deploy-clothbound-site-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: validate-clothbound-site-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  deploy:
-    name: Build & Deploy (Cloudflare)
+  validate:
+    name: Build & Dry-Run (Cloudflare cf)
     runs-on: ubuntu-latest
     env:
       CF_SEND_TELEMETRY: "false"
@@ -51,11 +51,3 @@ jobs:
       - name: Validate Cloudflare deploy (dry run)
         working-directory: site
         run: npx cf deploy dist --dry-run
-
-      - name: Deploy to clothbound.app
-        if: github.event_name != 'pull_request'
-        working-directory: site
-        run: npx cf deploy dist
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
