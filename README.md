@@ -76,7 +76,14 @@ cd clothbound
 ./bin/install
 ```
 
-Or download a prebuilt `.pkg.tar.zst` package from [GitHub Releases](https://github.com/orcawhisperer/clothbound/releases) and install with `sudo pacman -U clothbound-*.pkg.tar.zst`.
+Or, on x86_64, install the prebuilt package from [GitHub Releases](https://github.com/orcawhisperer/clothbound/releases). Download it first, because `pacman -U <url>` insists on a signature file and the package is unsigned:
+
+```sh
+curl -LO https://github.com/orcawhisperer/clothbound/releases/download/v0.4.0/clothbound-0.4.0-1-x86_64.pkg.tar.zst
+sudo pacman -U ./clothbound-0.4.0-1-x86_64.pkg.tar.zst
+```
+
+On aarch64 (for example Asahi Linux), use `./bin/install` above.
 
 ### Build & test from source
 

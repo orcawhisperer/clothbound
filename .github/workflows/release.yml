@@ -74,7 +74,7 @@ jobs:
           m = re.search(rf"^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
           body = m.group(1).strip() if m else ""
           if body:
-              body += f"\n\n---\n\n### Install on Arch Linux / Omarchy\n```sh\nsudo pacman -U https://github.com/orcawhisperer/clothbound/releases/download/v{ver}/clothbound-{ver}-1-x86_64.pkg.tar.zst\n```\n"
+              body += f"\n\n---\n\n### Install on Arch Linux / Omarchy\n```sh\ncurl -LO https://github.com/orcawhisperer/clothbound/releases/download/v{ver}/clothbound-{ver}-1-x86_64.pkg.tar.zst\nsudo pacman -U ./clothbound-{ver}-1-x86_64.pkg.tar.zst\n```\n\nDownload first: `pacman -U <url>` requires a package signature, and this package is unsigned. The prebuilt package is x86_64 only; on aarch64 (Asahi), build from source with `./bin/install`.\n"
           open("/tmp/release-notes.md", "w", encoding="utf-8").write(body)
           print("Release notes bytes:", len(body))
           '
