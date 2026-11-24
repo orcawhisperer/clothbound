@@ -534,19 +534,26 @@ Item {
                         }
                     }
                 }
-                // The sentence being read aloud (theme.accent @ 28–30%).
+                // The sentence being read aloud: smooth, uniform line-by-line highlight bands.
                 Repeater {
                     model: surface.speaking.chapter === pageItem.page
                            ? reader.pdfRects(pageItem.page, surface.speaking.start, surface.speaking.end) : []
                     delegate: Rectangle {
+                        id: speakBand
                         required property var modelData
-                        x: modelData.x * whole.width - 2
+                        property bool entered: false
+                        x: modelData.x * whole.width - 3
                         y: modelData.y * whole.height - 1
-                        width: modelData.width * whole.width + 4
+                        width: modelData.width * whole.width + 6
                         height: modelData.height * whole.height + 2
-                        radius: 3
+                        radius: 4
                         color: theme.accent
-                        opacity: surface.look && surface.look.dark ? 0.30 : 0.28
+                        opacity: entered ? (surface.look && surface.look.dark ? 0.26 : 0.22) : 0.0
+                        Behavior on opacity {
+                            enabled: !theme.reducedMotion
+                            NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+                        }
+                        Component.onCompleted: entered = true
                     }
                 }
                 // The selection.

@@ -537,6 +537,16 @@ SidePanel {
                 onToggled: (on) => panel.update("animate", on)
             }
             Toggle {
+                id: pageTurnSoundToggle
+                text: qsTr("Page-turn sound")
+                checked: readingSettings.pageTurnSound
+                onToggled: (on) => {
+                    readingSettings.pageTurnSound = on
+                    if (on)
+                        reader.playPageTurn(1)
+                }
+            }
+            Toggle {
                 visible: !panel.pdf
                 text: qsTr("Use the book's own styles")
                 checked: panel.settings.publisher

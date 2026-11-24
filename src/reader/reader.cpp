@@ -11,6 +11,9 @@
 #include <QAudioSink>
 #include <QBuffer>
 #include <QClipboard>
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QGuiApplication>
@@ -21,6 +24,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
+#include <QVector>
 #include <QtConcurrentRun>
 #include <algorithm>
 #include <array>
@@ -44,12 +48,14 @@ bool sfxSuppressedEnvironment() {
 }
 }
 
-// Synthesized tactile parchment page-flip sound engine: zero bundled assets,
-// pre-generated organic variants (~118–142 ms) with forward/backward spectral
-// tilt, rapid-repeat throttling, automatic idle stream release, and silent
-// headless/offscreen safety.
+// Tactile page-turn sound engine backed by real Public Domain hardcover page-flip
+// WAV clips (:/audio/sfx/page_turn_1..3.wav), with minimal RIFF/WAVE PCM decoding,
+// linear resampling for any audio output device format, natural 3-clip alternation,
+// gentler backward gain, rapid-repeat throttling, automatic idle stream release,
+// and silent headless/offscreen safety.
 struct Reader::PageTurnSfx {
-    static constexpr int kVariants = 4;
+    static constexpr int kVariants = 3;
+    static constexpr double kBackwardGain = 0.82;
     static constexpr qint64 kMinIntervalMs = 85;
     static constexpr int kIdleReleaseMs = 2000;
 
@@ -74,10 +80,8 @@ struct Reader::PageTurnSfx {
         if (!m_sink)
             return;
 
-        const bool forward = direction >= 0;
-        const int idx = (forward ? m_fwdIndex++ : m_bwdIndex++) % kVariants;
-        QByteArray &clip = forward ? m_forwardClips[size_t(idx)] : m_backwardClips[size_t(idx)];
-        if (clip.isEmpty())
+        QByteArray *clip = nextClip(direction >= 0);
+        if (!clip || clip->isEmpty())
             return;
 
         m_throttle.restart();
@@ -85,14 +89,14 @@ struct Reader::PageTurnSfx {
         m_sink->reset();
         if (m_buffer.isOpen())
             m_buffer.close();
-        m_buffer.setBuffer(&clip);
+        m_buffer.setBuffer(clip);
         if (!m_buffer.open(QIODevice::ReadOnly))
             return;
         m_sink->start(&m_buffer);
         m_idleTimer.start();
     }
 
-    // Hermetic test entry point: exercises throttle + PCM synthesis without opening an audio sink.
+    // Hermetic test entry point: exercises throttle + WAV PCM decode/resample without opening an audio sink.
     bool playDryRun(int direction, QByteArray *pcmOut = nullptr) {
         if (m_throttle.isValid() && m_throttle.elapsed() < kMinIntervalMs)
             return false;
@@ -101,114 +105,137 @@ struct Reader::PageTurnSfx {
         fmt.setChannelCount(1);
         fmt.setSampleFormat(QAudioFormat::Int16);
         prepareClips(fmt);
-        const bool forward = direction >= 0;
-        const int idx = (forward ? m_fwdIndex++ : m_bwdIndex++) % kVariants;
-        const QByteArray &clip = forward ? m_forwardClips[size_t(idx)] : m_backwardClips[size_t(idx)];
-        if (clip.isEmpty())
+        const QByteArray *clip = nextClip(direction >= 0);
+        if (!clip || clip->isEmpty())
             return false;
         m_throttle.restart();
         if (pcmOut)
-            *pcmOut = clip;
+            *pcmOut = *clip;
         return true;
     }
 
 private:
-    static QByteArray synthesizeClip(const QAudioFormat &fmt, int variant, bool forward) {
-        const int sr = qBound(8000, fmt.sampleRate(), 192000);
-        const int channels = qBound(1, fmt.channelCount(), 8);
-        static constexpr std::array<double, kVariants> kDurationsSec = {0.118, 0.126, 0.134, 0.142};
-        static constexpr std::array<double, kVariants> kPitchScale = {0.96, 1.01, 1.05, 0.98};
-        const double duration = kDurationsSec[size_t(variant % kVariants)];
-        const double pitch = kPitchScale[size_t(variant % kVariants)];
-        const int total = qMax(128, int(std::lround(duration * sr)));
+    struct DecodedWav {
+        int sampleRate = 0;
+        QVector<float> mono;
+    };
 
-        // Deterministic xorshift32 per variant/direction for distinct natural fiber grain.
-        uint32_t rng = 0x9E3779B9u ^ uint32_t(variant * 0x85EBCA6Bu) ^ (forward ? 0x27D4EB2Fu : 0x165667B1u);
-        auto nextNoise = [&rng]() -> double {
-            rng ^= rng << 13;
-            rng ^= rng >> 17;
-            rng ^= rng << 5;
-            return (double(int32_t(rng)) / 2147483648.0);
+    static DecodedWav decodeWavPcm(const QByteArray &bytes) {
+        DecodedWav out;
+        if (bytes.size() < 44)
+            return out;
+        const auto *p = reinterpret_cast<const unsigned char *>(bytes.constData());
+        const auto readU16 = [p](qsizetype off) -> uint16_t {
+            return uint16_t(p[off]) | (uint16_t(p[off + 1]) << 8);
         };
+        const auto readU32 = [p](qsizetype off) -> uint32_t {
+            return uint32_t(p[off]) | (uint32_t(p[off + 1]) << 8) | (uint32_t(p[off + 2]) << 16) |
+                   (uint32_t(p[off + 3]) << 24);
+        };
+        if (std::memcmp(p, "RIFF", 4) != 0 || std::memcmp(p + 8, "WAVE", 4) != 0)
+            return out;
 
-        // Two-pole state-variable bandpass helper for smooth time-varying paper formants.
-        struct Svf {
-            double low = 0.0;
-            double band = 0.0;
-            double process(double in, double freqHz, double q, double sampleRate) {
-                const double clampedFreq = std::clamp(freqHz, 60.0, sampleRate * 0.42);
-                const double f = 2.0 * std::sin(M_PI * clampedFreq / sampleRate);
-                const double damp = 1.0 / std::max(0.45, q);
-                low += f * band;
-                const double high = in - low - damp * band;
-                band += f * high;
-                return band;
+        uint16_t audioFormat = 0;
+        uint16_t channels = 0;
+        uint32_t sampleRate = 0;
+        uint16_t bitsPerSample = 0;
+        bool hasFmt = false;
+        qsizetype dataOffset = -1;
+        qsizetype dataSize = 0;
+
+        qsizetype pos = 12;
+        while (pos + 8 <= bytes.size()) {
+            const uint32_t chunkSize = readU32(pos + 4);
+            const qsizetype payload = pos + 8;
+            const qsizetype avail = qMin<qsizetype>(qsizetype(chunkSize), bytes.size() - payload);
+            if (std::memcmp(p + pos, "fmt ", 4) == 0 && avail >= 16) {
+                audioFormat = readU16(payload);
+                channels = readU16(payload + 2);
+                sampleRate = readU32(payload + 4);
+                bitsPerSample = readU16(payload + 14);
+                hasFmt = true;
+            } else if (std::memcmp(p + pos, "data", 4) == 0 && avail > 0) {
+                dataOffset = payload;
+                dataSize = avail;
             }
-        };
-
-        Svf bodyFilter, sheenFilter;
-        double hpPrevIn = 0.0, hpPrevOut = 0.0;
-        double lpState = 0.0;
-        double modState = 0.0;
-        const double hpAlpha = 1.0 / (1.0 + 2.0 * M_PI * 260.0 / sr);
-        const double lpAlpha = (2.0 * M_PI * 4600.0 / sr) / (1.0 + 2.0 * M_PI * 4600.0 / sr);
-        const double modAlpha = (2.0 * M_PI * 48.0 / sr) / (1.0 + 2.0 * M_PI * 48.0 / sr);
-
-        QVector<double> mono(total, 0.0);
-        double peak = 1e-6;
-        for (int n = 0; n < total; ++n) {
-            const double u = double(n) / double(total - 1);
-
-            // Asymmetric two-phase organic paper envelope:
-            // 1) Gentle brush lift across the sheet (peak ~0.24)
-            // 2) Subtle soft leaf settle (peak ~0.68), smooth decay to exact zero.
-            const double lift = std::exp(-std::pow((u - 0.25) / 0.16, 2.0));
-            const double settle = 0.48 * std::exp(-std::pow((u - 0.66) / 0.19, 2.0));
-            double env = lift + settle;
-
-            // Smooth raised-cosine attack (16 ms) and release (26 ms) for zero clicks.
-            const double attackFrac = std::min(0.22, 0.016 / duration);
-            const double releaseFrac = std::min(0.28, 0.026 / duration);
-            if (u < attackFrac)
-                env *= 0.5 - 0.5 * std::cos(M_PI * u / attackFrac);
-            if (u > 1.0 - releaseFrac)
-                env *= 0.5 - 0.5 * std::cos(M_PI * (1.0 - u) / releaseFrac);
-
-            // Slow paper-fiber friction modulation (~48 Hz).
-            const double rawA = nextNoise();
-            const double rawB = nextNoise();
-            modState += modAlpha * (rawB - modState);
-            const double grain = 1.0 + 0.35 * std::clamp(modState * 3.0, -0.5, 0.5);
-
-            // Subtle forward (bright-to-warm settle) vs backward (warm-to-bright lift) tilt.
-            const double bodyHz = (forward ? (1720.0 - 760.0 * u) : (1040.0 + 620.0 * u)) * pitch;
-            const double sheenHz = (forward ? (3350.0 - 1250.0 * u) : (2150.0 + 1050.0 * u)) * pitch;
-
-            const double shaped = bodyFilter.process(rawA, bodyHz, 0.85, sr) +
-                                  0.26 * sheenFilter.process(rawA, sheenHz, 1.15, sr);
-
-            // High-pass >260 Hz (no thump) + low-pass <4.6 kHz (no brittle static hiss).
-            const double hp = hpAlpha * (hpPrevOut + shaped - hpPrevIn);
-            hpPrevIn = shaped;
-            hpPrevOut = hp;
-            lpState += lpAlpha * (hp - lpState);
-
-            const double sample = lpState * env * grain;
-            mono[n] = sample;
-            peak = std::max(peak, std::abs(sample));
+            const qsizetype step = qsizetype(chunkSize) + qsizetype(chunkSize & 1u);
+            if (payload > bytes.size() - step)
+                break;
+            pos = payload + step;
         }
 
-        // Respectful, calm gain (~-16.5 dBFS peak) so consecutive flips stay unobtrusive.
-        const double gain = 0.148 / peak;
+        if (!hasFmt || audioFormat != 1 || channels < 1 || channels > 8 || bitsPerSample != 16 || sampleRate < 8000 ||
+            sampleRate > 192000 || dataOffset < 0)
+            return out;
+
+        const qsizetype frameBytes = qsizetype(channels) * 2;
+        const qsizetype frames = dataSize / frameBytes;
+        if (frames <= 0)
+            return out;
+
+        out.sampleRate = int(sampleRate);
+        out.mono.resize(frames);
+        const unsigned char *src = p + dataOffset;
+        const float invChannels = 1.0f / float(channels);
+        for (qsizetype i = 0; i < frames; ++i) {
+            float acc = 0.0f;
+            for (uint16_t c = 0; c < channels; ++c) {
+                const qsizetype off = (i * qsizetype(channels) + qsizetype(c)) * 2;
+                const int16_t sample = int16_t(uint16_t(src[off]) | (uint16_t(src[off + 1]) << 8));
+                acc += float(sample) / 32768.0f;
+            }
+            out.mono[i] = acc * invChannels;
+        }
+        return out;
+    }
+
+    static QByteArray readClipBytes(int index) {
+        const QString rel = QStringLiteral("audio/sfx/page_turn_%1.wav").arg(index + 1);
+        const QStringList candidates = {
+            QStringLiteral(":/") + rel,
+            QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).filePath(QStringLiteral("../") + rel),
+            QCoreApplication::applicationDirPath() + QStringLiteral("/../../src/") + rel,
+        };
+        for (const QString &path : candidates) {
+            QFile file(path);
+            if (file.open(QIODevice::ReadOnly))
+                return file.readAll();
+        }
+        return {};
+    }
+
+    static QByteArray renderClip(const DecodedWav &wav, const QAudioFormat &fmt, double gain) {
+        if (wav.mono.isEmpty() || wav.sampleRate <= 0)
+            return {};
+        const int dstRate = qBound(8000, fmt.sampleRate(), 192000);
+        const int channels = qBound(1, fmt.channelCount(), 8);
         const int bytesPerSample = fmt.bytesPerSample();
         if (bytesPerSample <= 0)
             return {};
+
+        const qsizetype srcCount = wav.mono.size();
+        const qsizetype outFrames =
+            (dstRate == wav.sampleRate)
+                ? srcCount
+                : qMax<qsizetype>(1, qsizetype(std::llround(double(srcCount) * double(dstRate) / double(wav.sampleRate))));
+        const double rateRatio = double(wav.sampleRate) / double(dstRate);
+
         QByteArray pcm;
-        pcm.resize(total * channels * bytesPerSample);
+        pcm.resize(outFrames * channels * bytesPerSample);
         char *dst = pcm.data();
 
-        for (int n = 0; n < total; ++n) {
-            const double v = std::clamp(mono[n] * gain, -1.0, 1.0);
+        for (qsizetype i = 0; i < outFrames; ++i) {
+            double sample = 0.0;
+            if (dstRate == wav.sampleRate) {
+                sample = double(wav.mono[i]);
+            } else {
+                const double srcPos = double(i) * rateRatio;
+                const qsizetype lo = qBound<qsizetype>(0, qsizetype(std::floor(srcPos)), srcCount - 1);
+                const qsizetype hi = qMin<qsizetype>(lo + 1, srcCount - 1);
+                const double frac = srcPos - double(lo);
+                sample = double(wav.mono[lo]) * (1.0 - frac) + double(wav.mono[hi]) * frac;
+            }
+            const double v = std::clamp(sample * gain, -1.0, 1.0);
             for (int c = 0; c < channels; ++c) {
                 switch (fmt.sampleFormat()) {
                 case QAudioFormat::Int16: {
@@ -243,13 +270,42 @@ private:
         return pcm;
     }
 
+    QByteArray *nextClip(bool forward) {
+        auto &bank = forward ? m_forwardClips : m_backwardClips;
+        for (int attempt = 0; attempt < kVariants; ++attempt) {
+            const int idx = (m_clipIndex + attempt) % kVariants;
+            if (!bank[size_t(idx)].isEmpty()) {
+                m_clipIndex = (idx + 1) % kVariants;
+                return &bank[size_t(idx)];
+            }
+        }
+        return nullptr;
+    }
+
+    void ensureSourcesLoaded() {
+        if (m_sourcesLoaded)
+            return;
+        m_sourcesLoaded = true;
+        for (int i = 0; i < kVariants; ++i)
+            m_sources[size_t(i)] = decodeWavPcm(readClipBytes(i));
+    }
+
+    bool hasPreparedClip() const {
+        for (const QByteArray &clip : m_forwardClips) {
+            if (!clip.isEmpty())
+                return true;
+        }
+        return false;
+    }
+
     void prepareClips(const QAudioFormat &fmt) {
-        if (m_preparedFormat == fmt && !m_forwardClips[0].isEmpty())
+        ensureSourcesLoaded();
+        if (m_preparedFormat == fmt && hasPreparedClip())
             return;
         m_preparedFormat = fmt;
         for (int i = 0; i < kVariants; ++i) {
-            m_forwardClips[size_t(i)] = synthesizeClip(fmt, i, true);
-            m_backwardClips[size_t(i)] = synthesizeClip(fmt, i, false);
+            m_forwardClips[size_t(i)] = renderClip(m_sources[size_t(i)], fmt, 1.0);
+            m_backwardClips[size_t(i)] = renderClip(m_sources[size_t(i)], fmt, kBackwardGain);
         }
     }
 
@@ -268,7 +324,7 @@ private:
         if (!fmt.isValid() || fmt.sampleRate() <= 0 || fmt.channelCount() <= 0 || fmt.bytesPerSample() <= 0)
             return;
         prepareClips(fmt);
-        if (m_forwardClips[0].isEmpty())
+        if (!hasPreparedClip())
             return;
         m_outputDevice = device;
         m_sink = new QAudioSink(device, fmt, m_owner);
@@ -310,13 +366,14 @@ private:
     QAudioDevice m_outputDevice;
     QAudioSink *m_sink = nullptr;
     QBuffer m_buffer;
+    bool m_sourcesLoaded = false;
+    std::array<DecodedWav, kVariants> m_sources;
     QAudioFormat m_preparedFormat;
     std::array<QByteArray, kVariants> m_forwardClips;
     std::array<QByteArray, kVariants> m_backwardClips;
     QElapsedTimer m_throttle;
     QTimer m_idleTimer;
-    int m_fwdIndex = 0;
-    int m_bwdIndex = 0;
+    int m_clipIndex = 0;
 };
 
 Reader::Reader(Library *library, BookScheme *scheme, QObject *parent)

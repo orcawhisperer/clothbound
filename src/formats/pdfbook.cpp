@@ -313,19 +313,167 @@ QString PdfBook::pageLabel(int page) const {
     return m_document->pageLabel(page);
 }
 
+QList<QRectF> PdfBook::mergeLineRects(const QList<QRectF> &raw) {
+    // 1. Clean and clamp finite non-empty boxes to [0..1].
+    QList<QRectF> boxes;
+    boxes.reserve(raw.size());
+    for (const QRectF &r : raw) {
+        if (!std::isfinite(r.x()) || !std::isfinite(r.y()) || !std::isfinite(r.width()) ||
+            !std::isfinite(r.height()))
+            continue;
+        const qreal x1 = std::clamp<qreal>(r.left(), 0.0, 1.0);
+        const qreal y1 = std::clamp<qreal>(r.top(), 0.0, 1.0);
+        const qreal x2 = std::clamp<qreal>(r.right(), 0.0, 1.0);
+        const qreal y2 = std::clamp<qreal>(r.bottom(), 0.0, 1.0);
+        if (x2 - x1 > 1e-6 && y2 - y1 > 1e-6)
+            boxes.append(QRectF(x1, y1, x2 - x1, y2 - y1));
+    }
+    if (boxes.isEmpty())
+        return {};
+
+    // Two boxes belong to the same visual line when their vertical centers are close
+    // relative to the taller box or their vertical spans overlap strongly.
+    const auto sameVisualLine = [](const QRectF &a, const QRectF &b) {
+        const qreal maxH = std::max(a.height(), b.height());
+        const qreal minH = std::min(a.height(), b.height());
+        if (maxH <= 0.0)
+            return false;
+        if (std::abs(a.center().y() - b.center().y()) <= 0.55 * maxH)
+            return true;
+        const qreal overlap = std::min(a.bottom(), b.bottom()) - std::max(a.top(), b.top());
+        return minH > 0.0 && overlap >= 0.45 * minH;
+    };
+
+    // Normal inter-word spacing ceiling: bridges justified gaps while never bridging
+    // across a 2-column academic PDF gutter.
+    const auto maxWordGap = [](qreal refH) -> qreal {
+        return std::clamp<qreal>(3.0 * refH, 0.022, 0.055);
+    };
+
+    const auto horizontalGap = [](const QRectF &a, const QRectF &b) -> qreal {
+        return std::max(b.left() - a.right(), a.left() - b.right());
+    };
+
+    // 2. Traverse in reading order, merging boxes on the same visual line within normal inter-word spacing.
+    struct LineBand {
+        QRectF rect;
+        qreal refHeight = 0.0;
+    };
+    QList<LineBand> bands;
+    bands.reserve(boxes.size());
+
+    for (const QRectF &box : boxes) {
+        bool merged = false;
+        for (qsizetype i = bands.size() - 1; i >= 0; --i) {
+            LineBand &band = bands[i];
+            const qreal refH = std::max(band.refHeight, box.height());
+            if (sameVisualLine(band.rect, box) && horizontalGap(band.rect, box) <= maxWordGap(refH)) {
+                band.rect = band.rect.united(box);
+                band.refHeight = refH;
+                merged = true;
+                break;
+            }
+        }
+        if (!merged)
+            bands.append({box, box.height()});
+    }
+
+    // Fixed-point merge for any out-of-order tokens belonging to the same visual line segment.
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (qsizetype i = 0; i < bands.size() && !changed; ++i) {
+            for (qsizetype j = i + 1; j < bands.size(); ++j) {
+                const qreal refH = std::max(bands[i].refHeight, bands[j].refHeight);
+                if (sameVisualLine(bands[i].rect, bands[j].rect) &&
+                    horizontalGap(bands[i].rect, bands[j].rect) <= maxWordGap(refH)) {
+                    bands[i].rect = bands[i].rect.united(bands[j].rect);
+                    bands[i].refHeight = refH;
+                    bands.removeAt(j);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // 3. Normalize vertical band heights across body lines in the returned range so lines
+    //    with only short x-height words match the full line envelope without distorting headings.
+    QList<qreal> heights;
+    heights.reserve(bands.size());
+    for (const LineBand &b : bands)
+        heights.append(b.rect.height());
+    std::sort(heights.begin(), heights.end());
+
+    qreal refLineH = heights[heights.size() / 2];
+    if (heights.size() >= 3) {
+        const qreal medianH = heights[heights.size() / 2];
+        QList<qreal> bodyHeights;
+        bodyHeights.reserve(heights.size());
+        for (qreal h : heights) {
+            if (h <= medianH * 1.6)
+                bodyHeights.append(h);
+        }
+        if (!bodyHeights.isEmpty())
+            refLineH = bodyHeights[bodyHeights.size() * 2 / 3];
+    }
+
+    QList<QRectF> out;
+    out.reserve(bands.size());
+    for (const LineBand &b : bands) {
+        const QRectF &r = b.rect;
+        qreal h = r.height();
+        if (h < refLineH && h >= refLineH * 0.20 && refLineH <= h * 2.1)
+            h = refLineH;
+        const qreal padY = std::clamp<qreal>(h * 0.06, 0.0004, 0.0020);
+        const qreal targetH = h + 2.0 * padY;
+        const qreal cy = r.center().y();
+        const qreal top = std::clamp<qreal>(cy - targetH * 0.5, 0.0, 1.0);
+        const qreal bottom = std::clamp<qreal>(cy + targetH * 0.5, top, 1.0);
+        out.append(QRectF(r.left(), top, r.width(), bottom - top));
+    }
+
+    // 4. Keep consecutive bands in the same column vertically non-overlapping so translucent
+    //    highlight overlays never create dark double-alpha seams between lines.
+    constexpr qreal minLineSep = 0.0008;
+    for (qsizetype i = 0; i < out.size(); ++i) {
+        for (qsizetype j = i + 1; j < out.size(); ++j) {
+            QRectF &a = out[i];
+            QRectF &b = out[j];
+            if (std::min(a.right(), b.right()) <= std::max(a.left(), b.left()))
+                continue;
+            QRectF *upper = a.center().y() <= b.center().y() ? &a : &b;
+            QRectF *lower = upper == &a ? &b : &a;
+            if (upper->bottom() > lower->top() - minLineSep) {
+                const qreal mid = 0.5 * (upper->bottom() + lower->top());
+                const qreal newUpperBottom = std::max(upper->top() + 1e-4, mid - 0.5 * minLineSep);
+                const qreal newLowerTop = std::min(lower->bottom() - 1e-4, mid + 0.5 * minLineSep);
+                if (newUpperBottom < newLowerTop) {
+                    upper->setBottom(newUpperBottom);
+                    lower->setTop(newLowerTop);
+                }
+            }
+        }
+    }
+
+    return out;
+}
+
 QList<QRectF> PdfBook::textRects(int page, qint64 start, qint64 end) const {
     QMutexLocker lock(&m_mutex);
-    QList<QRectF> out;
+    QList<QRectF> raw;
     const QSizeF size = pageSize(page);
     if (end <= start || size.isEmpty())
-        return out;
+        return raw;
     const QPdfSelection selection = m_document->getSelectionAtIndex(page, int(start), int(end - start));
-    for (const QPolygonF &polygon : selection.bounds()) {
+    const QList<QPolygonF> bounds = selection.bounds();
+    raw.reserve(bounds.size());
+    for (const QPolygonF &polygon : bounds) {
         const QRectF box = polygon.boundingRect();
-        out.append(QRectF(box.x() / size.width(), box.y() / size.height(), box.width() / size.width(),
+        raw.append(QRectF(box.x() / size.width(), box.y() / size.height(), box.width() / size.width(),
                           box.height() / size.height()));
     }
-    return out;
+    return mergeLineRects(raw);
 }
 
 PdfBook::Selection PdfBook::select(int page, const QPointF &from, const QPointF &to) const {

@@ -66,9 +66,12 @@ public:
     QString pageTextInBand(int page, double normTop, double normBottom, int maxChars = 260) const;
     // The page's size in points.
     QSizeF pageSize(int page) const;
-    // Where a stretch of the page's text is, as rectangles in parts of the
-    // page (0 to 1 across and down).
+    // Where a stretch of the page's text is, as uniform line-merged rectangles
+    // in parts of the page (0 to 1 across and down).
     QList<QRectF> textRects(int page, qint64 start, qint64 end) const;
+    // Merge raw per-word/glyph normalized [0..1] boxes into continuous, uniform-height
+    // visual line bands without bridging across multi-column gutters.
+    static QList<QRectF> mergeLineRects(const QList<QRectF> &raw);
     // The text between two points (parts of the page): {start, end, text}.
     struct Selection {
         qint64 start = -1;
