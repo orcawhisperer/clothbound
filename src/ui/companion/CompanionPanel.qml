@@ -1125,7 +1125,11 @@ FocusScope {
             clip: true
             contentHeight: chooserItem.implicitHeight + 36
             boundsBehavior: Flickable.StopAtBounds
+            maximumFlickVelocity: 4500
+            flickDeceleration: 2200
+            pixelAligned: true
             ScrollBar.vertical: ScrollBar {}
+            SmoothWheel { stepSize: 115 }
 
             CompanionChooser {
                 id: chooserItem
@@ -1159,7 +1163,11 @@ FocusScope {
                 clip: true
                 contentHeight: Math.max(height, talkColumn.implicitHeight + 36)
                 boundsBehavior: Flickable.StopAtBounds
+                maximumFlickVelocity: 4500
+                flickDeceleration: 2200
+                pixelAligned: true
                 ScrollBar.vertical: ScrollBar {}
+                SmoothWheel { stepSize: 115 }
 
                 // Respect manual upward wheel, drag, or scrollbar scrolling during streaming.
                 onContentYChanged: {
@@ -1520,7 +1528,11 @@ FocusScope {
             clip: true
             contentHeight: proseColumn.implicitHeight + 36
             boundsBehavior: Flickable.StopAtBounds
+            maximumFlickVelocity: 4500
+            flickDeceleration: 2200
+            pixelAligned: true
             ScrollBar.vertical: ScrollBar {}
+            SmoothWheel { stepSize: 115 }
 
             ColumnLayout {
                 id: proseColumn
@@ -1755,7 +1767,11 @@ FocusScope {
             spacing: 16
             model: illustrator.pictures
             boundsBehavior: Flickable.StopAtBounds
+            maximumFlickVelocity: 4500
+            flickDeceleration: 2200
+            pixelAligned: true
             ScrollBar.vertical: ScrollBar {}
+            SmoothWheel { stepSize: 115 }
 
             header: ColumnLayout {
                 width: ListView.view.width
@@ -2158,7 +2174,11 @@ FocusScope {
             spacing: 0
             model: companion.people
             boundsBehavior: Flickable.StopAtBounds
+            maximumFlickVelocity: 4500
+            flickDeceleration: 2200
+            pixelAligned: true
             ScrollBar.vertical: ScrollBar {}
+            SmoothWheel { stepSize: 115 }
 
             header: ColumnLayout {
                 width: ListView.view.width

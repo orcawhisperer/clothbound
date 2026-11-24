@@ -97,7 +97,11 @@ SidePanel {
             currentIndex: count > 0 ? 0 : -1
             model: panel.filteredMarks
             boundsBehavior: Flickable.StopAtBounds
+            maximumFlickVelocity: 4500
+            flickDeceleration: 2200
+            pixelAligned: true
             ScrollBar.vertical: ScrollBar {}
+            SmoothWheel { stepSize: 110 }
 
             onCountChanged: {
                 if (count === 0)

@@ -182,8 +182,12 @@ FocusScope {
             anchors.bottom: parent.bottom
             contentHeight: content.implicitHeight + 48
             boundsBehavior: Flickable.StopAtBounds
+            maximumFlickVelocity: 4500
+            flickDeceleration: 2200
+            pixelAligned: true
             clip: true
             ScrollBar.vertical: ScrollBar {}
+            SmoothWheel { stepSize: 120 }
 
             ColumnLayout {
                 id: content

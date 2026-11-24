@@ -17,6 +17,10 @@ Item {
     readonly property int spineRadius: radius > 0 ? Math.min(3, radius) : 0
 
     readonly property bool loaded: image.status === Image.Ready
+    readonly property bool useRoundedMask: cover.radius > 0 && frame.width > 0 && frame.height > 0
+    // Bucket decode size in 128px steps (capped at 640px) so multi-MB covers never
+    // decode at full resolution for small library tiles and resizes avoid thrashing.
+    readonly property int decodeLimit: Math.max(128, Math.min(640, Math.ceil((Math.max(cover.width, cover.height) * (Screen.devicePixelRatio || 1)) / 128) * 128))
     // Width over height of what's shown; generated covers are 2:3.
     readonly property real aspect: loaded && image.implicitHeight > 0
                                    ? Math.max(0.45, Math.min(1.2, image.implicitWidth / image.implicitHeight)) : 2 / 3
@@ -32,8 +36,10 @@ Item {
         y: cover.box.y
         width: cover.box.width
         height: cover.box.height
-        layer.enabled: cover.radius > 0
+        layer.enabled: cover.useRoundedMask
+        layer.smooth: true
         layer.effect: MultiEffect {
+            autoPaddingEnabled: false
             maskEnabled: true
             maskSource: mask
             maskThresholdMin: 0.5
@@ -50,17 +56,20 @@ Item {
         Image {
             id: image
             anchors.fill: parent
-            source: cover.source
+            source: cover.width > 0 && cover.height > 0 ? cover.source : ""
             asynchronous: true
+            cache: true
             fillMode: Image.Stretch
             smooth: true
             mipmap: true
-            // Bucket decode height to 128px steps so continuous window resizes
-            // don't re-decode every visible cover JPEG on every frame.
-            sourceSize.height: Math.max(128, Math.min(960, Math.ceil((cover.height * Screen.devicePixelRatio) / 128) * 128))
+            sourceSize.width: cover.decodeLimit
+            sourceSize.height: cover.decodeLimit
             visible: cover.loaded
             opacity: cover.loaded ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 160 } }
+            Behavior on opacity {
+                enabled: !theme.reducedMotion
+                NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+            }
         }
 
         // Subtle left-edge spine crease on every cover (inset 3px 0 0 rgba(0,0,0,0.22)).
@@ -79,7 +88,8 @@ Item {
         width: frame.width
         height: frame.height
         visible: false
-        layer.enabled: true
+        layer.enabled: cover.useRoundedMask
+        layer.smooth: true
         Rectangle {
             anchors.fill: parent
             radius: cover.radius

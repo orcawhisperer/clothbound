@@ -63,9 +63,13 @@ SidePanel {
         clip: true
         model: reader.contents
         boundsBehavior: Flickable.StopAtBounds
+        maximumFlickVelocity: 4500
+        flickDeceleration: 2200
+        pixelAligned: true
         keyNavigationEnabled: true
         highlightMoveDuration: theme.reducedMotion ? 0 : 120
         ScrollBar.vertical: ScrollBar {}
+        SmoothWheel { stepSize: 110 }
 
         Keys.onReturnPressed: panel.choose(currentIndex)
         Keys.onEnterPressed: panel.choose(currentIndex)

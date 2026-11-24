@@ -1512,6 +1512,9 @@ FocusScope {
                         Layout.fillHeight: true
                         clip: true
                         boundsBehavior: Flickable.StopAtBounds
+                        maximumFlickVelocity: 4500
+                        flickDeceleration: 2200
+                        pixelAligned: true
                         topMargin: 2
                         bottomMargin: 8
                         spacing: 3
@@ -1519,6 +1522,7 @@ FocusScope {
                         highlightFollowsCurrentItem: false
                         model: panel.listItems
                         ScrollBar.vertical: ScrollBar {}
+                        SmoothWheel { stepSize: 110 }
 
                         header: Item {
                             readonly property bool hasHeader:

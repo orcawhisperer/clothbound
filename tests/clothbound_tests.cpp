@@ -1444,8 +1444,8 @@ private slots:
         // A second of silence at 22.05 kHz.
         QByteArray wav = "RIFF";
         const int samples = 22050;
-        auto le32 = [](int v) { return QByteArray::fromRawData(reinterpret_cast<const char *>(&v), 4); };
-        auto le16 = [](short v) { return QByteArray::fromRawData(reinterpret_cast<const char *>(&v), 2); };
+        auto le32 = [](int v) { return QByteArray(reinterpret_cast<const char *>(&v), 4); };
+        auto le16 = [](short v) { return QByteArray(reinterpret_cast<const char *>(&v), 2); };
         wav += le32(36 + samples * 2) + "WAVEfmt " + le32(16) + le16(1) + le16(1) + le32(22050) + le32(44100) +
                le16(2) + le16(16) + "data" + le32(samples * 2) + QByteArray(samples * 2, '\0');
         server.responses.append({200, "audio/wav", wav});
@@ -10324,6 +10324,247 @@ Item {
             QVERIFY(detailsQml.contains(QStringLiteral("text: \"APA\"")));
             QVERIFY(detailsQml.contains(QStringLiteral("shelfPill.member ? theme.accentSoft")));
         }
+    }
+
+    void smoothWheelScrollPhysicsAndLibraryWiring() {
+        Theme theme;
+        QQmlEngine engine;
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QVERIFY(QFileInfo::exists(srcRoot));
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+
+        // 1. Standalone SmoothWheel.qml compiles via QQmlComponent and computeWheelTarget() math is exact.
+        QQmlComponent swComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/components/SmoothWheel.qml")));
+        QVERIFY2(swComp.status() == QQmlComponent::Ready, qPrintable(swComp.errorString()));
+        std::unique_ptr<QObject> swObj(swComp.create());
+        QVERIFY2(swObj != nullptr, qPrintable(swComp.errorString()));
+        QCOMPARE(swObj->property("stepSize").toDouble(), 135.0);
+        QCOMPARE(swObj->property("pixelMultiplier").toDouble(), 1.25);
+
+        auto compute = [&](double curY, double activeY, bool gliding, double minY, double maxY,
+                           double angleY, double pixelY) -> double {
+            QVariant ret;
+            const bool ok = QMetaObject::invokeMethod(
+                swObj.get(), "computeWheelTarget",
+                Q_RETURN_ARG(QVariant, ret),
+                Q_ARG(QVariant, curY), Q_ARG(QVariant, activeY), Q_ARG(QVariant, gliding),
+                Q_ARG(QVariant, minY), Q_ARG(QVariant, maxY),
+                Q_ARG(QVariant, angleY), Q_ARG(QVariant, pixelY));
+            Q_ASSERT(ok);
+            return ret.toDouble();
+        };
+
+        // Single discrete wheel notch down (-120) advances by +stepSize (135 px).
+        QCOMPARE(compute(0.0, 0.0, false, 0.0, 1000.0, -120.0, 0.0), 135.0);
+        // Consecutive notch mid-glide accumulates onto activeTargetY (135 -> 270), even while curY is still at 40.
+        QCOMPARE(compute(40.0, 135.0, true, 0.0, 1000.0, -120.0, 0.0), 270.0);
+        // Reversing direction mid-glide pivots immediately from currentY instead of overshooting forward.
+        QCOMPARE(compute(100.0, 400.0, true, 0.0, 1000.0, 120.0, 0.0), 0.0);
+        // Trackpad pixelDelta moves directly by -pixelDeltaY * pixelMultiplier, ignoring stale activeTargetY.
+        QCOMPARE(compute(200.0, 600.0, true, 0.0, 1000.0, -60.0, -40.0), 250.0);
+        // Top & bottom clamping, including negative minY (GridView/ListView header originY).
+        QCOMPARE(compute(950.0, 950.0, false, 0.0, 1000.0, -120.0, 0.0), 1000.0);
+        QCOMPARE(compute(30.0, 30.0, false, 0.0, 1000.0, 120.0, 0.0), 0.0);
+        QCOMPARE(compute(-260.0, -260.0, false, -260.0, 540.0, -120.0, 0.0), -125.0);
+        QCOMPARE(compute(-200.0, -200.0, false, -260.0, 540.0, 120.0, 0.0), -260.0);
+        // Zero vertical scroll room stays pinned at minY.
+        QCOMPARE(compute(0.0, 0.0, false, 0.0, 0.0, -120.0, 0.0), 0.0);
+
+        // 2. Live QQuickWindow + Flickable + GridView with REAL QWheelEvent delivery:
+        //    proves reparenting off contentItem onto viewport (even when contentWidth == 0),
+        //    discrete glide accumulation, direct pixelDelta, negative originY header bounds,
+        //    Ctrl+wheel passthrough, external reset cancellation, and reducedMotion.
+        const QString harnessQml = QStringLiteral(R"QML(
+import QtQuick
+import QtQuick.Controls
+import "ui/components"
+Item {
+    id: harnessRoot
+    width: 600
+    height: 400
+    property alias flick: flick
+    property alias wheel: sw
+    property alias grid: grid
+    property alias gridWheel: gridSw
+    property int ctrlWheelCount: 0
+
+    Flickable {
+        id: flick
+        anchors.fill: parent
+        // Intentionally omit contentWidth (like LibrarySidebar / BookDetails / CompanionPanel)
+        // to verify SmoothWheel reparents onto the Flickable viewport instead of 0-wide contentItem.
+        contentHeight: 2000
+        boundsBehavior: Flickable.StopAtBounds
+        pixelAligned: true
+        ScrollBar.vertical: ScrollBar {}
+        Item {
+            parent: flick
+            anchors.fill: parent
+            WheelHandler {
+                acceptedModifiers: Qt.ControlModifier
+                onWheel: harnessRoot.ctrlWheelCount++
+            }
+        }
+        SmoothWheel {
+            id: sw
+            stepSize: 165
+        }
+    }
+
+    GridView {
+        id: grid
+        anchors.fill: parent
+        visible: false
+        cellWidth: 150
+        cellHeight: 200
+        model: 40
+        boundsBehavior: Flickable.StopAtBounds
+        pixelAligned: true
+        header: Item { width: grid.width; height: 220 }
+        delegate: Item { width: 150; height: 200 }
+        ScrollBar.vertical: ScrollBar {}
+        SmoothWheel {
+            id: gridSw
+            stepSize: 165
+        }
+    }
+}
+)QML");
+        QQmlComponent harnessComp(&engine);
+        harnessComp.setData(harnessQml.toUtf8(), QUrl::fromLocalFile(srcRoot + QStringLiteral("/SmoothWheelHarness.qml")));
+        QVERIFY2(harnessComp.status() == QQmlComponent::Ready, qPrintable(harnessComp.errorString()));
+        std::unique_ptr<QQuickWindow> win(new QQuickWindow);
+        win->resize(600, 400);
+        std::unique_ptr<QObject> rootObj(harnessComp.create());
+        QVERIFY2(rootObj != nullptr, qPrintable(harnessComp.errorString()));
+        QQuickItem *rootItem = qobject_cast<QQuickItem *>(rootObj.get());
+        QVERIFY(rootItem != nullptr);
+        rootItem->setParentItem(win->contentItem());
+        win->show();
+        QVERIFY(QTest::qWaitForWindowExposed(win.get()));
+
+        QQuickItem *flickItem = rootObj->property("flick").value<QQuickItem *>();
+        QQuickItem *wheelItem = rootObj->property("wheel").value<QQuickItem *>();
+        QQuickItem *gridItem = rootObj->property("grid").value<QQuickItem *>();
+        QQuickItem *gridWheelItem = rootObj->property("gridWheel").value<QQuickItem *>();
+        QVERIFY(flickItem && wheelItem && gridItem && gridWheelItem);
+
+        // SmoothWheel automatically resolved Flickable & GridView and reparented onto viewport.
+        QCOMPARE(wheelItem->property("target").value<QObject *>(), flickItem);
+        QCOMPARE(wheelItem->parentItem(), flickItem);
+        QCOMPARE(wheelItem->width(), 600.0);
+        QCOMPARE(wheelItem->height(), 400.0);
+        QCOMPARE(gridWheelItem->property("target").value<QObject *>(), gridItem);
+        QCOMPARE(gridWheelItem->parentItem(), gridItem);
+
+        auto sendWheel = [&](QPoint pixelDelta, QPoint angleDelta, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            const QPointF pos(300.0, 200.0);
+            QWheelEvent ev(pos, pos, pixelDelta, angleDelta, Qt::NoButton, mods, Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(win.get(), &ev);
+        };
+
+        // Two rapid REAL mouse-wheel notches accumulate to 330px (never double-scrolled by Flickable).
+        sendWheel(QPoint(0, 0), QPoint(0, -120));
+        QCOMPARE(wheelItem->property("gliding").toBool(), true);
+        QCOMPARE(wheelItem->property("activeTargetY").toDouble(), 165.0);
+        sendWheel(QPoint(0, 0), QPoint(0, -120));
+        QCOMPARE(wheelItem->property("activeTargetY").toDouble(), 330.0);
+        QTRY_VERIFY_WITH_TIMEOUT(!wheelItem->property("gliding").toBool(), 1000);
+        QVERIFY2(qAbs(flickItem->property("contentY").toDouble() - 330.0) <= 1.0,
+                 qPrintable(QString::number(flickItem->property("contentY").toDouble())));
+
+        // Real trackpad pixelDelta cancels any running glide immediately and moves directly by -pixelDelta.y * 1.25.
+        sendWheel(QPoint(0, 0), QPoint(0, -120));
+        QCOMPARE(wheelItem->property("gliding").toBool(), true);
+        const double beforePixel = flickItem->property("contentY").toDouble();
+        sendWheel(QPoint(0, -40), QPoint(0, 0));
+        QCOMPARE(wheelItem->property("gliding").toBool(), false);
+        QVERIFY2(qAbs(flickItem->property("contentY").toDouble() - (beforePixel + 50.0)) <= 1.0,
+                 qPrintable(QString::number(flickItem->property("contentY").toDouble())));
+
+        // Ctrl+Wheel passes through untouched (leaves contentY stable, reaches outer Ctrl WheelHandler).
+        const double beforeCtrl = flickItem->property("contentY").toDouble();
+        sendWheel(QPoint(0, 0), QPoint(0, -120), Qt::ControlModifier);
+        QCOMPARE(flickItem->property("contentY").toDouble(), beforeCtrl);
+        QCOMPARE(rootObj->property("ctrlWheelCount").toInt(), 1);
+
+        // External contentY reset (like positionViewAtBeginning) cancels an in-flight glide cleanly.
+        sendWheel(QPoint(0, 0), QPoint(0, -120));
+        QCOMPARE(wheelItem->property("gliding").toBool(), true);
+        flickItem->setProperty("contentY", 0.0);
+        QCOMPARE(wheelItem->property("gliding").toBool(), false);
+        QCOMPARE(flickItem->property("contentY").toDouble(), 0.0);
+
+        // reducedMotion jumps instantaneously and clamps cleanly at top (0) and bottom (1600).
+        theme.setReducedMotion(true);
+        sendWheel(QPoint(0, 0), QPoint(0, -120));
+        QCOMPARE(wheelItem->property("gliding").toBool(), false);
+        QCOMPARE(flickItem->property("contentY").toDouble(), 165.0);
+        sendWheel(QPoint(0, 0), QPoint(0, 2400));
+        QCOMPARE(flickItem->property("contentY").toDouble(), 0.0);
+        sendWheel(QPoint(0, 0), QPoint(0, -24000));
+        QCOMPARE(flickItem->property("contentY").toDouble(), 1600.0);
+
+        // GridView with a 220px header (negative originY): scrolls down by exact stepSize and back to header top.
+        flickItem->setVisible(false);
+        gridItem->setVisible(true);
+        QMetaObject::invokeMethod(gridItem, "positionViewAtBeginning");
+        const double gridOriginY = gridItem->property("originY").toDouble();
+        QVERIFY2(gridOriginY <= -200.0, qPrintable(QString::number(gridOriginY)));
+        QCOMPARE(gridItem->property("contentY").toDouble(), gridOriginY);
+        sendWheel(QPoint(0, 0), QPoint(0, -120));
+        QVERIFY2(qAbs(gridItem->property("contentY").toDouble() - (gridOriginY + 165.0)) <= 1.0,
+                 qPrintable(QStringLiteral("contentY=%1 expected=%2").arg(gridItem->property("contentY").toDouble()).arg(gridOriginY + 165.0)));
+        sendWheel(QPoint(0, 0), QPoint(0, 240));
+        QVERIFY2(qAbs(gridItem->property("contentY").toDouble() - gridOriginY) <= 1.0,
+                 qPrintable(QStringLiteral("contentY=%1 expected=%2").arg(gridItem->property("contentY").toDouble()).arg(gridOriginY)));
+
+        // When no vertical scroll room exists (contentHeight <= height), handleWheelDelta returns false.
+        gridItem->setVisible(false);
+        flickItem->setVisible(true);
+        flickItem->setProperty("contentHeight", 300.0);
+        flickItem->setProperty("contentY", 0.0);
+        QVariant handled;
+        QVERIFY(QMetaObject::invokeMethod(wheelItem, "handleWheelDelta", Q_RETURN_ARG(QVariant, handled),
+                                          Q_ARG(QVariant, -120.0), Q_ARG(QVariant, 0.0)));
+        QCOMPARE(handled.toBool(), false);
+        rootItem->setParentItem(nullptr);
+
+        // 3. CoverImage.qml compiles cleanly with async decoding and rounded-mask guards.
+        QQmlComponent coverComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/CoverImage.qml")));
+        QVERIFY2(coverComp.status() == QQmlComponent::Ready, qPrintable(coverComp.errorString()));
+
+        // 4. LibraryView.qml wires SmoothWheel + flick tuning on both grid and listView,
+        //    and all app scroll views wire SmoothWheel consistently.
+        auto readQml = [&](const QString &rel) -> QString {
+            QFile f(srcRoot + QLatin1Char('/') + rel);
+            if (!f.open(QIODevice::ReadOnly))
+                return {};
+            return QString::fromUtf8(f.readAll());
+        };
+        const QString libQml = readQml(QStringLiteral("ui/library/LibraryView.qml"));
+        const qsizetype gridPos = libQml.indexOf(QStringLiteral("id: grid"));
+        const qsizetype listPos = libQml.indexOf(QStringLiteral("id: listView"));
+        QVERIFY(gridPos > 0 && listPos > gridPos);
+        const QString gridSection = libQml.mid(gridPos, listPos - gridPos);
+        const QString listSection = libQml.mid(listPos, 900);
+        QVERIFY(gridSection.contains(QStringLiteral("SmoothWheel { stepSize: 165 }")));
+        QVERIFY(gridSection.contains(QStringLiteral("maximumFlickVelocity: 4500")));
+        QVERIFY(gridSection.contains(QStringLiteral("flickDeceleration: 2200")));
+        QVERIFY(gridSection.contains(QStringLiteral("pixelAligned: true")));
+        QVERIFY(listSection.contains(QStringLiteral("SmoothWheel { stepSize: 115 }")));
+        QVERIFY(listSection.contains(QStringLiteral("maximumFlickVelocity: 4500")));
+        QVERIFY(listSection.contains(QStringLiteral("flickDeceleration: 2200")));
+        QVERIFY(listSection.contains(QStringLiteral("pixelAligned: true")));
+
+        QVERIFY(readQml(QStringLiteral("ui/library/LibrarySidebar.qml")).contains(QStringLiteral("SmoothWheel { stepSize: 105 }")));
+        QVERIFY(readQml(QStringLiteral("ui/settings/SettingsView.qml")).contains(QStringLiteral("SmoothWheel { stepSize: 120 }")));
+        QVERIFY(readQml(QStringLiteral("ui/audio/VoicePanel.qml")).contains(QStringLiteral("SmoothWheel { stepSize: 110 }")));
+        QVERIFY(readQml(QStringLiteral("ui/reader/ContentsPanel.qml")).contains(QStringLiteral("SmoothWheel { stepSize: 110 }")));
+        QVERIFY(readQml(QStringLiteral("ui/reader/MarksPanel.qml")).contains(QStringLiteral("SmoothWheel { stepSize: 110 }")));
+        const QString compQml = readQml(QStringLiteral("ui/companion/CompanionPanel.qml"));
+        QVERIFY(compQml.count(QStringLiteral("SmoothWheel { stepSize: 115 }")) >= 4);
     }
 };
 

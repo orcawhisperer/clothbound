@@ -320,8 +320,12 @@ FocusScope {
         contentWidth: width
         contentHeight: pageColumn.implicitHeight + 68
         boundsBehavior: Flickable.StopAtBounds
+        maximumFlickVelocity: 4500
+        flickDeceleration: 2200
+        pixelAligned: true
         clip: true
         ScrollBar.vertical: ScrollBar {}
+        SmoothWheel { stepSize: 120 }
 
         Connections {
             target: settings

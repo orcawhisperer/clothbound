@@ -234,8 +234,12 @@ Rectangle {
         width: parent.width
         contentHeight: column.implicitHeight + 12
         boundsBehavior: Flickable.StopAtBounds
+        maximumFlickVelocity: 4000
+        flickDeceleration: 2200
+        pixelAligned: true
         clip: true
         ScrollBar.vertical: ScrollBar {}
+        SmoothWheel { stepSize: 105 }
 
         Column {
             id: column

@@ -16,6 +16,7 @@
         <file alias="ui/components/Sheet.qml">ui/components/Sheet.qml</file>
         <file alias="ui/components/SidePanel.qml">ui/components/SidePanel.qml</file>
         <file alias="ui/components/Skeleton.qml">ui/components/Skeleton.qml</file>
+        <file alias="ui/components/SmoothWheel.qml">ui/components/SmoothWheel.qml</file>
         <file alias="ui/components/TextButton.qml">ui/components/TextButton.qml</file>
         <file alias="ui/components/Toast.qml">ui/components/Toast.qml</file>
         <file alias="ui/components/Format.js">ui/components/Format.js</file>

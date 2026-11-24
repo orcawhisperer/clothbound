@@ -701,6 +701,9 @@ FocusScope {
         keyNavigationEnabled: true
         keyNavigationWraps: false
         boundsBehavior: Flickable.StopAtBounds
+        maximumFlickVelocity: 4500
+        flickDeceleration: 2200
+        pixelAligned: true
         cacheBuffer: 1200
         currentIndex: -1
 
@@ -714,6 +717,7 @@ FocusScope {
         model: library.works
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        SmoothWheel { stepSize: 165 }
 
         header: Column {
             width: grid.width
@@ -818,11 +822,16 @@ FocusScope {
         keyNavigationEnabled: true
         keyNavigationWraps: false
         boundsBehavior: Flickable.StopAtBounds
+        maximumFlickVelocity: 4500
+        flickDeceleration: 2200
+        pixelAligned: true
+        cacheBuffer: 640
         spacing: 2
         currentIndex: -1
         model: library.works
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        SmoothWheel { stepSize: 115 }
 
         header: Column {
             width: listView.width
@@ -1363,8 +1372,10 @@ FocusScope {
                     clip: true
                     spacing: 6
                     boundsBehavior: Flickable.StopAtBounds
+                    pixelAligned: true
                     model: library.folders
                     ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                    SmoothWheel { stepSize: 105 }
 
                     delegate: Rectangle {
                         id: folderRow
