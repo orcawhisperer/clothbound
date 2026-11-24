@@ -9866,8 +9866,9 @@ domReady();
                      qPrintable(QStringLiteral("line1.bottom=%1 line2.top=%2").arg(out[1].bottom()).arg(out[2].top())));
         }
 
-        // 8. Reader::playPageTurnDryRun(): 3 real WAV clips alternate (c0 != c1 != c2),
-        //    backward gain is ~0.82x, and forward peaks lie within soft -14..-18 dBFS.
+        // 8. Reader::playPageTurnDryRun(): single signature page_turn.wav loads cleanly,
+        //    consecutive forward turns are consistent (c0 == c1, clipIndex == 0), 85 ms throttle
+        //    blocks immediate repeats, backward gain is ~0.82x, and forward peak lies in -14..-18 dBFS.
         {
             QTemporaryDir dir;
             Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
@@ -9884,31 +9885,27 @@ domReady();
                 return p;
             };
 
-            QByteArray c0, c1, c2, b0, throttled;
+            QByteArray c0, c1, b0, throttled;
             QVERIFY(reader.playPageTurnDryRun(1, &c0));
             QVERIFY(!reader.playPageTurnDryRun(1, &throttled));
             QVERIFY(throttled.isEmpty());
             QTest::qWait(95);
             QVERIFY(reader.playPageTurnDryRun(1, &c1));
             QTest::qWait(95);
-            QVERIFY(reader.playPageTurnDryRun(1, &c2));
-            QTest::qWait(95);
-            // 4th flip wraps back to clip 0 with backward gain (0.82x).
             QVERIFY(reader.playPageTurnDryRun(-1, &b0));
 
-            QVERIFY(c0.size() >= 18000 && c1.size() >= 18000 && c2.size() >= 18000);
-            QVERIFY(c0 != c1);
-            QVERIFY(c1 != c2);
-            QVERIFY(c0 != c2);
+            QVERIFY(c0.size() >= 18000);
+            QCOMPARE(c1, c0);
+            QCOMPARE(b0.size(), c0.size());
+            QVERIFY(b0 != c0);
 
-            for (const QByteArray &clip : {c0, c1, c2}) {
-                const int pk = peak16(clip);
-                QVERIFY(pk > 0);
-                const double dbfs = 20.0 * std::log10(double(pk) / 32768.0);
-                QVERIFY2(dbfs >= -18.0 && dbfs <= -14.0,
-                         qPrintable(QStringLiteral("clip peak dBFS=%1 out of [-18,-14]").arg(dbfs)));
-            }
-            const double bwdRatio = double(peak16(b0)) / double(peak16(c0));
+            const int pkFwd = peak16(c0);
+            const int pkBwd = peak16(b0);
+            QVERIFY(pkFwd > 0 && pkBwd > 0);
+            const double dbfs = 20.0 * std::log10(double(pkFwd) / 32768.0);
+            QVERIFY2(dbfs >= -18.0 && dbfs <= -14.0,
+                     qPrintable(QStringLiteral("clip peak dBFS=%1 out of [-18,-14]").arg(dbfs)));
+            const double bwdRatio = double(pkBwd) / double(pkFwd);
             QVERIFY2(bwdRatio >= 0.79 && bwdRatio <= 0.85,
                      qPrintable(QStringLiteral("backward gain ratio=%1 expected ~0.82").arg(bwdRatio)));
         }

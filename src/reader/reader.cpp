@@ -27,7 +27,6 @@
 #include <QVector>
 #include <QtConcurrentRun>
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -48,13 +47,12 @@ bool sfxSuppressedEnvironment() {
 }
 }
 
-// Tactile page-turn sound engine backed by real Public Domain hardcover page-flip
-// WAV clips (:/audio/sfx/page_turn_1..3.wav), with minimal RIFF/WAVE PCM decoding,
-// linear resampling for any audio output device format, natural 3-clip alternation,
-// gentler backward gain, rapid-repeat throttling, automatic idle stream release,
-// and silent headless/offscreen safety.
+// Tactile page-turn sound engine backed by Clothbound's single signature Public
+// Domain hardcover page-flip WAV clip (:/audio/sfx/page_turn.wav), with minimal
+// RIFF/WAVE PCM decoding, linear resampling for any audio output device format,
+// gentler backward gain (0.82x), rapid-repeat throttling, automatic idle stream
+// release, and silent headless/offscreen safety.
 struct Reader::PageTurnSfx {
-    static constexpr int kVariants = 3;
     static constexpr double kBackwardGain = 0.82;
     static constexpr qint64 kMinIntervalMs = 85;
     static constexpr int kIdleReleaseMs = 2000;
@@ -80,7 +78,7 @@ struct Reader::PageTurnSfx {
         if (!m_sink)
             return;
 
-        QByteArray *clip = nextClip(direction >= 0);
+        QByteArray *clip = clipFor(direction >= 0);
         if (!clip || clip->isEmpty())
             return;
 
@@ -105,7 +103,7 @@ struct Reader::PageTurnSfx {
         fmt.setChannelCount(1);
         fmt.setSampleFormat(QAudioFormat::Int16);
         prepareClips(fmt);
-        const QByteArray *clip = nextClip(direction >= 0);
+        const QByteArray *clip = clipFor(direction >= 0);
         if (!clip || clip->isEmpty())
             return false;
         m_throttle.restart();
@@ -189,8 +187,8 @@ private:
         return out;
     }
 
-    static QByteArray readClipBytes(int index) {
-        const QString rel = QStringLiteral("audio/sfx/page_turn_%1.wav").arg(index + 1);
+    static QByteArray readClipBytes() {
+        const QString rel = QStringLiteral("audio/sfx/page_turn.wav");
         const QStringList candidates = {
             QStringLiteral(":/") + rel,
             QDir(QFileInfo(QString::fromUtf8(__FILE__)).absolutePath()).filePath(QStringLiteral("../") + rel),
@@ -270,43 +268,25 @@ private:
         return pcm;
     }
 
-    QByteArray *nextClip(bool forward) {
-        auto &bank = forward ? m_forwardClips : m_backwardClips;
-        for (int attempt = 0; attempt < kVariants; ++attempt) {
-            const int idx = (m_clipIndex + attempt) % kVariants;
-            if (!bank[size_t(idx)].isEmpty()) {
-                m_clipIndex = (idx + 1) % kVariants;
-                return &bank[size_t(idx)];
-            }
-        }
-        return nullptr;
+    QByteArray *clipFor(bool forward) {
+        QByteArray &clip = forward ? m_forwardClip : m_backwardClip;
+        return clip.isEmpty() ? nullptr : &clip;
     }
 
-    void ensureSourcesLoaded() {
-        if (m_sourcesLoaded)
+    void ensureSourceLoaded() {
+        if (m_sourceLoaded)
             return;
-        m_sourcesLoaded = true;
-        for (int i = 0; i < kVariants; ++i)
-            m_sources[size_t(i)] = decodeWavPcm(readClipBytes(i));
-    }
-
-    bool hasPreparedClip() const {
-        for (const QByteArray &clip : m_forwardClips) {
-            if (!clip.isEmpty())
-                return true;
-        }
-        return false;
+        m_sourceLoaded = true;
+        m_source = decodeWavPcm(readClipBytes());
     }
 
     void prepareClips(const QAudioFormat &fmt) {
-        ensureSourcesLoaded();
-        if (m_preparedFormat == fmt && hasPreparedClip())
+        ensureSourceLoaded();
+        if (m_preparedFormat == fmt && !m_forwardClip.isEmpty())
             return;
         m_preparedFormat = fmt;
-        for (int i = 0; i < kVariants; ++i) {
-            m_forwardClips[size_t(i)] = renderClip(m_sources[size_t(i)], fmt, 1.0);
-            m_backwardClips[size_t(i)] = renderClip(m_sources[size_t(i)], fmt, kBackwardGain);
-        }
+        m_forwardClip = renderClip(m_source, fmt, 1.0);
+        m_backwardClip = renderClip(m_source, fmt, kBackwardGain);
     }
 
     void ensureSink() {
@@ -324,7 +304,7 @@ private:
         if (!fmt.isValid() || fmt.sampleRate() <= 0 || fmt.channelCount() <= 0 || fmt.bytesPerSample() <= 0)
             return;
         prepareClips(fmt);
-        if (!hasPreparedClip())
+        if (m_forwardClip.isEmpty())
             return;
         m_outputDevice = device;
         m_sink = new QAudioSink(device, fmt, m_owner);
@@ -366,14 +346,13 @@ private:
     QAudioDevice m_outputDevice;
     QAudioSink *m_sink = nullptr;
     QBuffer m_buffer;
-    bool m_sourcesLoaded = false;
-    std::array<DecodedWav, kVariants> m_sources;
+    bool m_sourceLoaded = false;
+    DecodedWav m_source;
     QAudioFormat m_preparedFormat;
-    std::array<QByteArray, kVariants> m_forwardClips;
-    std::array<QByteArray, kVariants> m_backwardClips;
+    QByteArray m_forwardClip;
+    QByteArray m_backwardClip;
     QElapsedTimer m_throttle;
     QTimer m_idleTimer;
-    int m_clipIndex = 0;
 };
 
 Reader::Reader(Library *library, BookScheme *scheme, QObject *parent)
