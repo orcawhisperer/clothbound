@@ -37,6 +37,7 @@ public:
     Q_INVOKABLE static QString detectUrlKind(const QString &rawUrl);
     Q_INVOKABLE static QString parseArxivId(const QString &rawUrl);
     Q_INVOKABLE static QVariantMap parseArxivAtom(const QByteArray &xml);
+    static QVariantMap parseCitationMetaHtml(const QByteArray &html);
 
     // Returns a trimmed http(s):// or arxiv: URL from the system clipboard when
     // running in a GUI session, or an empty string otherwise.
@@ -51,7 +52,8 @@ public:
 
     // Test-only hooks for local QTcpServer integration suites.
     void setAllowLocalNetworkForTests(bool allow) { m_allowLocalNetwork = allow; }
-    void setArxivEndpointsForTests(const QString &apiBaseUrl, const QString &pdfBaseUrl);
+    void setArxivEndpointsForTests(const QString &apiBaseUrl, const QString &pdfBaseUrl,
+                                   const QString &absBaseUrl = {});
 
 signals:
     void busyChanged();
@@ -85,15 +87,17 @@ private:
     void abortActiveOperations();
 
     void fetchUrl(const QUrl &url, qint64 maxBytes, bool allowBookCapUpgrade, bool trackProgress, int redirectCount,
-                  quint64 generation, const QByteArray &acceptHeader, FetchCallback callback);
+                  quint64 generation, const QByteArray &acceptHeader, FetchCallback callback, int timeoutMs = 30000);
     void startHttpRequest(const QUrl &url, qint64 maxBytes, bool allowBookCapUpgrade, bool trackProgress,
                           int redirectCount, quint64 generation, const QByteArray &acceptHeader,
-                          FetchCallback callback);
+                          FetchCallback callback, int timeoutMs = 30000);
 
     void runArxivImport(const QString &arxivId, int targetCollectionId, quint64 generation);
+    void downloadArxivPdf(const QString &arxivId, const QVariantMap &meta, int targetCollectionId, quint64 generation);
     void runDirectOrArticleImport(const QUrl &initialUrl, const QString &initialKind, int targetCollectionId,
                                   quint64 generation);
-    void finishDirectBook(const QString &format, const FetchResult &res, int targetCollectionId);
+    void finishDirectBook(const QString &format, const FetchResult &res, int targetCollectionId,
+                          const QVariantMap &citationMeta = {}, const QString &sourceUrlOverride = {});
     void finishWebArticle(const FetchResult &res, int targetCollectionId, quint64 generation);
 
     QString downloadsDir() const;
@@ -113,5 +117,6 @@ private:
     QString m_detectedKind;
     bool m_allowLocalNetwork = false;
     QString m_arxivApiBase = QStringLiteral("https://export.arxiv.org/api/query?id_list=");
+    QString m_arxivAbsBase = QStringLiteral("https://arxiv.org/abs/");
     QString m_arxivPdfBase = QStringLiteral("https://arxiv.org/pdf/");
 };

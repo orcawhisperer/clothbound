@@ -1,5 +1,6 @@
 #include "online/webimporter.h"
 
+#include "formats/bookname.h"
 #include "formats/epubbook.h"
 #include "library/library.h"
 #include "online/articleextractor.h"
@@ -24,7 +25,22 @@
 
 namespace {
 constexpr int kRequestTimeoutMs = 30000;
+constexpr int kMetadataTimeoutMs = 7000;
 constexpr int kMaxConcurrentImages = 4;
+
+QString decodeSimpleHtmlEntities(QString text) {
+    if (!text.contains(QLatin1Char('&')))
+        return text;
+    text.replace(QLatin1String("&quot;"), QLatin1String("\""));
+    text.replace(QLatin1String("&#34;"), QLatin1String("\""));
+    text.replace(QLatin1String("&apos;"), QLatin1String("'"));
+    text.replace(QLatin1String("&#39;"), QLatin1String("'"));
+    text.replace(QLatin1String("&lt;"), QLatin1String("<"));
+    text.replace(QLatin1String("&gt;"), QLatin1String(">"));
+    text.replace(QLatin1String("&nbsp;"), QLatin1String(" "));
+    text.replace(QLatin1String("&amp;"), QLatin1String("&"));
+    return text;
+}
 
 QString shortHashHex(const QString &input) {
     return QString::fromLatin1(QCryptographicHash::hash(input.toUtf8(), QCryptographicHash::Sha256).toHex().left(8));
@@ -175,9 +191,12 @@ WebImporter::~WebImporter() {
     abortActiveOperations();
 }
 
-void WebImporter::setArxivEndpointsForTests(const QString &apiBaseUrl, const QString &pdfBaseUrl) {
+void WebImporter::setArxivEndpointsForTests(const QString &apiBaseUrl, const QString &pdfBaseUrl,
+                                            const QString &absBaseUrl) {
     m_arxivApiBase = apiBaseUrl;
     m_arxivPdfBase = pdfBaseUrl;
+    if (!absBaseUrl.isEmpty())
+        m_arxivAbsBase = absBaseUrl;
 }
 
 QString WebImporter::downloadsDir() const { return QDir(m_storageDir).filePath(QStringLiteral("downloads")); }
@@ -215,7 +234,13 @@ QString WebImporter::parseArxivId(const QString &rawUrl) {
     if (const auto m = prefixRe.match(trimmed); m.hasMatch())
         return normalizeId(m.captured(1));
 
-    // 2. http(s)://[www.|export.|browse.|ar5iv.labs.]arxiv.org/{abs,pdf,html,e-print}/<id>
+    // 2. arXiv and popular arXiv paper mirrors / viewers:
+    //    - [www.|export.|browse.|ar5iv.labs.]arxiv.org/{abs,pdf,html,e-print,src}/<id>
+    //    - [www.]alphaxiv.org/{abs,pdf,overview,html}/<id>
+    //    - [www.]ar5iv.org/{abs,html,pdf}/<id>
+    //    - [www.]arxiv-vanity.com/papers/<id>
+    //    - [www.]huggingface.co/papers/<id>
+    //    - papers.cool/arxiv/<id>
     const QUrl url(trimmed);
     if (!url.isValid())
         return {};
@@ -224,14 +249,36 @@ QString WebImporter::parseArxivId(const QString &rawUrl) {
         return {};
     const QString host = url.host().toLower();
     const bool isArxivHost = (host == QLatin1String("arxiv.org") || host.endsWith(QLatin1String(".arxiv.org")));
-    if (!isArxivHost)
-        return {};
+    const bool isAlphaXiv = (host == QLatin1String("alphaxiv.org") || host.endsWith(QLatin1String(".alphaxiv.org")));
+    const bool isAr5iv = (host == QLatin1String("ar5iv.org") || host.endsWith(QLatin1String(".ar5iv.org")));
+    const bool isArxivVanity = (host == QLatin1String("arxiv-vanity.com") || host.endsWith(QLatin1String(".arxiv-vanity.com")));
+    const bool isHuggingFace = (host == QLatin1String("huggingface.co") || host == QLatin1String("www.huggingface.co"));
+    const bool isPapersCool = (host == QLatin1String("papers.cool") || host == QLatin1String("www.papers.cool"));
 
-    static const QRegularExpression pathRe(
-        QStringLiteral(R"(^/(?:abs|pdf|html|e-print)/((?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?)(?:\.pdf)?(?:/.*)?$)"),
-        QRegularExpression::CaseInsensitiveOption);
-    if (const auto m = pathRe.match(url.path()); m.hasMatch())
-        return normalizeId(m.captured(1));
+    if (isArxivHost || isAlphaXiv || isAr5iv) {
+        static const QRegularExpression pathRe(
+            QStringLiteral(R"(^/(?:abs|pdf|html|e-print|src|overview)/((?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?)(?:\.pdf)?(?:/.*)?$)"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (const auto m = pathRe.match(url.path()); m.hasMatch())
+            return normalizeId(m.captured(1));
+        return {};
+    }
+    if (isArxivVanity || isHuggingFace) {
+        static const QRegularExpression papersRe(
+            QStringLiteral(R"(^/papers/((?:\d{4}\.\d{4,5})(?:v\d+)?)(?:\.pdf)?(?:/.*)?$)"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (const auto m = papersRe.match(url.path()); m.hasMatch())
+            return normalizeId(m.captured(1));
+        return {};
+    }
+    if (isPapersCool) {
+        static const QRegularExpression coolRe(
+            QStringLiteral(R"(^/arxiv/((?:\d{4}\.\d{4,5}|[a-z\-]+(?:\.[A-Z]{2})?/\d{7})(?:v\d+)?)(?:\.pdf)?(?:/.*)?$)"),
+            QRegularExpression::CaseInsensitiveOption);
+        if (const auto m = coolRe.match(url.path()); m.hasMatch())
+            return normalizeId(m.captured(1));
+        return {};
+    }
     return {};
 }
 
@@ -345,6 +392,89 @@ QVariantMap WebImporter::parseArxivAtom(const QByteArray &xml) {
     out.insert(QStringLiteral("id"), entryId);
     out.insert(QStringLiteral("pdfUrl"), pdfUrl);
     out.insert(QStringLiteral("categories"), categories);
+    return out;
+}
+
+QVariantMap WebImporter::parseCitationMetaHtml(const QByteArray &html) {
+    if (html.trimmed().isEmpty())
+        return {};
+    // Only scan the document head / first 128 KB for Highwire/Google Scholar meta tags.
+    const QString text = QString::fromUtf8(html.left(131072));
+    static const QRegularExpression metaTagRe(QStringLiteral(R"(<meta\b([^>]+)/?>)"),
+                                              QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression attrRe(
+        QStringLiteral(R"re(\b([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))re"));
+
+    QString title;
+    QStringList authors;
+    QString abstractText;
+    QString dateText;
+    QString pdfUrl;
+    QString arxivId;
+
+    auto it = metaTagRe.globalMatch(text);
+    while (it.hasNext()) {
+        const QString attrsStr = it.next().captured(1);
+        QString name;
+        QString content;
+        auto ait = attrRe.globalMatch(attrsStr);
+        while (ait.hasNext()) {
+            const auto am = ait.next();
+            const QString key = am.captured(1).toLower();
+            const QString val = !am.captured(2).isNull()   ? am.captured(2)
+                                : !am.captured(3).isNull() ? am.captured(3)
+                                                           : am.captured(4);
+            if (key == QLatin1String("name") || key == QLatin1String("property"))
+                name = val.trimmed().toLower();
+            else if (key == QLatin1String("content"))
+                content = decodeSimpleHtmlEntities(val).simplified();
+        }
+        if (name.isEmpty() || content.isEmpty())
+            continue;
+        if (name == QLatin1String("citation_title") && title.isEmpty()) {
+            title = content;
+        } else if (name == QLatin1String("citation_author")) {
+            const QString cleanAuthor = BookName::displayAuthor(content);
+            if (!cleanAuthor.isEmpty() && !authors.contains(cleanAuthor))
+                authors.append(cleanAuthor);
+        } else if (name == QLatin1String("citation_abstract") && abstractText.isEmpty()) {
+            abstractText = content;
+        } else if ((name == QLatin1String("citation_date") || name == QLatin1String("citation_publication_date") ||
+                    name == QLatin1String("citation_online_date")) &&
+                   dateText.isEmpty()) {
+            dateText = content;
+        } else if (name == QLatin1String("citation_pdf_url") && pdfUrl.isEmpty()) {
+            pdfUrl = content;
+        } else if (name == QLatin1String("citation_arxiv_id") && arxivId.isEmpty()) {
+            arxivId = content;
+        }
+    }
+
+    if (title.isEmpty() && pdfUrl.isEmpty() && arxivId.isEmpty())
+        return {};
+
+    int year = 0;
+    static const QRegularExpression yearRe(QStringLiteral(R"(\b(19\d{2}|20\d{2})\b)"));
+    if (const auto m = yearRe.match(dateText); m.hasMatch())
+        year = m.captured(1).toInt();
+
+    QVariantMap out;
+    if (!title.isEmpty())
+        out.insert(QStringLiteral("title"), title);
+    if (!authors.isEmpty()) {
+        out.insert(QStringLiteral("authors"), authors);
+        out.insert(QStringLiteral("firstAuthor"), authors.first());
+    }
+    if (!abstractText.isEmpty())
+        out.insert(QStringLiteral("abstract"), abstractText);
+    if (!dateText.isEmpty())
+        out.insert(QStringLiteral("published"), dateText);
+    if (year > 0)
+        out.insert(QStringLiteral("year"), year);
+    if (!pdfUrl.isEmpty())
+        out.insert(QStringLiteral("pdfUrl"), pdfUrl);
+    if (!arxivId.isEmpty())
+        out.insert(QStringLiteral("arxivId"), arxivId);
     return out;
 }
 
@@ -532,7 +662,7 @@ bool WebImporter::importUrlSync(const QString &rawUrl, int *bookIdOut, QString *
 
 void WebImporter::fetchUrl(const QUrl &url, qint64 maxBytes, bool allowBookCapUpgrade, bool trackProgress,
                            int redirectCount, quint64 generation, const QByteArray &acceptHeader,
-                           FetchCallback callback) {
+                           FetchCallback callback, int timeoutMs) {
     if (generation != m_generation)
         return;
 
@@ -553,7 +683,7 @@ void WebImporter::fetchUrl(const QUrl &url, qint64 maxBytes, bool allowBookCapUp
             lookupId = QHostInfo::lookupHost(
                 host, this,
                 [this, url, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount, generation, acceptHeader, cbPtr,
-                 host](const QHostInfo &info) {
+                 host, timeoutMs](const QHostInfo &info) {
                     m_activeLookups.removeOne(info.lookupId());
                     if (generation != m_generation)
                         return;
@@ -576,7 +706,7 @@ void WebImporter::fetchUrl(const QUrl &url, qint64 maxBytes, bool allowBookCapUp
                         }
                     }
                     startHttpRequest(url, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount, generation,
-                                     acceptHeader, std::move(*cbPtr));
+                                     acceptHeader, std::move(*cbPtr), timeoutMs);
                 });
             m_activeLookups.append(lookupId);
             return;
@@ -584,18 +714,18 @@ void WebImporter::fetchUrl(const QUrl &url, qint64 maxBytes, bool allowBookCapUp
     }
 
     startHttpRequest(url, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount, generation, acceptHeader,
-                     std::move(callback));
+                     std::move(callback), timeoutMs);
 }
 
 void WebImporter::startHttpRequest(const QUrl &url, qint64 maxBytes, bool allowBookCapUpgrade, bool trackProgress,
                                    int redirectCount, quint64 generation, const QByteArray &acceptHeader,
-                                   FetchCallback callback) {
+                                   FetchCallback callback, int timeoutMs) {
     if (generation != m_generation)
         return;
 
     QNetworkRequest req(url);
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
-    req.setTransferTimeout(kRequestTimeoutMs);
+    req.setTransferTimeout(timeoutMs > 0 ? timeoutMs : kRequestTimeoutMs);
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Clothbound/0.4 (+https://clothbound.app)"));
     if (!acceptHeader.isEmpty())
         req.setRawHeader("Accept", acceptHeader);
@@ -649,7 +779,7 @@ void WebImporter::startHttpRequest(const QUrl &url, qint64 maxBytes, bool allowB
 
     connect(reply, &QNetworkReply::finished, this,
             [reply, state, url, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount, generation, acceptHeader,
-             this] {
+             timeoutMs, this] {
                 m_activeReplies.removeOne(reply);
                 const auto cleanup = qScopeGuard([reply] { reply->deleteLater(); });
                 if (generation != m_generation)
@@ -694,7 +824,7 @@ void WebImporter::startHttpRequest(const QUrl &url, qint64 maxBytes, bool allowB
                     const QUrl target = QUrl::fromEncoded(rawLoc, QUrl::TolerantMode);
                     const QUrl nextUrl = target.isRelative() ? url.resolved(target) : target;
                     fetchUrl(nextUrl, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount + 1, generation,
-                             acceptHeader, std::move(state->cb));
+                             acceptHeader, std::move(state->cb), timeoutMs);
                     return;
                 }
 
@@ -742,80 +872,108 @@ void WebImporter::runArxivImport(const QString &arxivId, int targetCollectionId,
             if (atomRes.ok)
                 meta = parseArxivAtom(atomRes.data);
 
-            const QString paperTitle = meta.value(QStringLiteral("title")).toString().simplified();
-            const QString firstAuthor = meta.value(QStringLiteral("firstAuthor")).toString().simplified();
-            const QString abstractText = meta.value(QStringLiteral("abstract")).toString().simplified();
-            const int year = meta.value(QStringLiteral("year")).toInt();
+            // export.arxiv.org occasionally rate-limits or times out; fall back
+            // to CDN-cached arxiv.org/abs/<id> Highwire citation_* meta tags.
+            if (meta.value(QStringLiteral("title")).toString().trimmed().isEmpty() && !m_arxivAbsBase.isEmpty()) {
+                const QUrl absUrl(m_arxivAbsBase + arxivId);
+                fetchUrl(
+                    absUrl, UrlGuard::maxHtmlBytes, false, false, 0, generation,
+                    QByteArrayLiteral("text/html, application/xhtml+xml;q=0.9, */*;q=0.1"),
+                    [this, arxivId, targetCollectionId, generation](FetchResult absRes) {
+                        if (generation != m_generation)
+                            return;
+                        QVariantMap fallbackMeta;
+                        if (absRes.ok)
+                            fallbackMeta = parseCitationMetaHtml(absRes.data);
+                        downloadArxivPdf(arxivId, fallbackMeta, targetCollectionId, generation);
+                    },
+                    kMetadataTimeoutMs);
+                return;
+            }
 
-            setStatus(paperTitle.isEmpty() ? QStringLiteral("Downloading arXiv %1 PDF…").arg(arxivId)
-                                           : QStringLiteral("Downloading “%1”…").arg(paperTitle));
-            setProgress(0.25);
+            downloadArxivPdf(arxivId, meta, targetCollectionId, generation);
+        },
+        kMetadataTimeoutMs);
+}
 
-            const QUrl pdfUrl(m_arxivPdfBase + arxivId + QStringLiteral(".pdf"));
-            fetchUrl(
-                pdfUrl, UrlGuard::maxBookBytes, false, true, 0, generation,
-                QByteArrayLiteral("application/pdf, */*;q=0.1"),
-                [this, arxivId, paperTitle, firstAuthor, abstractText, year, targetCollectionId,
-                 generation](FetchResult pdfRes) {
-                    if (generation != m_generation)
-                        return;
-                    if (!pdfRes.ok) {
-                        completeFailure(pdfRes.error);
-                        return;
-                    }
-                    if (!looksLikePdf(pdfRes.data)) {
-                        completeFailure(QStringLiteral("Downloaded arXiv file is not a valid PDF document."));
-                        return;
-                    }
+void WebImporter::downloadArxivPdf(const QString &arxivId, const QVariantMap &meta, int targetCollectionId,
+                                   quint64 generation) {
+    if (generation != m_generation)
+        return;
 
-                    // Build clean filename matching BookName::parseFileName():
-                    // "<FirstAuthor> - <SafeTitle> (<Year>).pdf" or "<id>.pdf" fallback.
-                    QString stem;
-                    const QString safeTitle = sanitizeFileStem(paperTitle, 110);
-                    const QString safeAuthor = sanitizeFileStem(firstAuthor, 48);
-                    if (!safeTitle.isEmpty()) {
-                        stem = !safeAuthor.isEmpty() ? (safeAuthor + QStringLiteral(" - ") + safeTitle) : safeTitle;
-                        if (year > 0)
-                            stem += QStringLiteral(" (%1)").arg(year);
-                    } else {
-                        QString safeId = arxivId;
-                        safeId.replace(QLatin1Char('/'), QLatin1Char('_'));
-                        stem = sanitizeFileStem(safeId, 64);
-                    }
-                    if (stem.isEmpty())
-                        stem = QStringLiteral("arxiv-paper");
+    const QString paperTitle = meta.value(QStringLiteral("title")).toString().simplified();
+    const QString firstAuthor = BookName::displayAuthor(meta.value(QStringLiteral("firstAuthor")).toString().simplified());
+    const QString abstractText = meta.value(QStringLiteral("abstract")).toString().simplified();
+    const int year = meta.value(QStringLiteral("year")).toInt();
 
-                    const QString destPath = QDir(downloadsDir()).filePath(stem + QStringLiteral(".pdf"));
-                    QString saveErr;
-                    if (!saveBytesAtomically(destPath, pdfRes.data, &saveErr)) {
-                        completeFailure(saveErr);
-                        return;
-                    }
+    setStatus(paperTitle.isEmpty() ? QStringLiteral("Downloading arXiv %1 PDF…").arg(arxivId)
+                                   : QStringLiteral("Downloading “%1”…").arg(paperTitle));
+    setProgress(0.25);
 
-                    setStatus(QStringLiteral("Adding paper to library…"));
-                    setProgress(0.92);
+    const QUrl pdfUrl(m_arxivPdfBase + arxivId + QStringLiteral(".pdf"));
+    fetchUrl(
+        pdfUrl, UrlGuard::maxBookBytes, false, true, 0, generation,
+        QByteArrayLiteral("application/pdf, */*;q=0.1"),
+        [this, arxivId, paperTitle, firstAuthor, abstractText, year, targetCollectionId,
+         generation](FetchResult pdfRes) {
+            if (generation != m_generation)
+                return;
+            if (!pdfRes.ok) {
+                completeFailure(pdfRes.error);
+                return;
+            }
+            if (!looksLikePdf(pdfRes.data)) {
+                completeFailure(QStringLiteral("Downloaded arXiv file is not a valid PDF document."));
+                return;
+            }
 
-                    const int bookId = m_library->addBookFile(destPath);
-                    if (bookId <= 0) {
-                        completeFailure(m_library->errorString().isEmpty()
-                                            ? QStringLiteral("Could not add downloaded PDF to the library.")
-                                            : m_library->errorString());
-                        return;
-                    }
+            // Build clean filename matching BookName::parseFileName():
+            // "<FirstAuthor> - <SafeTitle> (<Year>).pdf" or "<id>.pdf" fallback.
+            QString stem;
+            const QString safeTitle = sanitizeFileStem(paperTitle, 110);
+            const QString safeAuthor = sanitizeFileStem(firstAuthor, 48);
+            if (!safeTitle.isEmpty()) {
+                stem = !safeAuthor.isEmpty() ? (safeAuthor + QStringLiteral(" - ") + safeTitle) : safeTitle;
+                if (year > 0)
+                    stem += QStringLiteral(" (%1)").arg(year);
+            } else {
+                QString safeId = arxivId;
+                safeId.replace(QLatin1Char('/'), QLatin1Char('_'));
+                stem = sanitizeFileStem(safeId, 64);
+            }
+            if (stem.isEmpty())
+                stem = QStringLiteral("arxiv-paper");
 
-                    if (targetCollectionId > 0)
-                        m_library->addToCollection(bookId, targetCollectionId);
+            const QString destPath = QDir(downloadsDir()).filePath(stem + QStringLiteral(".pdf"));
+            QString saveErr;
+            if (!saveBytesAtomically(destPath, pdfRes.data, &saveErr)) {
+                completeFailure(saveErr);
+                return;
+            }
 
-                    const QString sourceUrl = QStringLiteral("https://arxiv.org/abs/") + arxivId;
-                    m_library->setBookSetting(bookId, QStringLiteral("source_url"), sourceUrl);
-                    m_library->setBookSetting(bookId, QStringLiteral("arxiv_id"), arxivId);
-                    if (!abstractText.isEmpty())
-                        m_library->setBookSetting(bookId, QStringLiteral("arxiv_abstract"), abstractText);
+            setStatus(QStringLiteral("Adding paper to library…"));
+            setProgress(0.92);
 
-                    const QString displayTitle =
-                        !paperTitle.isEmpty() ? paperTitle : m_library->record(bookId).title;
-                    completeSuccess(bookId, displayTitle, QStringLiteral("arxiv"), sourceUrl);
-                });
+            const int bookId = m_library->addBookFile(destPath);
+            if (bookId <= 0) {
+                completeFailure(m_library->errorString().isEmpty()
+                                    ? QStringLiteral("Could not add downloaded PDF to the library.")
+                                    : m_library->errorString());
+                return;
+            }
+
+            if (targetCollectionId > 0)
+                m_library->addToCollection(bookId, targetCollectionId);
+
+            const QString sourceUrl = QStringLiteral("https://arxiv.org/abs/") + arxivId;
+            m_library->setBookSetting(bookId, QStringLiteral("source_url"), sourceUrl);
+            m_library->setBookSetting(bookId, QStringLiteral("arxiv_id"), arxivId);
+            if (!abstractText.isEmpty())
+                m_library->setBookSetting(bookId, QStringLiteral("arxiv_abstract"), abstractText);
+
+            const QString displayTitle =
+                !paperTitle.isEmpty() ? paperTitle : m_library->record(bookId).title;
+            completeSuccess(bookId, displayTitle, QStringLiteral("arxiv"), sourceUrl);
         });
 }
 
@@ -872,6 +1030,44 @@ void WebImporter::runDirectOrArticleImport(const QUrl &initialUrl, const QString
             }
 
             if (isHtmlMime) {
+                // Academic paper landing pages (OpenReview, ACL Anthology, PMLR, bioRxiv,
+                // arXiv mirrors) advertise Highwire/Scholar citation_* meta tags pointing
+                // directly to the paper PDF.
+                const QVariantMap citation = parseCitationMetaHtml(res.data);
+                const QString metaArxivId = parseArxivId(QStringLiteral("arxiv:") +
+                                                         citation.value(QStringLiteral("arxivId")).toString());
+                if (!metaArxivId.isEmpty()) {
+                    setDetectedKind(QStringLiteral("arxiv"));
+                    downloadArxivPdf(metaArxivId, citation, targetCollectionId, generation);
+                    return;
+                }
+                const QString metaPdfStr = citation.value(QStringLiteral("pdfUrl")).toString().trimmed();
+                if (!metaPdfStr.isEmpty()) {
+                    const QUrl resolvedPdf = res.finalUrl.resolved(QUrl(metaPdfStr));
+                    if (UrlGuard::isAllowedUrl(resolvedPdf, m_allowLocalNetwork)) {
+                        const QString landingUrl = res.finalUrl.toString();
+                        const QString paperTitle = citation.value(QStringLiteral("title")).toString().trimmed();
+                        setDetectedKind(QStringLiteral("pdf"));
+                        setStatus(paperTitle.isEmpty() ? QStringLiteral("Downloading paper PDF…")
+                                                       : QStringLiteral("Downloading “%1”…").arg(paperTitle));
+                        fetchUrl(
+                            resolvedPdf, UrlGuard::maxBookBytes, false, true, 0, generation,
+                            QByteArrayLiteral("application/pdf, */*;q=0.1"),
+                            [this, citation, landingUrl, targetCollectionId, generation, res](FetchResult pdfRes) {
+                                if (generation != m_generation)
+                                    return;
+                                if (pdfRes.ok && looksLikePdf(pdfRes.data)) {
+                                    finishDirectBook(QStringLiteral("pdf"), pdfRes, targetCollectionId, citation,
+                                                     landingUrl);
+                                    return;
+                                }
+                                // Fall back to article extraction if the advertised PDF failed.
+                                setDetectedKind(QStringLiteral("article"));
+                                finishWebArticle(res, targetCollectionId, generation);
+                            });
+                        return;
+                    }
+                }
                 setDetectedKind(QStringLiteral("article"));
                 finishWebArticle(res, targetCollectionId, generation);
                 return;
@@ -882,27 +1078,43 @@ void WebImporter::runDirectOrArticleImport(const QUrl &initialUrl, const QString
         });
 }
 
-void WebImporter::finishDirectBook(const QString &format, const FetchResult &res, int targetCollectionId) {
+void WebImporter::finishDirectBook(const QString &format, const FetchResult &res, int targetCollectionId,
+                                   const QVariantMap &citationMeta, const QString &sourceUrlOverride) {
     setStatus(QStringLiteral("Saving %1…").arg(format.toUpper()));
     setProgress(0.88);
 
-    QString rawName = parseContentDispositionFilename(res.contentDisposition);
-    if (rawName.isEmpty())
-        rawName = QFileInfo(QUrl::fromPercentEncoding(res.finalUrl.path().toUtf8())).fileName();
+    QString stem;
+    const QString citeTitle = sanitizeFileStem(citationMeta.value(QStringLiteral("title")).toString(), 110);
+    const QString citeAuthor = sanitizeFileStem(
+        BookName::displayAuthor(citationMeta.value(QStringLiteral("firstAuthor")).toString()), 48);
+    const int citeYear = citationMeta.value(QStringLiteral("year")).toInt();
+    if (format == QLatin1String("pdf") && !citeTitle.isEmpty()) {
+        stem = !citeAuthor.isEmpty() ? (citeAuthor + QStringLiteral(" - ") + citeTitle) : citeTitle;
+        if (citeYear > 0)
+            stem += QStringLiteral(" (%1)").arg(citeYear);
+    }
 
-    QString stem = QFileInfo(rawName).completeBaseName();
-    stem = sanitizeFileStem(stem, 96);
+    if (stem.isEmpty()) {
+        QString rawName = parseContentDispositionFilename(res.contentDisposition);
+        if (rawName.isEmpty())
+            rawName = QFileInfo(QUrl::fromPercentEncoding(res.finalUrl.path().toUtf8())).fileName();
+
+        stem = QFileInfo(rawName).completeBaseName();
+        stem = sanitizeFileStem(stem, 96);
+    }
     if (stem.isEmpty())
         stem = slugify(res.finalUrl.host(), 32) + QLatin1Char('-') + shortHashHex(res.finalUrl.toString());
 
     const QString ext = QLatin1Char('.') + format;
     QString destPath = QDir(downloadsDir()).filePath(stem + ext);
+    const QString effectiveSourceUrl =
+        !sourceUrlOverride.isEmpty() ? sourceUrlOverride : res.finalUrl.toString();
     // Avoid overwriting a different file from another URL with the same generic filename.
     if (QFileInfo::exists(destPath)) {
         const int existingId = m_library->idForPath(destPath);
         const QString existingSrc = existingId > 0 ? m_library->bookSetting(existingId, QStringLiteral("source_url")) : QString();
-        if (existingSrc != res.finalUrl.toString())
-            destPath = QDir(downloadsDir()).filePath(stem + QLatin1Char('-') + shortHashHex(res.finalUrl.toString()) + ext);
+        if (existingSrc != effectiveSourceUrl)
+            destPath = QDir(downloadsDir()).filePath(stem + QLatin1Char('-') + shortHashHex(effectiveSourceUrl) + ext);
     }
 
     QString saveErr;
@@ -931,9 +1143,12 @@ void WebImporter::finishDirectBook(const QString &format, const FetchResult &res
 
     if (targetCollectionId > 0)
         m_library->addToCollection(bookId, targetCollectionId);
-    m_library->setBookSetting(bookId, QStringLiteral("source_url"), res.finalUrl.toString());
+    m_library->setBookSetting(bookId, QStringLiteral("source_url"), effectiveSourceUrl);
+    const QString citeAbstract = citationMeta.value(QStringLiteral("abstract")).toString().trimmed();
+    if (!citeAbstract.isEmpty())
+        m_library->setBookSetting(bookId, QStringLiteral("arxiv_abstract"), citeAbstract);
 
-    completeSuccess(bookId, m_library->record(bookId).title, format, res.finalUrl.toString());
+    completeSuccess(bookId, m_library->record(bookId).title, format, effectiveSourceUrl);
 }
 
 void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionId, quint64 generation) {

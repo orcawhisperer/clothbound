@@ -488,8 +488,34 @@ void TestOnlineIngest::webImporterParsingHelpers() {
              QStringLiteral("hep-th/9901001"));
     QCOMPARE(WebImporter::parseArxivId(QStringLiteral("https://arxiv.org/abs/math.GT/0309136v1")),
              QStringLiteral("math.GT/0309136v1"));
+    // Popular arXiv mirrors & viewers (alphaXiv, Hugging Face Papers, ar5iv, papers.cool)
+    QCOMPARE(WebImporter::parseArxivId(QStringLiteral("https://www.alphaxiv.org/pdf/2609.15818")),
+             QStringLiteral("2609.15818"));
+    QCOMPARE(WebImporter::parseArxivId(QStringLiteral("https://alphaxiv.org/overview/2609.15818v1")),
+             QStringLiteral("2609.15818v1"));
+    QCOMPARE(WebImporter::parseArxivId(QStringLiteral("https://huggingface.co/papers/2609.15818")),
+             QStringLiteral("2609.15818"));
+    QCOMPARE(WebImporter::parseArxivId(QStringLiteral("https://ar5iv.org/html/2301.07041")),
+             QStringLiteral("2301.07041"));
+    QCOMPARE(WebImporter::detectUrlKind(QStringLiteral("https://www.alphaxiv.org/pdf/2609.15818")),
+             QStringLiteral("arxiv"));
     QVERIFY(WebImporter::parseArxivId(QStringLiteral("https://example.com/abs/2301.07041")).isEmpty());
     QVERIFY(WebImporter::parseArxivId(QStringLiteral("not an arxiv id")).isEmpty());
+
+    // Highwire / Google Scholar citation_* HTML meta tag parsing
+    const QByteArray citeHtml =
+        R"HTML(<head><meta name="citation_title" content="Atria Dawn: Agentic Research" />
+<meta name="citation_author" content="Guo, Honglin" />
+<meta name="citation_date" content="2026/09/14" />
+<meta name="citation_pdf_url" content="https://arxiv.org/pdf/2609.15818" />
+<meta name="citation_arxiv_id" content="2609.15818" />
+<meta name="citation_abstract" content="A study of agentic workflows." /></head>)HTML";
+    const QVariantMap citeMeta = WebImporter::parseCitationMetaHtml(citeHtml);
+    QCOMPARE(citeMeta.value(QStringLiteral("title")).toString(), QStringLiteral("Atria Dawn: Agentic Research"));
+    QCOMPARE(citeMeta.value(QStringLiteral("firstAuthor")).toString(), QStringLiteral("Honglin Guo"));
+    QCOMPARE(citeMeta.value(QStringLiteral("year")).toInt(), 2026);
+    QCOMPARE(citeMeta.value(QStringLiteral("arxivId")).toString(), QStringLiteral("2609.15818"));
+    QCOMPARE(citeMeta.value(QStringLiteral("pdfUrl")).toString(), QStringLiteral("https://arxiv.org/pdf/2609.15818"));
 
     // URL kind detection
     QCOMPARE(WebImporter::detectUrlKind(QStringLiteral("https://arxiv.org/abs/2301.07041")), QStringLiteral("arxiv"));
@@ -714,6 +740,33 @@ void TestOnlineIngest::webImporterEndToEndArxiv() {
              QStringLiteral("https://arxiv.org/abs/2301.07041"));
     QCOMPARE(library.bookSetting(bookId, QStringLiteral("arxiv_abstract")),
              QStringLiteral("A concise abstract about structured attention."));
+
+    // When export.arxiv.org API fails (503), fall back cleanly to /abs/<id> citation_* meta tags,
+    // and accept alphaXiv URLs directly.
+    server.routes.insert("/api/query?id_list=2609.15818", {503, "text/plain", {}, "busy", false});
+    server.routes.insert(
+        "/abs/2609.15818",
+        {200,
+         "text/html; charset=utf-8",
+         {},
+         "<html><head><meta name=\"citation_title\" content=\"Atria Dawn\" />"
+         "<meta name=\"citation_author\" content=\"Guo, Honglin\" />"
+         "<meta name=\"citation_date\" content=\"2026/09/14\" /></head></html>",
+         false});
+    server.routes.insert("/pdf/2609.15818.pdf", {200, "application/pdf", {}, pdfBytes, false});
+    importer.setArxivEndpointsForTests(origin + QStringLiteral("/api/query?id_list="),
+                                       origin + QStringLiteral("/pdf/"),
+                                       origin + QStringLiteral("/abs/"));
+    int alphaId = 0;
+    QString alphaKind, alphaErr;
+    QVERIFY2(importer.importUrlSync(QStringLiteral("https://www.alphaxiv.org/pdf/2609.15818"),
+                                    &alphaId, &alphaKind, &alphaErr),
+             qPrintable(alphaErr));
+    QCOMPARE(alphaKind, QStringLiteral("arxiv"));
+    const BookRecord alphaRec = library.record(alphaId);
+    QCOMPARE(alphaRec.title, QStringLiteral("Atria Dawn"));
+    QCOMPARE(alphaRec.author, QStringLiteral("Honglin Guo"));
+    QCOMPARE(alphaRec.year, 2026);
 }
 
 void TestOnlineIngest::webImporterRejectsForbiddenRedirect() {
