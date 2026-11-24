@@ -44,6 +44,8 @@ QNetworkRequest makeBaseRequest(const QUrl &url, const QByteArray &accept) {
     QNetworkRequest req(url);
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
     req.setAttribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
+    // Avoid Qt 6 HTTP/2 half-closed stream errors on Open Library / Archive.org / HAProxy servers.
+    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Clothbound/0.4.0 (OPDS)"));
     if (!accept.isEmpty())
         req.setRawHeader("Accept", accept);

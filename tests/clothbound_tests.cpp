@@ -11046,12 +11046,12 @@ Item {
         QCoreApplication::processEvents();
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
 
-        // 4. Bookmark dog-ear stays below header bar (no Companion button overlap) and Companion C toggles cleanly.
+        // 4. Bookmark dog-ear stays clear of Companion button (52 px tool reserve) and Companion C toggles cleanly.
         {
             QFile erFile(srcRoot + QStringLiteral("/ui/reader/EpubReader.qml"));
             QVERIFY(erFile.open(QIODevice::ReadOnly));
             const QString erQml = QString::fromUtf8(erFile.readAll());
-            QVERIFY(erQml.contains(QStringLiteral("anchors.topMargin: Math.round(chrome.chromeProgress * chrome.height)")));
+            QVERIFY(erQml.contains(QStringLiteral("anchors.rightMargin: 52")));
             QVERIFY(erQml.contains(QStringLiteral("companionPanel.open ? companionPanel.close() : showCompanion(\"ask\")")));
 
             QFile cpFile(srcRoot + QStringLiteral("/ui/companion/CompanionPanel.qml"));

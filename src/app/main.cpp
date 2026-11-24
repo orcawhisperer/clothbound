@@ -51,8 +51,11 @@
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QNetworkAccessManager>
+#include <QNetworkRequest>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQmlNetworkAccessManagerFactory>
 #include <QQmlExpression>
 #include <QQuickStyle>
 #include <QQuickWindow>
@@ -446,6 +449,26 @@ int main(int argc, char *argv[]) {
         "settingsUrl", QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
                                            QStringLiteral("/settings.ini")));
     engine.rootContext()->setContextProperty("executablePath", QCoreApplication::applicationFilePath());
+    // Use HTTP/1.1 for QML remote cover thumbnails (e.g. covers.openlibrary.org)
+    // to prevent Qt 6 HTTP/2 "Data on closed stream" / half-closed stream errors.
+    class Http1NetworkAccessManager : public QNetworkAccessManager {
+    public:
+        using QNetworkAccessManager::QNetworkAccessManager;
+    protected:
+        QNetworkReply *createRequest(Operation op, const QNetworkRequest &originalReq,
+                                     QIODevice *outgoingData = nullptr) override {
+            QNetworkRequest req(originalReq);
+            if (req.url().scheme().startsWith(QLatin1String("http"), Qt::CaseInsensitive))
+                req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+            return QNetworkAccessManager::createRequest(op, req, outgoingData);
+        }
+    };
+    class Http1NamFactory : public QQmlNetworkAccessManagerFactory {
+    public:
+        QNetworkAccessManager *create(QObject *parent) override { return new Http1NetworkAccessManager(parent); }
+    };
+    Http1NamFactory qmlNetFactory;
+    engine.setNetworkAccessManagerFactory(&qmlNetFactory);
     engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
     engine.load(QUrl("qrc:/ui/Main.qml"));
     if (engine.rootObjects().isEmpty())

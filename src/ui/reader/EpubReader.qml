@@ -1295,7 +1295,7 @@ FocusScope {
             Row {
                 id: tools
                 anchors.right: parent.right
-                anchors.rightMargin: 14
+                anchors.rightMargin: 52
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 4
 
@@ -1765,14 +1765,13 @@ FocusScope {
             }
         }
 
-        // The bookmark is a 44×44 tactile paper dog-ear in the top-right corner (02_reading:550).
-        // Glides cleanly below the 48 px header bar whenever chrome is shown and stays at z: 2
-        // (below chrome's z: 3) so it never overlaps or intercepts the Companion button.
+        // The bookmark is a 44×44 tactile paper dog-ear permanently anchored in the
+        // top-right corner (02_reading:550); header tools reserve 52 px on the right
+        // so the Companion button and bookmark corner never overlap.
         Item {
             id: pageFold
-            z: 2
+            z: 4
             anchors.top: parent.top
-            anchors.topMargin: Math.round(chrome.chromeProgress * chrome.height)
             anchors.right: parent.right
             width: 44
             height: 44

@@ -725,6 +725,7 @@ void WebImporter::startHttpRequest(const QUrl &url, qint64 maxBytes, bool allowB
 
     QNetworkRequest req(url);
     req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
+    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
     req.setTransferTimeout(timeoutMs > 0 ? timeoutMs : kRequestTimeoutMs);
     req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Clothbound/0.4 (+https://clothbound.app)"));
     if (!acceptHeader.isEmpty())
