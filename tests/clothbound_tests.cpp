@@ -10319,6 +10319,12 @@ Item {
             const QString abBlock = qml.mid(abPos, 120);
             QVERIFY2(dlBlock.contains(QStringLiteral("glyph: Icons.download")), qPrintable(dlBlock));
             QVERIFY2(abBlock.contains(QStringLiteral("glyph: Icons.headphones")), qPrintable(abBlock));
+            QVERIFY2(qml.contains(QStringLiteral("readonly property string title: qsTr(\"Settings\")")),
+                     "LibrarySidebar footer must be labeled Settings");
+            QVERIFY2(qml.contains(QStringLiteral("path: Icons.gear")),
+                     "LibrarySidebar Settings footer must use Icons.gear");
+            QVERIFY2(qml.contains(QStringLiteral("onClicked: side.settingsRequested()")),
+                     "LibrarySidebar Settings footer must emit settingsRequested()");
 
             QFile detailsFile(srcRoot + QStringLiteral("/ui/library/BookDetails.qml"));
             QVERIFY(detailsFile.open(QIODevice::ReadOnly));
@@ -10326,6 +10332,24 @@ Item {
             QVERIFY(detailsQml.contains(QStringLiteral("text: \"BibTeX\"")));
             QVERIFY(detailsQml.contains(QStringLiteral("text: \"APA\"")));
             QVERIFY(detailsQml.contains(QStringLiteral("shelfPill.member ? theme.accentSoft")));
+
+            QFile shelfFile(srcRoot + QStringLiteral("/ui/library/ContinueShelf.qml"));
+            QVERIFY(shelfFile.open(QIODevice::ReadOnly));
+            const QString shelfQml = QString::fromUtf8(shelfFile.readAll());
+            QVERIFY(shelfQml.contains(QStringLiteral("book.format === \"pdf\"")));
+            QVERIFY(shelfQml.contains(QStringLiteral("qsTr(\"Page %1 of %2\")")));
+
+            QFile libViewFile(srcRoot + QStringLiteral("/ui/library/LibraryView.qml"));
+            QVERIFY(libViewFile.open(QIODevice::ReadOnly));
+            const QString libViewQml = QString::fromUtf8(libViewFile.readAll());
+            QVERIFY(libViewQml.contains(QStringLiteral("onSettingsRequested: win.showSettings()")));
+            QVERIFY(libViewQml.contains(QStringLiteral("qsTr(\"Open any book while the rest arrive.\")")));
+
+            QFile readerFile(srcRoot + QStringLiteral("/ui/reader/EpubReader.qml"));
+            QVERIFY(readerFile.open(QIODevice::ReadOnly));
+            const QString readerQml = QString::fromUtf8(readerFile.readAll());
+            QVERIFY(readerQml.contains(QStringLiteral("key: \"X\", what: qsTr(\"Snip\")")));
+            QVERIFY(readerQml.contains(QStringLiteral("key: \"Ctrl K\", what: qsTr(\"Find\")")));
         }
     }
 

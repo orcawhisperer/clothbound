@@ -43,6 +43,13 @@ FocusScope {
         if (!book)
             return ""
         const parts = [qsTr("%1%").arg(percentOf(book))]
+        if (book.format === "pdf" && (book.pages || 0) > 0) {
+            const cur = Math.max(1, Math.min(book.pages, Math.round((book.progress || 0) * book.pages)))
+            parts.push(qsTr("Page %1 of %2").arg(cur.toLocaleString(Qt.locale(), "f", 0))
+                                             .arg(book.pages.toLocaleString(Qt.locale(), "f", 0)))
+            parts.push("PDF")
+            return parts.join(" · ")
+        }
         const left = timeLeft(book)
         if (left !== "")
             parts.push(left)

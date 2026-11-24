@@ -1609,18 +1609,25 @@ FocusScope {
 
             RowLayout {
                 anchors.fill: parent
-                anchors.leftMargin: 20
-                anchors.rightMargin: 16
-                spacing: 20
+                anchors.leftMargin: 18
+                anchors.rightMargin: 14
+                spacing: 16
                 Repeater {
-                    model: [{ key: qsTr("Space"), what: qsTr("next page") },
-                            { key: "P", what: qsTr("read aloud") },
-                            { key: "C", what: qsTr("ask about it") },
-                            { key: "?", what: qsTr("every key") }]
+                    model: view.pdf
+                           ? [{ key: "← →", what: qsTr("Turn") },
+                              { key: "P", what: qsTr("Listen") },
+                              { key: "C", what: qsTr("Ask") },
+                              { key: "X", what: qsTr("Snip") },
+                              { key: "Ctrl K", what: qsTr("Find") }]
+                           : [{ key: "← →", what: qsTr("Turn") },
+                              { key: "P", what: qsTr("Listen") },
+                              { key: "C", what: qsTr("Ask") },
+                              { key: "Ctrl K", what: qsTr("Find") },
+                              { key: "?", what: qsTr("All keys") }]
                     delegate: Row {
                         required property var modelData
                         Layout.alignment: Qt.AlignVCenter
-                        spacing: 8
+                        spacing: 7
                         KeyHint {
                             anchors.verticalCenter: parent.verticalCenter
                             text: modelData.key

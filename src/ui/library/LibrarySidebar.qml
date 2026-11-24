@@ -7,8 +7,8 @@ import "../components/Icons.js" as Icons
 import "../components/Ui.js" as Ui
 
 // The library sidebar: Clothbound brand mark, core shelves, Listening (Downloaded &
-// Audiobooks), color-swatched Collections, transient J2 watching card, and the
-// Intelligence status card at the foot (01_library.html, 10_j1, 11_j2).
+// Audiobooks), color-swatched Collections, Online catalogs & URLs, transient J2
+// watching card, and the Settings entry (with live intelligence status) at the foot.
 // Ctrl+B folds it to a 60 px icon rail on a damped 350 ms transition.
 Rectangle {
     id: side
@@ -23,7 +23,7 @@ Rectangle {
     signal addBooksToCollection(int id)
     signal bookDroppedOnCollection(int collectionId, string collectionName)
     signal filterNavigated()
-    signal intelligenceRequested()
+    signal settingsRequested()
     signal catalogsRequested()
     signal addUrlRequested()
 
@@ -483,22 +483,22 @@ Rectangle {
             readonly property string where: !setUp ? "none"
                                            : ai.preset === "local" ? "local"
                                            : ai.preset === "cloud" ? "cloud" : "hybrid"
-            readonly property string title: where === "none" ? qsTr("Intelligence")
-                                           : where === "local" ? qsTr("On this computer")
-                                           : where === "cloud" ? qsTr("Gemini") : qsTr("Hybrid intelligence")
+            readonly property string title: qsTr("Settings")
             readonly property string detail: {
                 if (!setUp)
-                    return qsTr("Optional · set up")
+                    return qsTr("Reading, voices, AI")
                 if (where === "hybrid")
-                    return qsTr("Gemini · this computer")
+                    return qsTr("Hybrid · Gemini + local")
                 if (where === "cloud") {
                     const spent = Number(ai.spentThisMonth).toLocaleCurrencyString(Qt.locale("en_US"), "$")
                     return ai.unlimitedBudget || ai.budget <= 0
-                        ? qsTr("%1 this month").arg(spent)
-                        : qsTr("%1 of %2").arg(spent)
+                        ? qsTr("Gemini · %1").arg(spent)
+                        : qsTr("Gemini · %1 / %2").arg(spent)
                               .arg(Number(ai.budget).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
                 }
-                return ai.localTextModel !== "" ? ai.localTextModel : qsTr("Free and private")
+                return ai.localTextModel !== ""
+                    ? qsTr("Local · %1").arg(ai.localTextModel)
+                    : qsTr("On this computer")
             }
             Accessible.name: title + ", " + detail
 
@@ -512,19 +512,19 @@ Rectangle {
             }
             contentItem: Item {
                 Glyph {
-                    id: spark
+                    id: settingsGlyph
                     anchors.left: parent.left
                     anchors.leftMargin: side.collapsed ? (footer.width - width) / 2 : 10
                     anchors.verticalCenter: parent.verticalCenter
                     width: 16
                     height: 16
                     stroke: 1.7
-                    path: Icons.sparkle
-                    color: footer.setUp ? theme.accentInk : theme.ink3
+                    path: Icons.gear
+                    color: footer.hovered ? theme.ink1 : theme.ink2
                 }
                 Column {
                     visible: !side.collapsed
-                    anchors.left: spark.right
+                    anchors.left: settingsGlyph.right
                     anchors.leftMargin: 10
                     anchors.right: statusDot.visible ? statusDot.left : parent.right
                     anchors.rightMargin: 8
@@ -559,20 +559,20 @@ Rectangle {
                     Accessible.name: qsTr("Connected")
                 }
             }
-            onClicked: side.intelligenceRequested()
+            onClicked: side.settingsRequested()
             ToolTip.visible: hovered && (side.collapsed || (footer.setUp && ai.hasKey))
             ToolTip.text: {
                 if (!footer.setUp)
-                    return footer.title + " · " + footer.detail
+                    return qsTr("Settings (Ctrl+,)") + " · " + footer.detail
                 if (ai.hasKey && footer.where !== "local") {
                     const spent = Number(ai.spentThisMonth).toLocaleCurrencyString(Qt.locale("en_US"), "$")
                     const budgetStr = ai.unlimitedBudget || ai.budget <= 0
                         ? qsTr("%1 this month").arg(spent)
                         : qsTr("%1 of %2 this month").arg(spent)
                               .arg(Number(ai.budget).toLocaleCurrencyString(Qt.locale("en_US"), "$"))
-                    return footer.title + " · " + budgetStr
+                    return qsTr("Settings (Ctrl+,)") + " · Gemini · " + budgetStr
                 }
-                return footer.title + " · " + footer.detail
+                return qsTr("Settings (Ctrl+,)") + " · " + footer.detail
             }
             ToolTip.delay: 400
         }

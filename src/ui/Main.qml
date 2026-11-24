@@ -379,8 +379,10 @@ ApplicationWindow {
                 readingSettings.theme = order[(order.indexOf(readingSettings.theme) + 1) % order.length]
                 toast.show(qsTr("%1 theme").arg(Themes.name(readingSettings.theme)))
             }
-        } else if (actionId === "ai-settings") {
+        } else if (actionId === "settings") {
             settingsView.open ? settingsView.close() : settingsView.show()
+        } else if (actionId === "ai-settings") {
+            settingsView.show("intelligence")
         } else if (actionId === "fullscreen") {
             toggleFullScreen()
         } else if (actionId === "help") {
@@ -534,6 +536,7 @@ ApplicationWindow {
         }
     }
     Shortcut { sequences: ["Ctrl+,"]; context: Qt.ApplicationShortcut; onActivated: settingsView.open ? settingsView.close() : settingsView.show() }
+    function showSettings() { settingsView.show() }
     function showAiSettings() { settingsView.show("intelligence") }
 
     // --- Library ---------------------------------------------------------

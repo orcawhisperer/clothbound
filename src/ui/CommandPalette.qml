@@ -204,7 +204,8 @@ FocusScope {
             list.push({ id: "toggle-theme", title: qsTr("Cycle reading theme"), subtitle: Themes.name(currentTheme), hint: "", glyph: Icons.sun })
         }
         list.push({ id: "stats", title: qsTr("Reading stats & insights"), subtitle: qsTr("Reading time, streak, and finished books"), hint: "", glyph: Icons.stats })
-        list.push({ id: "ai-settings", title: qsTr("Intelligence settings"), subtitle: qsTr("Gemini, local models, budget"), hint: "Ctrl+,", glyph: Icons.sparkle })
+        list.push({ id: "settings", title: qsTr("Settings"), subtitle: qsTr("General, reading, voices, intelligence"), hint: "Ctrl ,", glyph: Icons.gear })
+        list.push({ id: "ai-settings", title: qsTr("Intelligence settings"), subtitle: qsTr("Gemini, local models, budget"), hint: "", glyph: Icons.sparkle })
         list.push({ id: "fullscreen", title: qsTr("Toggle full screen"), subtitle: "", hint: "F", glyph: Icons.fullscreen })
         list.push({ id: "help", title: qsTr("Keyboard shortcuts"), subtitle: qsTr("View all keys"), hint: "?", glyph: Icons.keyboard })
         list.push({ id: "quit", title: qsTr("Quit Clothbound"), subtitle: "", hint: "Q", glyph: Icons.close })
