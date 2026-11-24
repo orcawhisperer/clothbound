@@ -867,7 +867,7 @@ a {
 /* Calm Top Chrome */
 .reader-bar {
   height: 52px;
-  padding: 0 54px 0 18px;
+  padding: 0 18px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -992,26 +992,26 @@ a {
   display: none;
 }
 
-/* Corner Bookmark Fold */
+/* Corner Bookmark Fold (top-right of book page stage, below header bar) */
 .bookmark-fold {
   position: absolute;
   top: 0;
   right: 0;
-  width: 40px;
-  height: 40px;
+  width: 28px;
+  height: 28px;
   border: 0;
   padding: 0;
   background: linear-gradient(225deg, var(--bg) 50%, var(--fold) 50%);
-  box-shadow: -2px 2px 6px rgba(0, 0, 0, 0.08);
-  opacity: 0.22;
+  box-shadow: -2px 2px 5px rgba(0, 0, 0, 0.08);
+  opacity: 0.24;
   transition: opacity 180ms ease;
-  z-index: 35;
+  z-index: 20;
 }
 .bookmark-fold:hover {
-  opacity: 0.72;
+  opacity: 0.78;
 }
 .bookmark-fold.bookmarked {
-  opacity: 1;
+  opacity: 0.96;
   background: linear-gradient(225deg, var(--bg) 50%, #D9A229 50%);
 }
 
@@ -2009,7 +2009,7 @@ kbd {
 
   .reader-bar {
     height: 48px;
-    padding: 0 38px 0 10px;
+    padding: 0 10px;
     gap: 6px;
   }
   .reader-bar-right {
@@ -2028,8 +2028,8 @@ kbd {
     display: none;
   }
   .bookmark-fold {
-    width: 34px;
-    height: 34px;
+    width: 22px;
+    height: 22px;
   }
   .epub-stage {
     padding: 18px 22px 12px;
