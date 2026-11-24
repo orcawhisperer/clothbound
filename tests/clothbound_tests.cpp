@@ -14,6 +14,7 @@
 #include <QProcess>
 #include <QPromise>
 #include <QQmlComponent>
+#include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickItem>
 #include <QQuickStyle>
@@ -9752,6 +9753,580 @@ domReady();
         QCOMPARE(replies[1].value(QStringLiteral("result")).toObject().value(QStringLiteral("tools")).toArray().size(), 6);
         QCOMPARE(replies[2].value(QStringLiteral("id")).toInt(), 3);
         QCOMPARE(replies[2].value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("count")).toInt(), 2);
+    }
+
+    // --- Wave 5 regression tests: SFX & PDF line bands, Slim ListenBar,
+    //     Companion voice/resize, Library collections & shelves -------------
+
+    void wave5PdfLineBandsAndRealPageTurnSfx() {
+        // 1. PdfBook::mergeLineRects(): jagged word heights on one visual line -> 1 uniform band.
+        {
+            const QList<QRectF> jagged = {
+                QRectF(0.100, 0.200, 0.060, 0.020),  // "The"
+                QRectF(0.170, 0.205, 0.030, 0.011),  // "in"
+                QRectF(0.210, 0.204, 0.040, 0.017),  // "by"
+                QRectF(0.255, 0.212, 0.008, 0.005),  // "."
+            };
+            const QList<QRectF> out = PdfBook::mergeLineRects(jagged);
+            QCOMPARE(out.size(), 1);
+            QVERIFY(qAbs(out[0].left() - 0.100) < 1e-6);
+            QVERIFY(qAbs(out[0].right() - 0.263) < 1e-6);
+            QVERIFY(out[0].height() >= 0.020);
+        }
+
+        // 2. Lowercase-only wrap line matches height of full-height body lines.
+        {
+            const QList<QRectF> wrapped = {
+                QRectF(0.10, 0.200, 0.78, 0.020),  // Full line 1
+                QRectF(0.10, 0.232, 0.78, 0.020),  // Full line 2
+                QRectF(0.10, 0.268, 0.22, 0.011),  // Lowercase wrap line ("in a sum")
+            };
+            const QList<QRectF> out = PdfBook::mergeLineRects(wrapped);
+            QCOMPARE(out.size(), 3);
+            QVERIFY2(qAbs(out[2].height() - out[0].height()) < 0.001,
+                     qPrintable(QStringLiteral("wrap=%1 full=%2").arg(out[2].height()).arg(out[0].height())));
+        }
+
+        // 3. Two-column academic gutters (0.04 and 0.06) are never bridged.
+        {
+            const QList<QRectF> twoCol = {
+                // Row 1: gutter = 0.50 - 0.46 = 0.04 (body h=0.012 -> maxWordGap=0.036)
+                QRectF(0.08, 0.200, 0.17, 0.012),
+                QRectF(0.26, 0.200, 0.20, 0.012),
+                QRectF(0.50, 0.200, 0.18, 0.012),
+                QRectF(0.69, 0.200, 0.19, 0.012),
+                // Row 2: gutter = 0.51 - 0.45 = 0.06
+                QRectF(0.08, 0.226, 0.37, 0.012),
+                QRectF(0.51, 0.226, 0.37, 0.012),
+            };
+            const QList<QRectF> out = PdfBook::mergeLineRects(twoCol);
+            QCOMPARE(out.size(), 4);
+            for (const QRectF &band : out) {
+                const bool crossesCenterGutter = band.left() < 0.46 && band.right() > 0.50;
+                QVERIFY2(!crossesCenterGutter, qPrintable(QStringLiteral("Bridged gutter: [%1..%2]").arg(band.left()).arg(band.right())));
+            }
+        }
+
+        // 4. Oversized heading preserves its taller height above body lines.
+        {
+            const QList<QRectF> withHeading = {
+                QRectF(0.10, 0.100, 0.50, 0.042),  // Section heading
+                QRectF(0.10, 0.180, 0.78, 0.018),
+                QRectF(0.10, 0.210, 0.78, 0.018),
+                QRectF(0.10, 0.240, 0.78, 0.018),
+            };
+            const QList<QRectF> out = PdfBook::mergeLineRects(withHeading);
+            QCOMPARE(out.size(), 4);
+            QVERIFY(out[0].height() > out[1].height() * 1.8);
+        }
+
+        // 5. Out-of-order tokens on the same visual line unite cleanly.
+        {
+            const QList<QRectF> outOfOrder = {
+                QRectF(0.30, 0.30, 0.10, 0.018),
+                QRectF(0.10, 0.30, 0.08, 0.018),
+                QRectF(0.19, 0.30, 0.10, 0.018),
+            };
+            const QList<QRectF> out = PdfBook::mergeLineRects(outOfOrder);
+            QCOMPARE(out.size(), 1);
+            QVERIFY(qAbs(out[0].left() - 0.10) < 1e-6);
+            QVERIFY(qAbs(out[0].right() - 0.40) < 1e-6);
+        }
+
+        // 6. Degenerate / NaN / Inf / empty rects dropped safely.
+        {
+            const qreal nan = std::numeric_limits<qreal>::quiet_NaN();
+            const qreal inf = std::numeric_limits<qreal>::infinity();
+            const QList<QRectF> invalidOnly = {
+                QRectF(nan, 0.1, 0.1, 0.02),
+                QRectF(0.1, inf, 0.1, 0.02),
+                QRectF(0.1, 0.1, 0.0, 0.02),
+                QRectF(0.1, 0.1, 0.1, -0.02),
+            };
+            QVERIFY(PdfBook::mergeLineRects(invalidOnly).isEmpty());
+            QList<QRectF> mixed = invalidOnly;
+            mixed.append(QRectF(-0.05, 0.40, 0.30, 0.02));
+            const QList<QRectF> out = PdfBook::mergeLineRects(mixed);
+            QCOMPARE(out.size(), 1);
+            QVERIFY(out[0].left() >= 0.0 && out[0].right() <= 1.0);
+        }
+
+        // 7. Tight consecutive lines stay vertically non-overlapping (zero double-alpha seams).
+        {
+            const QList<QRectF> tight = {
+                QRectF(0.10, 0.200, 0.75, 0.019),
+                QRectF(0.10, 0.218, 0.75, 0.019),
+                QRectF(0.10, 0.236, 0.75, 0.019),
+            };
+            const QList<QRectF> out = PdfBook::mergeLineRects(tight);
+            QCOMPARE(out.size(), 3);
+            QVERIFY2(out[0].bottom() < out[1].top(),
+                     qPrintable(QStringLiteral("line0.bottom=%1 line1.top=%2").arg(out[0].bottom()).arg(out[1].top())));
+            QVERIFY2(out[1].bottom() < out[2].top(),
+                     qPrintable(QStringLiteral("line1.bottom=%1 line2.top=%2").arg(out[1].bottom()).arg(out[2].top())));
+        }
+
+        // 8. Reader::playPageTurnDryRun(): 3 real WAV clips alternate (c0 != c1 != c2),
+        //    backward gain is ~0.82x, and forward peaks lie within soft -14..-18 dBFS.
+        {
+            QTemporaryDir dir;
+            Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+            QVERIFY(library.open());
+            BookScheme scheme;
+            Reader reader(&library, &scheme);
+
+            auto peak16 = [](const QByteArray &pcm) {
+                const auto *s = reinterpret_cast<const qint16 *>(pcm.constData());
+                const qsizetype n = pcm.size() / 2;
+                int p = 0;
+                for (qsizetype i = 0; i < n; ++i)
+                    p = qMax(p, std::abs(int(s[i])));
+                return p;
+            };
+
+            QByteArray c0, c1, c2, b0, throttled;
+            QVERIFY(reader.playPageTurnDryRun(1, &c0));
+            QVERIFY(!reader.playPageTurnDryRun(1, &throttled));
+            QVERIFY(throttled.isEmpty());
+            QTest::qWait(95);
+            QVERIFY(reader.playPageTurnDryRun(1, &c1));
+            QTest::qWait(95);
+            QVERIFY(reader.playPageTurnDryRun(1, &c2));
+            QTest::qWait(95);
+            // 4th flip wraps back to clip 0 with backward gain (0.82x).
+            QVERIFY(reader.playPageTurnDryRun(-1, &b0));
+
+            QVERIFY(c0.size() >= 18000 && c1.size() >= 18000 && c2.size() >= 18000);
+            QVERIFY(c0 != c1);
+            QVERIFY(c1 != c2);
+            QVERIFY(c0 != c2);
+
+            for (const QByteArray &clip : {c0, c1, c2}) {
+                const int pk = peak16(clip);
+                QVERIFY(pk > 0);
+                const double dbfs = 20.0 * std::log10(double(pk) / 32768.0);
+                QVERIFY2(dbfs >= -18.0 && dbfs <= -14.0,
+                         qPrintable(QStringLiteral("clip peak dBFS=%1 out of [-18,-14]").arg(dbfs)));
+            }
+            const double bwdRatio = double(peak16(b0)) / double(peak16(c0));
+            QVERIFY2(bwdRatio >= 0.79 && bwdRatio <= 0.85,
+                     qPrintable(QStringLiteral("backward gain ratio=%1 expected ~0.82").arg(bwdRatio)));
+        }
+
+        // 9. AppearancePanel.qml exposes Page-turn sound toggle bound to readingSettings.pageTurnSound.
+        {
+            const QString srcRoot = QFINDTESTDATA("../src");
+            QFile apFile(srcRoot + QStringLiteral("/ui/reader/AppearancePanel.qml"));
+            QVERIFY(apFile.open(QIODevice::ReadOnly));
+            const QString apQml = QString::fromUtf8(apFile.readAll());
+            QVERIFY(apQml.contains(QStringLiteral("qsTr(\"Page-turn sound\")")));
+            QVERIFY(apQml.contains(QStringLiteral("readingSettings.pageTurnSound")));
+            QVERIFY(apQml.contains(QStringLiteral("reader.playPageTurn(1)")));
+        }
+    }
+
+    void wave5SlimListenBarAndToastClearance() {
+        QTemporaryDir dir;
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        VoiceCatalog voices(&services, &cache, &reader, library.database().connectionName(), dir.filePath(QStringLiteral("voices.json")));
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        Theme theme;
+
+        QQmlEngine engine;
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QVERIFY(QFileInfo::exists(srcRoot));
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("library"), &library);
+        engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+        engine.rootContext()->setContextProperty(QStringLiteral("ai"), &services);
+        engine.rootContext()->setContextProperty(QStringLiteral("voices"), &voices);
+        engine.rootContext()->setContextProperty(QStringLiteral("narration"), &narration);
+
+        // 1. Live ListenBar.qml instantiation: resting 44px capsule -> expanded 86px hover state.
+        QQmlComponent barComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/audio/ListenBar.qml")));
+        QVERIFY2(barComp.status() == QQmlComponent::Ready, qPrintable(barComp.errorString()));
+        std::unique_ptr<QObject> barObj(barComp.createWithInitialProperties(
+            {{QStringLiteral("availableWidth"), 1280.0},
+             {QStringLiteral("look"), QVariantMap{{QStringLiteral("dark"), false}}}}));
+        QVERIFY2(barObj != nullptr, qPrintable(barComp.errorString()));
+
+        QCOMPARE(barObj->property("showBookInfo").toBool(), false);
+        QCOMPARE(barObj->property("animateSize").toBool(), true);
+        QCOMPARE(barObj->property("expanded").toBool(), false);
+        QCOMPARE(qRound(barObj->property("height").toDouble()), 44);
+        QCOMPARE(qRound(barObj->property("restingTargetWidth").toDouble()), 368);
+        QCOMPARE(qRound(barObj->property("width").toDouble()), 368);
+
+        // Unfollowing widens the resting capsule cleanly to make room for the Follow chip.
+        narration.setFollowing(false);
+        QCOMPARE(qRound(barObj->property("restingTargetWidth").toDouble()), 412);
+        QCOMPARE(qRound(barObj->property("expandedTargetWidth").toDouble()), 556);
+        narration.setFollowing(true);
+        QCOMPARE(qRound(barObj->property("restingTargetWidth").toDouble()), 368);
+        QCOMPARE(qRound(barObj->property("expandedTargetWidth").toDouble()), 544);
+
+        // Expanding transitions to 86px height & 544px width, clamped cleanly by availableWidth.
+        barObj->setProperty("hoverExpanded", true);
+        QCOMPARE(barObj->property("expanded").toBool(), true);
+        QCOMPARE(qRound(barObj->property("expandedTargetHeight").toDouble()), 86);
+        QTRY_COMPARE_WITH_TIMEOUT(qRound(barObj->property("height").toDouble()), 86, 1000);
+        QTRY_COMPARE_WITH_TIMEOUT(qRound(barObj->property("width").toDouble()), 544, 1000);
+
+        barObj->setProperty("availableWidth", 460.0);
+        QTRY_VERIFY_WITH_TIMEOUT(barObj->property("width").toDouble() <= 436.5, 1000);
+        barObj->setProperty("hoverExpanded", false);
+        QTRY_COMPARE_WITH_TIMEOUT(qRound(barObj->property("height").toDouble()), 44, 1000);
+
+        // 2. Dynamic Toast.bottomClearance above ListenBar while narration.active matches Main.qml.
+        const QString harnessQml = QStringLiteral(R"QML(
+import QtQuick
+import "ui/audio"
+import "ui/components"
+Item {
+    width: 1280; height: 800
+    property bool readerSurfaceVisible: true
+    property bool narrationActive: false
+    property alias bar: bar
+    property alias toast: toast
+    ListenBar {
+        id: bar
+        availableWidth: parent.width
+        look: ({ dark: false })
+    }
+    Toast {
+        id: toast
+        bottomClearance: !parent.readerSurfaceVisible ? 28
+                       : parent.narrationActive
+                         ? Math.round(bar.height) + 28
+                         : 28
+    }
+}
+)QML");
+        QQmlComponent harnessComp(&engine);
+        harnessComp.setData(harnessQml.toUtf8(), QUrl::fromLocalFile(srcRoot + QStringLiteral("/Harness.qml")));
+        QVERIFY2(harnessComp.status() == QQmlComponent::Ready, qPrintable(harnessComp.errorString()));
+        std::unique_ptr<QObject> harnessObj(harnessComp.create());
+        QVERIFY2(harnessObj != nullptr, qPrintable(harnessComp.errorString()));
+        QObject *hBar = harnessObj->property("bar").value<QObject *>();
+        QObject *hToast = harnessObj->property("toast").value<QObject *>();
+        QVERIFY(hBar && hToast);
+
+        QCOMPARE(qRound(hToast->property("bottomClearance").toDouble()), 28);
+        harnessObj->setProperty("narrationActive", true);
+        QCOMPARE(qRound(hToast->property("bottomClearance").toDouble()), 72);  // 44 + 28
+        hBar->setProperty("hoverExpanded", true);
+        QTRY_COMPARE_WITH_TIMEOUT(qRound(hToast->property("bottomClearance").toDouble()), 114, 1000);  // 86 + 28
+        harnessObj->setProperty("readerSurfaceVisible", false);
+        QCOMPARE(qRound(hToast->property("bottomClearance").toDouble()), 28);
+
+        // 3. Main.qml & EpubReader.qml retain exact dynamic Toast & bottom clearance wiring.
+        QFile mainFile(srcRoot + QStringLiteral("/ui/Main.qml"));
+        QVERIFY(mainFile.open(QIODevice::ReadOnly));
+        const QString mainQml = QString::fromUtf8(mainFile.readAll());
+        QVERIFY(mainQml.contains(QStringLiteral("readerLoader.item.listenBar.height")));
+        QVERIFY(mainQml.contains(QStringLiteral("bottomClearance:")));
+
+        QFile readerFile(srcRoot + QStringLiteral("/ui/reader/EpubReader.qml"));
+        QVERIFY(readerFile.open(QIODevice::ReadOnly));
+        const QString readerQml = QString::fromUtf8(readerFile.readAll());
+        QVERIFY(readerQml.contains(QStringLiteral("animateSize: !view.companionResizing")));
+        QVERIFY(readerQml.contains(QStringLiteral("showBookInfo: false")));
+    }
+
+    void wave5CompanionResponseSpeechAndResize() {
+        // 1. Narration::cleanSpeechText() coverage.
+        {
+            const QString mdLinks = Narration::cleanSpeechText(
+                QStringLiteral("![Architecture](fig1.png) Read [Clothbound](https://clothbound.app/docs) now."));
+            QVERIFY2(mdLinks.contains(QStringLiteral("Architecture")) && mdLinks.contains(QStringLiteral("Clothbound")),
+                     qPrintable(mdLinks));
+            QVERIFY(!mdLinks.contains(QStringLiteral("https://")));
+            QVERIFY(!mdLinks.contains(QStringLiteral("](")));
+
+            const QString cites = Narration::cleanSpeechText(
+                QStringLiteral("Transformers scale well [1] across benchmarks [2, 3] and chapters [p. 4] [Ch. 3]."));
+            QVERIFY2(!cites.contains(QStringLiteral("[1]")) && !cites.contains(QStringLiteral("[2, 3]")) &&
+                         !cites.contains(QStringLiteral("[p. 4]")) && !cites.contains(QStringLiteral("[Ch. 3]")),
+                     qPrintable(cites));
+            QVERIFY(cites.contains(QStringLiteral("Transformers scale well")));
+
+            const QString formatting = Narration::cleanSpeechText(
+                QStringLiteral("## Summary\n> A **bold**, *italic*, and _quiet_ line.\n- First item\n"));
+            QVERIFY2(formatting.contains(QStringLiteral("Summary")) &&
+                         formatting.contains(QStringLiteral("A bold, italic, and quiet line.")) &&
+                         formatting.contains(QStringLiteral("First item")),
+                     qPrintable(formatting));
+            QVERIFY(!formatting.contains(QStringLiteral("##")) && !formatting.contains(QStringLiteral("**")) &&
+                    !formatting.contains(QLatin1Char('>')));
+
+            const QString code = Narration::cleanSpeechText(
+                QStringLiteral("```python\nscore = calc_norm(x)\n```\nCall `snake_case_fn` directly."));
+            QVERIFY2(code.contains(QStringLiteral("score = calc_norm(x)")) &&
+                         code.contains(QStringLiteral("snake_case_fn")),
+                     qPrintable(code));
+            QVERIFY(!code.contains(QLatin1Char('`')));
+
+            const QString html = Narration::cleanSpeechText(
+                QStringLiteral("H<sup>2</sup>O &amp; <span class=\"note\">pure</span>&mdash;clear."));
+            QVERIFY2(html.contains(QStringLiteral("H2O & pure\u2014clear.")), qPrintable(html));
+            QVERIFY(!html.contains(QStringLiteral("<sup>")) && !html.contains(QStringLiteral("<span")));
+
+            const QString latex = Narration::cleanSpeechText(
+                QStringLiteral("Using $\\frac{a}{b}$, $\\alpha + \\nabla f = \\sqrt{x}$, and bare \\frac{1}{2} \\alpha."));
+            QVERIFY2(latex.contains(QStringLiteral("a over b")) && latex.contains(QStringLiteral("alpha")) &&
+                         latex.contains(QStringLiteral("gradient")) && latex.contains(QStringLiteral("square root of x")) &&
+                         latex.contains(QStringLiteral("1 over 2")),
+                     qPrintable(latex));
+            QVERIFY(!latex.contains(QStringLiteral("\\frac")) && !latex.contains(QStringLiteral("\\alpha")) &&
+                    !latex.contains(QStringLiteral("\\nabla")) && !latex.contains(QStringLiteral("\\sqrt")) &&
+                    !latex.contains(QLatin1Char('$')));
+
+            // Currency guard: "$5 to $10" must stay verbatim.
+            const QString currency = Narration::cleanSpeechText(QStringLiteral("Expect costs of $5 to $10 per month."));
+            QVERIFY2(currency.contains(QStringLiteral("$5 to $10")), qPrintable(currency));
+
+            // Markup-only text collapses to empty.
+            QVERIFY(Narration::cleanSpeechText(QStringLiteral("---\n***\n   \n")).isEmpty());
+        }
+
+        // 2. Narration::speakResponse() / stopResponse() runtime behavior in headless mode.
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath(QStringLiteral("companion-speech.epub"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(16, 16))));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;  // No Gemini key saved -> tests missing voice & local fallback.
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+
+        // 2a. Missing-voice friendly prompt.
+        {
+            QSignalSpy probSpy(&narration, &Narration::responseSpeechProblem);
+            narration.speakResponse(QStringLiteral("Here is a concise answer."), QStringLiteral("ask-0"));
+            QCOMPARE(probSpy.count(), 1);
+            const QString msg = probSpy.first().first().toString();
+            QVERIFY2(msg.contains(QStringLiteral("Choose or download a voice first (P)")), qPrintable(msg));
+            QCOMPARE(narration.problem(), msg);
+            QVERIFY(!narration.speakingResponse());
+        }
+
+        // 2b. Local voice fallback when m_voice is empty + fast-start multi-sentence chunking.
+        VoicePacks packs(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                         packsManifest(QStringLiteral("http://x")));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("engine-arm"));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("kokoro-fp32"));
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+
+        const QString longReply = QStringLiteral(
+            "Scaled dot-product attention stabilizes softmax gradients across large key dimensions. "
+            "Without dividing by the square root of the key width, dot products grow linearly in variance and saturate the exponential curve. "
+            "Each query vector attends simultaneously across all key vectors in a single dense matrix multiplication. "
+            "Multi-head projection lets distinct subspaces track syntax, positional distance, and long-range semantic references in parallel. "
+            "Residual connections and layer normalization then keep gradients well-conditioned through every encoder and decoder block. "
+            "This combination replaces sequential recurrence while preserving strong modeling fidelity.");
+
+        narration.speakResponse(longReply, QStringLiteral("ask-1"));
+        QVERIFY(narration.speakingResponse());
+        QCOMPARE(narration.speakingResponseId(), QStringLiteral("ask-1"));
+        QVERIFY2(narration.m_responseVoice.startsWith(QStringLiteral("builtin:")), qPrintable(narration.m_responseVoice));
+        QVERIFY2(narration.m_responseChunks.size() >= 2, qPrintable(QString::number(narration.m_responseChunks.size())));
+        QVERIFY2(narration.m_responseChunks.first().text.size() <= 220,
+                 qPrintable(QString::number(narration.m_responseChunks.first().text.size())));
+        QTRY_VERIFY_WITH_TIMEOUT(!narration.responseBuffering() &&
+                                     !narration.m_responseChunks.isEmpty() &&
+                                     narration.m_responseChunks.first().state == Narration::ResponseChunk::Complete,
+                                 5000);
+
+        // 2c. Same-id toggle turns playback off; invoking another id switches cleanly.
+        narration.speakResponse(longReply, QStringLiteral("ask-1"));
+        QVERIFY(!narration.speakingResponse());
+        QVERIFY(narration.speakingResponseId().isEmpty());
+
+        narration.speakResponse(QStringLiteral("First item reply."), QStringLiteral("ask-2"));
+        QVERIFY(narration.speakingResponse());
+        QCOMPARE(narration.speakingResponseId(), QStringLiteral("ask-2"));
+        narration.speakResponse(QStringLiteral("Recap summary reply."), QStringLiteral("recap"));
+        QVERIFY(narration.speakingResponse());
+        QCOMPARE(narration.speakingResponseId(), QStringLiteral("recap"));
+        narration.stopResponse();
+        QVERIFY(!narration.speakingResponse());
+
+        // 2d. Coexistence with book narration: pauses book cleanly, resume() restores book & stops response.
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        narration.start(0, 0);
+        narration.addBlocks(0, R"([{"start":0,"end":42,"text":"The harbour lamp glowed through the storm.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(!narration.m_clips.isEmpty() && narration.m_clips[0].state == Narration::Clip::Complete, 5000);
+        QVERIFY(narration.active() && narration.playing());
+
+        narration.speakResponse(QStringLiteral("Answering while book narration pauses."), QStringLiteral("ask-3"));
+        QVERIFY(narration.active());
+        QVERIFY(!narration.playing());
+        QVERIFY(narration.m_bookPlayerDirty);
+        QVERIFY(narration.speakingResponse());
+        QCOMPARE(narration.speakingResponseId(), QStringLiteral("ask-3"));
+
+        narration.resume();
+        QVERIFY(!narration.speakingResponse());
+        QVERIFY(narration.playing());
+        QVERIFY(!narration.m_bookPlayerDirty);
+        QVERIFY(narration.m_clips[0].queued);
+        narration.stop();
+
+        // 2e. reader.close() cleanly stops response speech in headless mode.
+        narration.speakResponse(QStringLiteral("Reading selection explanation aloud."), QStringLiteral("selection"));
+        QVERIFY(narration.speakingResponse());
+        reader.close();
+        QVERIFY(!narration.speakingResponse());
+        QVERIFY(narration.speakingResponseId().isEmpty());
+
+        // 3. CompanionPanel.qml resize bounds, ui/companionWidth persistence, and SpeakButton wiring.
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QFile compFile(srcRoot + QStringLiteral("/ui/companion/CompanionPanel.qml"));
+        QVERIFY(compFile.open(QIODevice::ReadOnly));
+        const QString compQml = QString::fromUtf8(compFile.readAll());
+        QVERIFY(compQml.contains(QStringLiteral("property int companionWidth: 384")));
+        QVERIFY(compQml.contains(QStringLiteral("readonly property int minWidth: 320")));
+        QVERIFY(compQml.contains(QStringLiteral("readonly property bool resizing: resizeDrag.active")));
+        QVERIFY(compQml.contains(QStringLiteral("component SpeakButton:")));
+    }
+
+    void wave5LibraryCollectionsRecentAndSidebarIcons() {
+        QTemporaryDir dir;
+        const QString dataDir = dir.filePath(QStringLiteral("data"));
+        const QString cacheDir = dir.filePath(QStringLiteral("cache"));
+
+        auto makePdf = [](const QString &path, const QString &title, const QString &body) {
+            QPdfWriter writer(path);
+            writer.setPageSize(QPageSize(QPageSize::A4));
+            writer.setResolution(72);
+            writer.setTitle(title);
+            QPainter p(&writer);
+            p.drawText(QRect(30, 60, 520, 120), body);
+            p.end();
+        };
+
+        const QString existingPdf = dir.filePath(QStringLiteral("alpha_archive.pdf"));
+        const QString freshPdf = dir.filePath(QStringLiteral("zebra_paper.pdf"));
+        const QString epubPath = dir.filePath(QStringLiteral("lantern.epub"));
+        makePdf(existingPdf, QStringLiteral("Alpha Archive"), QStringLiteral("Existing PDF paper already in library."));
+        makePdf(freshPdf, QStringLiteral("Zebra Paper"), QStringLiteral("Brand new research PDF added straight to Research."));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(16, 16))));
+
+        int colId = 0;
+        int existingId = 0;
+        int freshId = 0;
+        int epubId = 0;
+
+        {
+            Library library(dataDir, cacheDir);
+            QVERIFY(library.open());
+            existingId = library.addBookFile(existingPdf);
+            epubId = library.addBookFile(epubPath);
+            QVERIFY(existingId > 0 && epubId > 0);
+
+            colId = library.createCollection(QStringLiteral("Research"));
+            QVERIFY(colId > 0);
+            library.works()->setCollectionId(colId);
+            QCOMPARE(library.works()->count(), 0);
+
+            // 1. Re-adding an already-in-library PDF while viewing Research tags it immediately (0 -> 1) and emits booksAdded.
+            QSignalSpy addedSpy(&library, &Library::booksAdded);
+            library.addUrls({QUrl::fromLocalFile(existingPdf)});
+            QCOMPARE(library.works()->count(), 1);
+            QVERIFY(library.isInCollection(existingId, colId));
+            QCOMPARE(addedSpy.count(), 1);
+            QCOMPARE(addedSpy[0][0].toInt(), existingId);
+            QCOMPARE(addedSpy[0][1].toInt(), 1);
+            QCOMPARE(addedSpy[0][3].toInt(), colId);
+
+            // 2. Adding a brand-new PDF while viewing Research scans, tags, updates works() live, and emits booksAdded.
+            library.addUrls({QUrl::fromLocalFile(freshPdf)});
+            QTRY_COMPARE_WITH_TIMEOUT(library.works()->count(), 2, 5000);
+            QTRY_VERIFY_WITH_TIMEOUT(addedSpy.count() >= 2, 5000);
+            freshId = library.idForPath(QFileInfo(freshPdf).canonicalFilePath());
+            QVERIFY(freshId > 0);
+            QVERIFY(library.isInCollection(freshId, colId));
+            QCOMPARE(addedSpy.last()[3].toInt(), colId);
+
+            // Set explicit added_at timestamps to exercise 14-day window and newest-first ordering across reopen.
+            const qint64 nowSec = QDateTime::currentSecsSinceEpoch();
+            QSqlQuery q(library.database());
+            QVERIFY(q.exec(QStringLiteral("UPDATE books SET added_at = %1 WHERE id = %2").arg(nowSec - 3600).arg(freshId)));
+            QVERIFY(q.exec(QStringLiteral("UPDATE books SET added_at = %1 WHERE id = %2").arg(nowSec - 3LL * 86400).arg(epubId)));
+            QVERIFY(q.exec(QStringLiteral("UPDATE books SET added_at = %1 WHERE id = %2").arg(nowSec - 20LL * 86400).arg(existingId)));
+        }
+
+        // 3. Reopen SQLite library: collection memberships persist, shelfCounts & recent shelf behave accurately.
+        {
+            Library reopened(dataDir, cacheDir);
+            QVERIFY(reopened.open());
+            QCOMPARE(reopened.schemaVersion(), 4);
+            QVERIFY(reopened.isInCollection(existingId, colId));
+            QVERIFY(reopened.isInCollection(freshId, colId));
+
+            const QVariantMap counts = reopened.shelfCounts();
+            QCOMPARE(counts.value(QStringLiteral("epub")).toInt(), 1);
+            QCOMPARE(counts.value(QStringLiteral("pdf")).toInt(), 2);
+            QCOMPARE(counts.value(QStringLiteral("recent")).toInt(), 2);
+
+            // statusFilter == "recent": 14-day window, strictly newest-first regardless of sortOrder == "title".
+            reopened.works()->setSortOrder(QStringLiteral("title"));
+            reopened.works()->setStatusFilter(QStringLiteral("recent"));
+            QCOMPARE(reopened.works()->count(), 2);
+            QCOMPARE(reopened.works()->get(0).value(QStringLiteral("bookId")).toInt(), freshId);
+            QCOMPARE(reopened.works()->get(1).value(QStringLiteral("bookId")).toInt(), epubId);
+
+            // Format shelves match shelfCounts["epub"] and shelfCounts["pdf"].
+            reopened.works()->clearFilters();
+            reopened.works()->setFormatFilter(QStringLiteral("epub"));
+            QCOMPARE(reopened.works()->count(), counts.value(QStringLiteral("epub")).toInt());
+            reopened.works()->setFormatFilter(QStringLiteral("pdf"));
+            QCOMPARE(reopened.works()->count(), counts.value(QStringLiteral("pdf")).toInt());
+        }
+
+        // 4. LibrarySidebar.qml icon check (Icons.download for Downloaded, Icons.headphones for Audiobooks)
+        //    and live component compilation.
+        {
+            const QString srcRoot = QFINDTESTDATA("../src");
+            QFile sidebarFile(srcRoot + QStringLiteral("/ui/library/LibrarySidebar.qml"));
+            QVERIFY(sidebarFile.open(QIODevice::ReadOnly));
+            const QString qml = QString::fromUtf8(sidebarFile.readAll());
+            const qsizetype dlPos = qml.indexOf(QStringLiteral("qsTr(\"Downloaded\")"));
+            const qsizetype abPos = qml.indexOf(QStringLiteral("qsTr(\"Audiobooks\")"));
+            QVERIFY(dlPos > 0 && abPos > dlPos);
+            const QString dlBlock = qml.mid(dlPos, 120);
+            const QString abBlock = qml.mid(abPos, 120);
+            QVERIFY2(dlBlock.contains(QStringLiteral("glyph: Icons.download")), qPrintable(dlBlock));
+            QVERIFY2(abBlock.contains(QStringLiteral("glyph: Icons.headphones")), qPrintable(abBlock));
+
+            QFile detailsFile(srcRoot + QStringLiteral("/ui/library/BookDetails.qml"));
+            QVERIFY(detailsFile.open(QIODevice::ReadOnly));
+            const QString detailsQml = QString::fromUtf8(detailsFile.readAll());
+            QVERIFY(detailsQml.contains(QStringLiteral("text: \"BibTeX\"")));
+            QVERIFY(detailsQml.contains(QStringLiteral("text: \"APA\"")));
+            QVERIFY(detailsQml.contains(QStringLiteral("shelfPill.member ? theme.accentSoft")));
+        }
     }
 };
 

@@ -320,16 +320,19 @@ int main(int argc, char *argv[]) {
     }
     PortalFilePicker picker;
 
-    // The reading surface's own profile: nothing is written to disk (no
-    // cache, no cookies), books are served from their ZIPs, and nothing a
-    // book contains can reach the network.
+    // The reading surface's own profile: Qt's default QQuickWebEngineProfile is
+    // off-the-record with an in-memory HTTP cache (nothing written to disk, no
+    // cookies), avoids Qt 6.9+'s QQuickWebEngineProfile constructor deprecation
+    // warning, serves books solely from their ZIPs, and blocks all network I/O.
     BookScheme bookScheme;
     OfflineInterceptor offline;
-    auto *profile = new QQuickWebEngineProfile(&app);
-    profile->setOffTheRecord(true);
-    profile->setHttpCacheType(QQuickWebEngineProfile::MemoryHttpCache);
+    QQuickWebEngineProfile *profile = QQuickWebEngineProfile::defaultProfile();
     profile->installUrlSchemeHandler("clothbound", &bookScheme);
     profile->setUrlRequestInterceptor(&offline);
+    auto detachProfileHandlers = qScopeGuard([profile, &bookScheme] {
+        profile->setUrlRequestInterceptor(nullptr);
+        profile->removeUrlSchemeHandler(&bookScheme);
+    });
     Reader reader(&library, &bookScheme);
 
     // The composition root for intelligence: Gemini is today's provider,

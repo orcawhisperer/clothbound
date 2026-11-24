@@ -721,6 +721,70 @@ body.view-grid .board-stage {
   background: rgba(var(--b1-ink), 0.07);
   color: var(--b1-text3);
 }
+.b1-new-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 17px;
+  padding: 0 6px;
+  border-radius: var(--rpill);
+  background: var(--accent-soft);
+  color: var(--b1-accent-ink);
+  border: 1px solid rgba(var(--accent-rgb), 0.36);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+.b1-cover-new {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  height: 17px;
+  padding: 0 6px;
+  border-radius: var(--rpill);
+  background: rgba(18, 18, 20, 0.78);
+  color: #E8EEFD;
+  border: 1px solid rgba(var(--accent-rgb), 0.65);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  display: inline-flex;
+  align-items: center;
+}
+.b1-col-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 15px;
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+  color: var(--b1-text3);
+  border: 1px solid rgba(var(--b1-ink), 0.14);
+  transition: background 110ms ease, border-color 110ms ease, color 110ms ease;
+}
+.b1-col-pill:hover {
+  background: rgba(var(--b1-ink), 0.07);
+  color: var(--b1-text2);
+}
+.b1-col-pill.assigned {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--b1-text);
+  font-weight: 600;
+}
+.b1-col-pill .b1-col-swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  opacity: 0.45;
+}
+.b1-col-pill.assigned .b1-col-swatch {
+  opacity: 1;
+}
 .b1-drawer-scrim {
   position: absolute;
   inset: 0;
@@ -826,29 +890,118 @@ body.view-grid .board-stage {
   pointer-events: none;
 }
 .b2-sfx-ring.ping { animation: cbSfxRipple 360ms ease-out; }
+.b2-aa-pop {
+  position: absolute;
+  top: 48px;
+  right: 90px;
+  width: 266px;
+  padding: 14px 16px;
+  border-radius: var(--rm);
+  background: #FDFAF3;
+  color: #26221D;
+  border: 1px solid #D8D2C6;
+  box-shadow: 0 20px 48px rgba(38, 34, 29, 0.22), 0 4px 12px rgba(0, 0, 0, 0.08);
+  display: none;
+  flex-direction: column;
+  gap: 11px;
+  z-index: 22;
+}
+.b2-aa-pop.open { display: flex; }
+.b2-aa-pop.is-dark {
+  background: #22211F;
+  color: #EAE4D9;
+  border-color: rgba(255, 255, 255, 0.10);
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.55);
+}
 
-/* Board 3: Listening Bar + Speed Popover + Sleep Drain */
+/* Board 3: Adaptive Slim Floating ListenBar (44px resting capsule -> 86px hover) */
 .b3-deck {
   position: absolute;
   left: 50%;
-  bottom: 28px;
+  bottom: 14px;
   transform: translateX(-50%);
-  width: 720px;
-  padding: 10px 10px 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border-radius: var(--rl);
+  width: 396px;
+  height: 44px;
+  border-radius: var(--rpill);
   background: rgba(28, 27, 25, 0.94);
   color: #F2EFE9;
   border: 1px solid rgba(0, 0, 0, 0.25);
-  box-shadow: 0 18px 50px rgba(40, 30, 10, 0.28), 0 6px 16px rgba(0, 0, 0, 0.28);
+  box-shadow: 0 12px 34px rgba(40, 30, 10, 0.24), 0 4px 12px rgba(0, 0, 0, 0.28);
   z-index: 10;
+  transition: width 220ms cubic-bezier(0.22, 1, 0.36, 1), height 220ms cubic-bezier(0.22, 1, 0.36, 1), border-radius 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.b3-deck:hover,
+.b3-deck.expanded {
+  width: 556px;
+  height: 86px;
+  border-radius: var(--rl);
+}
+.b3-deck-inner {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+}
+.b3-rest-layer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 44px;
+  padding: 0 7px 0 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 1;
+  transition: opacity 140ms ease;
+}
+.b3-deck:hover .b3-rest-layer,
+.b3-deck.expanded .b3-rest-layer {
+  opacity: 0;
+  pointer-events: none;
+}
+.b3-exp-layer {
+  position: absolute;
+  inset: 0;
+  padding: 8px 12px 9px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 170ms ease;
+}
+.b3-deck:hover .b3-exp-layer,
+.b3-deck.expanded .b3-exp-layer {
+  opacity: 1;
+  pointer-events: auto;
+}
+.b3-hairline {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  bottom: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.10);
+  border-radius: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
+.b3-hairline-fill {
+  height: 100%;
+  width: 34%;
+  background: var(--accent);
+  border-radius: 1px;
+  transition: width 200ms linear, background 160ms ease;
+}
+.b3-hairline-fill.fading {
+  background: #E0AF68;
 }
 .b3-speed-pop {
   position: absolute;
-  right: 112px;
-  bottom: calc(100% + 12px);
+  right: 76px;
+  bottom: calc(100% + 10px);
   width: 196px;
   padding: 6px;
   border-radius: var(--rm);
@@ -878,14 +1031,15 @@ body.view-grid .board-stage {
 .b3-sleep-btn {
   position: relative;
   overflow: hidden;
-  height: 30px;
-  padding: 0 9px;
-  border-radius: var(--rs);
+  height: 26px;
+  padding: 0 8px;
+  border-radius: var(--rpill);
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  font-size: 12px;
+  gap: 4px;
+  font-size: 11.5px;
   font-weight: 600;
+  color: #CFC9BE;
   transition: background 120ms ease;
 }
 .b3-sleep-btn.fading {
@@ -897,7 +1051,7 @@ body.view-grid .board-stage {
   position: absolute;
   left: 0;
   bottom: 0;
-  height: 2.5px;
+  height: 2px;
   background: #E0AF68;
   transition: width 250ms linear;
 }
@@ -1085,6 +1239,7 @@ body.view-grid .board-stage {
 
 /* Companion Docked Drawer (Boards 4, 8, 9, 18) */
 .comp-aside {
+  position: relative;
   width: 384px;
   flex-shrink: 0;
   height: 100%;
@@ -1094,6 +1249,65 @@ body.view-grid .board-stage {
   display: flex;
   flex-direction: column;
   box-shadow: -14px 0 28px rgba(0, 0, 0, 0.18);
+}
+.comp-resize-handle {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  width: 6px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 24;
+  display: flex;
+  justify-content: center;
+}
+.comp-resize-hairline {
+  width: 2px;
+  height: 100%;
+  background: var(--accent);
+  opacity: 0.24;
+  transition: opacity 120ms ease;
+}
+.comp-resize-handle:hover .comp-resize-hairline,
+.comp-resize-handle.dragging .comp-resize-hairline {
+  opacity: 0.85;
+}
+.comp-action-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.comp-small-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 7px;
+  border-radius: var(--rxs);
+  font-size: 11px;
+  font-weight: 500;
+  color: #A9A296;
+  background: transparent;
+  transition: background 100ms ease, color 100ms ease;
+}
+.comp-small-act:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #F2EFE9;
+}
+.comp-small-act.speaking {
+  background: var(--accent-soft);
+  color: var(--accent-text-dark);
+  font-weight: 600;
+}
+
+/* Uniform Line-by-Line PDF Narration / Highlight Bands (zero double-alpha seams) */
+.pdf-line-band {
+  display: block;
+  margin: 1px -3px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: rgba(62, 95, 153, 0.22);
+  color: #1F1C18;
 }
 .comp-jump {
   display: inline-flex;
@@ -1213,7 +1427,7 @@ body.view-grid .board-stage {
 <section class="board" id="board-01" data-w="1280" data-h="800">
   <div class="board-head">
     <h2>1 · Library</h2>
-    <span class="board-hint">Interactive: Collapse sidebar · Dark / Light · Grid / List (razor-aligned EPUB/PDF column) · Click any book for Details drawer &amp; BibTeX / APA pills</span>
+    <span class="board-hint">Interactive: All / Reading / Recently added / Books / Papers &amp; PDFs / Finished shelves · Fixed Listening icons · New arrival pill · BookDetails assigned (✓) vs unassigned (+) collection pills &amp; BibTeX / APA</span>
   </div>
   <div class="board-viewport"><div class="board-stage">
     <div class="artboard" id="b1Artboard">
@@ -1237,49 +1451,62 @@ body.view-grid .board-stage {
           </div>
 
           <div style="display:flex;flex-direction:column;gap:1px">
-            <button type="button" class="b1-nav-item active" data-b1-nav="Reading now">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-accent-ink)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5h6a4 4 0 0 1 4 4v11a3 3 0 0 0-3-3H2z"/><path d="M22 5h-6a4 4 0 0 0-4 4v11a3 3 0 0 1 3-3h7z"/></svg>
-              <span class="b1-lbl" style="flex:1">Reading now</span><span class="b1-lbl tnum" style="color:var(--b1-text3)">3</span>
+            <div class="b1-lbl" style="padding:0 10px 5px;font-size:11px;font-weight:600;color:var(--b1-text4);letter-spacing:0.02em">Library</div>
+            <button type="button" class="b1-nav-item active" data-b1-nav="All" data-b1-filter="all">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-accent-ink)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="4" height="16" rx="1"/><rect x="9" y="4" width="4" height="16" rx="1"/><path d="M15.5 5.2l3.6-1 3 14.8-3.6 1z"/></svg>
+              <span class="b1-lbl" style="flex:1">All</span><span class="b1-lbl tnum" style="color:var(--b1-text3)">66</span>
             </button>
-            <button type="button" class="b1-nav-item" data-b1-nav="All books">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="4" height="16" rx="1"/><rect x="9" y="4" width="4" height="16" rx="1"/><path d="M15.5 5.2l3.6-1 3 14.8-3.6 1z"/></svg>
-              <span class="b1-lbl" style="flex:1">All books</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">66</span>
+            <button type="button" class="b1-nav-item" data-b1-nav="Reading" data-b1-filter="reading">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 5h6a4 4 0 0 1 4 4v11a3 3 0 0 0-3-3H2z"/><path d="M22 5h-6a4 4 0 0 0-4 4v11a3 3 0 0 1 3-3h7z"/></svg>
+              <span class="b1-lbl" style="flex:1">Reading</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">3</span>
             </button>
-            <button type="button" class="b1-nav-item" data-b1-nav="Want to read">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4z"/></svg>
-              <span class="b1-lbl" style="flex:1">Want to read</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">9</span>
+            <button type="button" class="b1-nav-item" data-b1-nav="Recently added" data-b1-filter="recent">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 13v5a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M4 13h5l1.5 2h3L15 13h5"/></svg>
+              <span class="b1-lbl" style="flex:1">Recently added</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">3</span>
             </button>
-            <button type="button" class="b1-nav-item" data-b1-nav="Finished">
+            <button type="button" class="b1-nav-item" data-b1-nav="Books" data-b1-filter="epub">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h11a2 2 0 0 1 2 2v14H7a2 2 0 0 0-2 2z"/><path d="M7 20h11"/></svg>
+              <span class="b1-lbl" style="flex:1">Books</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">52</span>
+            </button>
+            <button type="button" class="b1-nav-item" data-b1-nav="Papers &amp; PDFs" data-b1-filter="pdf">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
+              <span class="b1-lbl" style="flex:1">Papers &amp; PDFs</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">14</span>
+            </button>
+            <button type="button" class="b1-nav-item" data-b1-nav="Finished" data-b1-filter="finished">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/></svg>
               <span class="b1-lbl" style="flex:1">Finished</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">14</span>
+            </button>
+            <button type="button" class="b1-nav-item" data-b1-nav="Want to read" data-b1-filter="all">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12v18l-6-4-6 4z"/></svg>
+              <span class="b1-lbl" style="flex:1">Want to read</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">9</span>
             </button>
           </div>
 
           <div style="display:flex;flex-direction:column;gap:1px">
-            <div class="b1-lbl" style="padding:0 10px 6px;font-size:11px;font-weight:600;color:var(--b1-text4);letter-spacing:0.02em">Listening</div>
-            <button type="button" class="b1-nav-item" data-b1-nav="Downloaded">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M3 14h3v6H4a1 1 0 0 1-1-1z"/><path d="M21 14h-3v6h2a1 1 0 0 0 1-1z"/></svg>
+            <div class="b1-lbl" style="padding:0 10px 5px;font-size:11px;font-weight:600;color:var(--b1-text4);letter-spacing:0.02em">Listening</div>
+            <button type="button" class="b1-nav-item" data-b1-nav="Downloaded" data-b1-filter="all">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11"/><path d="M7.5 10.5L12 15l4.5-4.5"/><path d="M4 18.5h16"/></svg>
               <span class="b1-lbl" style="flex:1">Downloaded</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">2</span>
             </button>
-            <button type="button" class="b1-nav-item" data-b1-nav="Audiobooks">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
+            <button type="button" class="b1-nav-item" data-b1-nav="Audiobooks" data-b1-filter="all">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--b1-text3)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M3 14h3v6H4a1 1 0 0 1-1-1z"/><path d="M21 14h-3v6h2a1 1 0 0 0 1-1z"/></svg>
               <span class="b1-lbl" style="flex:1">Audiobooks</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">1</span>
             </button>
           </div>
 
           <div style="display:flex;flex-direction:column;gap:1px">
-            <div class="b1-lbl" style="padding:0 10px 6px;font-size:11px;font-weight:600;color:var(--b1-text4);letter-spacing:0.02em">Collections</div>
-            <button type="button" class="b1-nav-item" data-b1-nav="Scientific romances">
-              <span style="width:10px;height:10px;border-radius:3px;background:#6B8CC9;margin:0 3px;flex-shrink:0"></span>
-              <span class="b1-lbl" style="flex:1">Scientific romances</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">12</span>
-            </button>
-            <button type="button" class="b1-nav-item" data-b1-nav="ML Papers">
+            <div class="b1-lbl" style="padding:0 10px 5px;font-size:11px;font-weight:600;color:var(--b1-text4);letter-spacing:0.02em">Collections</div>
+            <button type="button" class="b1-nav-item" data-b1-nav="Research" data-b1-filter="col:Research">
               <span style="width:10px;height:10px;border-radius:3px;background:#6BA887;margin:0 3px;flex-shrink:0"></span>
+              <span class="b1-lbl" style="flex:1">Research</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">2</span>
+            </button>
+            <button type="button" class="b1-nav-item" data-b1-nav="ML Papers" data-b1-filter="col:ML Papers">
+              <span style="width:10px;height:10px;border-radius:3px;background:#6B8CC9;margin:0 3px;flex-shrink:0"></span>
               <span class="b1-lbl" style="flex:1">ML Papers</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">6</span>
             </button>
-            <button type="button" class="b1-nav-item" data-b1-nav="Social novels">
+            <button type="button" class="b1-nav-item" data-b1-nav="Scientific romances" data-b1-filter="col:Scientific romances">
               <span style="width:10px;height:10px;border-radius:3px;background:#C9925A;margin:0 3px;flex-shrink:0"></span>
-              <span class="b1-lbl" style="flex:1">Social novels</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">8</span>
+              <span class="b1-lbl" style="flex:1">Scientific romances</span><span class="b1-lbl tnum" style="color:var(--b1-text4)">12</span>
             </button>
           </div>
 
@@ -1298,7 +1525,7 @@ body.view-grid .board-stage {
         <!-- Main Library Area -->
         <div style="flex:1;min-width:0;display:flex;flex-direction:column;position:relative">
           <header style="height:52px;flex-shrink:0;padding:0 20px 0 28px;display:flex;align-items:center;gap:10px;border-bottom:1px solid rgba(var(--b1-ink),0.06)">
-            <h3 id="b1Title" style="margin:0;font-size:15px;font-weight:600;letter-spacing:-0.01em;flex:1">Reading now</h3>
+            <h3 id="b1Title" style="margin:0;font-size:15px;font-weight:600;letter-spacing:-0.01em;flex:1">All</h3>
 
             <button type="button" id="b1DetailsDemoBtn" style="height:26px;padding:0 10px;border-radius:var(--rs);background:rgba(var(--b1-ink),0.06);color:var(--b1-text2);font-size:12px;font-weight:500">Book details…</button>
 
@@ -1419,7 +1646,7 @@ body.view-grid .board-stage {
 <section class="board" id="board-02" data-w="1280" data-h="800">
   <div class="board-head">
     <h2>2 · Reading</h2>
-    <span class="board-hint">Interactive: Paper / Sepia / Dusk / Charcoal theme pills · Smooth zero-flash directional page turn (← / →) · Bookmark corner fold · Page-turn SFX toggle</span>
+    <span class="board-hint">Interactive: Paper / Sepia / Dusk / Charcoal theme pills · Smooth zero-flash directional page turn (← / →) · Bookmark corner fold · Click Aa for Appearance popover with Page-turn sound toggle</span>
   </div>
   <div class="board-viewport"><div class="board-stage">
     <div class="artboard artboard-light" id="b2Artboard">
@@ -1437,14 +1664,14 @@ body.view-grid .board-stage {
             <button type="button" data-rtheme="charcoal" style="height:24px;padding:0 9px;border-radius:6px;font-size:11.5px;font-weight:500">Charcoal</button>
           </div>
           <div style="flex:1;text-align:center;font-size:12px;font-weight:500">The Time Machine<span style="opacity:0.55"> — Chapter I</span></div>
-          <button type="button" id="b2SfxBtn" title="Toggle page-turn paper-flip sound" style="height:26px;padding:0 9px;border-radius:999px;background:rgba(127,127,127,0.12);display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500">
+          <button type="button" id="b2SfxBtn" title="Toggle real page-turn sound" style="height:26px;padding:0 9px;border-radius:999px;background:rgba(127,127,127,0.12);display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:500">
             <span class="b2-sfx-dot">
               <span class="b2-sfx-ring" id="b2SfxRing"></span>
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
             </span>
-            <span id="b2SfxLabel">Paper-flip SFX</span>
+            <span id="b2SfxLabel">Page-turn sound</span>
           </button>
-          <span style="width:30px;height:30px;display:flex;align-items:center;justify-content:center" class="serif">Aa</span>
+          <button type="button" id="b2AaBtn" title="Appearance (A)" style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:var(--rs);background:rgba(127,127,127,0.14);font-weight:600" class="serif">Aa</button>
           <span style="width:30px;height:30px;display:flex;align-items:center;justify-content:center">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 14v-2a9 9 0 0 1 18 0v2"/><path d="M3 14h3v6H4a1 1 0 0 1-1-1z"/><path d="M21 14h-3v6h2a1 1 0 0 0 1-1z"/></svg>
           </span>
@@ -1452,6 +1679,30 @@ body.view-grid .board-stage {
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></svg>
           </span>
         </header>
+
+        <!-- Appearance (Aa) Quick Popover Preview with Page-turn sound toggle -->
+        <div class="b2-aa-pop open" id="b2AaPopover" role="dialog" aria-label="Appearance settings">
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font-size:12px;font-weight:600;letter-spacing:0.01em">Appearance</span>
+            <button type="button" id="b2AaClose" aria-label="Close Appearance" style="font-size:11px;opacity:0.65;padding:2px 5px">✕</button>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px">
+            <span style="opacity:0.78">Typeface</span>
+            <span class="serif" style="font-weight:600">Literata · 115%</span>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:12px">
+            <span style="opacity:0.78">Animate page turns</span>
+            <button type="button" class="cb-switch" id="b2AaAnimToggle" role="switch" aria-checked="true" aria-label="Animate page turns"></button>
+          </div>
+          <div style="height:1px;background:rgba(127,127,127,0.18)"></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:12px">
+            <div style="display:flex;flex-direction:column;gap:1px">
+              <span style="font-weight:500">Page-turn sound</span>
+              <span style="font-size:10.5px;opacity:0.65">Soft hardcover flip · auto-mutes while listening</span>
+            </div>
+            <button type="button" class="cb-switch" id="b2AaSfxToggle" role="switch" aria-checked="true" aria-label="Page-turn sound"></button>
+          </div>
+        </div>
 
         <!-- Clickable Bookmark Corner Fold -->
         <button type="button" id="b2CornerFold" aria-label="Toggle bookmark (B)" title="Toggle bookmark (B)" style="position:absolute;top:0;right:0;width:44px;height:44px;z-index:9;background:linear-gradient(225deg,#F6F1E7 50%,#E2D9C6 50%);box-shadow:-2px 2px 4px rgba(0,0,0,0.08);transition:opacity 160ms ease"></button>
@@ -1507,7 +1758,7 @@ body.view-grid .board-stage {
 <section class="board" id="board-03" data-w="1280" data-h="800">
   <div class="board-head">
     <h2>3 · Listening</h2>
-    <span class="board-hint">Interactive: Speed popover (0.75×–2.0× &amp; ±0.05× stepper) · Sleep timer countdown &amp; 10s amber drain bar · Play / Pause &amp; legible Buffering spinner toggle</span>
+    <span class="board-hint">Interactive: Adaptive 44px resting capsule with 2px inner hairline progress bar (zero redundant cover) · Hover or click Expand to reveal 86px precision transport, chapter scrubber, speed popover &amp; sleep drain</span>
   </div>
   <div class="board-viewport"><div class="board-stage">
     <div class="artboard artboard-light" id="b3Artboard" style="background:#F6F1E7;color:#26221D">
@@ -1517,11 +1768,14 @@ body.view-grid .board-stage {
         <span id="b3FollowLabel">Pages follow the voice</span>
       </button>
 
-      <!-- Subtle Buffering State Test Toggle (top-right) -->
-      <button type="button" id="b3BufferDemoBtn" style="position:absolute;top:24px;right:24px;height:28px;padding:0 10px;border-radius:999px;background:rgba(38,34,29,0.06);border:1px solid rgba(38,34,29,0.10);color:#4D463D;font-size:11.5px;font-weight:500">Preview buffering spinner</button>
+      <!-- Top-right Interactive Preview Controls -->
+      <div style="position:absolute;top:24px;right:24px;display:flex;align-items:center;gap:6px">
+        <button type="button" id="b3ExpandDemoBtn" style="height:28px;padding:0 10px;border-radius:999px;background:rgba(38,34,29,0.08);border:1px solid rgba(38,34,29,0.12);color:#26221D;font-size:11.5px;font-weight:500">Pin expanded (86px)</button>
+        <button type="button" id="b3BufferDemoBtn" style="height:28px;padding:0 10px;border-radius:999px;background:rgba(38,34,29,0.06);border:1px solid rgba(38,34,29,0.10);color:#4D463D;font-size:11.5px;font-weight:500">Preview buffering</button>
+      </div>
 
-      <!-- Listening Spread -->
-      <div style="position:absolute;left:144px;top:88px;width:992px;height:520px;display:flex;gap:108px;font-size:18.5px;line-height:1.62;text-align:justify;hyphens:auto" class="serif">
+      <!-- Listening Spread (with +44px bottom clearance so pill never overlaps text) -->
+      <div style="position:absolute;left:144px;top:88px;width:992px;height:564px;display:flex;gap:108px;font-size:18.5px;line-height:1.62;text-align:justify;hyphens:auto" class="serif">
         <article style="flex:1;min-width:0;color:#6E665A">
           <p style="margin:0;text-indent:1.4em">“You must follow me carefully. I shall have to controvert one or two ideas that are almost universally accepted. The geometry, for instance, they taught you at school is founded on a misconception.”</p>
           <p style="margin:0;text-indent:1.4em">“Is not that rather a large thing to expect us to begin upon?” said Filby, an argumentative person with red hair.</p>
@@ -1537,10 +1791,10 @@ body.view-grid .board-stage {
         </article>
       </div>
 
-      <!-- Floating Always-Dark ListenBar -->
-      <div class="b3-deck" role="region" aria-label="Now playing">
+      <!-- Adaptive Slim Floating ListenBar (44px resting capsule -> 86px hover/expanded) -->
+      <div class="b3-deck" id="b3Deck" role="region" aria-label="Now playing">
         <!-- Speed Popover (anchored cleanly above the 1.1x pill) -->
-        <div class="b3-speed-pop open" id="b3SpeedPop" role="dialog" aria-label="Playback speed">
+        <div class="b3-speed-pop" id="b3SpeedPop" role="dialog" aria-label="Playback speed">
           <div style="display:flex;align-items:center;gap:4px;padding:2px 2px 5px">
             <button type="button" id="b3Slower" aria-label="Slower" style="width:32px;height:28px;border-radius:var(--rxs);background:rgba(255,255,255,0.08);font-size:15px;font-weight:600">−</button>
             <span id="b3PopRate" class="tnum" style="flex:1;text-align:center;font-weight:600;font-size:13px">1.1×</span>
@@ -1550,59 +1804,81 @@ body.view-grid .board-stage {
           <div id="b3SpeedPresets" style="display:flex;flex-direction:column;gap:1px"></div>
         </div>
 
-        <!-- Row 1: Book/Narrator · Centered Transport · Speed/Sleep/Stop -->
-        <div style="display:flex;align-items:center;gap:10px">
-          <!-- Left Zone -->
-          <div style="flex:1 1 0;min-width:0;display:flex;align-items:center;gap:10px">
-            <div style="width:32px;height:46px;flex-shrink:0;border-radius:2px 4px 4px 2px;background:#1F3550;box-shadow:inset 2px 0 0 rgba(0,0,0,0.32)"></div>
-            <div style="display:flex;flex-direction:column;gap:3px;min-width:0;flex:1">
-              <span style="font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">The Time Machine</span>
-              <span style="display:flex;align-items:center;gap:5px;font-size:12px;color:#B9B3A8;white-space:nowrap">
-                Emma · British
+        <div class="b3-deck-inner">
+          <!-- RESTING LAYER: 44px single-row capsule + inset 2px bottom hairline -->
+          <div class="b3-rest-layer">
+            <button type="button" id="b3RestPlayBtn" aria-label="Pause (P)" style="width:32px;height:32px;flex-shrink:0;display:flex;align-items:center;justify-content:center;border-radius:50%;background:var(--accent)">
+              <svg id="b3RestIconPause" width="14" height="14" viewBox="0 0 24 24" fill="var(--accent-on)"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+              <svg id="b3RestIconPlay" width="14" height="14" viewBox="0 0 24 24" fill="var(--accent-on)" style="display:none;margin-left:1.5px"><path d="M8 5v14l11-7z"/></svg>
+              <span id="b3RestIconSpin" class="cb-spinner-on-accent" style="display:none;width:16px;height:16px;border-width:2px"></span>
+            </button>
+            <div style="flex:1;min-width:0;display:flex;align-items:center;gap:6px;padding:0 6px;font-size:12px;font-weight:500;color:#CFC9BE">
+              <span class="cb-dot local" title="On this computer"></span>
+              <span style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Emma</span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#A9A296" stroke-width="2.2" stroke-linecap="round"><path d="M7 9l5-5 5 5M7 15l5 5 5-5"/></svg>
+            </div>
+            <button type="button" id="b3RestFollowChip" style="display:none;height:22px;padding:0 8px;border-radius:999px;background:var(--accent-soft);color:var(--accent-text-dark);font-size:11px;font-weight:600">Follow</button>
+            <button type="button" id="b3RestSleepBtn" class="b3-sleep-btn fading tnum" title="Sleep timer">
+              <svg class="b3-sleep-moon fading" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>
+              <span id="b3RestSleepText">0:07</span>
+            </button>
+            <button type="button" id="b3RestRateBtn" class="tnum" style="height:26px;padding:0 9px;border-radius:999px;background:rgba(255,255,255,0.10);color:#F2EFE9;font-size:11.5px;font-weight:600">1.1×</button>
+            <button type="button" aria-label="Stop listening" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:50%;color:#A9A296">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+            </button>
+            <div class="b3-hairline"><div class="b3-hairline-fill fading" id="b3HairlineFill"></div></div>
+          </div>
+
+          <!-- EXPANDED LAYER (86px): Voice · Centered Precision Transport · Rate/Sleep/Stop + Scrubber -->
+          <div class="b3-exp-layer">
+            <div style="display:flex;align-items:center;gap:8px">
+              <!-- Left: Voice button only (no redundant mini-cover or title) -->
+              <div style="flex:1 1 0;min-width:0;display:flex;align-items:center;gap:6px;font-size:12px;color:#CFC9BE">
+                <span class="cb-dot local"></span>
+                <span style="font-weight:500;color:#F2EFE9;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Emma</span>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#A9A296" stroke-width="2.2" stroke-linecap="round"><path d="M7 9l5-5 5 5M7 15l5 5 5-5"/></svg>
-                <span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:9px;background:rgba(255,255,255,0.08);color:#CFC9BE">On this computer</span>
-              </span>
+              </div>
+
+              <!-- Dead-Center Transport: Prev · ↺15 · ▶/⏸ · ↻15 · Next -->
+              <div style="display:flex;align-items:center;gap:3px;flex-shrink:0">
+                <button type="button" aria-label="Previous sentence" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:50%">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="#F2EFE9"><path d="M6 5h2v14H6z"/><path d="M19 5v14L9 12z"/></svg>
+                </button>
+                <button type="button" id="b3Back15" class="tnum" style="width:30px;height:26px;border-radius:var(--rs);color:#B9B3A8;font-size:11px;font-weight:600">↺15</button>
+                <button type="button" id="b3PlayBtn" aria-label="Pause (P)" style="width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:var(--accent);transition:transform 90ms ease">
+                  <svg id="b3IconPause" width="16" height="16" viewBox="0 0 24 24" fill="var(--accent-on)"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+                  <svg id="b3IconPlay" width="16" height="16" viewBox="0 0 24 24" fill="var(--accent-on)" style="display:none;margin-left:2px"><path d="M8 5v14l11-7z"/></svg>
+                  <span id="b3IconSpin" class="cb-spinner-on-accent" style="display:none;width:18px;height:18px"></span>
+                </button>
+                <button type="button" id="b3Fwd15" class="tnum" style="width:30px;height:26px;border-radius:var(--rs);color:#B9B3A8;font-size:11px;font-weight:600">↻15</button>
+                <button type="button" aria-label="Next sentence" style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;border-radius:50%">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="#F2EFE9"><path d="M16 5h2v14h-2z"/><path d="M5 5v14l10-7z"/></svg>
+                </button>
+              </div>
+
+              <!-- Right Controls: Speed · Sleep with 10s Amber Drain · Stop -->
+              <div style="flex:1 1 0;display:flex;align-items:center;justify-content:flex-end;gap:4px">
+                <button type="button" id="b3RateBtn" class="tnum" style="height:26px;padding:0 8px;border-radius:var(--rpill);background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.14);font-weight:600;font-size:11.5px">1.1×</button>
+                <button type="button" id="b3SleepBtn" class="b3-sleep-btn fading tnum" title="Click to cycle sleep timer mode">
+                  <svg id="b3SleepMoon" class="b3-sleep-moon fading" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>
+                  <span id="b3SleepText">0:07</span>
+                  <span class="b3-sleep-drain" id="b3SleepDrain" style="width:70%"></span>
+                </button>
+                <button type="button" aria-label="Stop listening" style="width:26px;height:26px;display:flex;align-items:center;justify-content:center;border-radius:50%">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#CFC9BE" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Row 2: Scrubber -->
+            <div style="display:flex;align-items:center;gap:10px;padding:0 2px;font-size:11px;color:#A9A296" class="tnum">
+              <span id="b3Elapsed">1:42</span>
+              <div id="b3ScrubTrack" style="flex:1;height:4px;border-radius:2px;background:rgba(255,255,255,0.12);cursor:pointer;position:relative">
+                <div id="b3ScrubFill" style="width:34%;height:4px;border-radius:2px;background:var(--accent)"></div>
+              </div>
+              <span id="b3Remain">−3:16 · Chapter I</span>
             </div>
           </div>
-
-          <!-- Center Transport -->
-          <div style="display:flex;align-items:center;gap:4px;flex-shrink:0">
-            <button type="button" id="b3Back15" class="tnum" style="width:32px;height:30px;border-radius:var(--rs);color:#A9A296;font-size:11px;font-weight:600">−15</button>
-            <button type="button" aria-label="Previous sentence" style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:50%">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="#F2EFE9"><path d="M6 5h2v14H6z"/><path d="M19 5v14L9 12z"/></svg>
-            </button>
-            <button type="button" id="b3PlayBtn" aria-label="Pause (P)" style="width:44px;height:44px;display:flex;align-items:center;justify-content:center;border-radius:50%;background:var(--accent);transition:transform 90ms ease">
-              <svg id="b3IconPause" width="18" height="18" viewBox="0 0 24 24" fill="var(--accent-on)"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
-              <svg id="b3IconPlay" width="18" height="18" viewBox="0 0 24 24" fill="var(--accent-on)" style="display:none;margin-left:2px"><path d="M8 5v14l11-7z"/></svg>
-              <span id="b3IconSpin" class="cb-spinner-on-accent" style="display:none"></span>
-            </button>
-            <button type="button" aria-label="Next sentence" style="width:34px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:50%">
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="#F2EFE9"><path d="M16 5h2v14h-2z"/><path d="M5 5v14l10-7z"/></svg>
-            </button>
-            <button type="button" id="b3Fwd15" class="tnum" style="width:32px;height:30px;border-radius:var(--rs);color:#A9A296;font-size:11px;font-weight:600">+15</button>
-          </div>
-
-          <!-- Right Controls: Speed · Sleep with 10s Amber Drain · Stop -->
-          <div style="flex:1 1 0;display:flex;align-items:center;justify-content:flex-end;gap:4px">
-            <button type="button" id="b3RateBtn" class="tnum" style="height:30px;width:48px;border-radius:var(--rs);background:rgba(255,255,255,0.14);border:1px solid rgba(255,255,255,0.16);font-weight:600;font-size:12px">1.1×</button>
-            <button type="button" id="b3SleepBtn" class="b3-sleep-btn fading tnum" title="Click to cycle sleep timer mode">
-              <svg id="b3SleepMoon" class="b3-sleep-moon fading" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></svg>
-              <span id="b3SleepText">0:07</span>
-              <span class="b3-sleep-drain" id="b3SleepDrain" style="width:70%"></span>
-            </button>
-            <button type="button" aria-label="Stop listening" style="width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:var(--rs)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#CFC9BE" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
-            </button>
-          </div>
-        </div>
-
-        <!-- Row 2: Scrubber -->
-        <div style="display:flex;align-items:center;gap:10px;padding:0 2px;font-size:11px;color:#A9A296" class="tnum">
-          <span id="b3Elapsed">1:42</span>
-          <div id="b3ScrubTrack" style="flex:1;height:5px;border-radius:3px;background:rgba(255,255,255,0.12);cursor:pointer;position:relative">
-            <div id="b3ScrubFill" style="width:34%;height:5px;border-radius:3px;background:var(--accent)"></div>
-          </div>
-          <span id="b3Remain">−3:16 · Chapter I</span>
         </div>
       </div>
     </div>
@@ -1615,7 +1891,7 @@ body.view-grid .board-stage {
 <section class="board" id="board-04" data-w="1280" data-h="800">
   <div class="board-head">
     <h2>4 · Companion (Story Mode)</h2>
-    <span class="board-hint">Interactive: Story | Study pill · Ask / Previously / Who’s who / Pictures tabs · Clickable Try prompts · Inline Define SelectionBar swatches &amp; modes</span>
+    <span class="board-hint">Interactive: Drag left-edge hairline to resize drawer (double-click snaps to 384px) · Listen / Stop read-aloud toggle beside Copy · Story | Study pill · Ask / Previously / Who’s who / Pictures tabs</span>
   </div>
   <div class="board-viewport"><div class="board-stage">
     <div class="artboard" id="b4Artboard" style="display:flex;background:#1E1D1B;color:#DCD5C8">
@@ -1660,7 +1936,10 @@ body.view-grid .board-stage {
       </div>
 
       <!-- Docked Companion (Story Mode) -->
-      <aside class="comp-aside" aria-label="Story Companion">
+      <aside class="comp-aside" id="b4Aside" aria-label="Story Companion">
+        <div class="comp-resize-handle" data-resize-aside="b4Aside" title="Drag to resize Companion · Double-click to reset to 384px">
+          <span class="comp-resize-hairline"></span>
+        </div>
         <div style="padding:14px 16px 12px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid rgba(255,255,255,0.06)">
           <div style="display:flex;align-items:center;gap:6px">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></svg>
@@ -1698,9 +1977,18 @@ body.view-grid .board-stage {
               <button type="button" class="comp-jump" data-b4-jump="Page 3">Page 3 · “a line of thickness nil”</button>
               <button type="button" class="comp-jump" data-b4-jump="Page 4">Page 4 · “an instantaneous cube”</button>
             </span>
-            <span style="display:flex;align-items:center;gap:6px;font-size:11px;color:#958D80">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#958D80" stroke-width="2" stroke-linecap="round"><path d="M7 17a5 5 0 0 1 0-10 6 6 0 0 1 11.3 2A4 4 0 0 1 18 17z"/></svg>
-              Gemini · sent to Google · less than 1¢
+            <span style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:#958D80">
+              <span style="display:inline-flex;align-items:center;gap:6px">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#958D80" stroke-width="2" stroke-linecap="round"><path d="M7 17a5 5 0 0 1 0-10 6 6 0 0 1 11.3 2A4 4 0 0 1 18 17z"/></svg>
+                Gemini · sent to Google · less than 1¢
+              </span>
+              <span class="comp-action-row">
+                <button type="button" class="comp-small-act comp-copy-btn" data-toast="b4Toast">Copy</button>
+                <button type="button" class="comp-small-act comp-speak-btn" data-speak-id="b4-ask-0" data-toast="b4Toast">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 9.5 H8.5 L13.5 5.5 V18.5 L8.5 14.5 H4.5 Z M16.5 9 A4.2 4.2 0 0 1 16.5 15 M19 6.5 A7.5 7.5 0 0 1 19 17.5"/></svg>
+                  <span class="comp-speak-lbl">Listen</span>
+                </button>
+              </span>
             </span>
           </div>
           <div id="b4ExtraTurn" style="display:none;flex-direction:column;gap:10px"></div>
@@ -1723,8 +2011,12 @@ body.view-grid .board-stage {
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#958D80" stroke-width="2"><rect x="3" y="5" width="18" height="12" rx="1.5"/><path d="M8 21h8M12 17v4"/></svg>
             Written on this computer · Qwen3.5 4B
           </span>
-          <div style="display:flex;gap:8px">
-            <button type="button" class="cb-btn compact">Copy</button>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button type="button" class="cb-btn compact comp-copy-btn" data-toast="b4Toast">Copy</button>
+            <button type="button" class="cb-btn compact comp-speak-btn" data-speak-id="b4-recap" data-toast="b4Toast">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 9.5 H8.5 L13.5 5.5 V18.5 L8.5 14.5 H4.5 Z M16.5 9 A4.2 4.2 0 0 1 16.5 15 M19 6.5 A7.5 7.5 0 0 1 19 17.5"/></svg>
+              <span class="comp-speak-lbl">Listen</span>
+            </button>
             <button type="button" class="cb-btn compact">Save as note</button>
             <button type="button" class="cb-btn compact">Refresh</button>
           </div>
@@ -2370,8 +2662,11 @@ body.view-grid .board-stage {
         </footer>
       </div>
 
-      <!-- Right docked Study Companion (384px) -->
-      <aside class="comp-aside">
+      <!-- Right docked Study Companion (384px, drag left-edge hairline to resize) -->
+      <aside class="comp-aside" id="b8Aside">
+        <div class="comp-resize-handle" data-resize-aside="b8Aside" title="Drag to resize Study Companion · Double-click to reset to 384px">
+          <span class="comp-resize-hairline"></span>
+        </div>
         <header style="height:48px;padding:0 12px 0 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,0.06)">
           <div style="display:flex;align-items:center;gap:10px">
             <span style="font-size:13.5px;font-weight:600;color:#F2EFE9">Companion</span>
@@ -2444,6 +2739,16 @@ body.view-grid .board-stage {
                 <button type="button" class="comp-jump b8-cite" data-cite="Vaswani et al. (2017), p. 4 · Footnote 4">Vaswani et al., p. 4 ↗</button>
                 <button type="button" class="comp-jump b8-cite" data-cite="Bahdanau et al. (2015), p. 3 · Eq. (6) on ML Papers shelf">Bahdanau et al., p. 3 ↗</button>
               </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;padding-top:2px;font-size:11px;color:#8B8B94">
+                <span>Gemini · ML Papers</span>
+                <span class="comp-action-row">
+                  <button type="button" class="comp-small-act comp-copy-btn" data-toast="b8Toast">Copy</button>
+                  <button type="button" class="comp-small-act comp-speak-btn" data-speak-id="b8-ask-0" data-toast="b8Toast">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 9.5 H8.5 L13.5 5.5 V18.5 L8.5 14.5 H4.5 Z M16.5 9 A4.2 4.2 0 0 1 16.5 15 M19 6.5 A7.5 7.5 0 0 1 19 17.5"/></svg>
+                    <span class="comp-speak-lbl">Listen</span>
+                  </button>
+                </span>
+              </div>
             </div>
           </div>
 
@@ -2459,7 +2764,14 @@ body.view-grid .board-stage {
         <div id="b8PaneBrief" style="display:none;flex:1;padding:14px;overflow-y:auto;flex-direction:column;gap:10px">
           <div style="display:flex;align-items:center;justify-content:space-between">
             <span style="font-size:11px;font-weight:600;color:#A1A1AA;text-transform:uppercase;letter-spacing:0.06em">Structured paper brief</span>
-            <span class="cb-pill local"><span class="cb-dot local"></span>Cached</span>
+            <span class="comp-action-row">
+              <button type="button" class="comp-small-act comp-copy-btn" data-toast="b8Toast">Copy</button>
+              <button type="button" class="comp-small-act comp-speak-btn" data-speak-id="b8-brief" data-toast="b8Toast">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 9.5 H8.5 L13.5 5.5 V18.5 L8.5 14.5 H4.5 Z M16.5 9 A4.2 4.2 0 0 1 16.5 15 M19 6.5 A7.5 7.5 0 0 1 19 17.5"/></svg>
+                <span class="comp-speak-lbl">Listen</span>
+              </button>
+              <span class="cb-pill local"><span class="cb-dot local"></span>Cached</span>
+            </span>
           </div>
           <div style="padding:11px 12px;border-radius:var(--rs);background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);display:flex;flex-direction:column;gap:5px">
             <div style="display:flex;justify-content:space-between;align-items:center">
@@ -2631,7 +2943,11 @@ body.view-grid .board-stage {
             <div style="display:flex;align-items:center;justify-content:center;font-size:14.5px;color:#24201B;padding:4px 0">
               MultiHead(<em>Q</em>, <em>K</em>, <em>V</em>) = Concat(head<sub>1</sub>, …, head<sub><em>h</em></sub>)<em>W<sup>O</sup></em>
             </div>
-            <p style="margin:0;text-align:justify">where head<sub><em>i</em></sub> = Attention(<em>QW<sub>i</sub><sup>Q</sup></em>, <em>KW<sub>i</sub><sup>K</sup></em>, <em>VW<sub>i</sub><sup>V</sup></em>). Multi-head attention allows the model to jointly attend to information from different representation subspaces at different positions.</p>
+            <div style="margin:0;text-align:justify" title="Uniform line-by-line PDF highlight bands (zero per-word gaps or double-alpha seams)">
+              <span class="pdf-line-band">where head<sub><em>i</em></sub> = Attention(<em>QW<sub>i</sub><sup>Q</sup></em>, <em>KW<sub>i</sub><sup>K</sup></em>, <em>VW<sub>i</sub><sup>V</sup></em>). Multi-head attention allows the</span>
+              <span class="pdf-line-band">model to jointly attend to information from different representation subspaces</span>
+              <span class="pdf-line-band" style="display:inline-block">at different positions.</span>
+            </div>
           </article>
 
           <!-- Seamless 4-Rect Cutout Layer (cutout box: left 208px, top 234px, width 480px, height 88px => right 688px, bottom 322px) -->
@@ -2670,7 +2986,10 @@ body.view-grid .board-stage {
       </div>
 
       <!-- Right Docked Study Companion Streaming Step-by-Step Math Explanation (384px) -->
-      <aside class="comp-aside">
+      <aside class="comp-aside" id="b9Aside">
+        <div class="comp-resize-handle" data-resize-aside="b9Aside" title="Drag to resize Companion · Double-click to reset to 384px">
+          <span class="comp-resize-hairline"></span>
+        </div>
         <header style="height:48px;padding:0 14px 0 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid rgba(255,255,255,0.06)">
           <div style="display:flex;align-items:center;gap:10px">
             <span style="font-size:13.5px;font-weight:600;color:#F2EFE9">Companion</span>
@@ -2766,9 +3085,20 @@ body.view-grid .board-stage {
             <h4 style="margin:2px 0 0;font-size:14px;font-weight:700;color:#1F1C18">3.1 &nbsp; Encoder and Decoder Stacks</h4>
             <p style="margin:0;text-align:justify"><strong>Encoder:</strong> The encoder is composed of a stack of <em>N</em> = 6 identical layers. Each layer has two sub-layers. The first is a multi-head self-attention mechanism, and the second is a simple, position-wise fully connected feed-forward network. We employ a residual connection <button type="button" class="pdf-link" id="b10LinkRef" data-peek="ref">[14]</button> around each of the two sub-layers, followed by layer normalization [1]. That is, the output of each sub-layer is LayerNorm(<em>x</em> + Sublayer(<em>x</em>)).</p>
             <p style="margin:0;text-align:justify"><strong>Decoder:</strong> The decoder is also composed of a stack of <em>N</em> = 6 identical layers. In addition to the two sub-layers in each encoder layer, the decoder inserts a third sub-layer, which performs multi-head attention over the output of the encoder stack, as shown in the right half of <button type="button" class="pdf-link active" id="b10LinkFig" data-peek="fig">Fig. 1</button>. We also modify the self-attention sub-layer in the decoder stack to prevent positions from attending to subsequent positions.</p>
-            <h4 style="margin:6px 0 0;font-size:14px;font-weight:700;color:#1F1C18">3.2 &nbsp; Attention</h4>
-            <p style="margin:0;text-align:justify">An attention function can be described as mapping a query and a set of key-value pairs to an output, where the query, keys, values, and output are all vectors. The output is computed as a weighted sum of the values, where the weight assigned to each value is computed by a compatibility function of the query with the corresponding key.</p>
-            <p style="margin:0;text-align:justify">This masking, combined with fact that the output embeddings are offset by one position, ensures that the predictions for position <em>i</em> can depend only on the known outputs at positions less than <em>i</em>.</p>
+            <h4 style="margin:6px 0 0;font-size:14px;font-weight:700;color:#1F1C18">3.2 &nbsp; Attention <span style="font-family:var(--font-sans);font-size:10px;font-weight:500;color:#6E665A;margin-left:6px">· 2-column narration bands preserve center gutter</span></h4>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px;font-size:11.6px;line-height:1.54">
+              <div style="text-align:justify" title="Uniform line-by-line narration highlight stops cleanly before the 2-column gutter">
+                <span class="pdf-line-band">An attention function maps a query</span>
+                <span class="pdf-line-band">and a set of key-value pairs to an</span>
+                <span class="pdf-line-band">output, where query, keys, values,</span>
+                <span class="pdf-line-band" style="display:inline-block">and output are all vectors.</span>
+                <span style="display:block;margin-top:6px">The output is computed as a weighted sum of values by compatibility.</span>
+              </div>
+              <div style="text-align:justify;color:#3A342B">
+                <p style="margin:0 0 6px">This masking, combined with the fact that output embeddings are offset by one position, ensures predictions for <em>i</em> depend only on known outputs.</p>
+                <p style="margin:0">Normalized band heights align lowercase wrap lines with full lines without bridging columns.</p>
+              </div>
+            </div>
             <div style="flex:1"></div>
             <div style="text-align:center;font-size:10.5px;color:#8A8275" class="tnum">4</div>
           </article>
@@ -3959,12 +4289,19 @@ body.view-grid .board-stage {
   }
 
   /* -------------------------------------------------------------------------
-     1. BOARD 1 · LIBRARY (Grid/List, Dark/Light, Sidebar Collapse, Details Drawer)
+     1. BOARD 1 · LIBRARY (Shelves, New Pill, Assigned/Unassigned Collections, Details Drawer)
      ------------------------------------------------------------------------- */
+  var b1AllCollections = [
+    { name: "Research", color: "#6BA887" },
+    { name: "ML Papers", color: "#6B8CC9" },
+    { name: "Scientific romances", color: "#C9925A" }
+  ];
   var b1Books = [
     {
       title: "The Time Machine", author: "H. G. Wells", year: "1895", fmt: "EPUB",
-      pct: 4, meta: "Chapter I · 2 h 51 min left", bg: "#1F3550", fg: "#E9D8A6",
+      pct: 4, reading: true, recent: false, isNew: false, finished: false,
+      collections: ["Scientific romances"],
+      meta: "Chapter I · 2 h 51 min left", bg: "#1F3550", fg: "#E9D8A6",
       doi: "ISBN 978-0-14-143997-6",
       bibtex: "@book{wells1895timemachine,\n  author = {H. G. Wells},\n  title = {The Time Machine},\n  year = {1895}\n}",
       apa: "Wells, H. G. (1895). The Time Machine. William Heinemann.",
@@ -3972,7 +4309,9 @@ body.view-grid .board-stage {
     },
     {
       title: "The War of the Worlds", author: "H. G. Wells", year: "1898", fmt: "EPUB",
-      pct: 72, meta: "Listening · Emma, British", bg: "#6B2E2A", fg: "#F1E4D0",
+      pct: 72, reading: true, recent: false, isNew: false, finished: false,
+      collections: ["Scientific romances"],
+      meta: "Listening · Emma, British", bg: "#6B2E2A", fg: "#F1E4D0",
       doi: "ISBN 978-0-14-144103-0",
       bibtex: "@book{wells1898war,\n  author = {H. G. Wells},\n  title = {The War of the Worlds},\n  year = {1898}\n}",
       apa: "Wells, H. G. (1898). The War of the Worlds. William Heinemann.",
@@ -3980,7 +4319,9 @@ body.view-grid .board-stage {
     },
     {
       title: "Attention Is All You Need", author: "Ashish Vaswani et al.", year: "2017", fmt: "PDF",
-      pct: 27, meta: "Page 4 of 15 · arXiv:1706.03762", bg: "#2C3E63", fg: "#F4EDE0",
+      pct: 27, reading: true, recent: true, isNew: false, finished: false,
+      collections: ["Research", "ML Papers"],
+      meta: "Page 4 of 15 · arXiv:1706.03762", bg: "#2C3E63", fg: "#F4EDE0",
       doi: "arXiv:1706.03762",
       bibtex: "@inproceedings{vaswani2017attention,\n  author = {Vaswani, Ashish and Shazeer, Noam and Parmar, Niki and others},\n  title = {Attention Is All You Need},\n  booktitle = {NeurIPS},\n  year = {2017}\n}",
       apa: "Vaswani, A., Shazeer, N., Parmar, N., et al. (2017). Attention Is All You Need. NeurIPS.",
@@ -3988,7 +4329,9 @@ body.view-grid .board-stage {
     },
     {
       title: "Flatland", author: "Edwin A. Abbott", year: "1884", fmt: "EPUB",
-      pct: 12, meta: "Section 3 · 1 h 48 min left", bg: "#27473B", fg: "#E6E0D0",
+      pct: 0, reading: false, recent: true, isNew: true, finished: false,
+      collections: ["Scientific romances"],
+      meta: "Added today · Unread", bg: "#27473B", fg: "#E6E0D0",
       doi: "ISBN 978-0-486-27263-4",
       bibtex: "@book{abbott1884flatland,\n  author = {Edwin A. Abbott},\n  title = {Flatland: A Romance of Many Dimensions},\n  year = {1884}\n}",
       apa: "Abbott, E. A. (1884). Flatland: A Romance of Many Dimensions. Seeley & Co.",
@@ -3996,7 +4339,9 @@ body.view-grid .board-stage {
     },
     {
       title: "Deep Residual Learning", author: "Kaiming He et al.", year: "2016", fmt: "PDF",
-      pct: 60, meta: "Page 7 of 12 · CVPR 2016", bg: "#493757", fg: "#F2EBF8",
+      pct: 0, reading: false, recent: true, isNew: true, finished: false,
+      collections: ["Research", "ML Papers"],
+      meta: "Added 2h ago · CVPR 2016", bg: "#493757", fg: "#F2EBF8",
       doi: "doi:10.1109/CVPR.2016.90",
       bibtex: "@inproceedings{he2016deep,\n  author = {He, Kaiming and Zhang, Xiangyu and Ren, Shaoqing and Sun, Jian},\n  title = {Deep Residual Learning for Image Recognition},\n  booktitle = {CVPR},\n  year = {2016}\n}",
       apa: "He, K., Zhang, X., Ren, S., & Sun, J. (2016). Deep residual learning for image recognition. CVPR.",
@@ -4004,21 +4349,40 @@ body.view-grid .board-stage {
     },
     {
       title: "The Left Hand of Darkness", author: "Ursula K. Le Guin", year: "1969", fmt: "EPUB",
-      pct: 100, meta: "Finished · 14 notes", bg: "#2E4352", fg: "#DDE8F0",
+      pct: 100, reading: false, recent: false, isNew: false, finished: true,
+      collections: [],
+      meta: "Finished · 14 notes", bg: "#2E4352", fg: "#DDE8F0",
       doi: "ISBN 978-0-441-47812-5",
       bibtex: "@book{leguin1969lefthand,\n  author = {Ursula K. Le Guin},\n  title = {The Left Hand of Darkness},\n  year = {1969}\n}",
       apa: "Le Guin, U. K. (1969). The Left Hand of Darkness. Ace Books.",
       summary: "Envoy Genly Ai journeys across the winter planet Gethen to invite its nations into the Ekumen."
     }
   ];
+  var b1ActiveFilter = "all";
+
+  function b1MatchesFilter(b) {
+    if (b1ActiveFilter === "reading") return b.reading;
+    if (b1ActiveFilter === "recent") return b.recent;
+    if (b1ActiveFilter === "epub") return b.fmt === "EPUB";
+    if (b1ActiveFilter === "pdf") return b.fmt === "PDF";
+    if (b1ActiveFilter === "finished") return b.finished;
+    if (b1ActiveFilter.indexOf("col:") === 0) {
+      return b.collections.indexOf(b1ActiveFilter.slice(4)) !== -1;
+    }
+    return true;
+  }
 
   function renderB1Books() {
     var grid = $("b1Grid");
     var list = $("b1List");
     if (!grid || !list) return;
-    grid.innerHTML = b1Books.map(function (b, idx) {
+    var shown = b1Books.map(function (b, idx) { return { b: b, idx: idx }; }).filter(function (x) { return b1MatchesFilter(x.b); });
+    grid.innerHTML = shown.map(function (item) {
+      var b = item.b;
+      var idx = item.idx;
       return '<button type="button" class="b1-book-trigger" data-book="' + idx + '" style="display:flex;flex-direction:column;gap:8px;text-align:left">' +
         '<div class="cb-cover" style="width:100%;aspect-ratio:2/3;padding:12px 10px;background:' + b.bg + ';color:' + b.fg + '">' +
+          (b.isNew ? '<span class="b1-cover-new">New</span>' : '') +
           '<span style="font-size:9px;font-weight:700;letter-spacing:0.06em;opacity:0.75">' + b.fmt + '</span>' +
           '<span class="serif" style="font-size:13px;font-weight:600;line-height:1.18">' + b.title + '</span>' +
           '<span style="font-size:9px;opacity:0.78;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + b.author + '</span>' +
@@ -4037,11 +4401,16 @@ body.view-grid .board-stage {
         '<span style="width:130px;text-align:right">Progress</span>' +
         '<span style="width:48px;text-align:center">Format</span>' +
       '</div>' +
-      b1Books.map(function (b, idx) {
+      shown.map(function (item) {
+        var b = item.b;
+        var idx = item.idx;
         return '<div class="b1-list-row b1-book-trigger" data-book="' + idx + '">' +
           '<div class="cb-cover" style="width:28px;height:40px;background:' + b.bg + ';flex-shrink:0"></div>' +
           '<div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:1px">' +
-            '<span style="font-size:13px;font-weight:500;color:var(--b1-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + b.title + '</span>' +
+            '<span style="display:flex;align-items:center;gap:6px;min-width:0">' +
+              '<span style="font-size:13px;font-weight:500;color:var(--b1-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + b.title + '</span>' +
+              (b.isNew ? '<span class="b1-new-pill">New</span>' : '') +
+            '</span>' +
             '<span style="font-size:11.5px;color:var(--b1-text3)">' + b.author + ' · ' + b.year + '</span>' +
           '</div>' +
           '<div style="width:130px;display:flex;align-items:center;justify-content:flex-end;gap:8px">' +
@@ -4056,6 +4425,15 @@ body.view-grid .board-stage {
   function openB1Drawer(idx) {
     var b = b1Books[idx] || b1Books[2];
     var body = $("b1DrawerBody");
+    var colHtml = b1AllCollections.map(function (c) {
+      var assigned = b.collections.indexOf(c.name) !== -1;
+      return '<button type="button" class="b1-col-pill' + (assigned ? ' assigned' : '') + '" data-col="' + c.name + '" title="' + (assigned ? 'Remove from ' : 'Add to ') + c.name + '">' +
+        '<span class="b1-col-swatch" style="background:' + c.color + '"></span>' +
+        '<span>' + c.name + '</span>' +
+        '<span style="font-size:11px;font-weight:700">' + (assigned ? '✓' : '+') + '</span>' +
+      '</button>';
+    }).join("");
+
     body.innerHTML =
       '<div style="display:flex;gap:16px">' +
         '<div class="cb-cover" style="width:88px;height:132px;flex-shrink:0;padding:10px 8px;background:' + b.bg + ';color:' + b.fg + '">' +
@@ -4076,6 +4454,11 @@ body.view-grid .board-stage {
       '<p style="margin:4px 0 0;font-size:13px;line-height:1.58;color:var(--b1-text2)">' + b.summary + '</p>' +
       '<div style="height:1px;background:rgba(var(--b1-ink),0.07)"></div>' +
       '<div style="display:flex;flex-direction:column;gap:8px">' +
+        '<span style="font-size:11px;font-weight:600;color:var(--b1-text4);letter-spacing:0.03em">Collections</span>' +
+        '<div id="b1DrawerCols" style="display:flex;flex-wrap:wrap;gap:6px">' + colHtml + '</div>' +
+      '</div>' +
+      '<div style="height:1px;background:rgba(var(--b1-ink),0.07)"></div>' +
+      '<div style="display:flex;flex-direction:column;gap:8px">' +
         '<div style="display:flex;align-items:center;justify-content:space-between">' +
           '<span style="font-size:11.5px;font-weight:600;color:var(--b1-text3);text-transform:uppercase;letter-spacing:0.05em">Citation</span>' +
           '<div style="display:flex;gap:6px">' +
@@ -4093,6 +4476,21 @@ body.view-grid .board-stage {
     $("b1CopyApa").addEventListener("click", function () {
       $("b1CitePreview").textContent = b.apa;
       showToast("b1Toast", "Copied APA citation for " + b.title);
+    });
+    body.querySelectorAll(".b1-col-pill").forEach(function (pill) {
+      pill.addEventListener("click", function () {
+        var name = pill.getAttribute("data-col");
+        var pos = b.collections.indexOf(name);
+        if (pos >= 0) {
+          b.collections.splice(pos, 1);
+          showToast("b1Toast", "Removed “" + b.title + "” from " + name);
+        } else {
+          b.collections.push(name);
+          showToast("b1Toast", "Added “" + b.title + "” to " + name);
+        }
+        renderB1Books();
+        openB1Drawer(idx);
+      });
     });
     body.querySelectorAll(".b1-drawer-act").forEach(function (btn) {
       btn.addEventListener("click", function () { showToast("b1Toast", btn.getAttribute("data-msg")); });
@@ -4121,6 +4519,8 @@ body.view-grid .board-stage {
       document.querySelectorAll("[data-b1-nav]").forEach(function (b) { b.classList.remove("active"); });
       btn.classList.add("active");
       $("b1Title").textContent = btn.getAttribute("data-b1-nav");
+      b1ActiveFilter = btn.getAttribute("data-b1-filter") || "all";
+      renderB1Books();
     });
   });
   $("b1ThemeDark").addEventListener("click", function () {
@@ -4217,6 +4617,7 @@ body.view-grid .board-stage {
     $("b2CornerFold").style.background = "linear-gradient(225deg," + t.bg + " 50%," + t.fold + " 50%)";
     $("b2NoteBadge").style.background = t.hl;
     $("b2Artboard").classList.toggle("artboard-light", t.light);
+    if ($("b2AaPopover")) $("b2AaPopover").classList.toggle("is-dark", !t.light);
     document.querySelectorAll("#b2Themes [data-rtheme]").forEach(function (btn) {
       var active = btn.getAttribute("data-rtheme") === key;
       btn.style.background = active ? (t.light ? "#FDFAF3" : "rgba(255,255,255,0.14)") : "transparent";
@@ -4272,22 +4673,49 @@ body.view-grid .board-stage {
     $("b2CornerFold").style.opacity = b2Bookmarked ? "1" : "0.18";
     showToast("b2Toast", b2Bookmarked ? "Page bookmarked" : "Bookmark removed");
   });
+  function syncB2SfxUi() {
+    $("b2SfxLabel").textContent = b2SfxOn ? "Page-turn sound" : "SFX muted";
+    $("b2SfxBtn").style.opacity = b2SfxOn ? "1" : "0.55";
+    if ($("b2AaSfxToggle")) $("b2AaSfxToggle").setAttribute("aria-checked", b2SfxOn ? "true" : "false");
+  }
   $("b2SfxBtn").addEventListener("click", function () {
     b2SfxOn = !b2SfxOn;
-    $("b2SfxLabel").textContent = b2SfxOn ? "Paper-flip SFX" : "SFX muted";
-    $("b2SfxBtn").style.opacity = b2SfxOn ? "1" : "0.55";
+    syncB2SfxUi();
+  });
+  $("b2AaBtn").addEventListener("click", function () {
+    $("b2AaPopover").classList.toggle("open");
+  });
+  $("b2AaClose").addEventListener("click", function () {
+    $("b2AaPopover").classList.remove("open");
+  });
+  $("b2AaSfxToggle").addEventListener("click", function () {
+    b2SfxOn = !b2SfxOn;
+    syncB2SfxUi();
+    if (b2SfxOn) {
+      var ring = $("b2SfxRing");
+      ring.classList.remove("ping");
+      void ring.offsetWidth;
+      ring.classList.add("ping");
+    }
+    showToast("b2Toast", b2SfxOn ? "Page-turn sound enabled (previewed)" : "Page-turn sound muted");
+  });
+  $("b2AaAnimToggle").addEventListener("click", function () {
+    var on = $("b2AaAnimToggle").getAttribute("aria-checked") !== "true";
+    $("b2AaAnimToggle").setAttribute("aria-checked", on ? "true" : "false");
+    showToast("b2Toast", on ? "Page-turn glide enabled" : "Page turns set to instant snap");
   });
   $("b2NoteBadge").addEventListener("click", function () {
     showToast("b2Toast", "Margin note: “the whole argument rests on this”");
   });
 
   /* -------------------------------------------------------------------------
-     3. BOARD 3 · LISTENING (Speed Popover, Sleep Countdown & Drain, Buffering)
+     3. BOARD 3 · LISTENING (Adaptive 44px Resting Pill -> 86px Hover State)
      ------------------------------------------------------------------------- */
   var b3Rate = 1.1;
   var b3Playing = true;
   var b3Buffering = false;
   var b3Follow = true;
+  var b3PinnedExpanded = false;
   var b3SleepModes = [
     { label: "0:07", fading: true, drain: 70 },
     { label: "15m", fading: false, drain: 0 },
@@ -4297,10 +4725,17 @@ body.view-grid .board-stage {
   var b3SleepIdx = 0;
   var b3Presets = [0.75, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0];
 
+  function syncB3ExpandedClass() {
+    var popOpen = $("b3SpeedPop").classList.contains("open");
+    $("b3Deck").classList.toggle("expanded", b3PinnedExpanded || popOpen);
+    $("b3ExpandDemoBtn").textContent = b3PinnedExpanded ? "Return to 44px pill" : "Pin expanded (86px)";
+  }
+
   function renderB3Speed() {
     var txt = (Math.round(b3Rate * 100) / 100) + "×";
     $("b3PopRate").textContent = txt;
     $("b3RateBtn").textContent = txt;
+    $("b3RestRateBtn").textContent = txt;
     $("b3SpeedPresets").innerHTML = b3Presets.map(function (r) {
       var active = Math.abs(r - b3Rate) < 0.01;
       return '<button type="button" class="b3-speed-row' + (active ? ' active' : '') + '" data-rate="' + r + '"><span class="tnum">' + r + '×</span>' + (active ? '<span style="color:var(--accent)">✓</span>' : '') + '</button>';
@@ -4314,40 +4749,73 @@ body.view-grid .board-stage {
   }
 
   function renderB3PlayState() {
-    $("b3IconPause").style.display = (!b3Buffering && b3Playing) ? "block" : "none";
-    $("b3IconPlay").style.display = (!b3Buffering && !b3Playing) ? "block" : "none";
+    var showPause = !b3Buffering && b3Playing;
+    var showPlay = !b3Buffering && !b3Playing;
+    $("b3IconPause").style.display = showPause ? "block" : "none";
+    $("b3IconPlay").style.display = showPlay ? "block" : "none";
     $("b3IconSpin").style.display = b3Buffering ? "inline-block" : "none";
-    $("b3BufferDemoBtn").textContent = b3Buffering ? "Exit buffering preview" : "Preview buffering spinner";
+    $("b3RestIconPause").style.display = showPause ? "block" : "none";
+    $("b3RestIconPlay").style.display = showPlay ? "block" : "none";
+    $("b3RestIconSpin").style.display = b3Buffering ? "inline-block" : "none";
+    $("b3BufferDemoBtn").textContent = b3Buffering ? "Exit buffering" : "Preview buffering";
+  }
+
+  function toggleB3RatePop() {
+    $("b3SpeedPop").classList.toggle("open");
+    syncB3ExpandedClass();
+  }
+
+  function cycleB3Sleep() {
+    b3SleepIdx = (b3SleepIdx + 1) % b3SleepModes.length;
+    var m = b3SleepModes[b3SleepIdx];
+    $("b3SleepText").textContent = m.label;
+    $("b3RestSleepText").textContent = m.label;
+    $("b3RestSleepBtn").style.display = m.label === "Off" ? "none" : "inline-flex";
+    $("b3SleepBtn").classList.toggle("fading", m.fading);
+    $("b3RestSleepBtn").classList.toggle("fading", m.fading);
+    $("b3SleepMoon").classList.toggle("fading", m.fading);
+    $("b3SleepDrain").style.width = m.drain + "%";
+    $("b3HairlineFill").classList.toggle("fading", m.fading);
   }
 
   renderB3Speed();
   renderB3PlayState();
-  $("b3RateBtn").addEventListener("click", function () { $("b3SpeedPop").classList.toggle("open"); });
+  syncB3ExpandedClass();
+  $("b3RateBtn").addEventListener("click", toggleB3RatePop);
+  $("b3RestRateBtn").addEventListener("click", toggleB3RatePop);
+  $("b3ExpandDemoBtn").addEventListener("click", function () {
+    b3PinnedExpanded = !b3PinnedExpanded;
+    if (!b3PinnedExpanded) $("b3SpeedPop").classList.remove("open");
+    syncB3ExpandedClass();
+  });
   $("b3Slower").addEventListener("click", function () { b3Rate = Math.max(0.75, Math.round((b3Rate - 0.05) * 100) / 100); renderB3Speed(); });
   $("b3Faster").addEventListener("click", function () { b3Rate = Math.min(2.0, Math.round((b3Rate + 0.05) * 100) / 100); renderB3Speed(); });
   $("b3PlayBtn").addEventListener("click", function () { b3Buffering = false; b3Playing = !b3Playing; renderB3PlayState(); });
+  $("b3RestPlayBtn").addEventListener("click", function () { b3Buffering = false; b3Playing = !b3Playing; renderB3PlayState(); });
   $("b3BufferDemoBtn").addEventListener("click", function () { b3Buffering = !b3Buffering; renderB3PlayState(); });
   $("b3FollowPill").addEventListener("click", function () {
     b3Follow = !b3Follow;
     $("b3FollowLabel").textContent = b3Follow ? "Pages follow the voice" : "Free browsing · Return to voice";
+    $("b3RestFollowChip").style.display = b3Follow ? "none" : "inline-flex";
   });
-  $("b3SleepBtn").addEventListener("click", function () {
-    b3SleepIdx = (b3SleepIdx + 1) % b3SleepModes.length;
-    var m = b3SleepModes[b3SleepIdx];
-    $("b3SleepText").textContent = m.label;
-    $("b3SleepBtn").classList.toggle("fading", m.fading);
-    $("b3SleepMoon").classList.toggle("fading", m.fading);
-    $("b3SleepDrain").style.width = m.drain + "%";
+  $("b3RestFollowChip").addEventListener("click", function () {
+    b3Follow = true;
+    $("b3FollowLabel").textContent = "Pages follow the voice";
+    $("b3RestFollowChip").style.display = "none";
   });
+  $("b3SleepBtn").addEventListener("click", cycleB3Sleep);
+  $("b3RestSleepBtn").addEventListener("click", cycleB3Sleep);
   var b3Sec = 102;
   function updateB3Scrub() {
     var total = 298;
     b3Sec = Math.max(0, Math.min(total, b3Sec));
     var rem = total - b3Sec;
     function fmt(s) { return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); }
+    var pct = Math.round((b3Sec / total) * 100) + "%";
     $("b3Elapsed").textContent = fmt(b3Sec);
     $("b3Remain").textContent = "−" + fmt(rem) + " · Chapter I";
-    $("b3ScrubFill").style.width = Math.round((b3Sec / total) * 100) + "%";
+    $("b3ScrubFill").style.width = pct;
+    $("b3HairlineFill").style.width = pct;
   }
   $("b3Back15").addEventListener("click", function () { b3Sec -= 15; updateB3Scrub(); });
   $("b3Fwd15").addEventListener("click", function () { b3Sec += 15; updateB3Scrub(); });
@@ -4426,6 +4894,57 @@ body.view-grid .board-stage {
   });
   document.querySelectorAll("[data-b4-jump]").forEach(function (btn) {
     btn.addEventListener("click", function () { showToast("b4Toast", "Jumped to " + btn.getAttribute("data-b4-jump")); });
+  });
+
+  /* Shared Companion Resize Handle (Boards 4, 8, 9) & Listen/Stop Toggle */
+  var activeSpeakId = null;
+  function syncSpeakButtons() {
+    document.querySelectorAll(".comp-speak-btn").forEach(function (btn) {
+      var on = btn.getAttribute("data-speak-id") === activeSpeakId;
+      btn.classList.toggle("speaking", on);
+      var lbl = btn.querySelector(".comp-speak-lbl");
+      if (lbl) lbl.textContent = on ? "Stop" : "Listen";
+    });
+  }
+  document.querySelectorAll(".comp-speak-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var id = btn.getAttribute("data-speak-id");
+      var toastId = btn.getAttribute("data-toast") || "b4Toast";
+      activeSpeakId = (activeSpeakId === id) ? null : id;
+      syncSpeakButtons();
+      showToast(toastId, activeSpeakId ? "Reading Companion reply aloud with Emma…" : "Stopped reading Companion reply");
+    });
+  });
+  document.querySelectorAll(".comp-copy-btn").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      showToast(btn.getAttribute("data-toast") || "b4Toast", "Copied reply to clipboard");
+    });
+  });
+  document.querySelectorAll(".comp-resize-handle").forEach(function (handle) {
+    var aside = $(handle.getAttribute("data-resize-aside"));
+    if (!aside) return;
+    handle.addEventListener("dblclick", function () {
+      aside.style.width = "384px";
+    });
+    handle.addEventListener("mousedown", function (e) {
+      e.preventDefault();
+      var startX = e.clientX;
+      var startW = aside.getBoundingClientRect().width;
+      var scale = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--deck-scale")) || 1;
+      handle.classList.add("dragging");
+      function onMove(ev) {
+        var delta = (startX - ev.clientX) / scale;
+        var nextW = Math.max(320, Math.min(580, Math.round(startW + delta)));
+        aside.style.width = nextW + "px";
+      }
+      function onUp() {
+        handle.classList.remove("dragging");
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      }
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    });
   });
 
   /* -------------------------------------------------------------------------
