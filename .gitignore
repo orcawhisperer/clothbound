@@ -1,6 +1,6 @@
 /build/
 /pkgbuild/pkg/
 /pkgbuild/src/
-/pkgbuild/dogear/
+/pkgbuild/clothbound/
 *.pkg.tar.*
 *.user

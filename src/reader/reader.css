@@ -1,0 +1,231 @@
+/* The reading surface around the book's pages: the page color edge to edge,
+   margin note badges, and the footnote pop-over. The pages themselves are
+   styled from reader.js. */
+
+:root {
+    --cb-bg: #F6F1E7;
+    --cb-fg: #26221D;
+    --cb-ink-soft: #4D463D;
+    --cb-link: #3E5F99;
+    --cb-muted: #6E665A;
+    --cb-popover: #FDFAF3;
+    --cb-highlight: #F7DE8A;
+    --cb-border: rgba(38, 34, 29, 0.12);
+    --cb-radius: 0px;
+    --cb-radius-lg: 0px;
+    --cb-radius-sm: 0px;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--cb-bg);
+    color: var(--cb-fg);
+    -webkit-user-select: none;
+    user-select: none;
+    transition: background-color 200ms cubic-bezier(0.22, 1, 0.36, 1), color 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    html, body {
+        transition: none;
+    }
+}
+
+@font-face { font-family: "Inter"; src: url("fonts/Inter.ttf"); font-weight: 100 900; }
+
+/* A compact note badge beside its highlight in the outer margin (02_reading). */
+.margin-note-badge {
+    position: absolute;
+    pointer-events: auto;
+    box-sizing: border-box;
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--cb-radius-sm, 6px);
+    background: var(--cb-mark, var(--cb-highlight));
+    color: var(--cb-fg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    opacity: 0.92;
+    transition: opacity 120ms ease-out, transform 120ms ease-out, box-shadow 120ms ease-out;
+}
+.margin-note-badge:hover {
+    opacity: 1;
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.14);
+}
+.margin-note-badge:focus-visible {
+    outline: 2px solid var(--cb-link);
+    outline-offset: 2px;
+}
+
+#stage {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+
+#viewport {
+    position: absolute;
+    overflow: hidden;
+}
+
+#viewport.turning {
+    -webkit-mask-image: linear-gradient(
+        to right,
+        transparent 0px,
+        #000 var(--cb-feather, 36px),
+        #000 calc(100% - var(--cb-feather, 36px)),
+        transparent 100%
+    );
+    mask-image: linear-gradient(
+        to right,
+        transparent 0px,
+        #000 var(--cb-feather, 36px),
+        #000 calc(100% - var(--cb-feather, 36px)),
+        transparent 100%
+    );
+}
+
+/* Book frames have no implicit opacity transition so hiding an inactive frame
+   before navigation is instantaneous (zero unstyled white-canvas flash). */
+.book-frame, #book, #book-back {
+    position: absolute;
+    left: 0;
+    top: 0;
+    border: 0;
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    z-index: 0;
+}
+
+.book-frame.shown, #book.shown, #book-back.shown {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    z-index: 2;
+}
+
+.book-frame.outgoing, #book.outgoing, #book-back.outgoing {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: none;
+    z-index: 1;
+}
+
+@keyframes cb-book-reveal {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.book-frame.reveal, #book.reveal, #book-back.reveal {
+    animation: cb-book-reveal 160ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .book-frame.reveal, #book.reveal, #book-back.reveal {
+        animation: none;
+    }
+}
+
+#overlay {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+}
+
+.note {
+    position: absolute;
+    pointer-events: auto;
+    max-width: 440px;
+    min-width: 220px;
+    background: var(--cb-popover);
+    color: var(--cb-fg);
+    border: 1px solid var(--cb-border);
+    border-radius: var(--cb-radius-lg);
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.34);
+    padding: 14px 16px 12px;
+    font: 13px/1.45 "Inter", system-ui, sans-serif;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+
+.note.shown {
+    opacity: 1;
+    transform: none;
+}
+
+.note iframe {
+    display: block;
+    width: 100%;
+    border: 0;
+    height: 40px;
+    background: transparent;
+}
+
+.note .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+.note .actions button {
+    font: inherit;
+    font-weight: 500;
+    border: 0;
+    background: none;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: var(--cb-radius);
+    color: var(--cb-link);
+    cursor: pointer;
+    transition: background-color 100ms ease-out;
+}
+
+.note .actions button:hover {
+    background: rgba(128, 128, 128, 0.12);
+}
+
+/* Listening from a paragraph: a small play button in its margin. */
+.from-here {
+    position: absolute;
+    pointer-events: auto;
+    width: 26px;
+    height: 26px;
+    border: 0;
+    border-radius: 13px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--cb-link);
+    color: var(--cb-bg);
+    cursor: pointer;
+    opacity: 0;
+    visibility: hidden;
+    transform: scale(0.85);
+    transition: opacity 120ms ease-out, transform 120ms ease-out, visibility 0s linear 120ms;
+}
+.from-here.shown {
+    opacity: 0.9;
+    visibility: visible;
+    transform: none;
+    transition: opacity 120ms ease-out, transform 120ms ease-out;
+}
+.from-here:hover {
+    opacity: 1;
+}

@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Clothbound</title>
+  <desc>A woven indigo clothbound hardcover book with a stitched spine, warm cream page edges, blind-debossed cover frame, and an amber silk bookmark ribbon emerging from the bottom.</desc>
+  <defs>
+    <pattern id="linen" width="8" height="8" patternUnits="userSpaceOnUse">
+      <path d="M0 4 H8 M4 0 V8" stroke="#ffffff" stroke-width="0.7" opacity="0.06"/>
+    </pattern>
+  </defs>
+  <g transform="translate(8 -10)">
+    <!-- Hard drop shadow under the hardcover volume. -->
+    <rect x="92" y="64" width="328" height="392" rx="28" fill="#14151c" opacity="0.7" transform="translate(0 16)"/>
+    <!-- Back board & warm cream page block peeking out along the right & bottom fore-edge. -->
+    <rect x="104" y="64" width="316" height="392" rx="26" fill="#202e4a" stroke="#18233a" stroke-width="3"/>
+    <path d="M126 420 H392 Q408 420 408 404 V90 Q408 76 394 76 H380 V410 Q380 426 364 426 H126 Z"
+          fill="#f4ede0" stroke="#d8ceb6" stroke-width="3"/>
+    <!-- Subtle horizontal page-edge leaves at the bottom of the text block. -->
+    <path d="M126 436 H386 Q396 436 396 426 V416 H126 Z" fill="#efe6d5" stroke="#d8ceb6" stroke-width="2.5"/>
+    <line x1="138" y1="426" x2="386" y2="426" stroke="#c8bda5" stroke-width="2" opacity="0.75"/>
+    <!-- Silk ribbon bookmark descending from the text block with a swallowtail cut. -->
+    <path d="M294 420 V494 L322 472 L350 494 V420 Z" fill="#14151c" opacity="0.32" transform="translate(-4 6)"/>
+    <path d="M294 416 V490 L322 468 L350 490 V416 Z" fill="#E8B339" stroke="#c49122" stroke-width="3" stroke-linejoin="round"/>
+    <line x1="322" y1="418" x2="322" y2="466" stroke="#fae08c" stroke-width="3" opacity="0.55"/>
+    <!-- Front woven linen cover. -->
+    <rect x="92" y="56" width="298" height="364" rx="22" fill="#2c3e63" stroke="#1f2d49" stroke-width="3"/>
+    <rect x="92" y="56" width="298" height="364" rx="22" fill="url(#linen)"/>
+    <!-- Bound spine with raised cloth bands & hinge groove. -->
+    <path d="M114 56 H148 V420 H114 Q92 420 92 398 V78 Q92 56 114 56 Z" fill="#202e4a"/>
+    <line x1="148" y1="58" x2="148" y2="418" stroke="#18233a" stroke-width="3"/>
+    <line x1="152" y1="58" x2="152" y2="418" stroke="#455d8c" stroke-width="2" opacity="0.55"/>
+    <!-- Raised stitched spine bands. -->
+    <rect x="96" y="114" width="48" height="8" rx="4" fill="#3a4f7a" opacity="0.8"/>
+    <rect x="96" y="234" width="48" height="8" rx="4" fill="#3a4f7a" opacity="0.8"/>
+    <rect x="96" y="354" width="48" height="8" rx="4" fill="#3a4f7a" opacity="0.8"/>
+    <!-- Debossed gold-foil title plate & cover rule on the linen cover. -->
+    <rect x="176" y="88" width="184" height="300" rx="10" fill="none" stroke="#E8B339" stroke-width="3" opacity="0.45"/>
+    <rect x="206" y="148" width="124" height="16" rx="8" fill="#f4ede0"/>
+    <rect x="226" y="182" width="84" height="12" rx="6" fill="#E8B339" opacity="0.9"/>
+    <line x1="234" y1="224" x2="302" y2="224" stroke="#f4ede0" stroke-width="3" stroke-linecap="round" opacity="0.45"/>
+    <!-- Small woven-diamond centerpiece emblem. -->
+    <path d="M268 256 L284 272 L268 288 L252 272 Z" fill="#E8B339" opacity="0.85"/>
+  </g>
+</svg>

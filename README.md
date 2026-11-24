@@ -1,19 +1,19 @@
-# Dogear
+# Clothbound
 
-An ebook reader for [Omarchy](https://omarchy.org): your EPUBs and PDFs in one
+An ebook reader for [Omarchy](https://omarchy.org) ([clothbound.app](https://clothbound.app)): your EPUBs and PDFs in one
 library, a calm page to read them on, and voices to read them to you. It
 follows your Omarchy theme and language, is driven from the keyboard (and
 works just as well with a mouse or touchpad), and never changes your book
 files.
 
-![Dogear reading The Time Machine](screenshot.png)
+![Clothbound reading The Time Machine](screenshot.png)
 
 ## What it does
 
 ![The library: shelves, collections, and the book read last](screenshot-library.png)
 
 - **A library** of your EPUB and PDF books, found in the watched folders you
-  manage (on first run Dogear offers the folder your books are already in),
+  manage (on first run Clothbound offers the folder your books are already in),
   with covers, editions grouped together, a sidebar of shelves (Reading now,
   All books, Want to read, Finished, Listening) and your own **collections**,
   a Continue card for the book you read last, a compact **list view**
@@ -25,13 +25,13 @@ files.
   the current book's chapters, cross-book highlights & notes, page/percentage
   jumps, and every app or reader action.
 - **Light and dark**, following your Omarchy theme as it changes (or set in
-  Settings), with Dogear's own controls set in Inter.
+  Settings), with Clothbound's own controls set in Inter.
 - **A page to read on**: EPUB in columns or scrolling, with drop caps, notes
   beside their highlights when the margin has room, your typeface,
   size, spacing and theme; PDF pages recolored to the reading theme with
   their blank margins cut, one at a time, two side by side, or scrolling.
 - **Highlights, notes and bookmarks**, with W3C text-quote anchoring, undo,
-  cross-book search, Obsidian/Readwise Markdown file export, and `dogear notes`
+  cross-book search, Obsidian/Readwise Markdown file export, and `clothbound notes`
   to take them elsewhere. **Search** by words, or **by meaning** ("the scene
   where they first meet").
 - **Listening**: the book read aloud with the sentence shown as it's read,
@@ -45,7 +45,7 @@ files.
     Kokoro-FastAPI, speaches).
   - Download a book's narration to listen offline, and save it as an **M4B
     audiobook** with chapters. Close the window and it keeps reading; open
-    Dogear again to come back.
+    Clothbound again to come back.
 - **The X-Ray companion** (C): *Define*, *Explain* or *Translate* words you
   select, *Ask* about the book, read *Previously…* when you come back to it,
   browse *Who's who*, and *Illustrate* a moment in the manner of the book's own
@@ -65,7 +65,7 @@ server on this computer, or both. Choose in Intelligence (✦ in the library):
 | Search by meaning | Gemini | This computer | This computer |
 | Illustrate | Gemini | Gemini | Not available |
 
-Dogear doesn't bundle a language model. Intelligence sets one up for you: it
+Clothbound doesn't bundle a language model. Intelligence sets one up for you: it
 installs Ollama in Omarchy's terminal (you type your password there), then
 downloads the model that suits your computer, showing its size first. Or it
 finds the one you already run (llama.cpp's `llama-server`, LM Studio, MLX,
@@ -123,28 +123,28 @@ what will work well here, what will be slow, and what needs Gemini.
 Commands need no display, and take `--json`:
 
 ```sh
-dogear [open] [book]                # open the library, or a book where you left off
-dogear add <folder-or-book>...      # add books to the library
-dogear list                         # the books, with reading progress
-dogear info <book>                  # metadata and table of contents
-dogear notes <book>                 # highlights, notes and bookmarks, as Markdown
-dogear voices [list|install|remove|bench] # built-in voices and their speed here
-dogear ai [status|key|forget|local] # Gemini key and costs, and models on this computer
-dogear skill [install]              # the skill for coding agents
+clothbound [open] [book]                # open the library, or a book where you left off
+clothbound add <folder-or-book>...      # add books to the library
+clothbound list                         # the books, with reading progress
+clothbound info <book>                  # metadata and table of contents
+clothbound notes <book>                 # highlights, notes and bookmarks, as Markdown
+clothbound voices [list|install|remove|bench] # built-in voices and their speed here
+clothbound ai [status|key|forget|local] # Gemini key and costs, and models on this computer
+clothbound skill [install]              # the skill for coding agents
 ```
 
 ## Build
 
 ```sh
-bin/build      # build/dogear
+bin/build      # build/clothbound
 bin/test       # unit tests, offscreen
-bin/install    # builds and installs the package, so Dogear is in the launcher
+bin/install    # builds and installs the package, so Clothbound is in the launcher
 bin/translate  # translate what's new into Omarchy's languages (needs GEMINI_API_KEY)
 ```
 
 ## Credits
 
-Dogear is MIT licensed. It reads with Qt (LGPL) and Chromium's engine, and
+Clothbound is MIT licensed. It reads with Qt (LGPL) and Chromium's engine, and
 sets books in Literata and its interface in Inter (both SIL Open Font License).
 Built-in voices are made by
 [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0) with

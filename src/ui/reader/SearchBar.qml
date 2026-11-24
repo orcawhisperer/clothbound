@@ -1,0 +1,453 @@
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import "../components"
+
+import "../components/Icons.js" as Icons
+import "../components/Ui.js" as Ui
+
+// Finding words in the book: type, and every place they're found is listed
+// by chapter; Enter goes to the next. Once you're reading at one, the list
+// folds away and n and N go on stepping through them.
+FocusScope {
+    id: bar
+
+    property bool open: false
+    // The list is showing (while typing or choosing); folded otherwise.
+    property bool expanded: false
+    property bool pendingJump: false
+    property bool pendingBackwards: false
+    property var look
+
+    signal jumped(var hit)
+    signal closed()
+
+    readonly property bool editing: open && expanded
+
+    function show() {
+        open = true
+        expanded = true
+        pendingJump = false
+        input.forceActiveFocus()
+        input.selectAll()
+    }
+    function close() {
+        if (!open)
+            return
+        open = false
+        expanded = false
+        pendingJump = false
+        typing.stop()
+        bookSearch.clear()
+        closed()
+    }
+    function fold() {
+        expanded = false
+        input.focus = false
+    }
+    function jump(index) {
+        if (bookSearch.count === 0)
+            return
+        bookSearch.current = index
+        const hit = bookSearch.results[bookSearch.current]
+        if (hit)
+            jumped(hit)
+    }
+    function submit(backwards) {
+        typing.stop()
+        const wanted = input.text.trim()
+        if (wanted === "")
+            return
+        // If results for this exact query are already ready, step right to them;
+        // otherwise start the search and wait (never folding before async results arrive).
+        if (wanted === bookSearch.query && !bookSearch.searching && bookSearch.count > 0) {
+            if (backwards)
+                previous()
+            else
+                next()
+            fold()
+            return
+        }
+        pendingBackwards = !!backwards
+        pendingJump = !bookSearch.byMeaning
+        bar.expanded = true
+        bookSearch.find(input.text)
+    }
+    function next() { jump(bookSearch.current + 1) }
+    function previous() { jump(bookSearch.current < 0 ? bookSearch.count - 1 : bookSearch.current - 1) }
+
+    Connections {
+        target: bookSearch
+        function onChanged() {
+            if (bar.pendingJump && !bookSearch.searching) {
+                bar.pendingJump = false
+                if (bookSearch.count > 0) {
+                    if (bar.pendingBackwards)
+                        bar.previous()
+                    else
+                        bar.next()
+                    bar.fold()
+                }
+            }
+        }
+    }
+
+    function escaped(text) {
+        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    }
+
+    visible: open
+    width: Math.min(parent.width - 48, 660)
+    height: card.height
+
+    Timer {
+        id: typing
+        interval: 220
+        onTriggered: if (!bookSearch.byMeaning) bookSearch.find(input.text)
+    }
+
+    // Soft elevation shadow.
+    Rectangle {
+        z: -2
+        anchors.fill: card
+        anchors.leftMargin: -4
+        anchors.rightMargin: -4
+        anchors.topMargin: 8
+        anchors.bottomMargin: -14
+        radius: card.radius > 0 ? card.radius + 4 : 0
+        color: "black"
+        opacity: bar.look.dark ? 0.34 : 0.11
+    }
+    Rectangle {
+        z: -1
+        anchors.fill: card
+        anchors.topMargin: 3
+        anchors.bottomMargin: -5
+        radius: card.radius
+        color: "black"
+        opacity: bar.look.dark ? 0.28 : 0.08
+    }
+
+    Rectangle {
+        id: card
+        width: parent.width
+        height: searchHeader.height + (bar.expanded && list.count > 0 ? list.height + 10 : 0)
+                + (bar.expanded && note.visible ? note.height + 8 : 0)
+        radius: Ui.radius(12, theme.radius)
+        color: bar.look.popover
+        border.width: 1
+        border.color: bar.look.line
+        clip: true
+
+        // Keep clicks and wheel inside the card from dismissing it via the scrim.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onWheel: (wheel) => wheel.accepted = true
+        }
+
+        RowLayout {
+            id: searchHeader
+            width: parent.width
+            height: 44
+            spacing: 6
+
+            Glyph {
+                Layout.leftMargin: 14
+                Layout.preferredWidth: 16
+                Layout.preferredHeight: 16
+                path: Icons.search
+                color: bar.look.muted
+            }
+            TextInput {
+                id: input
+                Layout.fillWidth: true
+                Layout.minimumWidth: 140
+                Layout.leftMargin: 4
+                color: bar.look.fg
+                selectionColor: Ui.tint(bar.look.link, 0.4)
+                selectedTextColor: bar.look.fg
+                font.pixelSize: 13
+                clip: true
+                onTextEdited: {
+                    bar.expanded = true
+                    bar.pendingJump = false
+                    if (!bookSearch.byMeaning)
+                        typing.restart()
+                }
+                onActiveFocusChanged: if (activeFocus) bar.expanded = true
+                Keys.onReturnPressed: (event) => bar.submit(event.modifiers & Qt.ShiftModifier)
+                Keys.onEnterPressed: (event) => bar.submit(event.modifiers & Qt.ShiftModifier)
+                Keys.onEscapePressed: bar.close()
+                Keys.onDownPressed: list.forceActiveFocus()
+
+                Label {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: parent.width
+                    visible: !parent.text
+                    text: bookSearch.byMeaning
+                          ? (bookSearch.spoilerFree ? qsTr("Describe what you're looking for (up to here)")
+                                                    : qsTr("Describe what you're looking for"))
+                          : qsTr("Search in the book")
+                    color: bar.look.muted
+                    font.pixelSize: 13
+                    elide: Text.ElideRight
+                }
+            }
+            // Words, or meaning (26 px pill).
+            AbstractButton {
+                id: meaning
+                visible: bookSearch.canSearchByMeaning
+                implicitHeight: 26
+                implicitWidth: meaningLabel.implicitWidth + 18
+                hoverEnabled: true
+                focusPolicy: Qt.TabFocus
+                onClicked: {
+                    typing.stop()
+                    bar.pendingJump = false
+                    const turningOn = !bookSearch.byMeaning
+                    bookSearch.byMeaning = turningOn
+                    if (!turningOn && input.text.trim().length >= 2)
+                        bookSearch.find(input.text)
+                    input.forceActiveFocus()
+                }
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: qsTr("Find passages by what they're about, not their words. %1.").arg(bookSearch.where)
+                background: Rectangle {
+                    radius: Ui.radius(7, theme.radius)
+                    color: bookSearch.byMeaning ? Ui.tint(bar.look.link, 0.20)
+                         : meaning.hovered ? Ui.tint(bar.look.fg, 0.08) : Ui.tint(bar.look.fg, 0.04)
+                    border.width: bookSearch.byMeaning ? 1 : 0
+                    border.color: bar.look.link
+                }
+                contentItem: Label {
+                    id: meaningLabel
+                    text: qsTr("By meaning")
+                    color: bookSearch.byMeaning ? bar.look.fg : bar.look.muted
+                    font.pixelSize: 12
+                    font.weight: Font.Medium
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+            }
+            // Optional spoiler shield for semantic search (26 px pill).
+            AbstractButton {
+                id: spoilerShield
+                visible: bookSearch.canSearchByMeaning && bookSearch.byMeaning
+                implicitHeight: 26
+                implicitWidth: shieldRow.implicitWidth + 16
+                hoverEnabled: true
+                focusPolicy: Qt.TabFocus
+                onClicked: {
+                    bookSearch.spoilerFree = !bookSearch.spoilerFree
+                    input.forceActiveFocus()
+                }
+                ToolTip.visible: hovered
+                ToolTip.delay: 500
+                ToolTip.text: bookSearch.spoilerFree
+                              ? qsTr("Spoiler shield on: searching only up to your current page.")
+                              : qsTr("Limit semantic search to chapters up to your current page so nothing ahead is spoiled.")
+                background: Rectangle {
+                    radius: Ui.radius(7, theme.radius)
+                    color: bookSearch.spoilerFree ? Ui.tint(bar.look.link, 0.20)
+                         : spoilerShield.hovered ? Ui.tint(bar.look.fg, 0.08) : Ui.tint(bar.look.fg, 0.04)
+                    border.width: bookSearch.spoilerFree ? 1 : 0
+                    border.color: bar.look.link
+                }
+                contentItem: Item {
+                    Row {
+                        id: shieldRow
+                        anchors.centerIn: parent
+                        spacing: 5
+                        Glyph {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 12
+                            height: 12
+                            path: Icons.shieldCheck
+                            color: bookSearch.spoilerFree ? bar.look.link : bar.look.muted
+                        }
+                        Label {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Up to here")
+                            color: bookSearch.spoilerFree ? bar.look.fg : bar.look.muted
+                            font.pixelSize: 12
+                            font.weight: Font.Medium
+                        }
+                    }
+                }
+            }
+            Label {
+                Layout.maximumWidth: 180
+                elide: Text.ElideRight
+                text: bookSearch.preparing !== "" ? bookSearch.preparing
+                    : bookSearch.searching ? qsTr("Searching…")
+                    : bookSearch.query.length < 2 ? ""
+                    : bookSearch.count === 0 ? (bookSearch.byMeaning && bookSearch.query.length < 3 ? "" : qsTr("Not found"))
+                    : bookSearch.current >= 0 && translator.language !== ""
+                      ? qsTr("%1 of %2").arg(Number(bookSearch.current + 1).toLocaleString(Qt.locale(), 'f', 0))
+                                        .arg(Number(bookSearch.count).toLocaleString(Qt.locale(), 'f', 0) + (bookSearch.capped ? "+" : ""))
+                    : qsTr("%Ln found", "", bookSearch.count) + (bookSearch.capped ? "+" : "")
+                color: bar.look.muted
+                font.pixelSize: 12
+                font.features: ({ "tnum": 1 })
+            }
+            IconButton {
+                glyph: Icons.chevronLeft
+                rotation: 90
+                look: bar.look
+                enabled: bookSearch.count > 0
+                tip: qsTr("Previous (⇧N)")
+                onClicked: bar.previous()
+            }
+            IconButton {
+                glyph: Icons.chevronRight
+                rotation: 90
+                look: bar.look
+                enabled: bookSearch.count > 0
+                tip: qsTr("Next (N)")
+                onClicked: bar.next()
+            }
+            IconButton {
+                Layout.rightMargin: 8
+                glyph: Icons.close
+                look: bar.look
+                tone: bar.look.muted
+                tip: qsTr("Close (Esc)")
+                onClicked: bar.close()
+            }
+        }
+
+        Label {
+            id: note
+            anchors.top: searchHeader.bottom
+            x: 16
+            width: parent.width - 32
+            visible: bar.expanded && bookSearch.capped && !bookSearch.searching
+            text: qsTr("Showing the first %Ln. A few more words will narrow it down.", "", bookSearch.count)
+            color: bar.look.muted
+            font.pixelSize: 12
+            wrapMode: Text.Wrap
+        }
+
+        ListView {
+            id: list
+            anchors.top: note.visible ? note.bottom : searchHeader.bottom
+            anchors.topMargin: note.visible ? 6 : 0
+            x: 6
+            width: parent.width - 12
+            height: Math.min(contentHeight, bar.parent ? bar.parent.height * 0.55 : 400)
+            visible: bar.expanded
+            clip: true
+            model: bookSearch.results
+            currentIndex: bookSearch.current
+            boundsBehavior: Flickable.StopAtBounds
+            ScrollBar.vertical: ScrollBar {}
+            keyNavigationEnabled: true
+            Keys.onReturnPressed: { bar.jump(currentIndex); bar.fold() }
+            Keys.onEnterPressed: { bar.jump(currentIndex); bar.fold() }
+            Keys.onEscapePressed: bar.close()
+            Keys.onUpPressed: currentIndex <= 0 ? input.forceActiveFocus() : decrementCurrentIndex()
+
+            delegate: Column {
+                id: row
+                required property var modelData
+                required property int index
+                readonly property bool firstInChapter: index === 0
+                    || bookSearch.results[index - 1].chapter !== modelData.chapter
+                width: ListView.view.width
+
+                Label {
+                    visible: row.firstInChapter
+                    width: parent.width
+                    topPadding: row.index === 0 ? 4 : 12
+                    bottomPadding: 4
+                    leftPadding: 12
+                    text: reader.titleOfChapter(row.modelData.chapter)
+                          || (reader.format === "pdf"
+                              ? qsTr("p. %1").arg(reader.pdfPageLabel(row.modelData.chapter) || (row.modelData.chapter + 1))
+                              : qsTr("Chapter %1").arg(row.modelData.chapter + 1))
+                    color: bar.look.muted
+                    font.pixelSize: 11
+                    font.weight: Font.DemiBold
+                    font.letterSpacing: 0.22
+                    elide: Text.ElideRight
+                }
+                AbstractButton {
+                    id: hitButton
+                    width: parent.width
+                    implicitHeight: hitContent.implicitHeight + 14
+                    hoverEnabled: true
+                    focusPolicy: Qt.NoFocus
+                    onClicked: { bar.jump(row.index); bar.fold() }
+                    background: Rectangle {
+                        radius: Ui.radius(7, theme.radius)
+                        color: row.index === bookSearch.current || row.ListView.isCurrentItem && list.activeFocus
+                               ? Ui.tint(bar.look.link, 0.16) : hitButton.hovered ? Ui.tint(bar.look.fg, 0.06) : "transparent"
+                    }
+                    contentItem: RowLayout {
+                        id: hitContent
+                        spacing: 8
+                        Label {
+                            id: snippet
+                            Layout.fillWidth: true
+                            leftPadding: 12
+                            rightPadding: badgeRow.visible ? 0 : 12
+                            textFormat: Text.StyledText
+                            text: bar.escaped(row.modelData.before) + "<b>" + bar.escaped(row.modelData.match) + "</b>"
+                                  + bar.escaped(row.modelData.after)
+                            color: bar.look.fg
+                            font.pixelSize: 13
+                            font.family: "Literata"
+                            wrapMode: Text.Wrap
+                            maximumLineCount: 2
+                            elide: Text.ElideRight
+                        }
+                        Row {
+                            id: badgeRow
+                            visible: bookSearch.byMeaning && !!row.modelData.matchKind
+                            Layout.alignment: Qt.AlignTop
+                            Layout.rightMargin: 10
+                            Layout.topMargin: 2
+                            spacing: 4
+                            Rectangle {
+                                visible: !!row.modelData.matchKind
+                                height: 18
+                                width: modeBadge.implicitWidth + 10
+                                radius: Ui.radius(9, theme.radius)
+                                color: row.modelData.matchKind === "hybrid"
+                                       ? Ui.tint(bar.look.link, 0.18)
+                                       : Ui.tint(bar.look.fg, 0.07)
+                                Label {
+                                    id: modeBadge
+                                    anchors.centerIn: parent
+                                    text: row.modelData.matchKind === "hybrid" ? qsTr("Match")
+                                        : row.modelData.matchKind === "semantic" ? qsTr("Meaning")
+                                        : qsTr("Words")
+                                    color: row.modelData.matchKind === "hybrid" ? bar.look.link : bar.look.muted
+                                    font.pixelSize: 10
+                                    font.weight: Font.Medium
+                                }
+                            }
+                            Rectangle {
+                                visible: row.modelData.score > 0 && row.modelData.score <= 1.0
+                                height: 18
+                                width: scoreBadge.implicitWidth + 10
+                                radius: Ui.radius(9, theme.radius)
+                                color: Ui.tint(bar.look.fg, 0.06)
+                                Label {
+                                    id: scoreBadge
+                                    anchors.centerIn: parent
+                                    text: qsTr("%1%").arg(Math.round((row.modelData.score || 0) * 100))
+                                    color: bar.look.muted
+                                    font.pixelSize: 10
+                                    font.features: ({ "tnum": 1 })
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -3,7 +3,7 @@
  "model": "models/gemini-3.8-flash-tts",
  "type": "prompted",
  "expire_time": "2027-11-22T23:05:49.589722627Z",
- "display_name": "Dogear probe narrator",
+ "display_name": "Clothbound probe narrator",
  "prompted": {
   "input": "A measured, warm English gentleman in his sixties, a seasoned audiobook narrator with a quiet sense of wonder."
  },

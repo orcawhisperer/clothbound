@@ -1,5 +1,5 @@
 #!/bin/sh
-# A screenshot of Dogear as someone would see it, taken offscreen in a
+# A screenshot of Clothbound as someone would see it, taken offscreen in a
 # throwaway profile so it never touches your library, theme or settings.
 #
 #   bin/shot <name> [--theme <omarchy-theme>|none] [--lang <code>] [--radius <px>]
@@ -9,7 +9,7 @@
 # The PNG lands in build/shots/<name>.png. The run fails when QML prints a
 # warning, so a screen that looks right but logs errors doesn't pass.
 #
-# The profile holds a dozen books from DOGEAR_SHOT_BOOKS (a folder of EPUBs
+# The profile holds a dozen books from CLOTHBOUND_SHOT_BOOKS (a folder of EPUBs
 # and PDFs), added once and reused; --empty starts with no books instead.
 # The welcome and What's new are marked as seen unless --first-run is given.
 # --found puts a few books (links to the seed's) in ~/Books, for the
@@ -17,7 +17,7 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-APP="$ROOT/build/dogear"
+APP="$ROOT/build/clothbound"
 OUT="$ROOT/build/shots"
 THEMES="${OMARCHY_PATH:-/usr/share/omarchy}/themes"
 
@@ -45,7 +45,7 @@ mkdir -p "$OUT"
 
 # Each run gets a fresh home with the chosen Omarchy theme and language; the
 # seeded library database is copied in so runs can't affect each other.
-home="$(mktemp -d "${TMPDIR:-/tmp}/dogear-shot.XXXXXX")"
+home="$(mktemp -d "${TMPDIR:-/tmp}/clothbound-shot.XXXXXX")"
 trap 'rm -rf "$home"' EXIT INT TERM
 mkdir -p "$home/.config/omarchy" "$home/.local/state/omarchy/current/theme" \
          "$home/.local/share" "$home/.cache" "$home/runtime"
@@ -56,14 +56,14 @@ if [ "$theme" != "none" ]; then
     cp "$THEMES/$theme/colors.toml" "$home/.local/state/omarchy/current/theme/colors.toml"
 fi
 
-# DOGEAR_SHOT_SEED names another seeded profile (as the README's, of
+# CLOTHBOUND_SHOT_SEED names another seeded profile (as the README's, of
 # public-domain books), kept apart from the everyday one.
-seed="${DOGEAR_SHOT_SEED:-$OUT/.seed}"
+seed="${CLOTHBOUND_SHOT_SEED:-${DOGEAR_SHOT_SEED:-$OUT/.seed}}"
 if [ "$empty" -eq 0 ]; then
-    if [ ! -d "$seed/data/dogear" ]; then
-        books="${DOGEAR_SHOT_BOOKS:-}"
+    if [ ! -d "$seed/data/clothbound" ]; then
+        books="${CLOTHBOUND_SHOT_BOOKS:-${DOGEAR_SHOT_BOOKS:-}}"
         [ -n "$books" ] && [ -d "$books" ] || {
-            echo "bin/shot: set DOGEAR_SHOT_BOOKS to a folder of books to seed the profile once" >&2; exit 1; }
+            echo "bin/shot: set CLOTHBOUND_SHOT_BOOKS to a folder of books to seed the profile once" >&2; exit 1; }
         mkdir -p "$seed/data" "$seed/config" "$seed/cache"
         list="$(mktemp)"
         find "$books" -maxdepth 1 -type f \( -iname '*.epub' -o -iname '*.pdf' \) | sort | head -n 14 > "$list"
@@ -74,7 +74,7 @@ if [ "$empty" -eq 0 ]; then
         rm -f "$list"
         # Three books under way, so the Continue card and Reading now have
         # something to show: progress and the chapter last read.
-        db="$seed/data/dogear/library.sqlite"
+        db="$seed/data/clothbound/library.sqlite"
         now=$(date +%s); n=0
         for id in $(sqlite3 "$db" "SELECT id FROM books WHERE format = 'epub' ORDER BY id LIMIT 3 OFFSET 2"); do
             n=$((n + 1))
@@ -90,23 +90,23 @@ fi
 
 if [ "$found" -eq 1 ]; then
     mkdir -p "$home/Books"
-    sqlite3 "$seed/data/dogear/library.sqlite" "SELECT path FROM books" 2>/dev/null | while IFS= read -r book; do
+    sqlite3 "$seed/data/clothbound/library.sqlite" "SELECT path FROM books" 2>/dev/null | while IFS= read -r book; do
         ln -s "$book" "$home/Books/$(basename "$book")"
     done
 fi
 
 if [ "$first" -eq 0 ]; then
-    mkdir -p "$home/.config/dogear"
+    mkdir -p "$home/.config/clothbound"
     version="$("$APP" --version | awk '{print $NF}')"
-    printf '[onboarding]\nwelcomed=true\nversion=%s\n' "$version" >> "$home/.config/dogear/settings.ini"
+    printf '[onboarding]\nwelcomed=true\nversion=%s\n' "$version" >> "$home/.config/clothbound/settings.ini"
 fi
 
 # Extra settings, as group/key=value lines, appended to settings.ini.
 if [ -n "$settings" ]; then
-    mkdir -p "$home/.config/dogear"
+    mkdir -p "$home/.config/clothbound"
     printf '%s\n' "$settings" | while IFS= read -r line; do
         [ -n "$line" ] || continue
-        printf '[%s]\n%s\n' "${line%%/*}" "${line#*/}" >> "$home/.config/dogear/settings.ini"
+        printf '[%s]\n%s\n' "${line%%/*}" "${line#*/}" >> "$home/.config/clothbound/settings.ini"
     done
 fi
 
@@ -140,7 +140,7 @@ if command -v xvfb-run >/dev/null 2>&1; then
 else
     platform=offscreen
     launch() { "$@"; }
-    [ -n "${DOGEAR_SHOT_QUIET:-}" ] || echo "bin/shot: no xvfb-run, so book pages render blank (install xorg-server-xvfb)" >&2
+    [ -n "${CLOTHBOUND_SHOT_QUIET:-${DOGEAR_SHOT_QUIET:-}}" ] || echo "bin/shot: no xvfb-run, so book pages render blank (install xorg-server-xvfb)" >&2
 fi
 # A private session bus, so a shot can never reach the real keyring (your
 # Gemini key, and through it your own voices) or other running apps.

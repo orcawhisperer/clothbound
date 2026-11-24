@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Dogear's translations, kept up to date with Gemini.
+"""Clothbound's translations, kept up to date with Gemini.
 
     bin/translate extract            list the strings to translate (and how many each language lacks)
     bin/translate check              validate all catalogs offline (JSON, types, plural forms, placeholders)
@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 I18N = SRC / "i18n"
 LOCALES = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy")) / "default/i18n/locales.json"
-MODEL = os.environ.get("DOGEAR_TRANSLATE_MODEL", "gemini-3.5-flash-lite")
+MODEL = os.environ.get("CLOTHBOUND_TRANSLATE_MODEL") or os.environ.get("DOGEAR_TRANSLATE_MODEL", "gemini-3.5-flash-lite")
 
 # CLDR plural categories each language uses (always including "other" as fallback
 # for Translator::translate()).
@@ -61,14 +61,14 @@ def extract():
     """{english: plural?} for every visible string."""
     strings = {}
     qml = re.compile(r"qsTr\(\s*" + LITERAL + r"(\s*,\s*" + LITERAL + r"\s*,)?")
-    for path in sorted(list(SRC.glob("*.qml")) + list(SRC.glob("*.js"))):
+    for path in sorted(list(SRC.rglob("*.qml")) + list(SRC.rglob("*.js"))):
         for match in qml.finditer(path.read_text()):
             text = unescape(match.group(1))
             strings[text] = strings.get(text, False) or bool(match.group(2)) or "%n" in text or "%Ln" in text
     # C++: tr("…"), translate("Context", "…"), and QT_TR_NOOP("…"), with adjacent literals joined.
     joined = r'((?:"(?:[^"\\]|\\.)*"\s*)+)'
     cpp = re.compile(r"\btr\(\s*" + joined + r"|translate\(\s*" + LITERAL + r"\s*,\s*" + joined + r"|QT_TR_NOOP\(\s*" + joined)
-    for path in sorted(list(SRC.glob("*.cpp")) + list(SRC.glob("*.h"))):
+    for path in sorted(list(SRC.rglob("*.cpp")) + list(SRC.rglob("*.h"))):
         for match in cpp.finditer(path.read_text()):
             raw = match.group(1) or match.group(3) or match.group(4)
             text = "".join(unescape(part) for part in re.findall(LITERAL, raw))
@@ -177,12 +177,12 @@ def translate(code, name, strings, existing):
     for start in range(0, len(missing), 100):
         batch = missing[start:start + 100]
         listed = [{"i": i, "text": text, "counted": strings[text]} for i, text in enumerate(batch)]
-        prompt = f"""Translate the interface text of Dogear, an ebook reader and audiobook app for the Omarchy desktop, into {name} ({code}).
+        prompt = f"""Translate the interface text of Clothbound, an ebook reader and audiobook app for the Omarchy desktop, into {name} ({code}).
 
 Rules:
 - Natural, friendly, concise {name}, as a native speaker would write a well-made desktop app; keep the same tone (plain, warm, no jargon).
 - Keep placeholders exactly: %1, %2, %n, %Ln, and keep HTML tags, URLs, and keyboard keys (P, ⇧, Ctrl, Esc, Super W) as they are.
-- Keep brand and product names as they are: Dogear, Omarchy, Gemini, Google, Kokoro, Piper, Ollama, llama.cpp, LM Studio, MLX, vLLM, EPUB, PDF, M4B, MPRIS.
+- Keep brand and product names as they are: Clothbound, Omarchy, Gemini, Google, Kokoro, Piper, Ollama, llama.cpp, LM Studio, MLX, vLLM, EPUB, PDF, M4B, MPRIS.
 - For an entry with "counted": true, give "forms": the plural forms {name} uses ({", ".join(forms)}), ALWAYS including "other", each containing %n (or %Ln) where the number goes. Otherwise give "translation".
 
 Answer with a JSON array: for each entry, its "i" and its translation.
@@ -266,9 +266,9 @@ def register(codes):
                     for code in sorted(p.stem for p in I18N.glob("*.json")))
     text = re.sub(r'(        <file alias="i18n/[^"]+">[^<]+</file>\n)+', lambda _: lines, text)
     qrc.write_text(text)
-    desktop = ROOT / "pkgbuild/dogear.desktop"
+    desktop = ROOT / "pkgbuild/clothbound.desktop"
     entry = [line for line in desktop.read_text().splitlines() if not re.match(r"^(Name|Comment|GenericName)\[", line)]
-    keys = {"Name": "Dogear", "GenericName": "Ebook Reader", "Comment": "Read your EPUB and PDF books"}
+    keys = {"Name": "Clothbound", "GenericName": "Ebook Reader", "Comment": "Read your EPUB and PDF books"}
     out = []
     for line in entry:
         out.append(line)
