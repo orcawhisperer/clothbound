@@ -67,9 +67,13 @@ FocusScope {
     readonly property alias companionPanel: companionPanel
     readonly property alias noteEditor: noteEditor
     readonly property alias pdfSurface: pdfSurface
+    readonly property alias listenBar: listenBar
     // Companion docks beside the page on wide screens without a blocking scrim (04_companion).
     readonly property bool companionDocked: companionPanel.open && view.width >= 860
-    readonly property real companionDockWidth: companionDocked ? Math.min(384, companionPanel.width) : 0
+    readonly property bool companionResizing: Boolean(companionPanel["resizing"])
+    readonly property real companionDockWidth: companionDocked
+                                               ? Math.max(0, Math.min(Math.max(0, view.width - 320), companionPanel.width))
+                                               : 0
     readonly property bool modalPanelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
                                            || marksPanel.open || noteEditor.open || (companionPanel.open && !companionDocked)
     readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
@@ -195,9 +199,12 @@ FocusScope {
         const topMargin = narration.active
             ? Math.max(68, Math.min(92, Math.round(stageH * 0.115)))
             : Math.max(54, Math.min(92, Math.round(stageH * 0.115)))
+        const baseBottomMargin = Math.max(54, Math.min(104, Math.round(stageH * 0.13)))
+        // Reserve +44 px bottom clearance while listening so the bottom line
+        // of every page sits comfortably above the resting 44 px floating pill.
         const bottomMargin = narration.active
-            ? Math.max(136, Math.min(148, Math.round(stageH * 0.185)))
-            : Math.max(54, Math.min(104, Math.round(stageH * 0.13)))
+            ? Math.max(106, baseBottomMargin + 44)
+            : baseBottomMargin
         return {
             theme: look,
             font: activeSettings.font,
@@ -218,7 +225,7 @@ FocusScope {
             pdfCrop: activeSettings.pdfCrop,
             pdfOriginalColors: activeSettings.pdfOriginalColors,
             marginTop: topMargin,
-            // Room for the bottom footer or the floating two-row player.
+            // Room for the bottom footer or the floating slim listening pill.
             marginBottom: bottomMargin,
             radius: theme.radius,
             listening: narration.active,
@@ -956,7 +963,7 @@ FocusScope {
             visible: activeSettings.layout === "scroll"
             anchors.bottom: parent.bottom
             width: parent.width
-            height: 52
+            height: narration.active ? 68 : 52
             gradient: Gradient {
                 GradientStop { position: 0; color: Ui.tint(view.look.bg, 0) }
                 GradientStop { position: 0.55; color: view.look.bg }
@@ -1604,7 +1611,7 @@ FocusScope {
                 NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
             }
             readonly property bool shown: view.jumpPillVisible && reader.canGoBack && view.jumpPillLabel !== ""
-            y: shown ? parent.height - height - (narration.active ? 132 : bottomFooter.shown ? 86 : 36) : parent.height + 16
+            y: shown ? parent.height - height - (narration.active ? (listenBar.height + 28) : bottomFooter.shown ? 86 : 36) : parent.height + 16
             Behavior on y {
                 enabled: !theme.reducedMotion
                 NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
@@ -1974,22 +1981,32 @@ FocusScope {
     ListenBar {
         id: listenBar
         z: 9
+        showBookInfo: false
         // Centered in the room the side panels leave (VoicePanel is a centered modal sheet).
         readonly property real leftInset: contents.open ? contents.width : 0
         readonly property real rightInset: marksPanel.open ? marksPanel.width
                                          : companionPanel.open ? companionPanel.width
                                          : appearance.open ? appearance.width : 0
-        x: leftInset + (parent.width - leftInset - rightInset - width) / 2
-        Behavior on x {
-            enabled: !theme.reducedMotion
+        availableWidth: Math.max(320, parent.width - leftInset - rightInset)
+        animateSize: !view.companionResizing
+
+        // Animate horizontal center for panel open/close (paused during live
+        // Companion resize) and slide progress for narration start/stop, so
+        // the pill's own width/height morph expands symmetrically upward with
+        // its bottom edge locked 14 px above the viewport floor.
+        property real centerX: leftInset + (parent.width - leftInset - rightInset) / 2
+        Behavior on centerX {
+            enabled: !theme.reducedMotion && !view.companionResizing
             NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
         }
-        y: narration.active ? parent.height - height - 28 : parent.height + 16
-        Behavior on y {
+        property real showProgress: narration.active ? 1 : 0
+        Behavior on showProgress {
             enabled: !theme.reducedMotion
             NumberAnimation { duration: 240; easing.type: Easing.OutQuart }
         }
-        visible: y < parent.height
+        x: Math.round(centerX - width / 2)
+        y: Math.round((parent.height - height - 14) + (1 - showProgress) * (height + 30))
+        visible: showProgress > 0.005
         look: view.look
         onFollowRequested: narration.following = true
         onVoiceRequested: voicePanel.open ? voicePanel.close() : view.showVoices()
