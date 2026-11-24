@@ -768,14 +768,13 @@ void WebImporter::runArxivImport(const QString &arxivId, int targetCollectionId,
                         return;
                     }
 
-                    // Build clean filename: "<SafeTitle> - <FirstAuthor> (<Year>).pdf" or "<id>.pdf" fallback.
+                    // Build clean filename matching BookName::parseFileName():
+                    // "<FirstAuthor> - <SafeTitle> (<Year>).pdf" or "<id>.pdf" fallback.
                     QString stem;
                     const QString safeTitle = sanitizeFileStem(paperTitle, 110);
                     const QString safeAuthor = sanitizeFileStem(firstAuthor, 48);
                     if (!safeTitle.isEmpty()) {
-                        stem = safeTitle;
-                        if (!safeAuthor.isEmpty())
-                            stem += QStringLiteral(" - ") + safeAuthor;
+                        stem = !safeAuthor.isEmpty() ? (safeAuthor + QStringLiteral(" - ") + safeTitle) : safeTitle;
                         if (year > 0)
                             stem += QStringLiteral(" (%1)").arg(year);
                     } else {

@@ -390,20 +390,45 @@ void OpdsTests::clientBuiltInsCustomServersAndKeyringSecurity() {
         {
             OpdsClient client(&lib, &keys, dir.filePath(QStringLiteral("storage")), settingsPath);
 
-            // 3 curated built-in catalogs seeded by default.
+            // 4 live-verified curated built-in catalogs seeded by default.
             const QVariantList cats = client.catalogs();
-            QCOMPARE(cats.size(), 3);
-            QCOMPARE(cats[0].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("gutenberg"));
+            QCOMPARE(cats.size(), 4);
+            QCOMPARE(cats[0].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("standard-ebooks-new"));
             QCOMPARE(cats[0].toMap().value(QStringLiteral("url")).toString(),
-                     QStringLiteral("https://www.gutenberg.org/ebooks/search.opds/"));
-            QCOMPARE(cats[1].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("oapen"));
+                     QStringLiteral("https://standardebooks.org/feeds/atom/new-releases"));
+            QCOMPARE(cats[1].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("unglue-it"));
             QCOMPARE(cats[1].toMap().value(QStringLiteral("url")).toString(),
-                     QStringLiteral("https://library.oapen.org/opds"));
-            QCOMPARE(cats[2].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("standard-ebooks"));
+                     QStringLiteral("https://unglue.it/api/opds/"));
+            QCOMPARE(cats[2].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("open-library"));
             QCOMPARE(cats[2].toMap().value(QStringLiteral("url")).toString(),
+                     QStringLiteral("https://openlibrary.org/opds/"));
+            QCOMPARE(cats[3].toMap().value(QStringLiteral("id")).toString(), QStringLiteral("standard-ebooks"));
+            QCOMPARE(cats[3].toMap().value(QStringLiteral("url")).toString(),
                      QStringLiteral("https://standardebooks.org/feeds/opds"));
-            QCOMPARE(cats[2].toMap().value(QStringLiteral("authOptional")).toBool(), true);
-            QVERIFY(!cats[2].toMap().value(QStringLiteral("authHint")).toString().isEmpty());
+            QCOMPARE(cats[3].toMap().value(QStringLiteral("authOptional")).toBool(), true);
+            QVERIFY(!cats[3].toMap().value(QStringLiteral("authHint")).toString().isEmpty());
+
+            // Verify RFC 6570 query template expansion (Open Library OPDS 2.0) and media:thumbnail parsing.
+            QCOMPARE(OpdsParser::expandSearchTemplate(
+                         QStringLiteral("https://openlibrary.org/opds/search{?query,language,mode,limit}"),
+                         QStringLiteral("pride and prejudice")),
+                     QStringLiteral("https://openlibrary.org/opds/search?query=pride%20and%20prejudice"));
+            const QByteArray seAtom = R"XML(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+  <title>Standard Ebooks - Newest Ebooks</title>
+  <entry>
+    <title>Confessions of Zeno</title>
+    <author><name>Italo Svevo</name></author>
+    <media:thumbnail url="https://standardebooks.org/cover.jpg" width="350" height="525"/>
+    <link href="https://standardebooks.org/zeno.epub" rel="enclosure" type="application/epub+zip"/>
+  </entry>
+</feed>)XML";
+            const OpdsFeed seFeed = OpdsParser::parse(seAtom, QUrl(QStringLiteral("https://standardebooks.org/feeds/atom/new-releases")));
+            QVERIFY(seFeed.isValid());
+            QCOMPARE(seFeed.entries.size(), 1);
+            QCOMPARE(seFeed.entries[0].coverUrl, QStringLiteral("https://standardebooks.org/cover.jpg"));
+            QCOMPARE(seFeed.entries[0].acquisitions.size(), 1);
+            QCOMPARE(seFeed.entries[0].acquisitions[0].format, QStringLiteral("epub"));
 
             // Disallowed schemes rejected.
             QVERIFY(client.addCatalog(QStringLiteral("Bad File"), QStringLiteral("file:///etc/passwd")).isEmpty());
@@ -418,7 +443,7 @@ void OpdsTests::clientBuiltInsCustomServersAndKeyringSecurity() {
                                                        QStringLiteral("alice"),
                                                        secretPass);
             QVERIFY(!customId.isEmpty());
-            QCOMPARE(client.catalogs().size(), 4);
+            QCOMPARE(client.catalogs().size(), 5);
 
             // Password MUST be stored in KeyStore under "opds:" + id, and NEVER in settings.ini!
             QCOMPARE(keys.load(QStringLiteral("opds:") + customId), secretPass);
@@ -439,27 +464,27 @@ void OpdsTests::clientBuiltInsCustomServersAndKeyringSecurity() {
             QCOMPARE(keys.load(QStringLiteral("opds:") + customId), QStringLiteral("RestoredPass"));
 
             // Hide built-in catalog without losing custom servers, then restore.
-            QVERIFY(client.removeCatalog(QStringLiteral("oapen")));
-            QCOMPARE(client.catalogs().size(), 3);
+            QVERIFY(client.removeCatalog(QStringLiteral("unglue-it")));
+            QCOMPARE(client.catalogs().size(), 4);
             QVERIFY(client.hasHiddenBuiltIns());
             client.restoreBuiltInCatalogs();
-            QCOMPARE(client.catalogs().size(), 4);
+            QCOMPARE(client.catalogs().size(), 5);
             QVERIFY(!client.hasHiddenBuiltIns());
         }
 
         // Reload from settings.ini in a fresh OpdsClient instance and verify persistence + removal.
         {
             OpdsClient reloaded(&lib, &keys, dir.filePath(QStringLiteral("storage")), settingsPath);
-            QCOMPARE(reloaded.catalogs().size(), 4);
-            const QString persistedId = reloaded.catalogs()[3].toMap().value(QStringLiteral("id")).toString();
-            QCOMPARE(reloaded.catalogs()[3].toMap().value(QStringLiteral("name")).toString(),
+            QCOMPARE(reloaded.catalogs().size(), 5);
+            const QString persistedId = reloaded.catalogs()[4].toMap().value(QStringLiteral("id")).toString();
+            QCOMPARE(reloaded.catalogs()[4].toMap().value(QStringLiteral("name")).toString(),
                      QStringLiteral("Home Calibre-Web"));
-            QCOMPARE(reloaded.catalogs()[3].toMap().value(QStringLiteral("username")).toString(),
+            QCOMPARE(reloaded.catalogs()[4].toMap().value(QStringLiteral("username")).toString(),
                      QStringLiteral("alice2"));
 
             // Removing custom server must also purge its secret from KeyStore.
             QVERIFY(reloaded.removeCatalog(persistedId));
-            QCOMPARE(reloaded.catalogs().size(), 3);
+            QCOMPARE(reloaded.catalogs().size(), 4);
             QVERIFY(keys.load(QStringLiteral("opds:") + persistedId).isEmpty());
         }
     }

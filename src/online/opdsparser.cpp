@@ -784,6 +784,12 @@ OpdsFeed OpdsParser::parseAtom(const QByteArray &xmlData, const QUrl &baseUrl) {
                 const QString term = xml.attributes().value(QLatin1String("term")).toString().trimmed();
                 appendUnique(entry.categories, !label.isEmpty() ? label : term);
                 xml.skipCurrentElement();
+            } else if (name == QLatin1String("thumbnail")) {
+                const QString rawUrl = xml.attributes().value(QLatin1String("url")).toString().trimmed();
+                const QString resolved = resolveHref(baseUrl, rawUrl);
+                if (!resolved.isEmpty() && entry.thumbnailUrl.isEmpty())
+                    entry.thumbnailUrl = resolved;
+                xml.skipCurrentElement();
             } else if (name == QLatin1String("link")) {
                 const QXmlStreamAttributes attrs = xml.attributes();
                 const QString relAttr = attrs.value(QLatin1String("rel")).toString().trimmed();
@@ -1233,16 +1239,34 @@ QString OpdsParser::expandSearchTemplate(const QString &templateUrl, const QStri
     static const QRegularExpression termsRe(
         QStringLiteral("\\{(?:[A-Za-z0-9_.-]+:)?searchTerms\\??\\}"),
         QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression rfc6570QueryRe(
+        QStringLiteral("\\{([?&])([A-Za-z0-9_.,*-]+)\\}"));
     if (termsRe.match(out).hasMatch()) {
         out.replace(termsRe, encoded);
+    } else if (const QRegularExpressionMatch m = rfc6570QueryRe.match(out); m.hasMatch()) {
+        const QString op = m.captured(1);
+        const QStringList vars = m.captured(2).split(QLatin1Char(','), Qt::SkipEmptyParts);
+        QString paramName;
+        for (const QString &candidate :
+             {QStringLiteral("query"), QStringLiteral("q"), QStringLiteral("search"), QStringLiteral("searchTerms")}) {
+            if (vars.contains(candidate, Qt::CaseInsensitive)) {
+                paramName = candidate;
+                break;
+            }
+        }
+        if (paramName.isEmpty() && !vars.isEmpty())
+            paramName = vars.first();
+        const QString replacement =
+            encoded.isEmpty() ? QString() : (op + paramName + QLatin1Char('=') + encoded);
+        out.replace(m.capturedStart(), m.capturedLength(), replacement);
     } else {
         // Fallback for non-templated search endpoints.
         out.append(out.contains(QLatin1Char('?')) ? QLatin1Char('&') : QLatin1Char('?'));
         out.append(QStringLiteral("query=") + encoded);
     }
 
-    // Clear remaining optional OpenSearch placeholders like {startPage?} or {count?}.
-    static const QRegularExpression optionalRe(QStringLiteral("\\{[^{}]+\\?\\}"));
+    // Clear remaining optional OpenSearch or RFC 6570 placeholders like {startPage?} or {&page}.
+    static const QRegularExpression optionalRe(QStringLiteral("\\{[^{}]+\\?\\}|\\{[?&][^{}]+\\}"));
     out.remove(optionalRe);
     return out;
 }

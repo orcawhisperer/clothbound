@@ -4,8 +4,10 @@
 #include "formats/pdfbook.h"
 
 #include <QBuffer>
+#include <QCoreApplication>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QImageIOHandler>
 #include <QImageReader>
 #include <QPainter>
@@ -54,6 +56,15 @@ QImage decodeImage(const QByteArray &bytes, int height) {
     buffer.open(QIODevice::ReadOnly);
     QImageReader reader(&buffer);
     reader.setAutoTransform(true);
+    // Qt's SVG image plugin invokes QFontDatabase when rasterizing <text>
+    // elements, which aborts under headless QCoreApplication (CLI commands).
+    if (!qobject_cast<QGuiApplication *>(QCoreApplication::instance())) {
+        const QByteArray fmt = reader.format().toLower();
+        const QByteArray head = bytes.left(512).trimmed().toLower();
+        if (fmt.startsWith("svg") || head.startsWith("<svg") ||
+            (head.startsWith("<?xml") && head.contains("<svg")))
+            return {};
+    }
     // Covers can be enormous or have extreme aspect ratios; shrink while
     // decoding and refuse images that would exceed safe pixel limits.
     const QSize size = reader.size();

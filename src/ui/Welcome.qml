@@ -57,12 +57,12 @@ FocusScope {
         }
     ]
     readonly property var news: [
-        qsTr("PDFs, in your reading theme, one or two pages at a time, with highlights, search and listening."),
-        qsTr("The companion (C): ask about the book, Previously…, who's who, define, explain, translate, and pictures."),
-        qsTr("Models on this computer: Intelligence (✦) sets one up for you, or finds yours."),
-        qsTr("Search by meaning, a full cast, Studio and Pocket TTS voices, and audiobooks (M4B) from downloads."),
-        qsTr("Opening Clothbound again brings back the one already running, even while it reads in the background."),
-        qsTr("Clothbound speaks Omarchy's 50 languages.")
+        qsTr("Add from URL (Ctrl+Shift+U): save web articles offline as EPUBs on a new Articles shelf, or fetch arXiv papers, EPUBs, and PDFs directly."),
+        qsTr("OPDS catalogs (Ctrl+Shift+O): browse free public-domain libraries or connect your own Calibre-Web, Kavita, or Komga server."),
+        qsTr("Adaptive Story & Study Companion (C) with Smart Scope, offline LaTeX math, spoken replies, and a resizable panel."),
+        qsTr("Visual PDF Snip & Explain (X) with Gemini or local Ollama vision models, plus Quick-Look citation peek and BibTeX/APA copy."),
+        qsTr("Built-in local MCP server (clothbound mcp) so your own coding or research agents can search your offline library privately."),
+        qsTr("Zero-flash page turns, soft page-turn sound, slim floating listening pill, and snappy scroll physics.")
     ]
 
     function show(which) {

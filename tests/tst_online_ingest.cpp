@@ -681,7 +681,7 @@ void TestOnlineIngest::webImporterEndToEndArxiv() {
     <author><name>Alan Turing</name></author>
   </entry>
 </feed>)XML";
-    const QByteArray pdfBytes = TestBooks::pdf("Structured Attention Paper", "Alan Turing");
+    const QByteArray pdfBytes = TestBooks::pdf({}, {});
 
     server.routes.insert("/api/query?id_list=2301.07041", {200, "application/atom+xml", {}, atomXml, false});
     server.routes.insert("/pdf/2301.07041.pdf", {200, "application/pdf", {}, pdfBytes, false});
@@ -705,7 +705,10 @@ void TestOnlineIngest::webImporterEndToEndArxiv() {
     QCOMPARE(kind, QStringLiteral("arxiv"));
     const BookRecord rec = library.record(bookId);
     QCOMPARE(rec.format, QStringLiteral("pdf"));
-    QCOMPARE(QFileInfo(rec.path).fileName(), QStringLiteral("Structured Attention Paper - Alan Turing (2023).pdf"));
+    QCOMPARE(QFileInfo(rec.path).fileName(), QStringLiteral("Alan Turing - Structured Attention Paper (2023).pdf"));
+    QCOMPARE(rec.title, QStringLiteral("Structured Attention Paper"));
+    QCOMPARE(rec.author, QStringLiteral("Alan Turing"));
+    QCOMPARE(rec.year, 2023);
     QCOMPARE(library.bookSetting(bookId, QStringLiteral("arxiv_id")), QStringLiteral("2301.07041"));
     QCOMPARE(library.bookSetting(bookId, QStringLiteral("source_url")),
              QStringLiteral("https://arxiv.org/abs/2301.07041"));
