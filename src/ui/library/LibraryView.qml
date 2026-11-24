@@ -783,15 +783,19 @@ FocusScope {
             Item { width: 1; height: parent.showShelf ? 32 : 0 }
 
             // J2 quiet reassurance line while books arrive into the grid.
-            Label {
+            Item {
                 x: 12
                 width: grid.width - 24
                 visible: library.scanning && library.bookCount > 0
-                height: visible ? implicitHeight + 14 : 0
-                text: qsTr("Open any book while the rest arrive.")
-                color: theme.ink3
-                font.pixelSize: 13
-                elide: Text.ElideRight
+                height: visible ? scanHintLabel.implicitHeight + 14 : 0
+                Label {
+                    id: scanHintLabel
+                    width: parent.width
+                    text: qsTr("Open any book while the rest arrive.")
+                    color: theme.ink3
+                    font.pixelSize: 13
+                    elide: Text.ElideRight
+                }
             }
 
             // Under the Continue shelf, "All books" + right-aligned "N books · M PDFs".

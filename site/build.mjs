@@ -19,17 +19,38 @@ const indexOut = indexSrc.replaceAll(
 );
 fs.writeFileSync(path.join(distDir, "index.html"), indexOut);
 
-// 2. Copy favicon and interactive prototype
+// 2. Copy favicon, social preview card, and interactive prototype
 fs.copyFileSync(
   path.join(siteDir, "favicon.svg"),
   path.join(distDir, "favicon.svg")
 );
+
+const ogCardPath = path.join(siteDir, "og-card.png");
+if (!fs.existsSync(ogCardPath)) {
+  throw new Error(`Missing social preview image: ${ogCardPath}`);
+}
+fs.copyFileSync(ogCardPath, path.join(distDir, "og-card.png"));
 
 const protoPath = path.join(repoDir, "docs", "clothbound-prototype.html");
 if (!fs.existsSync(protoPath)) {
   throw new Error(`Missing prototype file: ${protoPath}`);
 }
 fs.copyFileSync(protoPath, path.join(distDir, "prototype.html"));
+
+// 2b. Minimal robots.txt and sitemap.xml for search discovery
+fs.writeFileSync(
+  path.join(distDir, "robots.txt"),
+  "User-agent: *\nAllow: /\nSitemap: https://clothbound.app/sitemap.xml\n"
+);
+fs.writeFileSync(
+  path.join(distDir, "sitemap.xml"),
+  `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://clothbound.app/</loc></url>
+  <url><loc>https://clothbound.app/prototype</loc></url>
+</urlset>
+`
+);
 
 // 3. Static security & caching headers for Cloudflare Workers Static Assets
 const headers = `/*
@@ -39,6 +60,9 @@ const headers = `/*
   Permissions-Policy: camera=(), microphone=(), geolocation=()
 
 /favicon.svg
+  Cache-Control: public, max-age=86400
+
+/og-card.png
   Cache-Control: public, max-age=86400
 `;
 fs.writeFileSync(path.join(distDir, "_headers"), headers);
@@ -51,7 +75,8 @@ try {
     if (/\bdog[-]?ear\b/i.test(html)) {
       throw new Error(`Stale brand string detected in ${name}`);
     }
-    if (/<(?:script|link|img)[^>]+(?:src|href)=["']https?:\/\//i.test(html)) {
+    if (/<(?:script|img)[^>]+src=["']https?:\/\//i.test(html) ||
+        /<link(?![^>]*rel=["']canonical["'])[^>]+href=["']https?:\/\//i.test(html)) {
       throw new Error(`External CDN resource detected in ${name}`);
     }
     const scripts = [

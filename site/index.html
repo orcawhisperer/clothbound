@@ -3,8 +3,23 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Clothbound — a calm, fast native Qt6 EPUB and PDF reader for Linux and Omarchy with zero-flash page turns, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server.">
+<meta name="description" content="Clothbound — a calm, fast native Qt6 EPUB and PDF reader for Linux and Omarchy with zero-flash page turns, smart PDF fit presets, save-from-URL articles &amp; OPDS catalogs, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server.">
 <meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FAF8F4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#1C1B19" media="(prefers-color-scheme: dark)">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Clothbound">
+<meta property="og:title" content="Clothbound — Read deeply. Think clearly.">
+<meta property="og:description" content="A calm, local-first Qt6 EPUB &amp; PDF reader for Linux and Omarchy with zero-flash spreads, save-from-URL articles, OPDS catalogs, Study Companion, PDF Snip &amp; Explain, and a built-in local MCP server.">
+<meta property="og:url" content="https://clothbound.app/">
+<meta property="og:image" content="https://clothbound.app/og-card.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Clothbound — Read deeply. Think clearly.">
+<meta name="twitter:description" content="A calm, local-first Qt6 EPUB &amp; PDF reader for Linux and Omarchy with Study Companion, PDF Snip &amp; Explain, OPDS catalogs, natural read-aloud, and local MCP.">
+<meta name="twitter:image" content="https://clothbound.app/og-card.png">
+<link rel="canonical" href="https://clothbound.app/">
 <title>Clothbound — Read deeply. Think clearly.</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
 <style>
@@ -2258,6 +2273,7 @@ kbd {
       <a href="#study-pdf">Study &amp; PDF</a>
       <a href="#mcp">Local MCP</a>
       <a href="#install">Install</a>
+      <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer">GitHub</a>
     </nav>
 
     <div class="nav-actions">
@@ -2286,7 +2302,7 @@ kbd {
     <div class="hero-copy">
       <div class="eyebrow">
         <span class="eyebrow-dot" aria-hidden="true"></span>
-        <span>Native Qt6 · Wayland &amp; Omarchy · Local-First</span>
+        <span>v0.4.0 · Native Qt6 · Wayland &amp; Omarchy · Local-First</span>
       </div>
       <h1>Read deeply. Think clearly.</h1>
       <p class="hero-sub">A calm, fast EPUB and PDF reader for Linux — zero-flash page turns, smart PDF fit presets, save-from-URL articles &amp; OPDS catalogs, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server.</p>
@@ -2635,7 +2651,7 @@ kbd {
           </li>
           <li>
             <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
-            <span><strong>Live desktop matching &amp; 50 languages</strong> — follows Omarchy themes automatically and ships localized across 50 interface languages.</span>
+            <span><strong>Live desktop matching, Rounded / Sharp corners &amp; 50 languages</strong> — follows Omarchy themes and Hyprland rounding automatically (or override in Settings) across 50 interface languages.</span>
           </li>
         </ul>
       </div>
@@ -2997,12 +3013,12 @@ kbd {
           <div class="install-step">
             <span class="install-step-num">Step 01 · Arch / Omarchy</span>
           </div>
-          <h3>Build &amp; install the package</h3>
-          <p class="install-note">Run inside <code>pkgbuild/</code> (or run <code>bin/install</code> from the repo root) to install Clothbound, its desktop entry, and icon.</p>
+          <h3>Clone &amp; install v0.4.0</h3>
+          <p class="install-note">Builds and installs the native Qt6 binary, desktop entry, and icon (or grab a prebuilt package from <a href="https://github.com/orcawhisperer/clothbound/releases" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">GitHub Releases</a>).</p>
         </div>
         <div class="cmd-bar">
-          <code><span class="cmd-prompt">$</span>makepkg -si</code>
-          <button type="button" class="copy-btn" data-copy-text="makepkg -si">Copy</button>
+          <code><span class="cmd-prompt">$</span>git clone https://github.com/orcawhisperer/clothbound &amp;&amp; cd clothbound &amp;&amp; ./bin/install</code>
+          <button type="button" class="copy-btn" data-copy-text="git clone https://github.com/orcawhisperer/clothbound && cd clothbound && ./bin/install">Copy</button>
         </div>
       </div>
 
@@ -3077,6 +3093,7 @@ kbd {
           <a href="#mcp">Local MCP</a>
           <a href="#install">Install</a>
           <a href="../docs/clothbound-prototype.html">Interactive Prototype</a>
+          <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer">GitHub</a>
         </div>
         <div>MIT License · Bundled Literata &amp; Inter under SIL OFL-1.1</div>
       </div>
