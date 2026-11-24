@@ -1,7 +1,7 @@
 pkgname=clothbound
 pkgver=0.3.0
 pkgrel=1
-pkgdesc='An ebook reader for Omarchy: your EPUBs and PDFs in one library, a calm page to read them on, and voices to read them aloud'
+pkgdesc='A calm, local-first EPUB and PDF reader for Linux with read-aloud, Study Companion, PDF Snip & Explain, and local MCP'
 url='https://clothbound.app'
 arch=('x86_64' 'aarch64')
 license=('MIT' 'OFL-1.1')
@@ -9,7 +9,7 @@ depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-webengine' 'qt6-webchan
          'qt6-multimedia' 'libsecret' 'xdg-desktop-portal' 'zlib' 'tar' 'bzip2')
 optdepends=('ffmpeg: keep listened narration small (Opus), and save downloads as M4B audiobooks'
             'sdcv: look words up in your own StarDict dictionaries, offline'
-            'ollama: run text and embedding models on this computer'
+            'ollama: run local text, vision, and embedding models on this computer'
             'llama.cpp: run text, embedding and voice models on this computer')
 makedepends=('gcc' 'make' 'pkgconf')
 source=()
