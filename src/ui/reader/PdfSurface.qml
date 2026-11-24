@@ -890,6 +890,7 @@ Item {
             }
             onExited: hoveredLink = null
             onPressed: (event) => {
+                surface.forceActiveFocus()
                 if (event.button === Qt.RightButton) {
                     const at = mouse.mapToItem(surface, event.x, event.y)
                     surface.contextMenuRequested(at.x, at.y)
@@ -1742,6 +1743,7 @@ Item {
             cursorShape: Qt.CrossCursor
             onWheel: (wheel) => wheel.accepted = true
             onPressed: (event) => {
+                surface.forceActiveFocus()
                 if (event.button === Qt.RightButton) {
                     surface.cancelSnip()
                     return

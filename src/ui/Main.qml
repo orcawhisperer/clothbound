@@ -408,7 +408,7 @@ ApplicationWindow {
             } else if (actionId === "bookmark") {
                 readerLoader.item.toggleBookmark()
             } else if (actionId === "companion-ask") {
-                readerLoader.item.showCompanion("ask")
+                readerLoader.item.showCompanion("ask", true)
             } else if (actionId === "companion-prev") {
                 readerLoader.item.showCompanion("recap")
                 if (companion.feature !== "recap" || companion.problem !== "")

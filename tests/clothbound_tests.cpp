@@ -11045,6 +11045,21 @@ Item {
         QVERIFY2(apObj != nullptr, qPrintable(apComp.errorString()));
         QCoreApplication::processEvents();
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+
+        // 4. Bookmark dog-ear stays below header bar (no Companion button overlap) and Companion C toggles cleanly.
+        {
+            QFile erFile(srcRoot + QStringLiteral("/ui/reader/EpubReader.qml"));
+            QVERIFY(erFile.open(QIODevice::ReadOnly));
+            const QString erQml = QString::fromUtf8(erFile.readAll());
+            QVERIFY(erQml.contains(QStringLiteral("anchors.topMargin: Math.round(chrome.chromeProgress * chrome.height)")));
+            QVERIFY(erQml.contains(QStringLiteral("companionPanel.open ? companionPanel.close() : showCompanion(\"ask\")")));
+
+            QFile cpFile(srcRoot + QStringLiteral("/ui/companion/CompanionPanel.qml"));
+            QVERIFY(cpFile.open(QIODevice::ReadOnly));
+            const QString cpQml = QString::fromUtf8(cpFile.readAll());
+            QVERIFY(cpQml.contains(QStringLiteral("function show(which, focusInput)")));
+            QVERIFY(cpQml.contains(QStringLiteral("if (focusInput && !choosing && tab === \"ask\")")));
+        }
     }
 };
 

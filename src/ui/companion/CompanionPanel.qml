@@ -95,14 +95,15 @@ FocusScope {
                 question.forceActiveFocus()
         })
     }
-    function show(which) {
+    function show(which, focusInput) {
         if (which)
             tab = which
         clearConfirmOpen = false
         open = true
-        forceActiveFocus()
-        if (!choosing && tab === "ask")
+        if (focusInput && !choosing && tab === "ask") {
+            forceActiveFocus()
             focusComposer()
+        }
     }
     function close() {
         if (!open)
@@ -128,8 +129,6 @@ FocusScope {
             if (!ai.hasKey && !ai.hasLocal && !companion.peopleLoaded)
                 return
             companion.whosWho()
-        } else if (which === "ask") {
-            focusComposer()
         }
     }
     function isMathSymbolBadge(name) {

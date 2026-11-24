@@ -574,12 +574,12 @@ FocusScope {
         marksPanel.show()
     }
     // The companion, on its own or for words on the page.
-    function showCompanion(tab) {
+    function showCompanion(tab, focusInput) {
         contents.close()
         appearance.close()
         voicePanel.close()
         marksPanel.close()
-        companionPanel.show(tab)
+        companionPanel.show(tab, !!focusInput)
     }
     // Supports both `askCompanion(question)` (from Main.qml / CommandPalette)
     // and `askCompanion(feature, target)` (from SelectionBar / pageMenu).
@@ -599,7 +599,7 @@ FocusScope {
                 companion.translate(target.text, target.chapter, target.end)
             return
         }
-        showCompanion("ask")
+        showCompanion("ask", true)
         const question = String(arg1 || "").trim()
         if (question !== "")
             companion.ask(question)
@@ -880,7 +880,7 @@ FocusScope {
         else if (key === "g" || key === "G") goTo.show()
         else if (key === "b" || key === "B") toggleBookmark()
         else if (key === "m" || key === "M") showMarks()
-        else if (key === "c" || key === "C") showCompanion("ask")
+        else if (key === "c" || key === "C") { companionPanel.open ? companionPanel.close() : showCompanion("ask") }
         else if ((key === "x" || key === "X") && pdf) toggleSnipMode()
         else if (key === "v" || key === "V") showVoices()
         else if (key === "/") searchBar.show()
@@ -1295,7 +1295,7 @@ FocusScope {
             Row {
                 id: tools
                 anchors.right: parent.right
-                anchors.rightMargin: view.pageBookmark > 0 ? 52 : 14
+                anchors.rightMargin: 14
                 anchors.verticalCenter: parent.verticalCenter
                 spacing: 4
 
@@ -1766,10 +1766,13 @@ FocusScope {
         }
 
         // The bookmark is a 44×44 tactile paper dog-ear in the top-right corner (02_reading:550).
+        // Glides cleanly below the 48 px header bar whenever chrome is shown and stays at z: 2
+        // (below chrome's z: 3) so it never overlaps or intercepts the Companion button.
         Item {
             id: pageFold
-            z: 4
+            z: 2
             anchors.top: parent.top
+            anchors.topMargin: Math.round(chrome.chromeProgress * chrome.height)
             anchors.right: parent.right
             width: 44
             height: 44
@@ -2563,7 +2566,12 @@ FocusScope {
     // Listening keys work with a panel open too, unless a field is taking typing.
     readonly property bool typing: win.typing
     readonly property bool listenKeys: reader.open && visible && !modalOpen && !win.typing && !lightbox.open
-    Shortcut { sequence: "C"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: companionPanel.open ? companionPanel.close() : view.showCompanion("ask") }
+    Shortcut {
+        sequence: "C"
+        context: Qt.ApplicationShortcut
+        enabled: view.keys || (reader.open && view.visible && companionPanel.open && !view.modalOpen && !win.typing && !lightbox.open)
+        onActivated: companionPanel.open ? companionPanel.close() : view.showCompanion("ask")
+    }
     Shortcut { sequence: "X"; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && view.pdf && !view.modalPanelOpen && !view.modalOpen && !win.typing && !lightbox.open; onActivated: view.toggleSnipMode() }
     Shortcut { sequence: "Right"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.prev() : view.next() }
     Shortcut { sequence: "Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.next() : view.prev() }
