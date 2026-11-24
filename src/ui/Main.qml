@@ -600,14 +600,18 @@ ApplicationWindow {
         }
 
         // Above everything, settings included. Lift cleanly above the reader's
-        // bottom J3 first-book keybar when both appear simultaneously.
+        // floating listening pill or bottom J3 first-book keybar when visible.
         Toast {
             id: toast
             z: 70
-            bottomClearance: win.readerOpen && !settingsView.open && !welcome.open
-                             && !commandPalette.open && !win.helpVisible
-                             && readerLoader.item && readerLoader.item.firstBookTipsActive
-                             ? 116 : 28
+            readonly property bool readerSurfaceVisible: win.readerOpen && !settingsView.open && !welcome.open
+                                                         && !commandPalette.open && !win.helpVisible
+            bottomClearance: !readerSurfaceVisible ? 28
+                           : narration.active
+                             ? ((readerLoader.item && readerLoader.item.listenBar)
+                                ? Math.round(readerLoader.item.listenBar.height) + 28
+                                : 76)
+                           : (readerLoader.item && readerLoader.item.firstBookTipsActive ? 116 : 28)
         }
 
         SettingsView {
