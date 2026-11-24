@@ -317,6 +317,7 @@ int main(int argc, char *argv[]) {
 
     Theme theme;
     theme.setAppearance(appearance.value(QStringLiteral("appearance/mode"), QStringLiteral("match")).toString());
+    theme.setCorners(appearance.value(QStringLiteral("appearance/corners"), QStringLiteral("match")).toString());
     theme.setReducedMotion(appearance.value(QStringLiteral("appearance/reducedMotion"), false).toBool());
     Library library;
     if (!library.open()) {

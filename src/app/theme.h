@@ -22,6 +22,8 @@ class Theme : public QObject {
     Q_PROPERTY(QString accent READ accent NOTIFY changed)
     Q_PROPERTY(QString accentForeground READ accentForeground NOTIFY changed)
     Q_PROPERTY(int radius READ radius NOTIFY changed)
+    // "match" (follow Hyprland rounding), "rounded", or "sharp".
+    Q_PROPERTY(QString corners READ corners WRITE setCorners NOTIFY changed)
     Q_PROPERTY(bool light READ light NOTIFY changed)
     Q_PROPERTY(bool omarchy READ omarchy NOTIFY changed)
     Q_PROPERTY(QString background READ background NOTIFY changed)
@@ -75,7 +77,9 @@ public:
 
     QString accent() const { return color("accent"); }
     QString accentForeground() const;
-    int radius() const { return m_radius; }
+    int radius() const;
+    QString corners() const { return m_corners; }
+    void setCorners(const QString &corners);
     bool light() const { return m_light; }
     bool omarchy() const { return m_omarchy; }
     QString background() const { return color("background"); }
@@ -156,13 +160,14 @@ private:
     QHash<QString, QString> m_palette;
     QHash<QString, QString> m_tokens;
     QString m_appearance = QStringLiteral("match");
+    QString m_corners = QStringLiteral("match");
     bool m_light = false;
     bool m_omarchy = false;
     bool m_reducedMotion = false;
     QFileSystemWatcher m_watcher;
     QTimer m_debounce;
     QString m_hyprSocketDir;
-    int m_radius = 0;
+    int m_desktopRadius = 0;
     QLocalSocket m_eventSocket;
     QByteArray m_eventBuffer;
     QPointer<QLocalSocket> m_roundingSocket;

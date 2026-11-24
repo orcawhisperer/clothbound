@@ -102,9 +102,10 @@ void Theme::refreshRounding() {
             m_roundingSocket = nullptr;
         const auto value = QJsonDocument::fromJson(*buffer).object().value("int");
         socket->deleteLater();
-        if (value.isDouble() && value.toInt(-1) >= 0 && value.toInt() != m_radius) {
-            m_radius = value.toInt();
-            emit changed();
+        if (value.isDouble() && value.toInt(-1) >= 0 && value.toInt() != m_desktopRadius) {
+            m_desktopRadius = value.toInt();
+            if (m_corners == QLatin1String("match"))
+                emit changed();
         }
     };
     connect(timeout, &QTimer::timeout, socket, [socket, finish] {
@@ -334,6 +335,24 @@ QHash<QString, QString> Theme::deriveTokens(const QHash<QString, QString> &palet
     t["scrim"] = light ? QStringLiteral("#40060608") : QStringLiteral("#94060608");
     t["shadow"] = light ? QStringLiteral("#26000000") : QStringLiteral("#73000000");
     return t;
+}
+
+int Theme::radius() const {
+    if (m_corners == QLatin1String("sharp"))
+        return 0;
+    if (m_corners == QLatin1String("rounded"))
+        return 22;
+    return m_desktopRadius;
+}
+
+void Theme::setCorners(const QString &corners) {
+    const QString value = (corners == QLatin1String("rounded") || corners == QLatin1String("sharp"))
+                              ? corners
+                              : QStringLiteral("match");
+    if (value == m_corners)
+        return;
+    m_corners = value;
+    emit changed();
 }
 
 void Theme::setAppearance(const QString &appearance) {

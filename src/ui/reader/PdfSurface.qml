@@ -1866,7 +1866,7 @@ Item {
             anchors.horizontalCenter: parent.horizontalCenter
             height: 34
             width: Math.min(parent.width - 32, snipHintRow.implicitWidth + 24)
-            radius: 17
+            radius: Ui.radius(17, theme.radius)
             color: Qt.rgba(26 / 255, 25 / 255, 23 / 255, 0.92)
             border.width: 1
             border.color: Qt.rgba(1, 1, 1, 0.12)

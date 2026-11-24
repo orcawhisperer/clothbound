@@ -598,12 +598,31 @@ private slots:
 
         Theme theme(dir.path(), nullptr, dir.path());
         QTRY_VERIFY(eventClient != nullptr);
+        QCOMPARE(theme.corners(), QString("match"));
         QCOMPARE(theme.radius(), 0);
 
         rounding = 6;
         eventClient->write("configreloaded>>\n");
         eventClient->flush();
         QTRY_COMPARE(theme.radius(), 6);
+
+        // Explicit rounded/sharp overrides win over Hyprland's rounding, and
+        // returning to "match" (or any unknown value) resumes live desktop rounding.
+        QSignalSpy cornerSpy(&theme, &Theme::changed);
+        theme.setCorners(QStringLiteral("sharp"));
+        QCOMPARE(theme.corners(), QString("sharp"));
+        QCOMPARE(theme.radius(), 0);
+        QCOMPARE(cornerSpy.count(), 1);
+
+        theme.setCorners(QStringLiteral("rounded"));
+        QCOMPARE(theme.corners(), QString("rounded"));
+        QCOMPARE(theme.radius(), 22);
+        QCOMPARE(cornerSpy.count(), 2);
+
+        theme.setCorners(QStringLiteral("bogus"));
+        QCOMPARE(theme.corners(), QString("match"));
+        QCOMPARE(theme.radius(), 6);
+        QCOMPARE(cornerSpy.count(), 3);
     }
 
     // --- Translator ----------------------------------------------------

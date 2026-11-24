@@ -41,7 +41,7 @@ T.Menu {
             anchors.fill: parent
             anchors.topMargin: 6
             anchors.margins: -2
-            radius: parent.radius + 2
+            radius: parent.radius > 0 ? parent.radius + 2 : 0
             color: control.palette.shadow
             opacity: 0.35
         }

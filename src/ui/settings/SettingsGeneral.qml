@@ -19,6 +19,7 @@ ColumnLayout {
         location: settingsUrl
         category: "appearance"
         property string mode: "match"
+        property string corners: "match"
         property bool desktopFont: false
         property bool reducedMotion: false
     }
@@ -109,6 +110,8 @@ ColumnLayout {
 
     Component.onCompleted: {
         initialDesktopFont = appearance.desktopFont
+        if (appearance.corners !== theme.corners)
+            theme.corners = appearance.corners
         if (appearance.reducedMotion && !theme.reducedMotion)
             theme.reducedMotion = true
     }
@@ -134,6 +137,18 @@ ColumnLayout {
                         { value: "light", label: qsTr("Light") }]
                 current: theme.appearance
                 onActivated: (value) => { theme.appearance = value; appearance.mode = value }
+            }
+        }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.hairline }
+        SettingsRow {
+            title: qsTr("Corners")
+            description: qsTr("Match desktop follows Hyprland's window rounding. Override to Rounded or Sharp for Clothbound.")
+            Segmented {
+                model: [{ value: "match", label: qsTr("Match desktop") },
+                        { value: "rounded", label: qsTr("Rounded") },
+                        { value: "sharp", label: qsTr("Sharp") }]
+                current: theme.corners
+                onActivated: (value) => { theme.corners = value; appearance.corners = value }
             }
         }
         Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.hairline }

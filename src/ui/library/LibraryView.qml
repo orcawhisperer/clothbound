@@ -379,7 +379,7 @@ FocusScope {
                 visible: library.scanning
                 Layout.preferredHeight: 30
                 Layout.preferredWidth: scanRow.implicitWidth + 18
-                radius: 15
+                radius: Ui.radius(15, theme.radius)
                 color: Ui.tint(theme.ink1, 0.06)
                 Accessible.role: Accessible.StatusBar
 
@@ -431,7 +431,7 @@ FocusScope {
                         onClicked: library.cancelScan()
 
                         background: Rectangle {
-                            radius: 11
+                            radius: Ui.radius(11, theme.radius)
                             color: stopScanBtn.pressed ? Ui.tint(theme.ink1, 0.14)
                                  : stopScanBtn.hovered ? Ui.tint(theme.ink1, 0.09) : "transparent"
                             border.width: stopScanBtn.visualFocus ? 2 : 0

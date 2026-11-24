@@ -148,16 +148,28 @@ FocusScope {
 
             RowLayout {
                 anchors.fill: parent
+                anchors.margins: 1
                 spacing: 0
 
                 // --- Left 320 px warm paper illustration pane ------------
                 Rectangle {
                     id: artPane
                     visible: frame.split
-                    Layout.preferredWidth: 320
+                    Layout.preferredWidth: 319
                     Layout.fillHeight: true
+                    radius: card.radius > 0 ? Math.max(0, card.radius - 1) : 0
                     color: "#F6F1E7"
                     clip: true
+
+                    // Keep the seam with the right column crisp while matching left outer corners.
+                    Rectangle {
+                        visible: artPane.radius > 0
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        width: artPane.radius
+                        color: artPane.color
+                    }
 
                     // Step 0: Clothbound hardcover volume over warm cream leaf with silk ribbon bookmark.
                     Item {

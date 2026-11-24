@@ -629,6 +629,10 @@ FocusScope {
     }
     onLookChanged: styleTimer.restart()
     Connections {
+        target: theme
+        function onChanged() { styleTimer.restart() }
+    }
+    Connections {
         target: reader
         function onAppearanceChanged() { styleTimer.restart() }
         function onPageTurnRequested(direction) { view.triggerPageTurnSound(direction) }
@@ -2448,7 +2452,7 @@ FocusScope {
             anchors.rightMargin: 20
             width: lightboxControls.implicitWidth + 14
             height: 40
-            radius: 20
+            radius: Ui.radius(20, theme.radius)
             color: Ui.tint("#1c1c1e", 0.9)
             border.color: Ui.tint("white", 0.16)
 
@@ -2472,7 +2476,7 @@ FocusScope {
                     focusPolicy: Qt.NoFocus
                     onClicked: lightbox.setZoom(1.0)
                     background: Rectangle {
-                        radius: 6
+                        radius: Ui.radius(6, theme.radius)
                         color: parent.hovered ? Ui.tint("white", 0.12) : "transparent"
                     }
                     contentItem: Label {
@@ -2519,7 +2523,7 @@ FocusScope {
             anchors.horizontalCenter: parent.horizontalCenter
             width: Math.min(parent.width - 64, captionText.implicitWidth + 32)
             height: captionText.implicitHeight + 18
-            radius: 10
+            radius: Ui.radius(10, theme.radius)
             color: Ui.tint("#1c1c1e", 0.88)
             border.color: Ui.tint("white", 0.14)
             Label {
