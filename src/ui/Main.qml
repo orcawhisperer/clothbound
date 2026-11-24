@@ -158,7 +158,8 @@ ApplicationWindow {
                                    || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined && !activeFocusItem.readOnly)
     readonly property bool overlayOpen: helpVisible || libraryView.menuOpen || settingsView.open || welcome.open
                                         || commandPalette.open || libraryView.foldersOpen || libraryView.statsOpen
-                                        || libraryView.collectionDialogOpen
+                                        || libraryView.collectionDialogOpen || libraryView.addUrlOpen
+                                        || libraryView.catalogsOpen
     readonly property bool libraryKeys: !readerOpen && !typing && !overlayOpen && !libraryView.detailsOpen
 
     function openBook(bookId) {
@@ -330,6 +331,14 @@ ApplicationWindow {
             picker.chooseFolders()
         } else if (actionId === "add-books") {
             picker.chooseBooks()
+        } else if (actionId === "add-url") {
+            if (readerOpen)
+                closeBook()
+            libraryView.openAddUrl()
+        } else if (actionId === "browse-catalogs") {
+            if (readerOpen)
+                closeBook()
+            libraryView.openCatalogs()
         } else if (actionId === "manage-folders") {
             if (readerOpen)
                 closeBook()
@@ -450,7 +459,7 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: win.helpVisible || welcome.open || settingsView.open || libraryView.detailsOpen
                  || libraryView.foldersOpen || libraryView.statsOpen || libraryView.collectionDialogOpen
-                 || commandPalette.open
+                 || libraryView.addUrlOpen || libraryView.catalogsOpen || commandPalette.open
         onActivated: {
             if (win.helpVisible)
                 win.helpVisible = false
@@ -460,6 +469,10 @@ ApplicationWindow {
                 welcome.close()
             else if (settingsView.open)
                 settingsView.close()
+            else if (libraryView.catalogsOpen)
+                libraryView.closeCatalogs()
+            else if (libraryView.addUrlOpen)
+                libraryView.closeAddUrl()
             else if (libraryView.collectionDialogOpen)
                 libraryView.closeCollectionDialog()
             else if (libraryView.statsOpen)
@@ -468,6 +481,34 @@ ApplicationWindow {
                 libraryView.closeFolders()
             else
                 libraryView.closeDetails()
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+U"
+        context: Qt.ApplicationShortcut
+        enabled: !commandPalette.open && !settingsView.open && !welcome.open
+        onActivated: {
+            if (libraryView.addUrlOpen) {
+                libraryView.closeAddUrl()
+            } else {
+                if (win.readerOpen)
+                    win.closeBook()
+                libraryView.openAddUrl()
+            }
+        }
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+O"
+        context: Qt.ApplicationShortcut
+        enabled: !commandPalette.open && !settingsView.open && !welcome.open
+        onActivated: {
+            if (libraryView.catalogsOpen) {
+                libraryView.closeCatalogs()
+            } else {
+                if (win.readerOpen)
+                    win.closeBook()
+                libraryView.openCatalogs()
+            }
         }
     }
     // Ctrl+Z undoes what a toast offers to; otherwise, while reading, the

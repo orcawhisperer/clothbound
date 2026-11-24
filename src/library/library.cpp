@@ -192,12 +192,15 @@ bool Library::open() {
     loadBooks();
     loadCollections();
     loadAudioBadges();
+    loadOnlineMeta();
+    refreshArticles();
     QSqlQuery speed(db);
     speed.exec(QStringLiteral("SELECT value FROM meta WHERE key = 'chars_per_minute'"));
     if (speed.next() && speed.value(0).toDouble() > 0)
         m_charsPerMinute = speed.value(0).toDouble();
     m_works->setCollections(m_collectionBooks);
     m_works->setAudioSets(m_downloadedBooks, m_audiobookBooks);
+    m_works->setArticleSet(m_articles);
     m_works->setBooks(m_books);
     return true;
 }
@@ -450,6 +453,53 @@ void Library::loadAudioBadges() {
         else if (key == QLatin1String("audiobook_saved"))
             m_audiobookBooks.insert(bookId);
     }
+}
+
+void Library::loadOnlineMeta() {
+    m_articleSettingIds.clear();
+    m_sourceUrls.clear();
+    if (!database().isOpen())
+        return;
+    QSqlQuery q(database());
+    if (!q.exec(QStringLiteral("SELECT book_id, key, value FROM book_settings "
+                               "WHERE key IN ('content_kind', 'source_url')")))
+        return;
+    while (q.next()) {
+        const int bookId = q.value(0).toInt();
+        const QString key = q.value(1).toString();
+        const QString val = q.value(2).toString();
+        if (key == QLatin1String("content_kind")) {
+            if (val.trimmed().compare(QLatin1String("article"), Qt::CaseInsensitive) == 0)
+                m_articleSettingIds.insert(bookId);
+        } else if (key == QLatin1String("source_url")) {
+            if (!val.trimmed().isEmpty())
+                m_sourceUrls.insert(bookId, val.trimmed());
+        }
+    }
+}
+
+bool Library::isArticleRecord(const BookRecord &record) const {
+    if (m_articleSettingIds.contains(record.id))
+        return true;
+    if (record.subjects.contains(QStringLiteral("Clothbound Article"), Qt::CaseInsensitive))
+        return true;
+    const QString articlesDir = m_dataDirectory + QStringLiteral("/articles");
+    if (isUnder(record.path, articlesDir))
+        return true;
+    const QString canonicalData = canonical(m_dataDirectory);
+    if (canonicalData != m_dataDirectory && isUnder(record.path, canonicalData + QStringLiteral("/articles")))
+        return true;
+    return false;
+}
+
+void Library::refreshArticles() {
+    m_articles.clear();
+    for (const auto &record : std::as_const(m_books)) {
+        if (isArticleRecord(record))
+            m_articles.insert(record.id);
+    }
+    if (m_works)
+        m_works->setArticleSet(m_articles);
 }
 
 void Library::loadFolders() {
@@ -928,6 +978,7 @@ bool Library::storeInDb(const ScannedBook &book, QList<StagedBook> &staged) {
 }
 
 void Library::applyStaged(const QList<StagedBook> &staged) {
+    bool articlesChanged = false;
     for (const StagedBook &entry : staged) {
         if (!entry.oldPath.isEmpty() && entry.oldPath != entry.record.path)
             m_pathToId.remove(entry.oldPath);
@@ -935,8 +986,18 @@ void Library::applyStaged(const QList<StagedBook> &staged) {
         m_pathToId.insert(entry.record.path, entry.record.id);
         if (!entry.fingerprint.isEmpty())
             m_fingerprints.insert(entry.record.id, entry.fingerprint);
+        const bool isArt = isArticleRecord(entry.record);
+        if (isArt && !m_articles.contains(entry.record.id)) {
+            m_articles.insert(entry.record.id);
+            articlesChanged = true;
+        } else if (!isArt && m_articles.contains(entry.record.id)) {
+            m_articles.remove(entry.record.id);
+            articlesChanged = true;
+        }
         entry.updated ? ++m_updated : ++m_added;
     }
+    if (articlesChanged && m_works)
+        m_works->setArticleSet(m_articles);
 }
 
 void Library::flushPending() {
@@ -1065,6 +1126,8 @@ QVariantMap Library::toMap(const BookRecord &r) const {
         {"listening", r.listenedAt > 0},
         {"downloaded", m_downloadedBooks.contains(r.id)},
         {"hasAudiobook", m_audiobookBooks.contains(r.id)},
+        {"isArticle", m_articles.contains(r.id)},
+        {"sourceUrl", m_sourceUrls.value(r.id)},
         {"chapterTitle", chapterTitleOf(r)},
         {"snippet", snippetOf(r)},
     };
@@ -1134,14 +1197,17 @@ void Library::markListened(int id) {
 // How many books each shelf of the sidebar holds: visible books only, a
 // work's editions counted once each as the grid shows them ungrouped.
 QVariantMap Library::shelfCounts() const {
-    int all = 0, reading = 0, recent = 0, want = 0, finished = 0, listening = 0, epub = 0, pdf = 0, downloaded = 0,
-        audiobooks = 0;
+    int all = 0, reading = 0, recent = 0, want = 0, finished = 0, listening = 0, epub = 0, pdf = 0, articles = 0,
+        downloaded = 0, audiobooks = 0;
     const qint64 recentCutoff = now() - WorksModel::recentWindowSecs;
     for (const auto &r : std::as_const(m_books)) {
         if (!r.visible())
             continue;
         ++all;
-        if (r.format.compare(QLatin1String("epub"), Qt::CaseInsensitive) == 0)
+        const bool isArt = m_articles.contains(r.id);
+        if (isArt)
+            ++articles;
+        if (r.format.compare(QLatin1String("epub"), Qt::CaseInsensitive) == 0 && !isArt)
             ++epub;
         else if (r.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0)
             ++pdf;
@@ -1168,6 +1234,7 @@ QVariantMap Library::shelfCounts() const {
             {"listening", listening},
             {"epub", epub},
             {"pdf", pdf},
+            {"articles", articles},
             {"downloaded", downloaded},
             {"audiobooks", audiobooks}};
 }
@@ -1727,6 +1794,33 @@ void Library::setBookSetting(int id, const QString &key, const QString &value) {
             m_works->setAudioSets(m_downloadedBooks, m_audiobookBooks);
             emit bookChanged(id);
             changed();
+        }
+    } else if (key == QLatin1String("content_kind")) {
+        const bool wantArticle = (norm == QLatin1String("article"));
+        if (wantArticle)
+            m_articleSettingIds.insert(id);
+        else
+            m_articleSettingIds.remove(id);
+        const bool isArt = m_books.contains(id) ? isArticleRecord(m_books.value(id)) : wantArticle;
+        const bool had = m_articles.contains(id);
+        if (isArt != had) {
+            if (isArt)
+                m_articles.insert(id);
+            else
+                m_articles.remove(id);
+            m_works->setArticleSet(m_articles);
+            emit bookChanged(id);
+            changed();
+        }
+    } else if (key == QLatin1String("source_url")) {
+        const QString trimmed = value.trimmed();
+        const QString prev = m_sourceUrls.value(id);
+        if (trimmed != prev) {
+            if (trimmed.isEmpty())
+                m_sourceUrls.remove(id);
+            else
+                m_sourceUrls.insert(id, trimmed);
+            emit bookChanged(id);
         }
     } else if (key == QLatin1String("voiceName")) {
         emit bookChanged(id);

@@ -24,6 +24,8 @@ Rectangle {
     signal bookDroppedOnCollection(int collectionId, string collectionName)
     signal filterNavigated()
     signal intelligenceRequested()
+    signal catalogsRequested()
+    signal addUrlRequested()
 
     readonly property var works: library.works
     readonly property var counts: library.shelfCounts
@@ -290,6 +292,14 @@ Rectangle {
                 onClicked: side.showFormat("pdf")
             }
             ShelfRow {
+                visible: !side.emptyLibrary && ((side.counts.articles || 0) > 0 || side.works.statusFilter === "articles")
+                text: qsTr("Articles")
+                glyph: Icons.article
+                count: side.counts.articles || 0
+                current: side.onShelf && side.works.statusFilter === "articles"
+                onClicked: side.showShelf("articles")
+            }
+            ShelfRow {
                 text: qsTr("Finished")
                 glyph: Icons.checkCircle
                 count: side.emptyLibrary ? -1 : (side.counts.finished || 0)
@@ -370,6 +380,21 @@ Rectangle {
                 glyph: Icons.plus
                 muted: true
                 onClicked: side.createCollection()
+            }
+
+            // Online section: always visible (even when library is empty) for catalogs & URLs.
+            GroupLabel {
+                text: qsTr("Online")
+            }
+            ShelfRow {
+                text: qsTr("Browse catalogs")
+                glyph: Icons.globe
+                onClicked: side.catalogsRequested()
+            }
+            ShelfRow {
+                text: qsTr("Add from URL")
+                glyph: Icons.link
+                onClicked: side.addUrlRequested()
             }
         }
     }

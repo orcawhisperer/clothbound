@@ -3,7 +3,7 @@ QT += core gui qml quick quickcontrols2 dbus sql concurrent network multimedia p
 CONFIG += c++20 release
 TARGET = clothbound
 TEMPLATE = app
-DEFINES += CLOTHBOUND_VERSION=\\\"0.3.0\\\"
+DEFINES += CLOTHBOUND_VERSION=\\\"0.4.0\\\"
 
 INCLUDEPATH += $$PWD/src
 
@@ -66,7 +66,13 @@ HEADERS += \
     src/ai/localsetup.h \
     src/ai/passageindex.h \
     src/ai/sseparser.h \
-    src/mcp/mcpserver.h
+    src/mcp/mcpserver.h \
+    src/online/articleextractor.h \
+    src/online/epubwriter.h \
+    src/online/opdsclient.h \
+    src/online/opdsparser.h \
+    src/online/urlguard.h \
+    src/online/webimporter.h
 
 SOURCES += \
     src/app/cli.cpp \
@@ -115,6 +121,12 @@ SOURCES += \
     src/ai/localsetup.cpp \
     src/ai/passageindex.cpp \
     src/ai/sseparser.cpp \
-    src/mcp/mcpserver.cpp
+    src/mcp/mcpserver.cpp \
+    src/online/articleextractor.cpp \
+    src/online/epubwriter.cpp \
+    src/online/opdsclient.cpp \
+    src/online/opdsparser.cpp \
+    src/online/urlguard.cpp \
+    src/online/webimporter.cpp
 
 RESOURCES += src/resources.qrc src/prompts.qrc

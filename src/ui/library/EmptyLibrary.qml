@@ -16,6 +16,8 @@ Column {
 
     signal addFolders()
     signal addBooks()
+    signal browseCatalogs()
+    signal addFromUrl()
 
     readonly property var offer: libraryFinder.found.length > 0 ? libraryFinder.found[0] : null
     readonly property string offerSummary: {
@@ -161,18 +163,38 @@ Column {
         }
     }
 
-    // Secondary folder & single-book picker buttons.
-    Row {
+    // Secondary local & online discovery actions (balanced two-row layout within 520 px).
+    Column {
         anchors.horizontalCenter: parent.horizontalCenter
         spacing: 8
-        TextButton {
-            primary: empty.offer === null
-            text: qsTr("Choose a folder…")
-            onClicked: empty.addFolders()
+
+        Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 8
+            TextButton {
+                primary: empty.offer === null
+                text: qsTr("Choose a folder…")
+                onClicked: empty.addFolders()
+            }
+            TextButton {
+                text: qsTr("Add single books…")
+                onClicked: empty.addBooks()
+            }
         }
-        TextButton {
-            text: qsTr("Add single books…")
-            onClicked: empty.addBooks()
+
+        Row {
+            anchors.horizontalCenter: parent.horizontalCenter
+            spacing: 8
+            TextButton {
+                glyph: Icons.globe
+                text: qsTr("Browse free catalogs")
+                onClicked: empty.browseCatalogs()
+            }
+            TextButton {
+                glyph: Icons.link
+                text: qsTr("Add from URL…")
+                onClicked: empty.addFromUrl()
+            }
         }
     }
 

@@ -33,6 +33,8 @@
         <file alias="ui/library/GeneratedCover.qml">ui/library/GeneratedCover.qml</file>
         <file alias="ui/library/EmptyLibrary.qml">ui/library/EmptyLibrary.qml</file>
         <file alias="ui/library/SearchBox.qml">ui/library/SearchBox.qml</file>
+        <file alias="ui/library/AddUrlSheet.qml">ui/library/AddUrlSheet.qml</file>
+        <file alias="ui/library/CatalogsSheet.qml">ui/library/CatalogsSheet.qml</file>
         <file alias="ui/reader/EpubReader.qml">ui/reader/EpubReader.qml</file>
         <file alias="ui/reader/PdfSurface.qml">ui/reader/PdfSurface.qml</file>
         <file alias="ui/reader/AppearancePanel.qml">ui/reader/AppearancePanel.qml</file>

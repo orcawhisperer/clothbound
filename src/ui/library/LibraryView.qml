@@ -20,10 +20,13 @@ FocusScope {
     property real nowEpoch: Math.floor(Date.now() / 1000)
 
     readonly property bool typing: search.activeFocus || collectionDialog.open || details.addingShelf
+                                   || addUrlOpen || catalogsOpen
     readonly property bool detailsOpen: details.open
     readonly property bool foldersOpen: foldersSheet.open
     readonly property bool statsOpen: statsSheet.open
     readonly property bool collectionDialogOpen: collectionDialog.open
+    readonly property bool addUrlOpen: addUrlSheet.open
+    readonly property bool catalogsOpen: catalogsSheet.open
     readonly property bool menuOpen: sortMenu.opened || seriesMenu.opened || filterMenu.opened || moreMenu.opened
     property bool sidebarCollapsed: false
     // What's typed in the search field; Ctrl+K takes it to the palette, which
@@ -52,6 +55,7 @@ FocusScope {
         }
         return works.statusFilter === "reading" ? qsTr("Reading")
              : works.statusFilter === "recent" ? qsTr("Recently added")
+             : works.statusFilter === "articles" ? qsTr("Articles")
              : works.statusFilter === "want" ? qsTr("Want to read")
              : works.statusFilter === "finished" ? qsTr("Finished")
              : works.statusFilter === "downloaded" ? qsTr("Downloaded")
@@ -229,15 +233,33 @@ FocusScope {
     function closeDetails() { details.close() }
     function openFolders() {
         statsSheet.close()
+        addUrlSheet.close()
+        catalogsSheet.close()
         foldersSheet.show()
     }
     function closeFolders() { foldersSheet.close() }
     function openStats() {
         foldersSheet.close()
+        addUrlSheet.close()
+        catalogsSheet.close()
         statsRevision++
         statsSheet.show()
     }
     function closeStats() { statsSheet.close() }
+    function openAddUrl(initialUrl) {
+        foldersSheet.close()
+        statsSheet.close()
+        catalogsSheet.close()
+        addUrlSheet.show(initialUrl || "")
+    }
+    function closeAddUrl() { addUrlSheet.close() }
+    function openCatalogs() {
+        foldersSheet.close()
+        statsSheet.close()
+        addUrlSheet.close()
+        catalogsSheet.show()
+    }
+    function closeCatalogs() { catalogsSheet.close() }
     function closeCollectionDialog() { collectionDialog.close() }
 
     // After reading, the book just closed is the one selected.
@@ -313,6 +335,8 @@ FocusScope {
             listView.positionViewAtBeginning()
         }
         onIntelligenceRequested: win.showAiSettings()
+        onCatalogsRequested: view.openCatalogs()
+        onAddUrlRequested: view.openAddUrl()
     }
 
     // Everything right of the sidebar, for centring the empty states.
@@ -595,6 +619,16 @@ FocusScope {
                                   ? qsTr("Add books to %1…").arg(view.activeCollectionName)
                                   : qsTr("Add books…")
                             onClicked: { moreMenu.close(); picker.chooseBooks() }
+                        }
+                        MenuRow {
+                            text: qsTr("Add from URL…")
+                            hint: "Ctrl ⇧ U"
+                            onClicked: { moreMenu.close(); view.openAddUrl() }
+                        }
+                        MenuRow {
+                            text: qsTr("Browse catalogs…")
+                            hint: "Ctrl ⇧ O"
+                            onClicked: { moreMenu.close(); view.openCatalogs() }
                         }
                     }
                 }
@@ -1166,6 +1200,9 @@ FocusScope {
                                              && library.works.formatFilter === "epub"
                                              && library.works.statusFilter === ""
                                              && library.works.searchText === ""
+        readonly property bool isEmptyArticles: library.works.collectionId === 0
+                                                && library.works.statusFilter === "articles"
+                                                && library.works.searchText === ""
 
         Label {
             width: parent.width
@@ -1177,6 +1214,8 @@ FocusScope {
                   ? qsTr("No books in “%1” yet").arg(view.activeCollectionName)
                 : emptyFilterState.isEmptyRecent
                   ? qsTr("Nothing added in the last 14 days")
+                : emptyFilterState.isEmptyArticles
+                  ? qsTr("No saved articles yet")
                 : emptyFilterState.isEmptyPdfs
                   ? qsTr("No papers or PDFs yet")
                 : emptyFilterState.isEmptyEpubs
@@ -1200,6 +1239,13 @@ FocusScope {
             anchors.horizontalCenter: parent.horizontalCenter
             spacing: 8
             TextButton {
+                visible: emptyFilterState.isEmptyArticles
+                primary: true
+                glyph: Icons.link
+                text: qsTr("Add from URL…")
+                onClicked: view.openAddUrl()
+            }
+            TextButton {
                 visible: emptyFilterState.isEmptyCollection || emptyFilterState.isEmptyPdfs || emptyFilterState.isEmptyEpubs
                 primary: true
                 glyph: Icons.plus
@@ -1209,6 +1255,7 @@ FocusScope {
             TextButton {
                 visible: library.works.hasActiveFilters
                 text: (emptyFilterState.isEmptyCollection || emptyFilterState.isEmptyRecent
+                       || emptyFilterState.isEmptyArticles
                        || emptyFilterState.isEmptyPdfs || emptyFilterState.isEmptyEpubs)
                       ? qsTr("Browse all books") : qsTr("Clear filters")
                 onClicked: library.works.clearFilters()
@@ -1221,6 +1268,8 @@ FocusScope {
         visible: library.bookCount === 0 && !library.scanning
         onAddFolders: picker.chooseFolders()
         onAddBooks: picker.chooseBooks()
+        onBrowseCatalogs: view.openCatalogs()
+        onAddFromUrl: view.openAddUrl()
     }
 
     // The first books on their way before any arrive: 6-col skeleton grid.
@@ -1874,5 +1923,35 @@ FocusScope {
                 elide: Text.ElideRight
             }
         }
+    }
+
+    AddUrlSheet {
+        id: addUrlSheet
+        anchors.fill: parent
+        z: 45
+        onImported: (bookId, title, kind) => {
+            const label = title !== "" ? title : qsTr("book")
+            toast.show(kind === "article" ? qsTr("Saved article “%1”").arg(label)
+                                          : qsTr("Added “%1”").arg(label))
+            if (bookId > 0 && library.works.rowOfBook(bookId) >= 0) {
+                view.select(bookId)
+                view.pulsedBookId = bookId
+                pulseTimer.restart()
+            }
+        }
+        onOpenBookRequested: (bookId) => view.openBook(bookId)
+        onClosed: if (view.enabled) view.focusGrid()
+    }
+
+    CatalogsSheet {
+        id: catalogsSheet
+        anchors.fill: parent
+        z: 46
+        targetCollectionId: library.works.collectionId
+        onOpenBook: (bookId) => {
+            catalogsSheet.close()
+            view.openBook(bookId)
+        }
+        onClosed: if (view.enabled) view.focusGrid()
     }
 }

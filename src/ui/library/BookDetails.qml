@@ -318,8 +318,8 @@ FocusScope {
                     Value {
                         text: {
                             const _lang = translator.language
-                            return (details.book.format || "").toUpperCase() + " · "
-                                   + Format.size(details.book.size || 0, Qt.locale())
+                            const label = details.book.isArticle ? qsTr("Web article") : (details.book.format || "").toUpperCase()
+                            return label + " · " + Format.size(details.book.size || 0, Qt.locale())
                         }
                     }
 
@@ -393,6 +393,49 @@ FocusScope {
                             if (s === "")
                                 return ""
                             return idx > 0 ? (s + " · #" + (Math.floor(idx) === idx ? Math.floor(idx) : idx)) : s
+                        }
+                    }
+
+                    Fact {
+                        text: qsTr("Source")
+                        visible: (details.book.sourceUrl || "") !== ""
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    RowLayout {
+                        visible: (details.book.sourceUrl || "") !== ""
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Label {
+                            Layout.fillWidth: true
+                            text: {
+                                const raw = details.book.sourceUrl || ""
+                                if (raw === "")
+                                    return ""
+                                const clean = raw.replace(/^https?:\/\/(?:www\.)?/i, "")
+                                return clean.length > 48 ? clean.slice(0, 48) + "…" : clean
+                            }
+                            textFormat: Text.PlainText
+                            color: theme.ink1
+                            font.pixelSize: 13
+                            elide: Text.ElideRight
+                            HoverHandler { id: sourceHover }
+                            ToolTip.visible: sourceHover.hovered && (details.book.sourceUrl || "") !== ""
+                            ToolTip.text: details.book.sourceUrl || ""
+                            ToolTip.delay: 350
+                        }
+                        IconButton {
+                            Layout.preferredWidth: 26
+                            Layout.preferredHeight: 26
+                            glyph: Icons.copy
+                            tone: theme.ink3
+                            tip: qsTr("Copy source link")
+                            onClicked: {
+                                const url = details.book.sourceUrl || ""
+                                if (url !== "") {
+                                    reader.copyText(url)
+                                    toast.show(qsTr("Copied source link"))
+                                }
+                            }
                         }
                     }
 

@@ -1,5 +1,6 @@
 QT += core gui qml quick quickcontrols2 testlib dbus sql concurrent network multimedia pdf webenginecore webenginequick webchannel
 CONFIG += c++20 testcase
+DEFINES += CLOTHBOUND_VERSION=\\\"0.4.0\\\" CLOTHBOUND_UNIFIED_TESTS
 TARGET = clothbound_tests
 TEMPLATE = app
 LIBS += -lz
@@ -62,10 +63,18 @@ HEADERS += \
     ../src/ai/localsetup.h \
     ../src/ai/passageindex.h \
     ../src/ai/sseparser.h \
-    ../src/mcp/mcpserver.h
+    ../src/mcp/mcpserver.h \
+    ../src/online/articleextractor.h \
+    ../src/online/epubwriter.h \
+    ../src/online/opdsclient.h \
+    ../src/online/opdsparser.h \
+    ../src/online/urlguard.h \
+    ../src/online/webimporter.h
 
 SOURCES += \
     clothbound_tests.cpp \
+    tst_online_ingest.cpp \
+    tst_opds.cpp \
     ../src/app/cli.cpp \
     ../src/app/migration.cpp \
     ../src/app/portalfilepicker.cpp \
@@ -110,6 +119,12 @@ SOURCES += \
     ../src/ai/localsetup.cpp \
     ../src/ai/passageindex.cpp \
     ../src/ai/sseparser.cpp \
-    ../src/mcp/mcpserver.cpp
+    ../src/mcp/mcpserver.cpp \
+    ../src/online/articleextractor.cpp \
+    ../src/online/epubwriter.cpp \
+    ../src/online/opdsclient.cpp \
+    ../src/online/opdsparser.cpp \
+    ../src/online/urlguard.cpp \
+    ../src/online/webimporter.cpp
 
 RESOURCES += ../src/prompts.qrc

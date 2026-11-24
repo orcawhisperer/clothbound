@@ -33,7 +33,8 @@ QHash<int, QByteArray> WorksModel::roleNames() const {
             {WantToReadRole, "wantToRead"},
             {ListeningRole, "listening"},
             {DownloadedRole, "downloaded"},
-            {AudiobookRole, "audiobook"}};
+            {AudiobookRole, "audiobook"},
+            {ArticleRole, "article"}};
 }
 
 QVariant WorksModel::data(const QModelIndex &index, int role) const {
@@ -88,6 +89,8 @@ QVariant WorksModel::data(const QModelIndex &index, int role) const {
         return m_downloaded.contains(book.id);
     case AudiobookRole:
         return m_audiobooks.contains(book.id);
+    case ArticleRole:
+        return m_articles.contains(book.id);
     }
     return {};
 }
@@ -224,6 +227,16 @@ void WorksModel::setAudioSets(const QSet<int> &downloaded, const QSet<int> &audi
         emit dataChanged(index(0), index(int(m_works.size()) - 1), {DownloadedRole, AudiobookRole});
 }
 
+void WorksModel::setArticleSet(const QSet<int> &articles) {
+    if (m_articles == articles)
+        return;
+    m_articles = articles;
+    if (m_statusFilter == QLatin1String("articles") || m_formatFilter == QLatin1String("epub"))
+        rebuild();
+    else if (!m_works.isEmpty())
+        emit dataChanged(index(0), index(int(m_works.size()) - 1), {ArticleRole});
+}
+
 void WorksModel::updateBook(const BookRecord &book) {
     const auto oldIt = m_books.constFind(book.id);
     const bool existed = oldIt != m_books.cend();
@@ -289,10 +302,17 @@ bool WorksModel::passesFilters(const BookRecord &book) const {
         } else if (m_statusFilter == QLatin1String("audiobooks")) {
             if (!m_audiobooks.contains(book.id))
                 return false;
+        } else if (m_statusFilter == QLatin1String("articles")) {
+            if (!m_articles.contains(book.id))
+                return false;
         }
     }
-    if (!m_formatFilter.isEmpty() && book.format.compare(m_formatFilter, Qt::CaseInsensitive) != 0)
-        return false;
+    if (!m_formatFilter.isEmpty()) {
+        if (book.format.compare(m_formatFilter, Qt::CaseInsensitive) != 0)
+            return false;
+        if (m_formatFilter == QLatin1String("epub") && m_articles.contains(book.id))
+            return false;
+    }
     if (!m_seriesFilter.isEmpty()) {
         if (m_seriesFilter == QLatin1String("*")) {
             if (book.series.trimmed().isEmpty())
