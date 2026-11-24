@@ -198,8 +198,8 @@ FocusScope {
         const stageH = readingStage.height > 0 ? readingStage.height : view.height
         const topMargin = narration.active
             ? Math.max(68, Math.min(92, Math.round(stageH * 0.115)))
-            : Math.max(54, Math.min(92, Math.round(stageH * 0.115)))
-        const baseBottomMargin = Math.max(54, Math.min(104, Math.round(stageH * 0.13)))
+            : Math.max(60, Math.min(92, Math.round(stageH * 0.115)))
+        const baseBottomMargin = Math.max(76, Math.min(108, Math.round(stageH * 0.13)))
         // Reserve +44 px bottom clearance while listening so the bottom line
         // of every page sits comfortably above the resting 44 px floating pill.
         const bottomMargin = narration.active
@@ -411,6 +411,8 @@ FocusScope {
         // A PDF's text is its pages: it zooms.
         if (pdf) {
             pdfSurface.zoom = step === 0 ? 1 : Math.max(1, Math.min(4, pdfSurface.zoom * (step > 0 ? 1.15 : 1 / 1.15)))
+            if (pdfSurface.zoom > 1.01 && !view.panelOpen)
+                view.chromeShown = false
             return
         }
         setAppearance("fontScale", step === 0 ? 1.15 : Math.max(0.7, Math.min(2.0, Math.round((activeSettings.fontScale + step) * 100) / 100)))
@@ -947,30 +949,55 @@ FocusScope {
             }
         }
 
-        // In scroll mode the text passes under the top/bottom margins;
-        // it fades into the page there rather than colliding with chrome.
+        // Soft theme-matched paper backdrop behind the top header and bottom
+        // progress footer whenever chrome is visible (or always in scroll mode)
+        // so zoomed PDFs and large text fade cleanly underneath instead of
+        // clashing with controls; fades out completely with chrome for pure
+        // edge-to-edge reading.
         Rectangle {
-            visible: activeSettings.layout === "scroll"
+            id: topBackdrop
+            z: 2
             anchors.top: parent.top
-            width: parent.width
-            height: 52
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: 70
+            opacity: activeSettings.layout === "scroll" ? 1 : chrome.chromeProgress
+            visible: opacity > 0.01
             gradient: Gradient {
-                GradientStop { position: 0.45; color: view.look.bg }
-                GradientStop { position: 1; color: Ui.tint(view.look.bg, 0) }
+                GradientStop { position: 0.0; color: view.look.bg }
+                GradientStop { position: 0.68; color: Ui.tint(view.look.bg, 0.95) }
+                GradientStop { position: 1.0; color: Ui.tint(view.look.bg, 0) }
+            }
+            Rectangle {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                y: 48
+                height: 1
+                color: view.look.line
+                opacity: (view.pdf && pdfSurface.zoom > 1.01) || activeSettings.layout === "scroll"
+                         ? chrome.chromeProgress * 0.75 : 0
             }
         }
         Rectangle {
-            visible: activeSettings.layout === "scroll"
+            id: bottomBackdrop
+            z: 2
             anchors.bottom: parent.bottom
-            width: parent.width
-            height: narration.active ? 68 : 52
+            anchors.left: parent.left
+            anchors.right: parent.right
+            height: narration.active ? 84 : 108
+            opacity: activeSettings.layout === "scroll" ? 1
+                   : narration.active ? 0.96 : bottomFooter.footerProgress
+            visible: opacity > 0.01
             gradient: Gradient {
-                GradientStop { position: 0; color: Ui.tint(view.look.bg, 0) }
-                GradientStop { position: 0.55; color: view.look.bg }
+                GradientStop { position: 0.0; color: Ui.tint(view.look.bg, 0) }
+                GradientStop { position: 0.28; color: view.look.bg }
+                GradientStop { position: 1.0; color: view.look.bg }
             }
         }
 
-        // Reveal reading chrome on any pointer movement (2 s idle fade, 09:628).
+        // Reveal reading chrome on pointer movement (2 s idle fade, 09:628).
+        // When a PDF is zoomed in, only reveal chrome when approaching the top
+        // or bottom edge so panning/reading never pops overlays over text.
         property real lastPointerX: -1
         property real lastPointerY: -1
         HoverHandler {
@@ -979,8 +1006,10 @@ FocusScope {
                 const px = point.position.x, py = point.position.y
                 if (readingStage.lastPointerX >= 0 && !view.modalPanelOpen && !narration.active && !lightbox.open
                     && !(view.pdf && (pdfSurface.snipMode || pdfSurface.peekOpen))) {
+                    const zoomedPdf = view.pdf && pdfSurface.zoom > 1.01
+                    const nearEdge = py <= 64 || py >= readingStage.height - 84
                     const dist = Math.hypot(px - readingStage.lastPointerX, py - readingStage.lastPointerY)
-                    if (dist >= 6)
+                    if (dist >= 6 && (!zoomedPdf || nearEdge))
                         view.showChrome()
                 }
                 readingStage.lastPointerX = px

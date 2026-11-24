@@ -894,7 +894,7 @@ Item {
         visible: pages.length > 0
         enabled: !isStandby
         x: Math.max(24, (zoomed.width - width) / 2) + slideOffset
-        y: Math.max(surface.topRoom - 10, (zoomed.height - height) / 2)
+        y: Math.max(surface.topRoom, (zoomed.height - height) / 2)
 
         Page {
             id: leftPageItem
@@ -919,8 +919,8 @@ Item {
         id: spreadRow
         anchors.fill: parent
         visible: !surface.scrolling
-        // The space for pages, under the title and above the listen bar.
-        readonly property real roomHeight: Math.max(120, height - surface.topRoom - surface.bottomRoom + 20)
+        // The space for pages, cleanly between the top header and bottom progress bar.
+        readonly property real roomHeight: Math.max(120, height - surface.topRoom - surface.bottomRoom)
         readonly property real roomWidth: Math.max(120, width - 48)
         property int activeSlot: 0
         property var pendingPages: []
@@ -1134,8 +1134,8 @@ Item {
     ListView {
         id: pageList
         anchors.fill: parent
-        anchors.topMargin: surface.topRoom - 14
-        anchors.bottomMargin: surface.bottomRoom - 14
+        anchors.topMargin: surface.topRoom
+        anchors.bottomMargin: surface.bottomRoom
         visible: surface.scrolling
         model: surface.scrolling ? surface.count : 0
         spacing: 8

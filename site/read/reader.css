@@ -1060,6 +1060,7 @@ a {
   align-items: stretch;
   justify-content: center;
   padding: 26px 64px 18px;
+  overflow: hidden;
 }
 
 .epub-viewport {
@@ -1297,8 +1298,11 @@ html[data-dropcap="true"] .cb-epub-content p.cb-opener::first-letter {
 
 /* Bottom Folio & Scrubber */
 .reader-folio {
-  padding: 6px 64px 14px;
+  padding: 8px 64px 14px;
+  background: var(--bg);
   flex-shrink: 0;
+  position: relative;
+  z-index: 25;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2035,7 +2039,7 @@ kbd {
     padding: 18px 22px 12px;
   }
   .epub-columns {
-    font-size: min(var(--reader-font-size), 17.5px);
+    font-size: min(var(--reader-font-size), 24px);
     text-align: left;
   }
   .page-arrow {
