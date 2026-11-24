@@ -1,0 +1,3627 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="paper">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Clothbound — a calm, fast native Qt6 EPUB and PDF reader for Linux and Omarchy with zero-flash page turns, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server.">
+<meta name="color-scheme" content="light dark">
+<title>Clothbound — Read deeply. Think clearly.</title>
+<link rel="icon" type="image/svg+xml" href="./favicon.svg">
+<style>
+/* ============================================================================
+   clothbound.app — Museum-Grade Static Landing Page
+   Zero build step · Zero external CDNs · 100% offline-instant
+   ============================================================================ */
+:root {
+  /* Typography stacks (bundled system & offline-first editorial bookcraft) */
+  --font-serif: "Literata", "Iowan Old Style", "C059", "Liberation Serif", "Noto Serif", Georgia, "Times New Roman", serif;
+  --font-sans: "Inter", "Adwaita Sans", -apple-system, BlinkMacSystemFont, "SF Pro Text", "Noto Sans", "Liberation Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "JetBrainsMono NF", "Adwaita Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+
+  /* Paper (Light Default — exact Clothbound warm book paper) */
+  --bg: #FAF8F4;
+  --bg-subtle: #F4EFE6;
+  --surface: #FFFFFF;
+  --surface-warm: #FDFAF3;
+  --surface-paper: #F6F1E7;
+  --surface-inset: #EFEAE0;
+  --nav-bg: rgba(250, 248, 244, 0.86);
+
+  --ink: #1F1C18;
+  --ink-soft: #4D463D;
+  --ink-muted: #6E665A;
+  --ink-faint: #8F877B;
+
+  --brand: #2C3E63;
+  --brand-hover: #21304E;
+  --accent: #3E5F99;
+  --accent-soft: rgba(62, 95, 153, 0.10);
+  --accent-border: rgba(62, 95, 153, 0.26);
+  --accent-on: #FFFFFF;
+
+  --gold: #C28C22;
+  --gold-soft: rgba(232, 179, 57, 0.16);
+  --local: #246A43;
+  --local-dot: #36A667;
+  --local-soft: rgba(54, 166, 103, 0.12);
+  --cloud: #9A6318;
+  --cloud-dot: #D89A3C;
+  --cloud-soft: rgba(216, 154, 60, 0.14);
+
+  --border: rgba(38, 34, 29, 0.10);
+  --border-strong: rgba(38, 34, 29, 0.18);
+  --hairline: rgba(38, 34, 29, 0.07);
+
+  --shadow-sm: 0 1px 2px rgba(28, 24, 18, 0.05), 0 4px 12px rgba(28, 24, 18, 0.04);
+  --shadow-md: 0 2px 6px rgba(28, 24, 18, 0.06), 0 18px 44px rgba(28, 24, 18, 0.08);
+  --shadow-window: 0 1px 2px rgba(24, 20, 14, 0.08), 0 24px 64px -12px rgba(28, 24, 18, 0.14), 0 0 0 1px rgba(38, 34, 29, 0.09);
+
+  --code-bg: #1B1A18;
+  --code-surface: #242320;
+  --code-border: rgba(242, 237, 228, 0.10);
+  --code-ink: #EDE7DC;
+  --code-muted: #9E9689;
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-pill: 999px;
+  --max-w: 1120px;
+}
+
+html[data-theme="dusk"] {
+  /* Dusk (Dark Mode — exact Clothbound Dusk) */
+  --bg: #1C1B19;
+  --bg-subtle: #161513;
+  --surface: #242320;
+  --surface-warm: #252421;
+  --surface-paper: #1E1D1B;
+  --surface-inset: #2C2A26;
+  --nav-bg: rgba(28, 27, 25, 0.86);
+
+  --ink: #F2EDE4;
+  --ink-soft: #CFC7B9;
+  --ink-muted: #958D80;
+  --ink-faint: #756E63;
+
+  --brand: #9DB8F2;
+  --brand-hover: #B4C9F6;
+  --accent: #9DB8F2;
+  --accent-soft: rgba(157, 184, 242, 0.14);
+  --accent-border: rgba(157, 184, 242, 0.30);
+  --accent-on: #12151C;
+
+  --gold: #E8B339;
+  --gold-soft: rgba(232, 179, 57, 0.15);
+  --local: #8FDDAE;
+  --local-dot: #5FCB8A;
+  --local-soft: rgba(95, 203, 138, 0.14);
+  --cloud: #EBC48C;
+  --cloud-dot: #E0AF68;
+  --cloud-soft: rgba(224, 175, 104, 0.14);
+
+  --border: rgba(242, 237, 228, 0.10);
+  --border-strong: rgba(242, 237, 228, 0.18);
+  --hairline: rgba(242, 237, 228, 0.06);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.25), 0 6px 16px rgba(0, 0, 0, 0.22);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.30), 0 24px 54px rgba(0, 0, 0, 0.36);
+  --shadow-window: 0 2px 6px rgba(0, 0, 0, 0.36), 0 32px 72px -12px rgba(0, 0, 0, 0.56), 0 0 0 1px rgba(242, 237, 228, 0.10);
+
+  --code-bg: #141311;
+  --code-surface: #1B1A17;
+  --code-border: rgba(242, 237, 228, 0.10);
+  --code-ink: #EDE7DC;
+  --code-muted: #958D80;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.55;
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 220ms ease, color 220ms ease;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  overflow-x: clip;
+}
+
+img, svg {
+  display: block;
+  max-width: 100%;
+}
+
+button, input {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+a {
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.serif { font-family: var(--font-serif); }
+.mono { font-family: var(--font-mono); }
+.tnum { font-variant-numeric: tabular-nums; }
+
+.container {
+  width: 100%;
+  max-width: var(--max-w);
+  margin: 0 auto;
+  padding: 0 28px;
+}
+
+/* ============================================================================
+   Subtle Scroll Reveal (Respects prefers-reduced-motion, never hides hero)
+   ============================================================================ */
+.reveal {
+  opacity: 1;
+  transform: none;
+  transition: opacity 560ms cubic-bezier(0.22, 1, 0.36, 1), transform 560ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+html.anim-ready .reveal:not(.is-visible) {
+  opacity: 0;
+  transform: translateY(16px);
+}
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  html.anim-ready .reveal:not(.is-visible) {
+    opacity: 1;
+    transform: none;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================================
+   1. Sticky Minimal Navigation
+   ============================================================================ */
+.site-nav {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: var(--nav-bg);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  border-bottom: 1px solid var(--border);
+  transition: background-color 220ms ease, border-color 220ms ease;
+}
+.site-nav-inner {
+  height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  flex-shrink: 0;
+}
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+}
+.brand-word {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+.brand-word span {
+  color: var(--ink-muted);
+  font-weight: 450;
+}
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.nav-links a {
+  text-decoration: none;
+  font-size: 13.5px;
+  font-weight: 480;
+  color: var(--ink-soft);
+  padding: 6px 11px;
+  border-radius: var(--radius-sm);
+  transition: color 140ms ease, background-color 140ms ease;
+}
+.nav-links a:hover {
+  color: var(--ink);
+  background: var(--accent-soft);
+}
+.nav-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.theme-toggle {
+  height: 32px;
+  padding: 0 11px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-warm);
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: border-color 140ms ease, color 140ms ease, background-color 140ms ease;
+}
+.theme-toggle:hover {
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+.theme-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+.nav-cta {
+  height: 32px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  background: var(--ink);
+  color: var(--bg);
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 560;
+  display: inline-flex;
+  align-items: center;
+  letter-spacing: -0.01em;
+  transition: opacity 140ms ease, transform 120ms ease;
+}
+.nav-cta:hover {
+  opacity: 0.88;
+}
+.nav-cta:active {
+  transform: scale(0.98);
+}
+
+/* ============================================================================
+   2. Hero + Interactive Product Showcase
+   ============================================================================ */
+.hero {
+  padding: 34px 0 64px;
+  position: relative;
+}
+.hero-copy {
+  max-width: 880px;
+  margin: 0 auto;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 13px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-warm);
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 520;
+  letter-spacing: 0.01em;
+  margin-bottom: 14px;
+}
+.eyebrow-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 0 3px var(--gold-soft);
+}
+.hero h1 {
+  margin: 0 0 14px;
+  font-family: var(--font-serif);
+  font-size: clamp(2.25rem, 4.5vw, 3.8rem);
+  font-weight: 500;
+  line-height: 1.07;
+  letter-spacing: -0.028em;
+  text-wrap: balance;
+  color: var(--ink);
+}
+.hero-sub {
+  margin: 0 0 22px;
+  max-width: 640px;
+  font-size: clamp(0.98rem, 1.3vw, 1.1rem);
+  line-height: 1.56;
+  color: var(--ink-soft);
+  font-weight: 400;
+}
+.hero-ctas {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 26px;
+}
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 41px;
+  padding: 0 18px;
+  border-radius: var(--radius-pill);
+  font-size: 14px;
+  font-weight: 540;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform 110ms ease, box-shadow 150ms ease;
+  white-space: nowrap;
+}
+.btn:active { transform: scale(0.985); }
+.btn-primary {
+  background: var(--brand);
+  color: var(--accent-on);
+  box-shadow: 0 1px 2px rgba(24, 32, 50, 0.16), 0 6px 18px rgba(44, 62, 99, 0.18);
+}
+.btn-primary:hover {
+  background: var(--brand-hover);
+}
+.btn-secondary {
+  background: var(--surface-warm);
+  border-color: var(--border-strong);
+  color: var(--ink);
+}
+.btn-secondary:hover {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+.btn-quiet {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--ink-soft);
+}
+.btn-quiet:hover {
+  color: var(--ink);
+  border-color: var(--border-strong);
+  background: var(--surface-warm);
+}
+
+/* --- Interactive Hero Showcase --- */
+.showcase-wrap {
+  max-width: 1020px;
+  margin: 0 auto;
+}
+.showcase-tabs-row {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+.showcase-tabs {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 13px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+}
+.showcase-tab {
+  height: 33px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 520;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.showcase-tab:hover {
+  color: var(--ink);
+}
+.showcase-tab[aria-selected="true"] {
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--border);
+}
+.showcase-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.45;
+}
+.showcase-tab[aria-selected="true"] .showcase-tab-dot {
+  background: var(--accent);
+  opacity: 1;
+}
+
+.app-window {
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-window);
+  background: var(--surface-paper);
+  border: 1px solid var(--border);
+  position: relative;
+}
+.showcase-pane {
+  display: none;
+  min-height: 458px;
+}
+.showcase-pane.active {
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- Pane 1: Reading (Paper / Sepia / Dusk) --- */
+.demo-reader {
+  --r-bg: #F6F1E7;
+  --r-fg: #26221D;
+  --r-soft: #4D463D;
+  --r-muted: #6E665A;
+  --r-fold: #E2D9C6;
+  --r-track: #E3DCCD;
+  --r-tick: #C9BFAC;
+  --r-link: #3E5F99;
+  --r-hl: #F7DE8A;
+  --r-speak: rgba(62, 95, 153, 0.22);
+  --r-border: rgba(38, 34, 29, 0.09);
+  --r-pill: rgba(38, 34, 29, 0.07);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  background: var(--r-bg);
+  color: var(--r-fg);
+  transition: background-color 220ms ease, color 220ms ease;
+}
+.demo-reader[data-rtheme="sepia"] {
+  --r-bg: #EEDFC4;
+  --r-fg: #3A2E1F;
+  --r-soft: #56472F;
+  --r-muted: #6F5D44;
+  --r-fold: #D8C6A4;
+  --r-track: #DCCAA8;
+  --r-tick: #BFAA86;
+  --r-link: #8A4B1F;
+  --r-hl: #EFC96B;
+  --r-speak: rgba(138, 75, 31, 0.20);
+  --r-border: rgba(58, 46, 31, 0.11);
+  --r-pill: rgba(58, 46, 31, 0.08);
+}
+.demo-reader[data-rtheme="dusk"] {
+  --r-bg: #1E1D1B;
+  --r-fg: #DCD5C8;
+  --r-soft: #B9B1A3;
+  --r-muted: #958D80;
+  --r-fold: #2E2C29;
+  --r-track: #33312D;
+  --r-tick: #4A4741;
+  --r-link: #9DB8F2;
+  --r-hl: #5E4E22;
+  --r-speak: rgba(157, 184, 242, 0.24);
+  --r-border: rgba(220, 213, 200, 0.09);
+  --r-pill: rgba(220, 213, 200, 0.09);
+}
+.demo-reader-bar {
+  height: 44px;
+  padding: 0 52px 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid var(--r-border);
+  font-size: 12px;
+  color: var(--r-soft);
+}
+.demo-rtheme-pills {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--r-pill);
+  gap: 2px;
+}
+.demo-rtheme-pills button {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--r-muted);
+  font-size: 11.5px;
+  font-weight: 540;
+}
+.demo-rtheme-pills button.active {
+  background: var(--r-bg);
+  color: var(--r-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+.demo-book-title {
+  font-size: 12px;
+  font-weight: 520;
+  color: var(--r-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.demo-book-title span {
+  opacity: 0.6;
+}
+.demo-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.demo-chip {
+  height: 25px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: var(--r-pill);
+  color: var(--r-soft);
+  font-size: 11px;
+  font-weight: 520;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.demo-chip.is-on {
+  color: var(--r-fg);
+}
+.demo-bookmark-fold {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 38px;
+  height: 38px;
+  border: 0;
+  padding: 0;
+  background: linear-gradient(225deg, var(--r-bg) 50%, var(--r-fold) 50%);
+  box-shadow: -2px 2px 5px rgba(0, 0, 0, 0.08);
+  opacity: 0.25;
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 4;
+}
+.demo-bookmark-fold.bookmarked {
+  opacity: 1;
+}
+.demo-bookmark-fold:hover {
+  opacity: 0.85;
+}
+
+.demo-spread-area {
+  flex: 1;
+  position: relative;
+  display: flex;
+  align-items: center;
+  padding: 26px 56px 76px;
+  overflow: hidden;
+}
+.demo-turn-btn {
+  position: absolute;
+  top: 44%;
+  transform: translateY(-50%);
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--r-pill);
+  color: var(--r-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 3;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.demo-turn-btn:hover {
+  background: var(--r-fold);
+  color: var(--r-fg);
+}
+.demo-turn-btn.prev { left: 14px; }
+.demo-turn-btn.next { right: 14px; }
+
+.demo-spread {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 52px;
+  font-family: var(--font-serif);
+  font-size: 15.2px;
+  line-height: 1.66;
+  text-align: justify;
+  hyphens: auto;
+  transition: opacity 180ms ease, transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.demo-spread.turning-next {
+  opacity: 0;
+  transform: translateX(-16px);
+}
+.demo-spread.turning-prev {
+  opacity: 0;
+  transform: translateX(16px);
+}
+.demo-spread p {
+  margin: 0 0 11px;
+  text-indent: 1.3em;
+}
+.demo-spread p:first-child,
+.demo-spread p.dropcap {
+  text-indent: 0;
+}
+.demo-spread .chapter-kicker {
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 620;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--r-muted);
+  margin: 0 0 4px;
+  text-indent: 0;
+  text-align: left;
+}
+.demo-spread .chapter-title {
+  font-family: var(--font-serif);
+  font-size: 19px;
+  font-weight: 500;
+  color: var(--r-fg);
+  margin: 0 0 14px;
+  text-indent: 0;
+  text-align: left;
+  letter-spacing: -0.01em;
+}
+.dropcap::first-letter {
+  float: left;
+  font-size: 2.95em;
+  line-height: 0.84;
+  padding: 3px 7px 0 0;
+  margin: 0;
+  font-weight: 500;
+  color: var(--r-fg);
+}
+.hl-yellow {
+  background: var(--r-hl);
+  border-radius: 2px;
+  box-shadow: 0 0 0 2px var(--r-hl);
+}
+.hl-spoken {
+  background: var(--r-speak);
+  border-radius: 3px;
+  box-shadow: 0 0 0 2px var(--r-speak);
+  transition: background-color 180ms ease;
+}
+.hl-spoken.paused {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Slim 44px Floating Narration Pill inside hero showcase */
+.demo-listen-pill {
+  position: absolute;
+  left: 50%;
+  bottom: 42px;
+  transform: translateX(-50%);
+  height: 44px;
+  width: min(368px, calc(100% - 32px));
+  padding: 0 10px 0 6px;
+  border-radius: 22px;
+  background: rgba(26, 25, 23, 0.94);
+  color: #F2EFE9;
+  border: 1px solid rgba(255, 255, 255, 0.11);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.26);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 4;
+  overflow: hidden;
+}
+.demo-play-btn {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: #9DB8F2;
+  color: #10141E;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.demo-listen-meta {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: #D8D2C6;
+}
+.demo-listen-meta strong {
+  font-weight: 560;
+  color: #F6F2EA;
+}
+.demo-listen-meta span {
+  color: #9F978A;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.demo-rate-chip {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: rgba(255, 255, 255, 0.11);
+  color: #F2EFE9;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.demo-pill-hairline {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.demo-pill-hairline-fill {
+  width: 38%;
+  height: 100%;
+  background: #9DB8F2;
+  transition: width 260ms ease;
+}
+
+.demo-folio {
+  padding: 0 56px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  color: var(--r-muted);
+  font-size: 11px;
+}
+.demo-track {
+  position: relative;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--r-track);
+}
+.demo-track-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--r-link);
+  transition: width 240ms ease;
+}
+.demo-track-tick {
+  position: absolute;
+  top: -2px;
+  width: 1px;
+  height: 7px;
+  background: var(--r-tick);
+}
+.demo-folio-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* --- Pane 2 & 3: Study Companion & PDF Snip Split Windows --- */
+.demo-split {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr);
+  min-height: 458px;
+}
+.demo-pdf-side {
+  background: #F1EBE0;
+  color: #26221D;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid rgba(38, 34, 29, 0.10);
+  position: relative;
+}
+html[data-theme="dusk"] .demo-pdf-side {
+  background: #23211E;
+  border-right-color: rgba(242, 237, 228, 0.09);
+}
+.demo-pdf-bar {
+  height: 42px;
+  padding: 0 14px;
+  background: #F6F1E7;
+  border-bottom: 1px solid rgba(38, 34, 29, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #4D463D;
+}
+html[data-theme="dusk"] .demo-pdf-bar {
+  background: #1E1D1B;
+  color: #CFC7B9;
+  border-bottom-color: rgba(242, 237, 228, 0.08);
+}
+.arxiv-badge {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(62, 95, 153, 0.11);
+  border: 1px solid rgba(62, 95, 153, 0.24);
+  color: #3E5F99;
+  font-size: 11px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+html[data-theme="dusk"] .arxiv-badge {
+  background: rgba(157, 184, 242, 0.14);
+  border-color: rgba(157, 184, 242, 0.28);
+  color: #9DB8F2;
+}
+.pdf-page-card {
+  margin: 16px 20px;
+  padding: 18px 22px;
+  border-radius: 4px;
+  background: #FDFBF7;
+  color: #24201B;
+  border: 1px solid rgba(38, 34, 29, 0.10);
+  box-shadow: 0 4px 16px rgba(38, 34, 29, 0.08);
+  font-family: var(--font-serif);
+  font-size: 12.2px;
+  line-height: 1.54;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  position: relative;
+}
+.pdf-running-head {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #8A8275;
+  border-bottom: 1px solid rgba(38, 34, 29, 0.10);
+  padding-bottom: 5px;
+}
+.pdf-page-card h4 {
+  margin: 2px 0 0;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #1F1C18;
+}
+.pdf-page-card p {
+  margin: 0;
+  text-align: justify;
+}
+.pdf-eq-box {
+  margin: 4px -6px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  background: rgba(62, 95, 153, 0.08);
+  border: 1px solid rgba(62, 95, 153, 0.30);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pdf-eq-formula {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-family: var(--font-serif);
+  font-size: 14.5px;
+  color: #1A1713;
+  flex-wrap: wrap;
+}
+.math-frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 2px;
+  line-height: 1.1;
+  font-size: 0.9em;
+}
+.math-frac-num {
+  padding: 0 4px 2px;
+  border-bottom: 1px solid currentColor;
+}
+.math-frac-den {
+  padding: 2px 4px 0;
+}
+
+/* Docked Study / Vision Companion Side */
+.demo-comp-side {
+  background: #1A1918;
+  color: #ECE7DE;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.demo-comp-head {
+  height: 42px;
+  padding: 0 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.comp-mode-seg {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.07);
+  gap: 2px;
+}
+.comp-mode-seg span {
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-weight: 560;
+  display: inline-flex;
+  align-items: center;
+  color: #9A958C;
+}
+.comp-mode-seg span.active {
+  background: rgba(157, 184, 242, 0.20);
+  color: #E8F0FE;
+}
+.scope-seg {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 2px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.06);
+  gap: 2px;
+}
+.scope-seg button {
+  height: 25px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #9E988F;
+  font-size: 11px;
+  font-weight: 540;
+}
+.scope-seg button.active {
+  background: rgba(255, 255, 255, 0.14);
+  color: #F4EFE6;
+}
+.demo-comp-body {
+  flex: 1;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12.2px;
+  line-height: 1.5;
+}
+.scope-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #8FDDAE;
+}
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot.local { background: #5FCB8A; }
+.status-dot.cloud { background: #E0AF68; }
+.user-bubble {
+  align-self: flex-end;
+  max-width: 92%;
+  padding: 8px 11px;
+  border-radius: 11px 11px 3px 11px;
+  background: rgba(157, 184, 242, 0.16);
+  border: 1px solid rgba(157, 184, 242, 0.28);
+  color: #F2EFE9;
+  font-size: 12px;
+}
+.math-display-dark {
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: var(--font-serif);
+  font-size: 14px;
+  color: #F6F2EA;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cite-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.cite-jump {
+  height: 23px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  background: rgba(157, 184, 242, 0.13);
+  border: 1px solid rgba(157, 184, 242, 0.24);
+  color: #BFD4FA;
+  font-size: 11px;
+  font-weight: 540;
+  display: inline-flex;
+  align-items: center;
+}
+.comp-foot-actions {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #8F897F;
+}
+.comp-mini-btn {
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: #D8D2C6;
+  font-size: 11px;
+  font-weight: 520;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.comp-mini-btn:hover {
+  background: rgba(255, 255, 255, 0.11);
+  color: #FFFFFF;
+}
+.comp-mini-btn.speaking {
+  background: rgba(157, 184, 242, 0.20);
+  border-color: rgba(157, 184, 242, 0.45);
+  color: #DCE8FD;
+}
+
+/* --- Pane 3: PDF Snip & Explain Cutout --- */
+.snip-stage {
+  position: relative;
+  margin: 16px 20px;
+  flex: 1;
+  border-radius: 4px;
+  overflow: hidden;
+  background: #FDFBF7;
+  color: #24201B;
+  border: 1px solid rgba(38, 34, 29, 0.10);
+  padding: 18px 22px;
+  font-family: var(--font-serif);
+  font-size: 12px;
+  line-height: 1.54;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.snip-dimmed {
+  opacity: 0.36;
+  filter: blur(0.4px);
+}
+.snip-cutout {
+  position: relative;
+  margin: 4px -4px;
+  padding: 13px 16px;
+  border-radius: 4px;
+  background: #FFFFFF;
+  border: 1.5px solid #3E5F99;
+  box-shadow: 0 0 0 999px rgba(24, 22, 18, 0.16);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 2;
+}
+.snip-corner {
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  border: 2.5px solid #3E5F99;
+}
+.snip-corner.tl { top: -2px; left: -2px; border-right: 0; border-bottom: 0; }
+.snip-corner.tr { top: -2px; right: -2px; border-left: 0; border-bottom: 0; }
+.snip-corner.bl { bottom: -2px; left: -2px; border-right: 0; border-top: 0; }
+.snip-corner.br { bottom: -2px; right: -2px; border-left: 0; border-top: 0; }
+.snip-bar {
+  position: relative;
+  z-index: 3;
+  align-self: center;
+  margin-top: 2px;
+  padding: 4px;
+  border-radius: 10px;
+  background: #FDFAF3;
+  border: 1px solid #D5CEC0;
+  box-shadow: 0 10px 24px rgba(24, 20, 14, 0.18);
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px;
+  font-family: var(--font-sans);
+}
+.snip-bar button {
+  height: 27px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #26221D;
+  font-size: 11.5px;
+  font-weight: 560;
+}
+.snip-bar button:hover {
+  background: rgba(38, 34, 29, 0.07);
+}
+.snip-bar button.active {
+  background: #3E5F99;
+  color: #FFFFFF;
+}
+.vision-pill-btn {
+  height: 22px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #EBC48C;
+  font-size: 10.5px;
+  font-weight: 580;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.vision-pill-btn.is-local {
+  color: #8FDDAE;
+  background: rgba(95, 203, 138, 0.13);
+  border-color: rgba(95, 203, 138, 0.28);
+}
+
+/* --- Pane 4: Local MCP Live Inspector --- */
+.demo-mcp-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.15fr);
+  background: #171614;
+  color: #ECE7DE;
+  min-height: 458px;
+}
+.demo-mcp-left {
+  padding: 20px;
+  border-right: 1px solid rgba(255, 255, 255, 0.07);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.demo-mcp-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.mcp-tool-btn {
+  width: 100%;
+  text-align: left;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+  color: #D8D2C6;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+.mcp-tool-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.mcp-tool-btn.active {
+  background: rgba(157, 184, 242, 0.14);
+  border-color: rgba(157, 184, 242, 0.36);
+  color: #FFFFFF;
+}
+.mcp-tool-btn code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: #B9D0FA;
+}
+.mcp-tool-btn span {
+  font-size: 11px;
+  color: #8F897F;
+}
+.demo-mcp-right {
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: #131210;
+  min-width: 0;
+}
+.mcp-json-out {
+  margin: 0;
+  flex: 1;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: #1B1A17;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.56;
+  color: #E3DDD2;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ============================================================================
+   3. Feature Chapters (4 Focused Editorial Bands)
+   ============================================================================ */
+.chapter-band {
+  padding: 88px 0;
+  border-top: 1px solid var(--hairline);
+}
+.chapter-band.alt {
+  background: var(--bg-subtle);
+}
+.chapter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 56px;
+  align-items: center;
+}
+.chapter-grid.flip .chapter-copy {
+  order: 2;
+}
+.chapter-grid.flip .chapter-exhibit {
+  order: 1;
+}
+.chapter-kicker-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 620;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 14px;
+}
+.chapter-kicker-label span {
+  font-family: var(--font-mono);
+  opacity: 0.72;
+}
+.chapter-copy h2 {
+  margin: 0 0 16px;
+  font-family: var(--font-serif);
+  font-size: clamp(1.85rem, 3.2vw, 2.55rem);
+  font-weight: 500;
+  line-height: 1.14;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+}
+.chapter-copy p {
+  margin: 0 0 22px;
+  font-size: 15.5px;
+  line-height: 1.66;
+  color: var(--ink-soft);
+}
+.spec-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+}
+.spec-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.spec-list strong {
+  color: var(--ink);
+  font-weight: 580;
+}
+.spec-bullet {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+.spec-bullet svg {
+  width: 10px;
+  height: 10px;
+}
+
+/* Exhibit Cards */
+.exhibit-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  box-shadow: var(--shadow-md);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+}
+
+/* Chapter 01 Exhibit: Craft First */
+.theme-swatch-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+.swatch-tile {
+  padding: 10px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 560;
+}
+.swatch-tile .aa-glyph {
+  font-family: var(--font-serif);
+  font-size: 17px;
+  line-height: 1;
+}
+.craft-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 11px;
+  background: var(--surface-warm);
+  border: 1px solid var(--border);
+}
+.craft-switch {
+  width: 38px;
+  height: 22px;
+  border-radius: 11px;
+  border: 0;
+  padding: 2px;
+  background: var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  transition: background-color 160ms ease;
+}
+.craft-switch::after {
+  content: "";
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.craft-switch[aria-checked="true"] {
+  background: var(--accent);
+}
+.craft-switch[aria-checked="true"]::after {
+  transform: translateX(16px);
+}
+
+/* Interactive 44px -> 86px Adaptive Narration Capsule Exhibit */
+.narration-exhibit {
+  border-radius: 14px;
+  background: #1C1B19;
+  color: #F2EFE9;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.narration-exhibit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+  color: #AFA89D;
+}
+.narration-capsule {
+  border-radius: 18px;
+  background: #272522;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  padding: 7px 12px;
+  transition: all 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.narration-capsule-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.narration-extra {
+  display: none;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  flex-direction: column;
+  gap: 8px;
+}
+.narration-capsule.expanded .narration-extra {
+  display: flex;
+}
+.craft-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+.meta-chip {
+  height: 26px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-warm);
+  color: var(--ink-soft);
+  font-size: 11.5px;
+  font-weight: 520;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Chapter 02 Exhibit: Story vs Study Comparison */
+.dual-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.mode-card {
+  border-radius: 14px;
+  padding: 18px;
+  background: var(--surface-warm);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.mode-card.study-accent {
+  border-color: var(--accent-border);
+  background: var(--surface);
+}
+.mode-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.mode-card h3 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 540;
+  color: var(--ink);
+}
+.mini-note-box {
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--hairline);
+  font-size: 12.2px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+}
+.mini-note-box strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+.notation-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.notation-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-size: 11.5px;
+}
+.notation-badge em {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Chapter 03 Exhibit: Research PDFs + Interactive Quick-Look + 1-click BibTeX/APA */
+.research-sheet {
+  border-radius: 12px;
+  padding: 18px 20px;
+  background: var(--surface-paper);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  position: relative;
+}
+.research-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.cite-copy-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.pill-action {
+  height: 27px;
+  padding: 0 10px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 11.5px;
+  font-weight: 560;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: border-color 140ms ease, background-color 140ms ease;
+}
+.pill-action:hover {
+  border-color: var(--accent);
+}
+.pill-action.copied {
+  border-color: var(--local-dot);
+  color: var(--local);
+  background: var(--local-soft);
+}
+.research-prose {
+  font-family: var(--font-serif);
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--ink);
+  margin: 0;
+}
+.ql-trigger {
+  display: inline;
+  border: 0;
+  padding: 1px 5px;
+  margin: 0 1px;
+  border-radius: 4px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  vertical-align: baseline;
+  transition: background-color 140ms ease, color 140ms ease;
+}
+.ql-trigger.active,
+.ql-trigger:hover {
+  background: var(--accent);
+  color: var(--accent-on);
+}
+.ql-popover {
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--accent-border);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ql-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 620;
+  color: var(--accent);
+}
+.ql-popover p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.54;
+  color: var(--ink-soft);
+}
+.vlm-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 6px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+
+/* Chapter 04 Exhibit: MCP Config + 6 Read-Only Tools */
+.code-card {
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  box-shadow: var(--shadow-md);
+}
+.code-card-head {
+  padding: 10px 14px;
+  background: var(--code-surface);
+  border-bottom: 1px solid var(--code-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.client-tabs {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.client-tab {
+  height: 26px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--code-muted);
+  font-size: 11.5px;
+  font-weight: 540;
+}
+.client-tab.active {
+  background: rgba(255, 255, 255, 0.11);
+  color: #F6F2EA;
+}
+.copy-btn {
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 7px;
+  border: 1px solid rgba(242, 237, 228, 0.15);
+  background: rgba(255, 255, 255, 0.06);
+  color: #F2EDE4;
+  font-size: 12px;
+  font-weight: 540;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+  flex-shrink: 0;
+}
+.copy-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.copy-btn.copied {
+  background: rgba(95, 203, 138, 0.18);
+  border-color: rgba(95, 203, 138, 0.45);
+  color: #8FDDAE;
+}
+.code-card pre {
+  margin: 0;
+  padding: 16px 18px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.62;
+  color: var(--code-ink);
+  overflow-x: auto;
+}
+.tok-key { color: #9DB8F2; }
+.tok-str { color: #B9E4C9; }
+.tok-punct { color: #958D80; }
+.tok-cmd { color: #EBC48C; }
+
+.mcp-tools-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.mcp-tool-card {
+  padding: 12px 14px;
+  border-radius: 11px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.mcp-tool-card code {
+  font-family: var(--font-mono);
+  font-size: 12.2px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.mcp-tool-card span {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+/* ============================================================================
+   4. Privacy & Local-First Trust Grid
+   ============================================================================ */
+.trust-section {
+  padding: 88px 0;
+  border-top: 1px solid var(--hairline);
+}
+.section-head {
+  max-width: 640px;
+  margin-bottom: 42px;
+}
+.section-head h2 {
+  margin: 0 0 12px;
+  font-family: var(--font-serif);
+  font-size: clamp(1.9rem, 3.3vw, 2.65rem);
+  font-weight: 500;
+  line-height: 1.13;
+  letter-spacing: -0.025em;
+  color: var(--ink);
+}
+.section-head p {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--ink-soft);
+}
+.trust-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+.trust-card {
+  padding: 24px;
+  border-radius: 15px;
+  background: var(--surface-warm);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  min-width: 0;
+}
+.trust-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.trust-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.trust-card h3 {
+  margin: 2px 0 0;
+  font-size: 15.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+.trust-card p {
+  margin: 0;
+  font-size: 13.8px;
+  line-height: 1.58;
+  color: var(--ink-soft);
+}
+
+/* ============================================================================
+   5. Install & Quickstart Section
+   ============================================================================ */
+.install-section {
+  padding: 88px 0 96px;
+  border-top: 1px solid var(--hairline);
+  background: var(--bg-subtle);
+}
+.install-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.install-card {
+  border-radius: 15px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  padding: 20px 24px;
+  box-shadow: var(--shadow-sm);
+  display: grid;
+  grid-template-columns: minmax(0, 0.88fr) minmax(0, 1.12fr);
+  align-items: center;
+  gap: 24px;
+  min-width: 0;
+}
+.install-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.install-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.install-step-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.install-card h3 {
+  margin: 0;
+  font-size: 16.5px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+.cmd-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 12px 12px 16px;
+  border-radius: 11px;
+  background: var(--code-bg);
+  border: 1px solid var(--code-border);
+  color: var(--code-ink);
+  min-width: 0;
+}
+.cmd-bar code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  white-space: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  min-width: 0;
+}
+.cmd-bar code::-webkit-scrollbar { display: none; }
+.cmd-prompt {
+  color: var(--code-muted);
+  user-select: none;
+  margin-right: 6px;
+}
+.install-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.54;
+  color: var(--ink-muted);
+}
+.install-note code {
+  font-family: var(--font-mono);
+  font-size: 11.8px;
+  color: var(--ink-soft);
+}
+.install-foot {
+  margin-top: 22px;
+  padding: 16px 20px;
+  border-radius: 13px;
+  border: 1px solid var(--border);
+  background: var(--surface-warm);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+
+/* ============================================================================
+   6. Clean Footer
+   ============================================================================ */
+.site-footer {
+  padding: 46px 0 56px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.footer-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 28px;
+  padding-bottom: 26px;
+  border-bottom: 1px solid var(--hairline);
+}
+.footer-colophon {
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.footer-colophon p {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--ink-muted);
+}
+.footer-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-muted);
+}
+.footer-links {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.footer-links a {
+  text-decoration: none;
+  color: var(--ink-soft);
+  font-weight: 500;
+}
+.footer-links a:hover {
+  color: var(--ink);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.shortcut-bar {
+  padding-top: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12.5px;
+  color: var(--ink-muted);
+}
+.shortcut-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+.shortcut-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 21px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  background: var(--surface-warm);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 10.8px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+/* ============================================================================
+   Responsive Layout (Tablet & Mobile 390×844 — Zero Horizontal Overflow)
+   ============================================================================ */
+@media (max-width: 960px) {
+  .chapter-grid,
+  .demo-split,
+  .demo-mcp-grid,
+  .install-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .install-card {
+    padding: 18px;
+    gap: 14px;
+  }
+  .chapter-grid.flip .chapter-copy,
+  .chapter-grid.flip .chapter-exhibit {
+    order: initial;
+  }
+  .chapter-grid {
+    gap: 34px;
+  }
+  .trust-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .demo-pdf-side {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .demo-mcp-left {
+    border-right: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  }
+  .footer-meta {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 720px) {
+  .container {
+    padding: 0 18px;
+  }
+  .nav-links {
+    display: none;
+  }
+  .hero {
+    padding: 34px 0 54px;
+  }
+  .eyebrow {
+    font-size: 11px;
+    padding: 0 10px;
+    height: auto;
+    min-height: 28px;
+    text-align: center;
+  }
+  .hero-ctas {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    max-width: 320px;
+    margin-bottom: 28px;
+  }
+  .btn {
+    width: 100%;
+    justify-content: center;
+  }
+  .showcase-tabs {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .showcase-tab {
+    justify-content: center;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+  .demo-reader-bar {
+    padding: 0 42px 0 12px;
+  }
+  .demo-book-title {
+    display: none;
+  }
+  .demo-spread-area {
+    padding: 20px 20px 134px;
+  }
+  .demo-spread {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    font-size: 14.5px;
+  }
+  .demo-spread .col-second {
+    display: none;
+  }
+  .demo-turn-btn {
+    top: auto;
+    bottom: 94px;
+    transform: none;
+  }
+  #demoSfxText,
+  #demoAaChip {
+    display: none;
+  }
+  .cmd-bar code {
+    font-size: 11.8px;
+  }
+  .demo-folio {
+    padding: 0 18px 12px;
+  }
+  .chapter-band,
+  .trust-section,
+  .install-section {
+    padding: 60px 0;
+  }
+  .exhibit-card {
+    padding: 18px;
+  }
+  .theme-swatch-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .dual-cards,
+  .mcp-tools-grid,
+  .trust-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pdf-page-card,
+  .snip-stage {
+    margin: 12px;
+    padding: 14px;
+  }
+  .pdf-eq-formula {
+    font-size: 13px;
+  }
+  .snip-cutout {
+    padding: 10px 12px;
+  }
+}
+</style>
+<script>
+/* Apply saved or requested theme synchronously before first paint (Paper default) */
+(function () {
+  try {
+    var params = new URLSearchParams(window.location.search);
+    var requested = params.get("theme");
+    var saved = window.localStorage.getItem("clothbound-site-theme");
+    var theme = (requested === "dusk" || requested === "paper") ? requested
+              : (saved === "dusk" || saved === "paper") ? saved : "paper";
+    document.documentElement.setAttribute("data-theme", theme);
+  } catch (e) {
+    document.documentElement.setAttribute("data-theme", "paper");
+  }
+})();
+</script>
+</head>
+<body>
+
+<!-- =========================================================================
+     1. STICKY MINIMAL NAVIGATION
+     ========================================================================= -->
+<header class="site-nav">
+  <div class="container site-nav-inner">
+    <a class="brand" href="#top" aria-label="Clothbound home">
+      <svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true">
+        <g transform="translate(8 -10)">
+          <rect x="104" y="64" width="316" height="392" rx="26" fill="#202e4a" stroke="#18233a" stroke-width="6"/>
+          <path d="M126 420 H392 Q408 420 408 404 V90 Q408 76 394 76 H380 V410 Q380 426 364 426 H126 Z" fill="#f4ede0"/>
+          <path d="M294 416 V490 L322 468 L350 490 V416 Z" fill="#E8B339"/>
+          <rect x="92" y="56" width="298" height="364" rx="22" fill="#2c3e63" stroke="#1f2d49" stroke-width="5"/>
+          <path d="M114 56 H148 V420 H114 Q92 420 92 398 V78 Q92 56 114 56 Z" fill="#202e4a"/>
+          <rect x="176" y="88" width="184" height="300" rx="10" fill="none" stroke="#E8B339" stroke-width="6" opacity="0.55"/>
+          <rect x="206" y="148" width="124" height="18" rx="9" fill="#f4ede0"/>
+          <rect x="226" y="184" width="84" height="14" rx="7" fill="#E8B339"/>
+          <path d="M268 256 L284 272 L268 288 L252 272 Z" fill="#E8B339"/>
+        </g>
+      </svg>
+      <span class="brand-word">clothbound<span>.app</span></span>
+    </a>
+
+    <nav class="nav-links" aria-label="Primary navigation">
+      <a href="#features">Features</a>
+      <a href="#study-pdf">Study &amp; PDF</a>
+      <a href="#mcp">Local MCP</a>
+      <a href="#install">Install</a>
+    </nav>
+
+    <div class="nav-actions">
+      <button type="button" class="theme-toggle" id="themeToggle" aria-pressed="false" aria-label="Switch between Paper and Dusk theme">
+        <svg id="themeIconSun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="4"/>
+          <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+        </svg>
+        <svg id="themeIconMoon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" style="display:none" aria-hidden="true">
+          <path d="M20.354 15.354A9 9 0 0 1 8.646 3.646 9.003 9.003 0 0 0 12 21a9.003 9.003 0 0 0 8.354-5.646z"/>
+        </svg>
+        <span id="themeToggleLabel">Dusk</span>
+      </button>
+      <a class="nav-cta" href="#install">Install</a>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+<!-- =========================================================================
+     2. HERO + INTERACTIVE PRODUCT SHOWCASE
+     ========================================================================= -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-copy">
+      <div class="eyebrow">
+        <span class="eyebrow-dot" aria-hidden="true"></span>
+        <span>Native Qt6 · Wayland &amp; Omarchy · Local-First</span>
+      </div>
+      <h1>Read deeply. Think clearly.</h1>
+      <p class="hero-sub">A calm, fast EPUB and PDF reader for Linux — zero-flash page turns, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server for your coding and research agents.</p>
+      <div class="hero-ctas">
+        <a class="btn btn-primary" href="#install">Install on Arch / Omarchy</a>
+        <a class="btn btn-secondary" href="../docs/clothbound-prototype.html">Explore Interactive Prototype</a>
+        <a class="btn btn-quiet" href="#mcp">Local MCP Config</a>
+      </div>
+    </div>
+
+    <!-- Interactive Clothbound Product Showcase -->
+    <div class="showcase-wrap">
+      <div class="showcase-tabs-row">
+        <div class="showcase-tabs" role="tablist" aria-label="Interactive Clothbound preview">
+          <button type="button" class="showcase-tab" role="tab" id="tab-reading" aria-selected="true" aria-controls="pane-reading" data-pane="reading">
+            <span class="showcase-tab-dot" aria-hidden="true"></span>Reading (Paper / Dusk)
+          </button>
+          <button type="button" class="showcase-tab" role="tab" id="tab-study" aria-selected="false" aria-controls="pane-study" data-pane="study">
+            <span class="showcase-tab-dot" aria-hidden="true"></span>Study Companion
+          </button>
+          <button type="button" class="showcase-tab" role="tab" id="tab-snip" aria-selected="false" aria-controls="pane-snip" data-pane="snip">
+            <span class="showcase-tab-dot" aria-hidden="true"></span>PDF Snip &amp; Explain
+          </button>
+          <button type="button" class="showcase-tab" role="tab" id="tab-mcp" aria-selected="false" aria-controls="pane-mcp" data-pane="mcp">
+            <span class="showcase-tab-dot" aria-hidden="true"></span>Local MCP
+          </button>
+        </div>
+      </div>
+
+      <div class="app-window">
+        <!-- PANE 1: READING (PAPER / SEPIA / DUSK) -->
+        <div class="showcase-pane active" id="pane-reading" role="tabpanel" aria-labelledby="tab-reading">
+          <div class="demo-reader" id="demoReader" data-rtheme="paper">
+            <div class="demo-reader-bar">
+              <div class="demo-rtheme-pills" id="demoRThemePills" role="group" aria-label="Reading theme">
+                <button type="button" class="active" data-rtheme="paper">Paper</button>
+                <button type="button" data-rtheme="sepia">Sepia</button>
+                <button type="button" data-rtheme="dusk">Dusk</button>
+              </div>
+              <div class="demo-book-title">The Time Machine <span>— Chapter I</span></div>
+              <div class="demo-bar-right">
+                <button type="button" class="demo-chip is-on" id="demoSfxChip" aria-pressed="true" title="Toggle page-turn sound">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                  <span id="demoSfxText">Flip sound</span>
+                </button>
+                <span class="demo-chip serif" id="demoAaChip" style="font-weight:600">Aa</span>
+              </div>
+            </div>
+
+            <button type="button" class="demo-bookmark-fold bookmarked" id="demoBookmark" aria-pressed="true" aria-label="Toggle page bookmark" title="Bookmark corner fold (B)"></button>
+
+            <div class="demo-spread-area">
+              <button type="button" class="demo-turn-btn prev" id="demoPrevPage" aria-label="Previous spread">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+              </button>
+              <button type="button" class="demo-turn-btn next" id="demoNextPage" aria-label="Next spread">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+              </button>
+
+              <div class="demo-spread" id="demoSpread">
+                <div>
+                  <div class="chapter-kicker">Chapter I</div>
+                  <div class="chapter-title">Introduction</div>
+                  <p class="dropcap">The Time Traveller (for so it will be convenient to speak of him) was expounding a recondite matter to us. His grey eyes shone and twinkled, and his usually pale face was flushed and animated. The fire burned brightly, and the soft radiance of the incandescent lights in the lilies of silver caught the bubbles that flashed and passed in our glasses.</p>
+                  <p>“You must follow me carefully. I shall have to controvert one or two ideas that are almost universally accepted. <span class="hl-yellow">The geometry, for instance, they taught you at school is founded on a misconception.”</span></p>
+                </div>
+                <div class="col-second">
+                  <p>“You know of course that a mathematical line, a line of thickness <em>nil</em>, has no real existence. They taught you that? Neither has a mathematical plane. These things are mere abstractions.”</p>
+                  <p>“There I object,” said Filby. “Of course a solid body may exist. All real things—”</p>
+                  <p>“So most people think. But wait a moment. <span class="hl-spoken" id="demoSpokenSpan">Can an <em>instantaneous</em> cube exist?”</span></p>
+                  <p>“Clearly,” the Time Traveller proceeded, “any real body must have extension in <em>four</em> directions: it must have Length, Breadth, Thickness, and—Duration.”</p>
+                </div>
+              </div>
+
+              <!-- 44px Adaptive Floating Narration Pill -->
+              <div class="demo-listen-pill" role="region" aria-label="Read-aloud preview">
+                <button type="button" class="demo-play-btn" id="demoPlayToggle" aria-label="Pause read-aloud" aria-pressed="true">
+                  <svg id="demoPauseIcon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+                  <svg id="demoPlayIcon" width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="display:none;margin-left:1.5px" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                </button>
+                <div class="demo-listen-meta">
+                  <span class="status-dot local" aria-hidden="true"></span>
+                  <strong>Emma</strong>
+                  <span id="demoListenStatus">Local voice · following sentence</span>
+                </div>
+                <button type="button" class="demo-rate-chip tnum" id="demoRateBtn" title="Cycle reading speed">1.1×</button>
+                <div class="demo-pill-hairline"><div class="demo-pill-hairline-fill" id="demoHairline"></div></div>
+              </div>
+            </div>
+
+            <div class="demo-folio tnum">
+              <div class="demo-track">
+                <div class="demo-track-fill" id="demoTrackFill" style="width:12%"></div>
+                <span class="demo-track-tick" style="left:16%"></span>
+                <span class="demo-track-tick" style="left:32%"></span>
+                <span class="demo-track-tick" style="left:49%"></span>
+                <span class="demo-track-tick" style="left:67%"></span>
+                <span class="demo-track-tick" style="left:84%"></span>
+              </div>
+              <div class="demo-folio-row">
+                <span id="demoTimeLeft">3 min left in chapter</span>
+                <span id="demoPageNum">Pages 3–4 of 148</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- PANE 2: STUDY COMPANION (LATEX MATH & SHELF SCOPE) -->
+        <div class="showcase-pane" id="pane-study" role="tabpanel" aria-labelledby="tab-study">
+          <div class="demo-split">
+            <div class="demo-pdf-side">
+              <div class="demo-pdf-bar">
+                <div style="display:flex;align-items:center;gap:8px;min-width:0">
+                  <strong style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Attention Is All You Need</strong>
+                  <span class="arxiv-badge">arXiv:1706.03762</span>
+                </div>
+                <span class="tnum" style="font-size:11.5px;opacity:0.75;flex-shrink:0">Page 4 / 15</span>
+              </div>
+              <article class="pdf-page-card">
+                <div class="pdf-running-head">
+                  <span>NIPS 2017 · Section 3.2</span>
+                  <span class="tnum">p. 4</span>
+                </div>
+                <h4>3.2.1 &nbsp; Scaled Dot-Product Attention</h4>
+                <p>The input consists of queries and keys of dimension <em>d<sub>k</sub></em>, and values of dimension <em>d<sub>v</sub></em>. We compute the dot products of the query with all keys, divide each by √<em>d<sub>k</sub></em>, and apply a softmax function to obtain the weights on the values.</p>
+                <div class="pdf-eq-box">
+                  <div class="pdf-eq-formula">
+                    <span>Attention(<em>Q</em>, <em>K</em>, <em>V</em>) = softmax</span>
+                    <span style="font-size:20px;font-weight:300">(</span>
+                    <span class="math-frac"><span class="math-frac-num"><em>QK<sup>T</sup></em></span><span class="math-frac-den">√<em>d<sub>k</sub></em></span></span>
+                    <span style="font-size:20px;font-weight:300">)</span>
+                    <span><em>V</em></span>
+                  </div>
+                  <span class="tnum" style="font-size:11.5px;color:#6E665A">(1)</span>
+                </div>
+                <p>For large values of <em>d<sub>k</sub></em>, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients. To counteract this effect, we scale the dot products by 1/√<em>d<sub>k</sub></em>.</p>
+              </article>
+            </div>
+
+            <aside class="demo-comp-side" aria-label="Study Companion preview">
+              <div class="demo-comp-head">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <strong style="font-size:12.5px">Companion</strong>
+                  <div class="comp-mode-seg" aria-label="Companion mode">
+                    <span>Story</span>
+                    <span class="active">Study</span>
+                  </div>
+                </div>
+                <span style="font-size:11px;color:#8F897F">LaTeX · Offline</span>
+              </div>
+              <div class="demo-comp-body">
+                <div class="scope-seg" id="demoScopeSeg" role="group" aria-label="Study scope">
+                  <button type="button" data-scope="upto">Up to here</button>
+                  <button type="button" data-scope="book">Whole book</button>
+                  <button type="button" class="active" data-scope="shelf">This shelf</button>
+                </div>
+                <div class="scope-status" id="demoScopeStatus">
+                  <span class="status-dot local" aria-hidden="true"></span>
+                  <span>Searching 6 papers on <strong>ML Papers</strong> shelf</span>
+                </div>
+                <div class="user-bubble">Why divide <em>QK<sup>T</sup></em> by √<em>d<sub>k</sub></em>, and how does it compare to Bahdanau’s additive attention?</div>
+                <div style="color:#DDD7CC" id="demoStudyText">Assuming unit-variance entries in <em>q</em> and <em>k</em>, their dot product grows linearly in variance with head dimension:</div>
+                <div class="math-display-dark" aria-label="Variance scaling equation">
+                  <span>Var(<em>q</em> · <em>k</em>) = <em>d<sub>k</sub></em></span>
+                  <span style="margin:0 6px;opacity:0.5">⇒</span>
+                  <span>Var(</span>
+                  <span class="math-frac"><span class="math-frac-num"><em>q</em> · <em>k</em></span><span class="math-frac-den">√<em>d<sub>k</sub></em></span></span>
+                  <span>) = 1</span>
+                </div>
+                <div style="color:#CFC9BE" id="demoStudyDetail">Scaling keeps logits near unit variance so <code class="mono" style="font-size:11px;color:#BFD4FA">softmax</code> avoids saturated gradients. Bahdanau et al. (2015) avoid blowup with a feed-forward layer at higher matmul cost.</div>
+                <div class="cite-row" id="demoStudyCites">
+                  <span class="cite-jump">Vaswani et al., p. 4 ↗</span>
+                  <span class="cite-jump">Bahdanau et al., p. 3 ↗</span>
+                </div>
+                <div class="comp-foot-actions">
+                  <span id="demoStudyModel">ML Papers · 2 cited</span>
+                  <div style="display:flex;gap:6px">
+                    <button type="button" class="comp-mini-btn" id="demoStudySpeak" aria-pressed="false">
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+                      <span id="demoStudySpeakLbl">Listen</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+
+        <!-- PANE 3: PDF SNIP & EXPLAIN -->
+        <div class="showcase-pane" id="pane-snip" role="tabpanel" aria-labelledby="tab-snip">
+          <div class="demo-split">
+            <div class="demo-pdf-side">
+              <div class="demo-pdf-bar">
+                <div style="display:flex;align-items:center;gap:8px">
+                  <strong>Attention Is All You Need</strong>
+                  <span class="arxiv-badge">Snip Mode · X</span>
+                </div>
+                <span class="tnum" style="font-size:11px;opacity:0.75">480 × 88 px</span>
+              </div>
+              <div class="snip-stage">
+                <p class="snip-dimmed" style="margin:0">In practice, we compute the attention function on a set of queries simultaneously, packed together into a matrix <em>Q</em>. The keys and values are also packed together into matrices <em>K</em> and <em>V</em>:</p>
+                <div class="snip-cutout">
+                  <span class="snip-corner tl" aria-hidden="true"></span>
+                  <span class="snip-corner tr" aria-hidden="true"></span>
+                  <span class="snip-corner bl" aria-hidden="true"></span>
+                  <span class="snip-corner br" aria-hidden="true"></span>
+                  <div class="pdf-eq-formula">
+                    <span>Attention(<em>Q</em>, <em>K</em>, <em>V</em>) = softmax</span>
+                    <span style="font-size:20px;font-weight:300">(</span>
+                    <span class="math-frac"><span class="math-frac-num"><em>QK<sup>T</sup></em></span><span class="math-frac-den">√<em>d<sub>k</sub></em></span></span>
+                    <span style="font-size:20px;font-weight:300">)</span>
+                    <span><em>V</em></span>
+                  </div>
+                  <span class="tnum" style="font-size:11.5px;color:#6E665A">(1)</span>
+                </div>
+                <div class="snip-bar" id="demoSnipBar" role="group" aria-label="PDF snip actions">
+                  <button type="button" class="active" data-snip="explain">✦ Explain</button>
+                  <button type="button" data-snip="latex">Copy LaTeX</button>
+                  <button type="button" data-snip="table">Extract Table</button>
+                </div>
+                <p class="snip-dimmed" style="margin:4px 0 0">While for small values of <em>d<sub>k</sub></em> the two mechanisms perform similarly, additive attention outperforms dot product attention without scaling for larger values of <em>d<sub>k</sub></em>.</p>
+              </div>
+            </div>
+
+            <aside class="demo-comp-side" aria-label="Snip vision analysis">
+              <div class="demo-comp-head">
+                <strong style="font-size:12.5px">Snip &amp; Explain</strong>
+                <button type="button" class="vision-pill-btn is-local" id="demoVisionToggle" title="Switch between local Ollama VLM and Gemini Vision">
+                  <span class="status-dot local" id="demoVisionDot" aria-hidden="true"></span>
+                  <span id="demoVisionLabel">Ollama · Qwen2.5-VL</span>
+                </button>
+              </div>
+              <div class="demo-comp-body" id="demoSnipOutput">
+                <div style="font-size:11px;color:#9F988F;text-transform:uppercase;letter-spacing:0.06em;font-weight:600">Step-by-step equation breakdown</div>
+                <div style="padding-left:10px;border-left:2px solid #9DB8F2;display:flex;flex-direction:column;gap:7px;color:#E2DCD1">
+                  <div><strong>1. Pairwise scores (<em>QK<sup>T</sup></em>):</strong> Compares every query vector against every key in one matrix multiply.</div>
+                  <div><strong>2. Variance stabilization (÷ √<em>d<sub>k</sub></em>):</strong> Prevents large logits from saturating softmax gradients.</div>
+                  <div><strong>3. Value retrieval (× <em>V</em>):</strong> Softmax weights blend value vectors into each token’s contextual representation.</div>
+                </div>
+                <div class="math-display-dark" style="font-size:13px">
+                  <span><em>α<sub>ij</sub></em> =</span>
+                  <span class="math-frac">
+                    <span class="math-frac-num">exp(<em>q<sub>i</sub> · k<sub>j</sub></em> / √<em>d<sub>k</sub></em>)</span>
+                    <span class="math-frac-den">∑<sub><em>m</em></sub> exp(<em>q<sub>i</sub> · k<sub>m</sub></em> / √<em>d<sub>k</sub></em>)</span>
+                  </span>
+                </div>
+                <div class="comp-foot-actions">
+                  <span>Page 4 · Eq. (1) · zero remote fonts</span>
+                  <span style="color:#8FDDAE">Local VLM ready</span>
+                </div>
+              </div>
+            </aside>
+          </div>
+        </div>
+
+        <!-- PANE 4: LOCAL MCP INSPECTOR -->
+        <div class="showcase-pane" id="pane-mcp" role="tabpanel" aria-labelledby="tab-mcp">
+          <div class="demo-mcp-grid">
+            <div class="demo-mcp-left">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                <div>
+                  <div style="font-size:13.5px;font-weight:600;color:#F4EFE6">Local agents (MCP)</div>
+                  <div style="font-size:11.5px;color:#989186">Read-only stdio · nothing leaves your machine</div>
+                </div>
+                <span style="display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;background:rgba(95,203,138,0.14);color:#8FDDAE;font-size:11px;font-weight:600">
+                  <span class="status-dot local" aria-hidden="true"></span>Ready
+                </span>
+              </div>
+
+              <div class="demo-mcp-tools" id="demoMcpTools" role="group" aria-label="Inspect local MCP tools">
+                <button type="button" class="mcp-tool-btn active" data-tool="search_passages">
+                  <code>search_passages</code><span>Hybrid semantic + BM25</span>
+                </button>
+                <button type="button" class="mcp-tool-btn" data-tool="list_books">
+                  <code>list_books</code><span>Catalog &amp; progress</span>
+                </button>
+                <button type="button" class="mcp-tool-btn" data-tool="search_library">
+                  <code>search_library</code><span>SQLite FTS5 keyword</span>
+                </button>
+                <button type="button" class="mcp-tool-btn" data-tool="get_book_outline">
+                  <code>get_book_outline</code><span>TOC &amp; page map</span>
+                </button>
+                <button type="button" class="mcp-tool-btn" data-tool="read_passage">
+                  <code>read_passage</code><span>Verbatim text + cite</span>
+                </button>
+                <button type="button" class="mcp-tool-btn" data-tool="list_marks">
+                  <code>list_marks</code><span>Highlights &amp; notes</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="demo-mcp-right">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+                <div class="mono" style="font-size:11.5px;color:#A59E92" id="demoMcpCallTitle">→ tools/call · search_passages</div>
+                <button type="button" class="copy-btn" data-copy-target="mcpConfigCanonical">Copy MCP JSON</button>
+              </div>
+              <pre class="mcp-json-out" id="demoMcpJson">{
+  "tool": "search_passages",
+  "arguments": { "query": "why scale dot product by sqrt dk", "collection": "ML Papers" },
+  "result": [
+    {
+      "book_id": "vaswani-2017-attention",
+      "title": "Attention Is All You Need",
+      "page": 4,
+      "score": 0.94,
+      "text": "For large values of d_k, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients."
+    }
+  ]
+}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =========================================================================
+     3. FEATURE CHAPTERS (4 FOCUSED APPLE-STYLE EDITORIAL BANDS)
+     ========================================================================= -->
+
+<!-- CHAPTER 01 · CRAFT FIRST -->
+<section class="chapter-band alt" id="features">
+  <div class="container">
+    <div class="chapter-grid reveal">
+      <div class="chapter-copy">
+        <div class="chapter-kicker-label"><span>01</span> Craft First</div>
+        <h2>Paper stillness.<br>Native Qt6 speed.</h2>
+        <p>Every surface is tuned for long, uninterrupted reading. Pages turn cleanly without white flashes or layout stutter, controls step out of the way, and your window adapts live to your Omarchy desktop palette and corner rounding.</p>
+        <ul class="spec-list">
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Zero-flash double-buffered spreads</strong> — crisp EPUB columns and theme-recolored PDF pages with smooth directional glides.</span>
+          </li>
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Tactile hardcover page-turn sound</strong> — mastered Public Domain paper flip with an instant <code class="mono" style="font-size:12.5px">Aa</code> toggle that auto-mutes while listening.</span>
+          </li>
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Adaptive 44px floating narration pill</strong> — rests quietly below the margin and expands smoothly for scrubbing, speed, and sleep timer.</span>
+          </li>
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Live desktop matching &amp; 50 languages</strong> — follows Omarchy themes automatically and ships localized across 50 interface languages.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="chapter-exhibit">
+        <div class="exhibit-card">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+            <span style="font-size:13px;font-weight:600;color:var(--ink)">Appearance (<span class="serif">Aa</span>)</span>
+            <span style="font-size:12px;color:var(--ink-muted)">Literata · Hyphenated · 5 themes</span>
+          </div>
+
+          <div class="theme-swatch-row">
+            <div class="swatch-tile" style="background:linear-gradient(135deg,#2C3E63,#1C1B19);color:#F2EDE4;border-color:rgba(157,184,242,0.35)">
+              <span class="aa-glyph">Aa</span><span>Omarchy</span>
+            </div>
+            <div class="swatch-tile" style="background:#F6F1E7;color:#26221D;border-color:rgba(38,34,29,0.16)">
+              <span class="aa-glyph">Aa</span><span>Paper</span>
+            </div>
+            <div class="swatch-tile" style="background:#EEDFC4;color:#3A2E1F;border-color:rgba(58,46,31,0.18)">
+              <span class="aa-glyph">Aa</span><span>Sepia</span>
+            </div>
+            <div class="swatch-tile" style="background:#1E1D1B;color:#DCD5C8;border-color:rgba(220,213,200,0.18)">
+              <span class="aa-glyph">Aa</span><span>Dusk</span>
+            </div>
+            <div class="swatch-tile" style="background:#0E0E0F;color:#C9C9CC;border-color:rgba(201,201,204,0.16)">
+              <span class="aa-glyph">Aa</span><span>Night</span>
+            </div>
+          </div>
+
+          <div class="craft-row">
+            <div style="display:flex;flex-direction:column;gap:2px">
+              <strong style="font-size:13.5px;color:var(--ink)">Page-turn sound</strong>
+              <span style="font-size:12px;color:var(--ink-muted)">Public Domain hardcover flip · instant <span class="serif">Aa</span> toggle</span>
+            </div>
+            <button type="button" class="craft-switch" id="craftSfxSwitch" role="switch" aria-checked="true" aria-label="Toggle page-turn sound"></button>
+          </div>
+
+          <div class="narration-exhibit">
+            <div class="narration-exhibit-head">
+              <span>Adaptive Narration Pill · <strong id="pillStateLbl" style="color:#F2EFE9">44px resting</strong></span>
+              <button type="button" class="comp-mini-btn" id="pillExpandBtn" aria-expanded="false">Expand to 86px</button>
+            </div>
+            <div class="narration-capsule" id="narrationCapsule">
+              <div class="narration-capsule-top">
+                <div style="display:flex;align-items:center;gap:9px;min-width:0">
+                  <span style="width:28px;height:28px;border-radius:50%;background:#9DB8F2;color:#111520;display:flex;align-items:center;justify-content:center;flex-shrink:0">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+                  </span>
+                  <span class="status-dot local" aria-hidden="true"></span>
+                  <span style="font-size:12.5px;font-weight:540;color:#F4EFE6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Emma · Kokoro offline</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;flex-shrink:0" class="tnum">
+                  <span style="font-size:11px;color:#EBC48C">☾ 15m</span>
+                  <span style="height:22px;padding:0 8px;border-radius:999px;background:rgba(255,255,255,0.10);font-size:11px;font-weight:600;display:inline-flex;align-items:center">1.1×</span>
+                </div>
+              </div>
+              <div class="narration-extra tnum">
+                <div style="display:flex;align-items:center;justify-content:center;gap:14px;font-size:11.5px;color:#CFC9BE">
+                  <span>⏮ Prev</span><span>↺ 15s</span><strong style="color:#FFFFFF">Pause</strong><span>↻ 15s</span><span>Next ⏭</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:#9F988F">
+                  <span>1:42</span>
+                  <div style="flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,0.12)"><div style="width:36%;height:100%;border-radius:2px;background:#9DB8F2"></div></div>
+                  <span>−3:16 · Ch. I</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="craft-chips">
+            <span class="meta-chip">Zero-flash double buffer</span>
+            <span class="meta-chip">50 UI languages</span>
+            <span class="meta-chip">M4B audiobook export</span>
+            <span class="meta-chip">Ctrl+K Command Palette</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CHAPTER 02 · QUIET INTELLIGENCE (STORY | STUDY COMPANION) -->
+<section class="chapter-band" id="study-pdf">
+  <div class="container">
+    <div class="chapter-grid flip reveal">
+      <div class="chapter-copy">
+        <div class="chapter-kicker-label"><span>02</span> Adaptive Companion</div>
+        <h2>Quiet intelligence that knows what you’re reading.</h2>
+        <p>Open a novel and Clothbound stays strictly spoiler-free. Open a textbook or research paper and the same <code class="mono" style="font-size:13px">C</code> drawer shifts seamlessly into Study mode — with structured briefs, tracked mathematical notation, offline LaTeX math, and shelf-wide synthesis.</p>
+        <ul class="spec-list">
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Story Mode for novels</strong> — spoiler-free <em>Previously…</em> recaps and <em>Who’s Who</em> character profiles capped strictly at your current page.</span>
+          </li>
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Study Mode for textbooks &amp; papers</strong> — whole-document <em>Brief</em>, tracked <em>Glossary &amp; Notation</em> with first-definition jumps, and offline LaTeX equations.</span>
+          </li>
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Cross-book “This Shelf” scope &amp; Listen aloud</strong> — synthesize claims across an entire collection and hear any companion reply read aloud with one click.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="chapter-exhibit">
+        <div class="exhibit-card">
+          <div class="dual-cards">
+            <div class="mode-card">
+              <span class="mode-tag">Story · Spoiler-Free</span>
+              <h3>The Time Machine</h3>
+              <div class="mini-note-box">
+                <strong>Previously (up to p. 38)</strong><br>
+                The Time Traveller demonstrates a brass miniature to Filby and the Psychologist, then vanishes into the year 802,701 and encounters the Eloi.
+              </div>
+              <div class="mini-note-box">
+                <strong>Who’s Who</strong><br>
+                <strong>Filby</strong> — Argumentative guest with red hair who doubts a fourth dimension. <em>First seen Ch. I.</em>
+              </div>
+              <div style="margin-top:auto;font-size:11.5px;color:var(--ink-muted)">Never reads past your bookmark</div>
+            </div>
+
+            <div class="mode-card study-accent">
+              <span class="mode-tag">Study · This Shelf</span>
+              <h3>Attention Is All You Need</h3>
+              <div class="mini-note-box">
+                <strong>Brief · Core Claim</strong><br>
+                Multi-head self-attention replaces recurrence and convolutions, achieving <strong>28.4 BLEU</strong> on WMT14 EN-DE in 3.5 days.
+              </div>
+              <div class="notation-strip" aria-label="Tracked glossary symbols">
+                <span class="notation-badge"><em>θ</em> Params · p. 2</span>
+                <span class="notation-badge"><em>ℒ</em> Loss · p. 7</span>
+                <span class="notation-badge"><em>∇</em> Grad · p. 4</span>
+                <span class="notation-badge"><em>d<sub>k</sub></em> Head · p. 4</span>
+              </div>
+              <div style="margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11.5px;color:var(--ink-muted)">
+                <span>Offline LaTeX · 6 books</span>
+                <span style="color:var(--accent);font-weight:600;white-space:nowrap;flex-shrink:0">Listen aloud ▸</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CHAPTER 03 · BUILT FOR RESEARCH PDFS -->
+<section class="chapter-band alt">
+  <div class="container">
+    <div class="chapter-grid reveal">
+      <div class="chapter-copy">
+        <div class="chapter-kicker-label"><span>03</span> Research PDFs</div>
+        <h2>Equations, figures, and citations — without losing your place.</h2>
+        <p>Academic PDFs shouldn’t force constant jumping between pages and reference lists. Clothbound pairs visual region snipping with Quick-Look peeks and automatic bibliographic detection, running on Gemini or local Ollama vision models.</p>
+        <ul class="spec-list">
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Visual Snip &amp; Explain (<code class="mono" style="font-size:12.5px">X</code>)</strong> — drag over any equation, chart, or table to explain, copy LaTeX, or extract tables via Gemini or local Ollama VLMs (<strong>Gemma 3</strong> / <strong>Qwen2.5-VL</strong>).</span>
+          </li>
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Zero-Jump Citation &amp; Figure Peek</strong> — Apple Quick-Look style floating preview for references and figures right beside the paragraph you’re reading.</span>
+          </li>
+          <li>
+            <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
+            <span><strong>Auto DOI &amp; arXiv Detection</strong> — recognizes paper identifiers automatically with 1-click <strong>BibTeX</strong> and <strong>APA</strong> copy in the reader header.</span>
+          </li>
+        </ul>
+      </div>
+
+      <div class="chapter-exhibit">
+        <div class="exhibit-card">
+          <div class="research-sheet">
+            <div class="research-head">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <span class="arxiv-badge">arXiv:1706.03762</span>
+                <span style="font-size:11.5px;color:var(--ink-muted)">DOI detected</span>
+              </div>
+              <div class="cite-copy-bar">
+                <button type="button" class="pill-action" id="copyBibtexBtn">Copy BibTeX</button>
+                <button type="button" class="pill-action" id="copyApaBtn">Copy APA</button>
+              </div>
+            </div>
+
+            <p class="research-prose">
+              We call our particular attention “Scaled Dot-Product Attention” <span style="white-space:nowrap">(<button type="button" class="ql-trigger active" data-ql="fig2">Figure 2</button>)</span>. The two most commonly used attention functions are additive attention <button type="button" class="ql-trigger" data-ql="ref2">[2]</button>, and dot-product attention, scaled by 1/√<em>d<sub>k</sub></em> to prevent gradient saturation.
+            </p>
+
+            <!-- Interactive Quick-Look Peek Card -->
+            <div class="ql-popover" id="qlPopover" role="region" aria-label="Quick-Look Citation and Figure Peek">
+              <div class="ql-popover-head">
+                <span id="qlTitle">Quick-Look · Figure 2 (Page 4)</span>
+                <span style="font-weight:500;color:var(--ink-muted)">Zero-jump peek · click [2] or Figure 2</span>
+              </div>
+              <p id="qlBody"><strong>Scaled Dot-Product &amp; Multi-Head Attention:</strong> MatMul(<em>Q</em>, <em>K</em>) → Scale (1/√<em>d<sub>k</sub></em>) → Optional Mask → SoftMax → MatMul(·, <em>V</em>). Eight parallel heads project into <em>d<sub>k</sub></em> = 64 subspaces before concatenation.</p>
+            </div>
+
+            <div class="vlm-strip">
+              <span>Snip (<kbd>X</kbd>) Vision Routing</span>
+              <div style="display:flex;gap:6px;flex-wrap:wrap">
+                <span class="meta-chip" style="height:24px;font-size:11px">Gemini Vision</span>
+                <span class="meta-chip" style="height:24px;font-size:11px">Ollama · Gemma 3</span>
+                <span class="meta-chip" style="height:24px;font-size:11px">Qwen2.5-VL</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CHAPTER 04 · PRIVATE KNOWLEDGE HUB FOR AI AGENTS (MCP) -->
+<section class="chapter-band" id="mcp">
+  <div class="container">
+    <div class="chapter-grid flip reveal">
+      <div class="chapter-copy">
+        <div class="chapter-kicker-label"><span>04</span> Local MCP Server</div>
+        <h2>A private knowledge hub for your coding &amp; research agents.</h2>
+        <p>Point <strong>Antigravity</strong>, <strong>Claude Code</strong>, <strong>Cursor</strong>, or <strong>Codex</strong> directly at <code class="mono" style="font-size:13.5px">clothbound mcp</code>. Your agents can search passages, inspect book outlines, read verbatim pages, and quote your margin notes over pure local stdio — with zero open ports and zero cloud uploads.</p>
+        <div class="mcp-tools-grid" aria-label="Six read-only MCP tools">
+          <div class="mcp-tool-card">
+            <code>list_books</code>
+            <span>Browse titles, formats, collections, and progress.</span>
+          </div>
+          <div class="mcp-tool-card">
+            <code>search_library</code>
+            <span>Fast local SQLite FTS5 keyword search with snippets.</span>
+          </div>
+          <div class="mcp-tool-card">
+            <code>search_passages</code>
+            <span>Hybrid semantic + BM25 cited passage retrieval.</span>
+          </div>
+          <div class="mcp-tool-card">
+            <code>get_book_outline</code>
+            <span>Metadata, full TOC, and print/PDF page map.</span>
+          </div>
+          <div class="mcp-tool-card">
+            <code>read_passage</code>
+            <span>Verbatim EPUB chapter or PDF page with citation header.</span>
+          </div>
+          <div class="mcp-tool-card">
+            <code>list_marks</code>
+            <span>Your highlights, bookmarks, and margin notes.</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="chapter-exhibit">
+        <div class="code-card">
+          <div class="code-card-head">
+            <div class="client-tabs" id="mcpClientTabs" role="tablist" aria-label="MCP client config">
+              <button type="button" class="client-tab active" role="tab" aria-selected="true" data-client="antigravity">Antigravity</button>
+              <button type="button" class="client-tab" role="tab" aria-selected="false" data-client="claude">Claude Code</button>
+              <button type="button" class="client-tab" role="tab" aria-selected="false" data-client="cursor">Cursor</button>
+              <button type="button" class="client-tab" role="tab" aria-selected="false" data-client="codex">Codex</button>
+            </div>
+            <button type="button" class="copy-btn" id="copyMcpConfigBtn" data-copy-target="mcpConfigCanonical">Copy</button>
+          </div>
+          <pre id="mcpConfigDisplay"><code><span class="tok-punct">{</span>
+  <span class="tok-key">"mcpServers"</span><span class="tok-punct">: {</span>
+    <span class="tok-key">"clothbound"</span><span class="tok-punct">: {</span>
+      <span class="tok-key">"command"</span><span class="tok-punct">:</span> <span class="tok-str">"clothbound"</span><span class="tok-punct">,</span>
+      <span class="tok-key">"args"</span><span class="tok-punct">: [</span><span class="tok-str">"mcp"</span><span class="tok-punct">]</span>
+    <span class="tok-punct">}</span>
+  <span class="tok-punct">}</span>
+<span class="tok-punct">}</span></code></pre>
+        </div>
+        <div style="margin-top:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:0 4px;font-size:12.5px;color:var(--ink-muted)">
+          <span id="mcpClientHint">Drop into your Antigravity MCP config · pure local JSON-RPC 2.0 over stdio</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;color:var(--local);font-weight:560">
+            <span class="status-dot local" aria-hidden="true"></span>6 read-only tools · 0 network
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- =========================================================================
+     4. PRIVACY & LOCAL-FIRST TRUST GRID
+     ========================================================================= -->
+<section class="trust-section">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="chapter-kicker-label"><span>05</span> Local-First Guarantee</div>
+      <h2>Your books belong on your computer.</h2>
+      <p>Clothbound never uploads your library, never mutates your EPUB or PDF files, and gives you full control over what stays strictly offline.</p>
+    </div>
+
+    <div class="trust-grid reveal">
+      <article class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        </div>
+        <h3>Offline <code class="mono" style="font-size:14px">sdcv</code> Dictionary</h3>
+        <p>Look up definitions instantly inside your own StarDict dictionaries with zero network calls and zero latency.</p>
+      </article>
+
+      <article class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3z"/></svg>
+        </div>
+        <h3>Local Neural Voices</h3>
+        <p>Free, private narration synthesized right on your machine with Kokoro, Pocket TTS, and Piper across 42 languages.</p>
+      </article>
+
+      <article class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></svg>
+        </div>
+        <h3>Ollama &amp; LM Studio</h3>
+        <p>Automatically detects Ollama, LM Studio, llama.cpp, MLX, and vLLM for private Study Companion and vision snipping.</p>
+      </article>
+
+      <article class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
+        </div>
+        <h3>Strict $0 Cloud Budget Cap</h3>
+        <p>Bring your own Gemini key if you want cloud voices or vision, with upfront cost previews and a hard $0 strict ceiling.</p>
+      </article>
+
+      <article class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M4.93 4.93l14.14 14.14"/></svg>
+        </div>
+        <h3>Zero Telemetry</h3>
+        <p>No accounts, no trackers, no background sync. Annotations stay in local SQLite and export cleanly to Obsidian Markdown.</p>
+      </article>
+
+      <article class="trust-card">
+        <div class="trust-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+        </div>
+        <h3>MIT &amp; OFL-1.1 Open Source</h3>
+        <p>Transparent Qt6/C++ source code under the MIT License, shipping bundled Literata and Inter fonts under SIL OFL-1.1.</p>
+      </article>
+    </div>
+  </div>
+</section>
+
+<!-- =========================================================================
+     5. INSTALL & QUICKSTART SECTION
+     ========================================================================= -->
+<section class="install-section" id="install">
+  <div class="container">
+    <div class="section-head reveal">
+      <div class="chapter-kicker-label"><span>06</span> Install &amp; Quickstart</div>
+      <h2>Up and reading in under a minute.</h2>
+      <p>Native <code class="mono" style="font-size:14px">x86_64</code> and <code class="mono" style="font-size:14px">aarch64</code> Arch package for Omarchy and Linux desktops. Every CLI command works headless with <code class="mono" style="font-size:14px">--json</code>.</p>
+    </div>
+
+    <div class="install-grid reveal">
+      <div class="install-card">
+        <div class="install-meta">
+          <div class="install-step">
+            <span class="install-step-num">Step 01 · Arch / Omarchy</span>
+          </div>
+          <h3>Build &amp; install the package</h3>
+          <p class="install-note">Run inside <code>pkgbuild/</code> (or run <code>bin/install</code> from the repo root) to install Clothbound, its desktop entry, and icon.</p>
+        </div>
+        <div class="cmd-bar">
+          <code><span class="cmd-prompt">$</span>makepkg -si</code>
+          <button type="button" class="copy-btn" data-copy-text="makepkg -si">Copy</button>
+        </div>
+      </div>
+
+      <div class="install-card">
+        <div class="install-meta">
+          <div class="install-step">
+            <span class="install-step-num">Step 02 · AI Agents</span>
+          </div>
+          <h3>Start the local MCP server</h3>
+          <p class="install-note">Runs read-only JSON-RPC 2.0 over stdio for Antigravity, Claude Code, Cursor, and Codex. Diagnostics go cleanly to stderr.</p>
+        </div>
+        <div class="cmd-bar">
+          <code><span class="cmd-prompt">$</span>clothbound mcp</code>
+          <button type="button" class="copy-btn" data-copy-text="clothbound mcp">Copy</button>
+        </div>
+      </div>
+
+      <div class="install-card">
+        <div class="install-meta">
+          <div class="install-step">
+            <span class="install-step-num">Step 03 · Terminal CLI</span>
+          </div>
+          <h3>Query your library headless</h3>
+          <p class="install-note">Instant local SQLite FTS5 search across every EPUB and PDF — no display server required. Also try <code>clothbound list</code> and <code>clothbound notes</code>.</p>
+        </div>
+        <div class="cmd-bar">
+          <code><span class="cmd-prompt">$</span>clothbound search "attention" --json</code>
+          <button type="button" class="copy-btn" data-copy-text='clothbound search "attention" --json'>Copy</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="install-foot reveal">
+      <span><strong>Dependencies:</strong> Qt6 (<code class="mono" style="font-size:12px">qt6-base</code>, <code class="mono" style="font-size:12px">qt6-declarative</code>, <code class="mono" style="font-size:12px">qt6-wayland</code>, <code class="mono" style="font-size:12px">qt6-webengine</code>). Optional: <code class="mono" style="font-size:12px">ffmpeg</code>, <code class="mono" style="font-size:12px">sdcv</code>, <code class="mono" style="font-size:12px">ollama</code>.</span>
+      <a class="btn btn-secondary" style="height:34px;padding:0 14px;font-size:13px" href="../docs/clothbound-prototype.html">Open Full Interactive Prototype →</a>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<!-- =========================================================================
+     6. CLEAN FOOTER
+     ========================================================================= -->
+<footer class="site-footer">
+  <div class="container">
+    <div class="footer-top">
+      <div class="footer-colophon">
+        <a class="brand" href="#top" aria-label="Clothbound top">
+          <svg class="brand-mark" viewBox="0 0 512 512" aria-hidden="true">
+            <g transform="translate(8 -10)">
+              <rect x="104" y="64" width="316" height="392" rx="26" fill="#202e4a" stroke="#18233a" stroke-width="6"/>
+              <path d="M126 420 H392 Q408 420 408 404 V90 Q408 76 394 76 H380 V410 Q380 426 364 426 H126 Z" fill="#f4ede0"/>
+              <path d="M294 416 V490 L322 468 L350 490 V416 Z" fill="#E8B339"/>
+              <rect x="92" y="56" width="298" height="364" rx="22" fill="#2c3e63" stroke="#1f2d49" stroke-width="5"/>
+              <path d="M114 56 H148 V420 H114 Q92 420 92 398 V78 Q92 56 114 56 Z" fill="#202e4a"/>
+              <rect x="176" y="88" width="184" height="300" rx="10" fill="none" stroke="#E8B339" stroke-width="6" opacity="0.55"/>
+              <rect x="206" y="148" width="124" height="18" rx="9" fill="#f4ede0"/>
+              <rect x="226" y="184" width="84" height="14" rx="7" fill="#E8B339"/>
+              <path d="M268 256 L284 272 L268 288 L252 272 Z" fill="#E8B339"/>
+            </g>
+          </svg>
+          <span class="brand-word">clothbound<span>.app</span></span>
+        </a>
+        <p>A native Qt6 EPUB and PDF reader crafted for Linux, Wayland, and Omarchy. Local-first, calm by default, and respectful of your files.</p>
+      </div>
+
+      <div class="footer-meta">
+        <div class="footer-links">
+          <a href="#features">Features</a>
+          <a href="#study-pdf">Study &amp; PDF</a>
+          <a href="#mcp">Local MCP</a>
+          <a href="#install">Install</a>
+          <a href="../docs/clothbound-prototype.html">Interactive Prototype</a>
+        </div>
+        <div>MIT License · Bundled Literata &amp; Inter under SIL OFL-1.1</div>
+      </div>
+    </div>
+
+    <div class="shortcut-bar">
+      <div class="shortcut-list" aria-label="Clothbound keyboard shortcuts">
+        <span class="shortcut-item"><kbd>Ctrl</kbd><kbd>K</kbd> Command Palette</span>
+        <span class="shortcut-item"><kbd>C</kbd> Companion</span>
+        <span class="shortcut-item"><kbd>X</kbd> Snip PDF</span>
+        <span class="shortcut-item"><kbd>P</kbd> Listen</span>
+        <span class="shortcut-item"><kbd>A</kbd> Appearance</span>
+        <span class="shortcut-item"><kbd>?</kbd> All shortcuts</span>
+      </div>
+      <span>clothbound.app</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+
+  var htmlEl = document.documentElement;
+
+  /* -----------------------------------------------------------------------
+     1. Paper / Dusk Theme Toggle
+     ----------------------------------------------------------------------- */
+  var themeToggle = document.getElementById("themeToggle");
+  var themeLabel = document.getElementById("themeToggleLabel");
+  var iconSun = document.getElementById("themeIconSun");
+  var iconMoon = document.getElementById("themeIconMoon");
+  var demoReader = document.getElementById("demoReader");
+  var demoRThemePills = document.getElementById("demoRThemePills");
+
+  function syncThemeUI(theme, syncShowcase) {
+    var isDusk = theme === "dusk";
+    htmlEl.setAttribute("data-theme", theme);
+    if (themeToggle) {
+      themeToggle.setAttribute("aria-pressed", isDusk ? "true" : "false");
+    }
+    if (themeLabel) {
+      themeLabel.textContent = isDusk ? "Paper" : "Dusk";
+    }
+    if (iconSun && iconMoon) {
+      iconSun.style.display = isDusk ? "block" : "none";
+      iconMoon.style.display = isDusk ? "none" : "block";
+    }
+    if (syncShowcase && demoReader) {
+      setReaderTheme(isDusk ? "dusk" : "paper");
+    }
+  }
+
+  function setReaderTheme(rtheme) {
+    if (!demoReader) return;
+    demoReader.setAttribute("data-rtheme", rtheme);
+    if (demoRThemePills) {
+      var btns = demoRThemePills.querySelectorAll("button");
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].classList.toggle("active", btns[i].getAttribute("data-rtheme") === rtheme);
+      }
+    }
+  }
+
+  syncThemeUI(htmlEl.getAttribute("data-theme") || "paper", true);
+
+  if (themeToggle) {
+    themeToggle.addEventListener("click", function () {
+      var next = htmlEl.getAttribute("data-theme") === "dusk" ? "paper" : "dusk";
+      syncThemeUI(next, true);
+      try { window.localStorage.setItem("clothbound-site-theme", next); } catch (e) {}
+    });
+  }
+
+  /* -----------------------------------------------------------------------
+     2. Hero Showcase Tabs
+     ----------------------------------------------------------------------- */
+  var tabButtons = document.querySelectorAll(".showcase-tab");
+  var panes = {
+    reading: document.getElementById("pane-reading"),
+    study: document.getElementById("pane-study"),
+    snip: document.getElementById("pane-snip"),
+    mcp: document.getElementById("pane-mcp")
+  };
+
+  function activatePane(name) {
+    for (var i = 0; i < tabButtons.length; i++) {
+      var btn = tabButtons[i];
+      var active = btn.getAttribute("data-pane") === name;
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    Object.keys(panes).forEach(function (k) {
+      if (panes[k]) panes[k].classList.toggle("active", k === name);
+    });
+  }
+
+  for (var t = 0; t < tabButtons.length; t++) {
+    tabButtons[t].addEventListener("click", function () {
+      activatePane(this.getAttribute("data-pane"));
+    });
+  }
+
+  try {
+    var initTab = new URLSearchParams(window.location.search).get("tab");
+    if (initTab && panes[initTab]) activatePane(initTab);
+  } catch (e) {}
+
+  /* -----------------------------------------------------------------------
+     3. Showcase Pane 1: Reading Interactive Controls
+     ----------------------------------------------------------------------- */
+  if (demoRThemePills) {
+    demoRThemePills.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("button[data-rtheme]");
+      if (btn) setReaderTheme(btn.getAttribute("data-rtheme"));
+    });
+  }
+
+  var demoBookmark = document.getElementById("demoBookmark");
+  if (demoBookmark) {
+    demoBookmark.addEventListener("click", function () {
+      var on = this.classList.toggle("bookmarked");
+      this.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+  }
+
+  var demoSfxChip = document.getElementById("demoSfxChip");
+  var demoSfxText = document.getElementById("demoSfxText");
+  if (demoSfxChip && demoSfxText) {
+    demoSfxChip.addEventListener("click", function () {
+      var on = this.classList.toggle("is-on");
+      this.setAttribute("aria-pressed", on ? "true" : "false");
+      demoSfxText.textContent = on ? "Flip sound" : "Muted";
+    });
+  }
+
+  var spreads = [
+    {
+      pages: "Pages 3–4 of 148",
+      left: "3 min left in chapter",
+      pct: "12%",
+      col1: '<div class="chapter-kicker">Chapter I</div><div class="chapter-title">Introduction</div><p class="dropcap">The Time Traveller (for so it will be convenient to speak of him) was expounding a recondite matter to us. His grey eyes shone and twinkled, and his usually pale face was flushed and animated. The fire burned brightly, and the soft radiance of the incandescent lights in the lilies of silver caught the bubbles that flashed and passed in our glasses.</p><p>“You must follow me carefully. I shall have to controvert one or two ideas that are almost universally accepted. <span class="hl-yellow">The geometry, for instance, they taught you at school is founded on a misconception.”</span></p>',
+      col2: '<p>“You know of course that a mathematical line, a line of thickness <em>nil</em>, has no real existence. They taught you that? Neither has a mathematical plane. These things are mere abstractions.”</p><p>“There I object,” said Filby. “Of course a solid body may exist. All real things—”</p><p>“So most people think. But wait a moment. <span class="hl-spoken" id="demoSpokenSpan">Can an <em>instantaneous</em> cube exist?”</span></p><p>“Clearly,” the Time Traveller proceeded, “any real body must have extension in <em>four</em> directions: it must have Length, Breadth, Thickness, and—Duration.”</p>'
+    },
+    {
+      pages: "Pages 5–6 of 148",
+      left: "2 min left in chapter",
+      pct: "19%",
+      col1: '<p>“There are really four dimensions, three which we call the three planes of Space, and a fourth, Time. There is, however, a tendency to draw an unreal distinction between the former three dimensions and the latter, because it happens that our consciousness moves intermittently in one direction along the latter from the beginning to the end of our lives.”</p><p>“That,” said a very young man, making spasmodic efforts to relight his cigar over the lamp; “that … very clear indeed.”</p>',
+      col2: '<p>“Now, it is very remarkable that this is so extensively overlooked,” continued the Time Traveller, with a slight accession of cheerfulness. <span class="hl-spoken" id="demoSpokenSpan">“Really this is what is meant by the Fourth Dimension, though some people who talk about the Fourth Dimension do not know they mean it.”</span></p><p>The Psychologist looked down at the fire. “If Time is really only a fourth dimension of Space, why is it, and why has it always been, regarded as something different?”</p>'
+    }
+  ];
+  var spreadIndex = 0;
+  var isPlaying = true;
+  var demoSpread = document.getElementById("demoSpread");
+  var demoPageNum = document.getElementById("demoPageNum");
+  var demoTimeLeft = document.getElementById("demoTimeLeft");
+  var demoTrackFill = document.getElementById("demoTrackFill");
+
+  function turnSpread(dir) {
+    if (!demoSpread) return;
+    spreadIndex = (spreadIndex + dir + spreads.length) % spreads.length;
+    var cls = dir > 0 ? "turning-next" : "turning-prev";
+    demoSpread.classList.add(cls);
+    window.setTimeout(function () {
+      var s = spreads[spreadIndex];
+      demoSpread.innerHTML = '<div>' + s.col1 + '</div><div class="col-second">' + s.col2 + '</div>';
+      var sp = document.getElementById("demoSpokenSpan");
+      if (sp) sp.classList.toggle("paused", !isPlaying);
+      if (demoPageNum) demoPageNum.textContent = s.pages;
+      if (demoTimeLeft) demoTimeLeft.textContent = s.left;
+      if (demoTrackFill) demoTrackFill.style.width = s.pct;
+      demoSpread.classList.remove(cls);
+    }, 130);
+  }
+
+  var prevBtn = document.getElementById("demoPrevPage");
+  var nextBtn = document.getElementById("demoNextPage");
+  if (prevBtn) prevBtn.addEventListener("click", function () { turnSpread(-1); });
+  if (nextBtn) nextBtn.addEventListener("click", function () { turnSpread(1); });
+
+  var playToggle = document.getElementById("demoPlayToggle");
+  var pauseIcon = document.getElementById("demoPauseIcon");
+  var playIcon = document.getElementById("demoPlayIcon");
+  var listenStatus = document.getElementById("demoListenStatus");
+  var hairline = document.getElementById("demoHairline");
+
+  if (playToggle) {
+    playToggle.addEventListener("click", function () {
+      isPlaying = !isPlaying;
+      this.setAttribute("aria-pressed", isPlaying ? "true" : "false");
+      this.setAttribute("aria-label", isPlaying ? "Pause read-aloud" : "Play read-aloud");
+      if (pauseIcon) pauseIcon.style.display = isPlaying ? "block" : "none";
+      if (playIcon) playIcon.style.display = isPlaying ? "none" : "block";
+      if (listenStatus) listenStatus.textContent = isPlaying ? "Local voice · following sentence" : "Paused · press P to resume";
+      if (hairline) hairline.style.width = isPlaying ? "38%" : "22%";
+      var sp = document.getElementById("demoSpokenSpan");
+      if (sp) sp.classList.toggle("paused", !isPlaying);
+    });
+  }
+
+  var rates = ["1.0×", "1.1×", "1.25×", "1.5×"];
+  var rateIdx = 1;
+  var rateBtn = document.getElementById("demoRateBtn");
+  if (rateBtn) {
+    rateBtn.addEventListener("click", function () {
+      rateIdx = (rateIdx + 1) % rates.length;
+      this.textContent = rates[rateIdx];
+    });
+  }
+
+  /* -----------------------------------------------------------------------
+     4. Showcase Pane 2: Study Companion Scope & Listen Aloud
+     ----------------------------------------------------------------------- */
+  var scopeData = {
+    upto: {
+      status: "Reading up to <strong>Page 4</strong> only (no forward spoilers)",
+      detail: "Up through Section 3.2.1, the paper introduces Scaled Dot-Product Attention and notes in Footnote 4 why large <em>d<sub>k</sub></em> pushes softmax into flat gradient regions.",
+      cites: '<span class="cite-jump">Vaswani et al., p. 4 · Footnote 4 ↗</span>',
+      model: "Current paper · pp. 1–4"
+    },
+    book: {
+      status: "Synthesizing across the <strong>whole 15-page paper</strong>",
+      detail: "Across Sections 3.2 and 6.2, scaling by 1/√<em>d<sub>k</sub></em> pairs with 8 heads (<em>d<sub>k</sub></em>=64) to match additive quality while running much faster via batched GEMMs.",
+      cites: '<span class="cite-jump">Vaswani et al., p. 4 ↗</span><span class="cite-jump">Table 3 Ablation, p. 9 ↗</span>',
+      model: "Whole paper · 2 passages cited"
+    },
+    shelf: {
+      status: "Searching 6 papers on <strong>ML Papers</strong> shelf",
+      detail: "Scaling keeps logits near unit variance so <code class=\"mono\" style=\"font-size:11px;color:#BFD4FA\">softmax</code> avoids saturated gradients. Bahdanau et al. (2015) avoid blowup with a feed-forward layer at higher matmul cost.",
+      cites: '<span class="cite-jump">Vaswani et al., p. 4 ↗</span><span class="cite-jump">Bahdanau et al., p. 3 ↗</span>',
+      model: "ML Papers · 2 cited"
+    }
+  };
+
+  var scopeSeg = document.getElementById("demoScopeSeg");
+  var scopeStatus = document.getElementById("demoScopeStatus");
+  var studyDetail = document.getElementById("demoStudyDetail");
+  var studyCites = document.getElementById("demoStudyCites");
+  var studyModel = document.getElementById("demoStudyModel");
+
+  if (scopeSeg) {
+    scopeSeg.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("button[data-scope]");
+      if (!btn) return;
+      var key = btn.getAttribute("data-scope");
+      var d = scopeData[key];
+      if (!d) return;
+      var all = scopeSeg.querySelectorAll("button");
+      for (var i = 0; i < all.length; i++) all[i].classList.toggle("active", all[i] === btn);
+      if (scopeStatus) scopeStatus.innerHTML = '<span class="status-dot local" aria-hidden="true"></span><span>' + d.status + '</span>';
+      if (studyDetail) studyDetail.innerHTML = d.detail;
+      if (studyCites) studyCites.innerHTML = d.cites;
+      if (studyModel) studyModel.textContent = d.model;
+    });
+  }
+
+  var studySpeak = document.getElementById("demoStudySpeak");
+  var studySpeakLbl = document.getElementById("demoStudySpeakLbl");
+  if (studySpeak && studySpeakLbl) {
+    studySpeak.addEventListener("click", function () {
+      var active = this.classList.toggle("speaking");
+      this.setAttribute("aria-pressed", active ? "true" : "false");
+      studySpeakLbl.textContent = active ? "Stop" : "Listen";
+    });
+  }
+
+  /* -----------------------------------------------------------------------
+     5. Showcase Pane 3: PDF Snip & Explain Actions + Vision Engine Toggle
+     ----------------------------------------------------------------------- */
+  var snipViews = {
+    explain:
+      '<div style="font-size:11px;color:#9F988F;text-transform:uppercase;letter-spacing:0.06em;font-weight:600">Step-by-step equation breakdown</div>' +
+      '<div style="padding-left:10px;border-left:2px solid #9DB8F2;display:flex;flex-direction:column;gap:7px;color:#E2DCD1">' +
+      '<div><strong>1. Pairwise scores (<em>QK<sup>T</sup></em>):</strong> Compares every query vector against every key in one matrix multiply.</div>' +
+      '<div><strong>2. Variance stabilization (÷ √<em>d<sub>k</sub></em>):</strong> Prevents large logits from saturating softmax gradients.</div>' +
+      '<div><strong>3. Value retrieval (× <em>V</em>):</strong> Softmax weights blend value vectors into each token’s contextual representation.</div>' +
+      '</div>' +
+      '<div class="math-display-dark" style="font-size:13px"><span><em>α<sub>ij</sub></em> =</span><span class="math-frac"><span class="math-frac-num">exp(<em>q<sub>i</sub> · k<sub>j</sub></em> / √<em>d<sub>k</sub></em>)</span><span class="math-frac-den">∑<sub><em>m</em></sub> exp(<em>q<sub>i</sub> · k<sub>m</sub></em> / √<em>d<sub>k</sub></em>)</span></span></div>' +
+      '<div class="comp-foot-actions"><span>Page 4 · Eq. (1) · zero remote fonts</span><span style="color:#8FDDAE">Local VLM ready</span></div>',
+    latex:
+      '<div style="font-size:11px;color:#9F988F;text-transform:uppercase;letter-spacing:0.06em;font-weight:600">Extracted LaTeX Source</div>' +
+      '<pre class="mono" style="margin:0;padding:12px;border-radius:8px;background:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.08);font-size:11.5px;line-height:1.55;color:#BFD4FA;overflow-x:auto">\\mathrm{Attention}(Q, K, V) =\n  \\mathrm{softmax}\\!\\left(\n    \\frac{Q K^{\\top}}{\\sqrt{d_k}}\n  \\right) V</pre>' +
+      '<div style="color:#CFC9BE">Ready to paste into Obsidian, Overleaf, or Markdown notes — rendered natively without remote math CDNs.</div>' +
+      '<div class="comp-foot-actions"><span>Equation (1) · Page 4</span><span style="color:#8FDDAE">Copied LaTeX ✓</span></div>',
+    table:
+      '<div style="font-size:11px;color:#9F988F;text-transform:uppercase;letter-spacing:0.06em;font-weight:600">Structured Table Extraction</div>' +
+      '<pre class="mono" style="margin:0;padding:11px 12px;border-radius:8px;background:rgba(255,255,255,0.045);border:1px solid rgba(255,255,255,0.08);font-size:11px;line-height:1.55;color:#E3DDD2;overflow-x:auto">| Layer Type     | Complexity   | Seq Ops |\n|----------------|--------------|---------|\n| Self-Attention | O(n^2 · d)   | O(1)    |\n| Recurrent      | O(n · d^2)   | O(n)    |\n| Convolutional  | O(k·n·d^2)   | O(1)    |</pre>' +
+      '<div style="color:#CFC9BE">Clean GitHub-Flavored Markdown table ready for your research notes or coding agent context.</div>' +
+      '<div class="comp-foot-actions"><span>Table 1 · Page 6</span><span style="color:#8FDDAE">Markdown ready</span></div>'
+  };
+
+  var snipBar = document.getElementById("demoSnipBar");
+  var snipOut = document.getElementById("demoSnipOutput");
+  if (snipBar && snipOut) {
+    snipBar.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("button[data-snip]");
+      if (!btn) return;
+      var mode = btn.getAttribute("data-snip");
+      if (!snipViews[mode]) return;
+      var all = snipBar.querySelectorAll("button");
+      for (var i = 0; i < all.length; i++) all[i].classList.toggle("active", all[i] === btn);
+      snipOut.innerHTML = snipViews[mode];
+    });
+  }
+
+  var visionBtn = document.getElementById("demoVisionToggle");
+  var visionDot = document.getElementById("demoVisionDot");
+  var visionLbl = document.getElementById("demoVisionLabel");
+  var visionModes = [
+    { label: "Ollama · Qwen2.5-VL", local: true },
+    { label: "Ollama · Gemma 3", local: true },
+    { label: "Gemini 2.5 Flash", local: false }
+  ];
+  var visionIdx = 0;
+  if (visionBtn && visionDot && visionLbl) {
+    visionBtn.addEventListener("click", function () {
+      visionIdx = (visionIdx + 1) % visionModes.length;
+      var m = visionModes[visionIdx];
+      visionLbl.textContent = m.label;
+      this.classList.toggle("is-local", m.local);
+      visionDot.className = "status-dot " + (m.local ? "local" : "cloud");
+    });
+  }
+
+  /* -----------------------------------------------------------------------
+     6. Showcase Pane 4: Local MCP Tool Inspector
+     ----------------------------------------------------------------------- */
+  var mcpSamples = {
+    search_passages: {
+      title: "→ tools/call · search_passages",
+      body: '{\n  "tool": "search_passages",\n  "arguments": { "query": "why scale dot product by sqrt dk", "collection": "ML Papers" },\n  "result": [\n    {\n      "book_id": "vaswani-2017-attention",\n      "title": "Attention Is All You Need",\n      "page": 4,\n      "score": 0.94,\n      "text": "For large values of d_k, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients."\n    }\n  ]\n}'
+    },
+    list_books: {
+      title: "→ tools/call · list_books",
+      body: '{\n  "tool": "list_books",\n  "arguments": { "collection": "ML Papers", "limit": 20 },\n  "result": [\n    { "id": "vaswani-2017-attention", "title": "Attention Is All You Need", "format": "pdf", "pages": 15, "progress": 0.27 },\n    { "id": "bahdanau-2015-align", "title": "Neural Machine Translation by Jointly Learning to Align and Translate", "format": "pdf", "pages": 15, "progress": 1.0 },\n    { "id": "wells-time-machine", "title": "The Time Machine", "format": "epub", "chapters": 12, "progress": 0.14 }\n  ]\n}'
+    },
+    search_library: {
+      title: "→ tools/call · search_library",
+      body: '{\n  "tool": "search_library",\n  "arguments": { "query": "scaled dot-product", "limit": 5 },\n  "result": [\n    {\n      "book_id": "vaswani-2017-attention",\n      "title": "Attention Is All You Need",\n      "location": "Page 4",\n      "snippet": "...we call our particular attention «Scaled Dot-Product Attention» (Figure 2)..."\n    }\n  ]\n}'
+    },
+    get_book_outline: {
+      title: "→ tools/call · get_book_outline",
+      body: '{\n  "tool": "get_book_outline",\n  "arguments": { "book_id": "vaswani-2017-attention" },\n  "result": {\n    "title": "Attention Is All You Need",\n    "authors": "Vaswani et al. (2017)",\n    "identifier": "arXiv:1706.03762",\n    "toc": [\n      { "section": "1 Introduction", "page": 1 },\n      { "section": "3.2 Attention", "page": 3 },\n      { "section": "3.2.1 Scaled Dot-Product Attention", "page": 4 },\n      { "section": "6 Results", "page": 8 }\n    ]\n  }\n}'
+    },
+    read_passage: {
+      title: "→ tools/call · read_passage",
+      body: '{\n  "tool": "read_passage",\n  "arguments": { "book_id": "vaswani-2017-attention", "page": 4, "max_chars": 8000 },\n  "citation": "Attention Is All You Need — Page 4 (arXiv:1706.03762)",\n  "text": "3.2.1 Scaled Dot-Product Attention. The input consists of queries and keys of dimension d_k, and values of dimension d_v..."\n}'
+    },
+    list_marks: {
+      title: "→ tools/call · list_marks",
+      body: '{\n  "tool": "list_marks",\n  "arguments": { "book_id": "wells-time-machine" },\n  "result": [\n    {\n      "color": "yellow",\n      "chapter": "Chapter I",\n      "quote": "The geometry, for instance, they taught you at school is founded on a misconception.",\n      "note": "The whole four-dimensional argument starts here."\n    }\n  ]\n}'
+    }
+  };
+
+  var mcpToolsWrap = document.getElementById("demoMcpTools");
+  var mcpCallTitle = document.getElementById("demoMcpCallTitle");
+  var mcpJsonOut = document.getElementById("demoMcpJson");
+  if (mcpToolsWrap && mcpCallTitle && mcpJsonOut) {
+    mcpToolsWrap.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("button[data-tool]");
+      if (!btn) return;
+      var k = btn.getAttribute("data-tool");
+      var sample = mcpSamples[k];
+      if (!sample) return;
+      var all = mcpToolsWrap.querySelectorAll("button");
+      for (var i = 0; i < all.length; i++) all[i].classList.toggle("active", all[i] === btn);
+      mcpCallTitle.textContent = sample.title;
+      mcpJsonOut.textContent = sample.body;
+    });
+  }
+
+  /* -----------------------------------------------------------------------
+     7. Feature Chapter Exhibits: Craft Switch, Narration Expand, Quick-Look
+     ----------------------------------------------------------------------- */
+  var craftSfxSwitch = document.getElementById("craftSfxSwitch");
+  if (craftSfxSwitch) {
+    craftSfxSwitch.addEventListener("click", function () {
+      var cur = this.getAttribute("aria-checked") === "true";
+      this.setAttribute("aria-checked", cur ? "false" : "true");
+    });
+  }
+
+  var pillExpandBtn = document.getElementById("pillExpandBtn");
+  var narrationCapsule = document.getElementById("narrationCapsule");
+  var pillStateLbl = document.getElementById("pillStateLbl");
+  if (pillExpandBtn && narrationCapsule && pillStateLbl) {
+    pillExpandBtn.addEventListener("click", function () {
+      var exp = narrationCapsule.classList.toggle("expanded");
+      this.setAttribute("aria-expanded", exp ? "true" : "false");
+      this.textContent = exp ? "Collapse to 44px" : "Expand to 86px";
+      pillStateLbl.textContent = exp ? "86px precision transport" : "44px resting";
+    });
+  }
+
+  var qlData = {
+    fig2: {
+      title: "Quick-Look · Figure 2 (Page 4)",
+      body: '<strong>Scaled Dot-Product &amp; Multi-Head Attention:</strong> MatMul(<em>Q</em>, <em>K</em>) → Scale (1/√<em>d<sub>k</sub></em>) → Optional Mask → SoftMax → MatMul(·, <em>V</em>). Eight parallel heads project into <em>d<sub>k</sub></em> = 64 subspaces before concatenation.'
+    },
+    ref2: {
+      title: "Quick-Look · Reference [2] (Page 10)",
+      body: '<strong>Dzmitry Bahdanau, Kyunghyun Cho, and Yoshua Bengio (2015).</strong> <em>Neural Machine Translation by Jointly Learning to Align and Translate.</em> ICLR 2015 — introduces additive attention over encoder hidden states.'
+    }
+  };
+  var qlTriggers = document.querySelectorAll(".ql-trigger");
+  var qlTitle = document.getElementById("qlTitle");
+  var qlBody = document.getElementById("qlBody");
+  for (var q = 0; q < qlTriggers.length; q++) {
+    qlTriggers[q].addEventListener("click", function () {
+      var key = this.getAttribute("data-ql");
+      if (!qlData[key]) return;
+      for (var j = 0; j < qlTriggers.length; j++) {
+        qlTriggers[j].classList.toggle("active", qlTriggers[j] === this);
+      }
+      if (qlTitle) qlTitle.textContent = qlData[key].title;
+      if (qlBody) qlBody.innerHTML = qlData[key].body;
+    });
+  }
+
+  /* -----------------------------------------------------------------------
+     8. MCP Client Tabs & Clipboard Copy Helpers (Copy -> Copied ✓)
+     ----------------------------------------------------------------------- */
+  var mcpConfigCanonical = JSON.stringify({
+    mcpServers: {
+      clothbound: {
+        command: "clothbound",
+        args: ["mcp"]
+      }
+    }
+  }, null, 2);
+
+  var bibtexSample = "@inproceedings{vaswani2017attention,\n  title={Attention Is All You Need},\n  author={Vaswani, Ashish and Shazeer, Noam and Parmar, Niki and Uszkoreit, Jakob and Jones, Llion and Gomez, Aidan N and Kaiser, Lukasz and Polosukhin, Illia},\n  booktitle={NeurIPS},\n  year={2017},\n  eprint={1706.03762}\n}";
+  var apaSample = "Vaswani, A., Shazeer, N., Parmar, N., Uszkoreit, J., Jones, L., Gomez, A. N., Kaiser, L., & Polosukhin, I. (2017). Attention is all you need. Advances in Neural Information Processing Systems, 30. https://arxiv.org/abs/1706.03762";
+
+  var clientHints = {
+    antigravity: "Drop into your Antigravity MCP config · pure local JSON-RPC 2.0 over stdio",
+    claude: "Add to ~/.claude.json or project .mcp.json · strictly read-only local stdio",
+    cursor: "Add to ~/.cursor/mcp.json · zero open ports, zero cloud upload",
+    codex: "Configure in Codex MCP servers · exposes 6 read-only library tools locally"
+  };
+  var mcpClientTabs = document.getElementById("mcpClientTabs");
+  var mcpClientHint = document.getElementById("mcpClientHint");
+  if (mcpClientTabs && mcpClientHint) {
+    mcpClientTabs.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("button[data-client]");
+      if (!btn) return;
+      var client = btn.getAttribute("data-client");
+      var all = mcpClientTabs.querySelectorAll("button");
+      for (var i = 0; i < all.length; i++) {
+        var on = all[i] === btn;
+        all[i].classList.toggle("active", on);
+        all[i].setAttribute("aria-selected", on ? "true" : "false");
+      }
+      if (clientHints[client]) mcpClientHint.textContent = clientHints[client];
+    });
+  }
+
+  function writeClipboard(text, btn, defaultLabel, doneLabel) {
+    function markDone() {
+      btn.classList.add("copied");
+      btn.textContent = doneLabel || "Copied ✓";
+      window.setTimeout(function () {
+        btn.classList.remove("copied");
+        btn.textContent = defaultLabel;
+      }, 1800);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(markDone, function () {
+        fallbackCopy(text);
+        markDone();
+      });
+    } else {
+      fallbackCopy(text);
+      markDone();
+    }
+  }
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand("copy"); } catch (e) {}
+    document.body.removeChild(ta);
+  }
+
+  var copyButtons = document.querySelectorAll("[data-copy-text], [data-copy-target]");
+  for (var c = 0; c < copyButtons.length; c++) {
+    copyButtons[c].addEventListener("click", function () {
+      var orig = this.getAttribute("data-orig-label") || this.textContent;
+      this.setAttribute("data-orig-label", orig);
+      var text = this.getAttribute("data-copy-text");
+      if (!text && this.getAttribute("data-copy-target") === "mcpConfigCanonical") {
+        text = mcpConfigCanonical;
+      }
+      if (text) writeClipboard(text, this, orig, "Copied ✓");
+    });
+  }
+
+  var bibBtn = document.getElementById("copyBibtexBtn");
+  var apaBtn = document.getElementById("copyApaBtn");
+  if (bibBtn) {
+    bibBtn.addEventListener("click", function () {
+      writeClipboard(bibtexSample, this, "Copy BibTeX", "BibTeX Copied ✓");
+    });
+  }
+  if (apaBtn) {
+    apaBtn.addEventListener("click", function () {
+      writeClipboard(apaSample, this, "Copy APA", "APA Copied ✓");
+    });
+  }
+
+  /* -----------------------------------------------------------------------
+     9. Subtle Scroll Reveal (Respects prefers-reduced-motion)
+     ----------------------------------------------------------------------- */
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  var revealParam = false;
+  try {
+    revealParam = new URLSearchParams(window.location.search).get("reveal") === "all";
+  } catch (e) {}
+
+  var revealEls = document.querySelectorAll(".reveal");
+  if (!reduceMotion && !revealParam && "IntersectionObserver" in window) {
+    htmlEl.classList.add("anim-ready");
+    var io = new IntersectionObserver(function (entries) {
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].isIntersecting) {
+          entries[i].target.classList.add("is-visible");
+          io.unobserve(entries[i].target);
+        }
+      }
+    }, { rootMargin: "0px 0px -6% 0px", threshold: 0.04 });
+
+    for (var r = 0; r < revealEls.length; r++) {
+      var rect = revealEls[r].getBoundingClientRect();
+      if (rect.top < window.innerHeight * 1.05) {
+        revealEls[r].classList.add("is-visible");
+      } else {
+        io.observe(revealEls[r]);
+      }
+    }
+  } else {
+    for (var k = 0; k < revealEls.length; k++) {
+      revealEls[k].classList.add("is-visible");
+    }
+  }
+})();
+</script>
+</body>
+</html>
