@@ -65,6 +65,9 @@
         <file alias="hyphenation/hyph-en-us.pat.txt">reader/hyphenation/hyph-en-us.pat.txt</file>
         <file alias="hyphenation/hyph-en-us.hyp.txt">reader/hyphenation/hyph-en-us.hyp.txt</file>
         <file alias="voices/packs.json">audio/voices/packs.json</file>
+        <file alias="audio/sfx/page_turn_1.wav">audio/sfx/page_turn_1.wav</file>
+        <file alias="audio/sfx/page_turn_2.wav">audio/sfx/page_turn_2.wav</file>
+        <file alias="audio/sfx/page_turn_3.wav">audio/sfx/page_turn_3.wav</file>
         <file alias="clothbound.svg">../pkgbuild/clothbound.svg</file>
         <file alias="skill.md">skill.md</file>
         <file alias="fonts/Literata.ttf">fonts/Literata.ttf</file>

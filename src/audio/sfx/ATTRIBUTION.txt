@@ -1,0 +1,19 @@
+Page-Turn Sound Effects — Public Domain Sources
+===============================================
+
+The three bundled page-turn clips (`page_turn_1.wav`, `page_turn_2.wav`,
+`page_turn_3.wav`) are mastered single-page excerpts from Public Domain
+recordings hosted on Wikimedia Commons (originating from PDSounds.org,
+marked Copyrighted: False, AttributionRequired: false / PD-self / CC0):
+
+- `page_turn_1.wav` (235 ms) & `page_turn_2.wav` (260 ms):
+  Excerpted from Wikimedia Commons `File:Book_paper_assorted.ogg`
+  (PDSounds.org, Public Domain; segments 29.620–29.855 s and 7.320–7.580 s).
+
+- `page_turn_3.wav` (245 ms):
+  Excerpted from Wikimedia Commons `File:Old_book.ogg`
+  (PDSounds.org, Public Domain; segment 41.765–42.010 s).
+
+Mastering chain (ffmpeg, mono 44100 Hz 16-bit PCM WAV):
+2-pole high-pass 110 Hz, 2-pole low-pass 7.5 kHz, 8 ms half-sine fade-in,
+42 ms quarter-sine fade-out, peak-normalized to -14.5..-15.6 dBFS.
