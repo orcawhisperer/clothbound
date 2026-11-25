@@ -55,6 +55,22 @@ Rectangle {
             return ""
         return path.replace(/^\/home\/[^/]+/, "~")
     }
+    function deleteCollectionItem(col) {
+        if (!col)
+            return
+        library.deleteCollection(col.id)
+        if (typeof toast !== "undefined" && toast)
+            toast.show(qsTr("Deleted “%1”").arg(col.name))
+    }
+    function openCollectionMenu(col, anchorItem) {
+        if (!col)
+            return
+        collectionMenu.target = col
+        if (anchorItem)
+            collectionMenu.popup(anchorItem, Math.max(0, anchorItem.width - 12), anchorItem.height)
+        else
+            collectionMenu.popup()
+    }
 
     width: collapsed ? railWidth : expandedWidth
     Behavior on width {
@@ -81,6 +97,7 @@ Rectangle {
         property bool current: false
         property bool muted: false
         property bool dropTarget: false
+        property bool reserveActionSlot: false
         signal contextRequested()
 
         width: side.width - 20
@@ -129,7 +146,7 @@ Rectangle {
                 anchors.left: parent.left
                 anchors.leftMargin: 36
                 anchors.right: countLabel.visible ? countLabel.left : parent.right
-                anchors.rightMargin: 8
+                anchors.rightMargin: row.reserveActionSlot ? 32 : 8
                 anchors.verticalCenter: parent.verticalCenter
                 visible: !side.collapsed
                 text: row.text
@@ -143,7 +160,7 @@ Rectangle {
                 anchors.right: parent.right
                 anchors.rightMargin: 10
                 anchors.verticalCenter: parent.verticalCenter
-                visible: !side.collapsed && row.count >= 0
+                visible: !side.collapsed && row.count >= 0 && !row.reserveActionSlot
                 text: row.count >= 0 ? row.count.toLocaleString(Qt.locale(), "f", 0) : ""
                 color: row.current ? theme.ink3 : theme.ink4
                 font.pixelSize: 13
@@ -353,10 +370,36 @@ Rectangle {
                     count: modelData.count
                     current: side.works.collectionId === modelData.id
                     dropTarget: colDrop.containsDrag
+                    reserveActionSlot: colMoreBtn.visible
                     onClicked: side.showCollection(modelData.id)
-                    onContextRequested: {
-                        collectionMenu.target = modelData
-                        collectionMenu.popup()
+                    onContextRequested: side.openCollectionMenu(modelData, colRow)
+                    Keys.onPressed: (event) => {
+                        if (event.key === Qt.Key_F2) {
+                            side.renameCollection(colRow.modelData.id, colRow.modelData.name)
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_Delete) {
+                            side.deleteCollectionItem(colRow.modelData)
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_Menu
+                                   || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) {
+                            side.openCollectionMenu(colRow.modelData, colRow)
+                            event.accepted = true
+                        }
+                    }
+                    IconButton {
+                        id: colMoreBtn
+                        visible: !side.collapsed && (colRow.hovered || colRow.activeFocus || colMoreBtn.activeFocus)
+                        anchors.right: parent.right
+                        anchors.rightMargin: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 24
+                        height: 24
+                        tabFocusable: true
+                        glyph: Icons.more
+                        tone: theme.ink3
+                        tip: qsTr("Collection actions (F2 rename · Del delete)")
+                        Accessible.name: qsTr("Actions for %1").arg(colRow.modelData.name)
+                        onClicked: side.openCollectionMenu(colRow.modelData, colMoreBtn)
                     }
                     DropArea {
                         id: colDrop
@@ -412,13 +455,7 @@ Rectangle {
         }
         MenuItem {
             text: qsTr("Delete collection")
-            onTriggered: {
-                const col = collectionMenu.target
-                if (!col)
-                    return
-                library.deleteCollection(col.id)
-                toast.show(qsTr("Deleted “%1”").arg(col.name))
-            }
+            onTriggered: side.deleteCollectionItem(collectionMenu.target)
         }
     }
 

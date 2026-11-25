@@ -46,6 +46,7 @@ HEADERS += \
     ../src/library/readingtelemetry.h \
     ../src/library/scanner.h \
     ../src/reader/reader.h \
+    ../src/reader/readerimageprovider.h \
     ../src/audio/audiobook.h \
     ../src/audio/audiocache.h \
     ../src/audio/cast.h \
@@ -117,6 +118,7 @@ SOURCES += \
     ../src/library/readingtelemetry.cpp \
     ../src/library/scanner.cpp \
     ../src/reader/reader.cpp \
+    ../src/reader/readerimageprovider.cpp \
     ../src/audio/audiobook.cpp \
     ../src/audio/audiocache.cpp \
     ../src/audio/cast.cpp \

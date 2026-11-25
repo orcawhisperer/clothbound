@@ -2,7 +2,10 @@
 
 #include "formats/pdfbook.h"
 
+#include <QCoreApplication>
 #include <QMetaObject>
+#include <QPdfDocument>
+#include <QPdfDocumentRenderOptions>
 #include <QRunnable>
 #include <QThread>
 #include <QUrlQuery>
@@ -15,19 +18,61 @@ QMutex PdfPages::s_mutex;
 PdfPages *PdfPages::s_instance = nullptr;
 std::atomic<quint64> PdfPages::s_prefetchGen{0};
 QHash<QString, QString> PdfPages::s_paths;
-// Keep up to ~128 MiB of rendered pages in an LRU cache so page turns back
+// Keep up to ~128 MiB of rendered base pages in an LRU cache so page turns back
 // and forth are instantaneous without re-running PDFium + recolor().
 QCache<QString, QImage> PdfPages::s_cache(128 * 1024 * 1024);
+// Dedicated 48 MiB LRU cache for high-zoom viewport tiles (each capped ≤ 16 MiB)
+// so zooming/panning never evicts base pages from s_cache or s_rawCache.
+QCache<QString, QImage> PdfPages::s_tileCache(48 * 1024 * 1024);
 // Keep up to ~32 MiB of pre-recolor PDFium renders so switching reading themes
 // (Paper/Sepia/Dusk/Night) runs only the ~6 ms LUT pass instead of re-decoding
 // slow JPEG2000/JBIG2 scanned pages (~800 ms each).
 QCache<QString, QImage> PdfPages::s_rawCache(32 * 1024 * 1024);
 QHash<QString, QSet<QString>> PdfPages::s_tokenKeys;
+QHash<QString, QSet<QString>> PdfPages::s_tokenTileKeys;
 QHash<QString, QSet<QString>> PdfPages::s_tokenRawKeys;
 QHash<QString, QList<QPair<int, QString>>> PdfPages::s_idWidths;
 QHash<QString, QSet<QString>> PdfPages::s_tokenIds;
 
 namespace {
+
+void assertWorkerAffinity(PdfPages::WorkerState *worker) {
+    Q_ASSERT(worker != nullptr);
+    QThread *cur = QThread::currentThread();
+    Q_ASSERT(!QCoreApplication::instance() || cur != QCoreApplication::instance()->thread());
+    if (worker->book) {
+        Q_ASSERT(worker->workerThread == cur);
+        if (worker->book->document())
+            Q_ASSERT(worker->book->document()->thread() == cur);
+    }
+}
+
+void resetWorkerBook(PdfPages::WorkerState *worker) {
+    assertWorkerAffinity(worker);
+    worker->book.reset();
+    worker->token.clear();
+    worker->path.clear();
+    worker->workerThread = nullptr;
+}
+
+bool ensureWorkerBook(PdfPages::WorkerState *worker, const QString &token, const QString &path) {
+    assertWorkerAffinity(worker);
+    if (worker->token != token || worker->path != path || !worker->book) {
+        resetWorkerBook(worker);
+        auto opened = std::make_unique<PdfBook>(path);
+        if (opened->open()) {
+            QThread *cur = QThread::currentThread();
+            Q_ASSERT(!opened->document() || opened->document()->thread() == cur);
+            worker->workerThread = cur;
+            worker->token = token;
+            worker->path = path;
+            worker->book = std::move(opened);
+        } else {
+            return false;
+        }
+    }
+    return worker->book != nullptr;
+}
 
 class CachedPageResponse : public QQuickImageResponse {
 public:
@@ -48,7 +93,7 @@ private:
 class PageResponse : public QQuickImageResponse, public QRunnable {
 public:
     PageResponse(std::shared_ptr<PdfPages::WorkerState> worker, QString token, QString id, QString cacheKey, int page,
-                 QSize size, QColor bg, QColor fg)
+                 QSize size, QColor bg, QColor fg, PdfPages::TileSpec tile = {})
         : m_worker(std::move(worker)),
           m_token(std::move(token)),
           m_id(std::move(id)),
@@ -56,7 +101,8 @@ public:
           m_page(page),
           m_size(size),
           m_bg(bg),
-          m_fg(fg) {
+          m_fg(fg),
+          m_tile(tile) {
         setAutoDelete(false);
     }
 
@@ -67,21 +113,42 @@ public:
     void cancel() override { m_cancelled.store(true, std::memory_order_relaxed); }
 
     void run() override {
+        if (m_worker)
+            assertWorkerAffinity(m_worker.get());
         if (m_cancelled.load(std::memory_order_relaxed)) {
             emit finished();
             return;
         }
-        if (const QImage hit = PdfPages::cached(m_cacheKey); !hit.isNull()) {
+        if (m_tile.active) {
+            if (const QImage hit = PdfPages::cachedTile(m_cacheKey); !hit.isNull()) {
+                m_image = hit;
+                emit finished();
+                return;
+            }
+        } else if (const QImage hit = PdfPages::cached(m_cacheKey); !hit.isNull()) {
             m_image = hit;
             emit finished();
             return;
         }
         const QString path = PdfPages::pathFor(m_token);
         if (path.isEmpty()) {
-            if (m_worker && m_worker->token == m_token) {
-                m_worker->book.reset();
-                m_worker->token.clear();
-                m_worker->path.clear();
+            if (m_worker && m_worker->token == m_token)
+                resetWorkerBook(m_worker.get());
+            emit finished();
+            return;
+        }
+        if (m_tile.active) {
+            QImage rendered;
+            if (m_worker && ensureWorkerBook(m_worker.get(), m_token, path) &&
+                !m_cancelled.load(std::memory_order_relaxed)) {
+                rendered = PdfPages::renderTileRaw(*m_worker->book, m_page, m_tile, m_size);
+            }
+            if (!m_cancelled.load(std::memory_order_relaxed) && !rendered.isNull()) {
+                PdfPages::compositeAndRecolor(rendered, m_bg, m_fg);
+                if (!m_cancelled.load(std::memory_order_relaxed)) {
+                    PdfPages::storeTile(m_token, m_cacheKey, rendered);
+                    m_image = std::move(rendered);
+                }
             }
             emit finished();
             return;
@@ -92,19 +159,8 @@ public:
             // Detach from the shared raw cache before in-place LUT recoloring.
             rendered = rendered.copy();
         } else {
-            if (m_worker && (m_worker->token != m_token || m_worker->path != path || !m_worker->book)) {
-                m_worker->book.reset();
-                auto opened = std::make_unique<PdfBook>(path);
-                if (opened->open()) {
-                    m_worker->token = m_token;
-                    m_worker->path = path;
-                    m_worker->book = std::move(opened);
-                } else {
-                    m_worker->token.clear();
-                    m_worker->path.clear();
-                }
-            }
-            if (m_worker && m_worker->book && !m_cancelled.load(std::memory_order_relaxed)) {
+            if (m_worker && ensureWorkerBook(m_worker.get(), m_token, path) &&
+                !m_cancelled.load(std::memory_order_relaxed)) {
                 const QSize size = PdfPages::renderSizeFor(m_worker->book->pageSize(m_page), m_size);
                 if (!m_cancelled.load(std::memory_order_relaxed)) {
                     rendered = m_worker->book->renderPageRaw(m_page, size);
@@ -134,6 +190,7 @@ private:
     int m_page;
     QSize m_size;
     QColor m_bg, m_fg;
+    PdfPages::TileSpec m_tile;
     std::atomic_bool m_cancelled{false};
     QImage m_image;
 };
@@ -155,6 +212,8 @@ public:
     }
 
     void run() override {
+        if (m_worker)
+            assertWorkerAffinity(m_worker.get());
         if (m_gen != PdfPages::s_prefetchGen.load(std::memory_order_relaxed))
             return;
         if (!PdfPages::cached(m_cacheKey).isNull())
@@ -183,20 +242,9 @@ public:
         if (!rendered.isNull()) {
             rendered = rendered.copy();
         } else {
-            if (m_worker && (m_worker->token != m_token || m_worker->path != path || !m_worker->book)) {
-                m_worker->book.reset();
-                auto opened = std::make_unique<PdfBook>(path);
-                if (opened->open()) {
-                    m_worker->token = m_token;
-                    m_worker->path = path;
-                    m_worker->book = std::move(opened);
-                } else {
-                    m_worker->token.clear();
-                    m_worker->path.clear();
-                    return;
-                }
-            }
-            if (!m_worker || !m_worker->book || m_page < 0 || m_page >= m_worker->book->pageCount())
+            if (!m_worker || !ensureWorkerBook(m_worker.get(), m_token, path))
+                return;
+            if (m_page < 0 || m_page >= m_worker->book->pageCount())
                 return;
             if (m_gen != PdfPages::s_prefetchGen.load(std::memory_order_relaxed))
                 return;
@@ -231,6 +279,7 @@ PdfPages::PdfPages() {
     m_worker = std::make_shared<WorkerState>();
     m_pool.setMaxThreadCount(1);
     m_pool.setExpiryTimeout(-1);
+    Q_ASSERT(m_pool.maxThreadCount() == 1);
     QMutexLocker lock(&s_mutex);
     s_instance = this;
 }
@@ -243,11 +292,7 @@ PdfPages::~PdfPages() {
     }
     s_prefetchGen.fetch_add(1, std::memory_order_relaxed);
     auto worker = m_worker;
-    m_pool.start([worker] {
-        worker->book.reset();
-        worker->token.clear();
-        worker->path.clear();
-    });
+    m_pool.start([worker] { resetWorkerBook(worker.get()); });
     m_pool.waitForDone();
 }
 
@@ -264,6 +309,9 @@ void PdfPages::remove(const QString &token) {
     const QSet<QString> keys = s_tokenKeys.take(token);
     for (const QString &key : keys)
         s_cache.remove(key);
+    const QSet<QString> tileKeys = s_tokenTileKeys.take(token);
+    for (const QString &key : tileKeys)
+        s_tileCache.remove(key);
     const QSet<QString> rawKeys = s_tokenRawKeys.take(token);
     for (const QString &key : rawKeys)
         s_rawCache.remove(key);
@@ -276,17 +324,144 @@ void PdfPages::remove(const QString &token) {
         // worker thread instead of pinning hundreds of MB until another PDF opens.
         s_instance->m_pool.start(
             [worker, token] {
-                if (worker && worker->token == token && PdfPages::pathFor(token).isEmpty()) {
-                    worker->book.reset();
-                    worker->token.clear();
-                    worker->path.clear();
-                }
+                if (worker)
+                    assertWorkerAffinity(worker.get());
+                if (worker && worker->token == token && PdfPages::pathFor(token).isEmpty())
+                    resetWorkerBook(worker.get());
             },
             2);
     }
 }
 
 void PdfPages::cancelPrefetch() { s_prefetchGen.fetch_add(1, std::memory_order_relaxed); }
+
+PdfPages::TileSpec PdfPages::parseTileSpec(const QUrlQuery &query) {
+    TileSpec spec;
+    if (!query.hasQueryItem(QStringLiteral("tx")) && !query.hasQueryItem(QStringLiteral("ty")) &&
+        !query.hasQueryItem(QStringLiteral("tw")) && !query.hasQueryItem(QStringLiteral("th")) &&
+        !query.hasQueryItem(QStringLiteral("fullw")))
+        return spec;
+
+    bool okX = false, okY = false, okW = false, okH = false, okFull = false;
+    const double rawX = query.queryItemValue(QStringLiteral("tx")).toDouble(&okX);
+    const double rawY = query.queryItemValue(QStringLiteral("ty")).toDouble(&okY);
+    const double rawW = query.queryItemValue(QStringLiteral("tw")).toDouble(&okW);
+    const double rawH = query.queryItemValue(QStringLiteral("th")).toDouble(&okH);
+    const int rawFull = query.queryItemValue(QStringLiteral("fullw")).toInt(&okFull);
+    if (!okX || !okY || !okW || !okH || !okFull || rawFull <= 0)
+        return spec;
+    if (!std::isfinite(rawX) || !std::isfinite(rawY) || !std::isfinite(rawW) || !std::isfinite(rawH))
+        return spec;
+    if (rawW <= 0.0005 || rawH <= 0.0005)
+        return spec;
+
+    const double x1 = std::clamp(rawX, 0.0, 1.0);
+    const double y1 = std::clamp(rawY, 0.0, 1.0);
+    const double x2 = std::clamp(rawX + rawW, 0.0, 1.0);
+    const double y2 = std::clamp(rawY + rawH, 0.0, 1.0);
+    if (x2 - x1 <= 0.0005 || y2 - y1 <= 0.0005)
+        return spec;
+
+    spec.active = true;
+    spec.tx = x1;
+    spec.ty = y1;
+    spec.tw = x2 - x1;
+    spec.th = y2 - y1;
+    spec.fullWidth = qBound(64, rawFull, 12000);
+    return spec;
+}
+
+QPair<QSize, QRect> PdfPages::tileGeometryFor(const QSizeF &points, const TileSpec &spec, const QSize &requestedSize) {
+    if (!spec.active || points.width() <= 0.0 || points.height() <= 0.0 || !std::isfinite(points.width()) ||
+        !std::isfinite(points.height()))
+        return {};
+
+    const double ratio = std::clamp(points.height() / points.width(), 0.1, 10.0);
+    constexpr int kMaxVirtualDim = 12000;
+    constexpr int kMaxTileDim = 4096;
+
+    double virtW = double(qBound(64, spec.fullWidth, kMaxVirtualDim));
+    double virtH = virtW * ratio;
+    if (virtH > double(kMaxVirtualDim)) {
+        const double shrink = double(kMaxVirtualDim) / virtH;
+        virtW = std::max(64.0, std::floor(virtW * shrink));
+        virtH = double(kMaxVirtualDim);
+    }
+
+    auto computeClip = [&](int fw, int fh) -> QRect {
+        const int cx = qBound(0, int(std::floor(spec.tx * double(fw))), qMax(0, fw - 1));
+        const int cy = qBound(0, int(std::floor(spec.ty * double(fh))), qMax(0, fh - 1));
+        const int cw = qBound(1, int(std::ceil((spec.tx + spec.tw) * double(fw))) - cx, fw - cx);
+        const int ch = qBound(1, int(std::ceil((spec.ty + spec.th) * double(fh))) - cy, fh - cy);
+        return QRect(cx, cy, cw, ch);
+    };
+
+    int fullW = qMax(1, int(std::lround(virtW)));
+    int fullH = qMax(1, int(std::lround(virtH)));
+    QRect clip = computeClip(fullW, fullH);
+
+    int maxW = kMaxTileDim;
+    int maxH = kMaxTileDim;
+    if (requestedSize.width() > 0)
+        maxW = qMin(maxW, requestedSize.width());
+    if (requestedSize.height() > 0)
+        maxH = qMin(maxH, requestedSize.height());
+
+    const qint64 pixels = qint64(clip.width()) * qint64(clip.height());
+    if (clip.width() > maxW || clip.height() > maxH || pixels > kMaxTilePixels) {
+        double scale = 1.0;
+        if (clip.width() > maxW)
+            scale = std::min(scale, double(maxW) / double(clip.width()));
+        if (clip.height() > maxH)
+            scale = std::min(scale, double(maxH) / double(clip.height()));
+        if (pixels > kMaxTilePixels)
+            scale = std::min(scale, std::sqrt(double(kMaxTilePixels) / double(pixels)));
+        fullW = qMax(1, int(std::floor(double(fullW) * scale)));
+        fullH = qMax(1, int(std::floor(double(fullH) * scale)));
+        clip = computeClip(fullW, fullH);
+        while ((clip.width() > maxW || clip.height() > maxH ||
+                qint64(clip.width()) * qint64(clip.height()) > kMaxTilePixels) &&
+               (fullW > 1 || fullH > 1)) {
+            fullW = qMax(1, int(std::floor(double(fullW) * 0.96)));
+            fullH = qMax(1, int(std::floor(double(fullH) * 0.96)));
+            clip = computeClip(fullW, fullH);
+        }
+        if (clip.width() > maxW)
+            clip.setWidth(maxW);
+        if (clip.height() > maxH)
+            clip.setHeight(maxH);
+    }
+    return {QSize(fullW, fullH), clip};
+}
+
+QImage PdfPages::renderTileRaw(PdfBook &book, int page, const TileSpec &spec, const QSize &requestedSize) {
+    if (!spec.active || page < 0 || page >= book.pageCount())
+        return {};
+    QPdfDocument *doc = book.document();
+    if (!doc)
+        return {};
+    const auto [scaledSize, clipRect] = tileGeometryFor(book.pageSize(page), spec, requestedSize);
+    if (!scaledSize.isValid() || scaledSize.isEmpty() || !clipRect.isValid() || clipRect.isEmpty())
+        return {};
+
+    QPdfDocumentRenderOptions opts;
+    opts.setScaledSize(scaledSize);
+    opts.setScaledClipRect(clipRect);
+    QImage rendered = doc->render(page, clipRect.size(), opts);
+    if (!rendered.isNull())
+        return rendered;
+
+    // Fallback: render a bounded full page raw and crop the normalized viewport.
+    const QSize fallbackSize = renderSizeFor(book.pageSize(page), QSize(qMin(scaledSize.width(), 3200), 0));
+    const QImage full = book.renderPageRaw(page, fallbackSize);
+    if (full.isNull())
+        return {};
+    const int fx = qBound(0, int(std::floor(spec.tx * full.width())), qMax(0, full.width() - 1));
+    const int fy = qBound(0, int(std::floor(spec.ty * full.height())), qMax(0, full.height() - 1));
+    const int fw = qBound(1, int(std::ceil((spec.tx + spec.tw) * full.width())) - fx, full.width() - fx);
+    const int fh = qBound(1, int(std::ceil((spec.ty + spec.th) * full.height())) - fy, full.height() - fy);
+    return full.copy(fx, fy, fw, fh);
+}
 
 QString PdfPages::makeCacheKey(const QString &id, const QSize &requestedSize) {
     const int w = requestedSize.width() > 0 ? requestedSize.width() : 0;
@@ -425,6 +600,35 @@ void PdfPages::storeCached(const QString &token, const QString &id, int width, c
     }
 }
 
+QImage PdfPages::cachedTile(const QString &key) {
+    QMutexLocker lock(&s_mutex);
+    const QImage *img = s_tileCache.object(key);
+    return img ? *img : QImage();
+}
+
+void PdfPages::storeTile(const QString &token, const QString &key, const QImage &image) {
+    if (image.isNull())
+        return;
+    QMutexLocker lock(&s_mutex);
+    if (!s_paths.contains(token))
+        return;
+    const qsizetype bytes = image.sizeInBytes();
+    if (bytes <= 0 || bytes > kMaxTileBytes || bytes > s_tileCache.maxCost())
+        return;
+    if (s_tileCache.insert(key, new QImage(image), int(bytes))) {
+        auto &tileKeys = s_tokenTileKeys[token];
+        tileKeys.insert(key);
+        if (tileKeys.size() > s_tileCache.count() + 64) {
+            for (auto it = tileKeys.begin(); it != tileKeys.end();) {
+                if (!s_tileCache.contains(*it))
+                    it = tileKeys.erase(it);
+                else
+                    ++it;
+            }
+        }
+    }
+}
+
 QImage PdfPages::cachedRaw(const QString &rawKey) {
     QMutexLocker lock(&s_mutex);
     const QImage *img = s_rawCache.object(rawKey);
@@ -455,23 +659,30 @@ void PdfPages::storeRaw(const QString &token, const QString &rawKey, const QImag
 }
 
 QQuickImageResponse *PdfPages::requestImageResponse(const QString &id, const QSize &requestedSize) {
-    // "<token>/<page>?bg=%23rrggbb&fg=%23rrggbb" (or without query for original colors)
+    // "<token>/<page>?bg=%23rrggbb&fg=%23rrggbb[&tx=...&ty=...&tw=...&th=...&fullw=...]"
     const QString cacheKey = makeCacheKey(id, requestedSize);
-    if (const QImage hit = cached(cacheKey); !hit.isNull())
-        return new CachedPageResponse(hit);
-    // When narrowing (e.g. Companion docking beside the page), reuse an already-
-    // cached slightly larger render of the exact same page+theme via GPU downscale
-    // instead of re-decoding slow JPEG2000/JBIG2 scans from scratch.
-    if (const QImage nearHit = cachedDownscaleMatch(id, requestedSize); !nearHit.isNull())
-        return new CachedPageResponse(nearHit);
-
     const QString path = id.section(QLatin1Char('?'), 0, 0);
     const QString token = path.section(QLatin1Char('/'), 0, 0);
     const int page = path.section(QLatin1Char('/'), 1).toInt();
     const QUrlQuery query(id.section(QLatin1Char('?'), 1));
+    const TileSpec tile = parseTileSpec(query);
+
+    if (tile.active) {
+        if (const QImage hit = cachedTile(cacheKey); !hit.isNull())
+            return new CachedPageResponse(hit);
+    } else {
+        if (const QImage hit = cached(cacheKey); !hit.isNull())
+            return new CachedPageResponse(hit);
+        // When narrowing (e.g. Companion docking beside the page), reuse an already-
+        // cached slightly larger render of the exact same page+theme via GPU downscale
+        // instead of re-decoding slow JPEG2000/JBIG2 scans from scratch.
+        if (const QImage nearHit = cachedDownscaleMatch(id, requestedSize); !nearHit.isNull())
+            return new CachedPageResponse(nearHit);
+    }
+
     const QColor bg(query.queryItemValue(QStringLiteral("bg"), QUrl::FullyDecoded));
     const QColor fg(query.queryItemValue(QStringLiteral("fg"), QUrl::FullyDecoded));
-    auto *response = new PageResponse(m_worker, token, id, cacheKey, page, requestedSize, bg, fg);
+    auto *response = new PageResponse(m_worker, token, id, cacheKey, page, requestedSize, bg, fg, tile);
     m_pool.start(response, 1);
     return response;
 }

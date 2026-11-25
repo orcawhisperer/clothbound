@@ -15285,6 +15285,13 @@ async function flushMicrotasks(n = 8) {
     void w5AiMcpDagCompanionExtraction();
     void w5AiMcpDagReadOnlyMcpAndSimdPassageIndex();
     // === end w5-ai-mcp-dag tests ===
+
+    // === w5-reader-craft tests ===
+    void w5ReaderCraftPdfViewportTilingAndCache();
+    void w5ReaderCraftAsyncLightboxSnipAndPeek();
+    void w5ReaderCraftPdfSurfaceFocalZoomAndBaseCap();
+    void w5ReaderCraftDecomposedReaderGpuFoldAndKeyboardA11y();
+    // === end w5-reader-craft tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS
@@ -17136,5 +17143,666 @@ void ClothboundTests::w5AiMcpDagReadOnlyMcpAndSimdPassageIndex() {
     QVERIFY2(std::abs(ranked[1].score - expectedTop[1]) < 1e-5, qPrintable(QString::number(ranked[1].score)));
 }
 // === end w5-ai-mcp-dag tests ===
+
+// === w5-reader-craft tests ===
+#include "reader/readerimageprovider.h"
+
+#include <QUrlQuery>
+
+void ClothboundTests::w5ReaderCraftPdfViewportTilingAndCache() {
+    // 1. parseTileSpec validation and clamping.
+    {
+        QVERIFY(!PdfPages::parseTileSpec(QUrlQuery(QStringLiteral("bg=%23111111&fg=%23eeeeee"))).active);
+        QVERIFY(!PdfPages::parseTileSpec(QUrlQuery(QStringLiteral("tx=0&ty=0&tw=0&th=0.5&fullw=3000"))).active);
+        QVERIFY(!PdfPages::parseTileSpec(QUrlQuery(QStringLiteral("tx=nan&ty=0&tw=0.5&th=0.5&fullw=3000"))).active);
+        QVERIFY(!PdfPages::parseTileSpec(QUrlQuery(QStringLiteral("tx=0.1&ty=0.1&tw=0.5&th=0.5&fullw=-10"))).active);
+
+        const PdfPages::TileSpec clamped =
+            PdfPages::parseTileSpec(QUrlQuery(QStringLiteral("tx=-0.2&ty=0.25&tw=0.6&th=1.2&fullw=4096")));
+        QVERIFY(clamped.active);
+        QCOMPARE(clamped.tx, 0.0);
+        QCOMPARE(clamped.ty, 0.25);
+        QVERIFY(qAbs(clamped.tw - 0.4) < 1e-6);
+        QVERIFY(qAbs(clamped.th - 0.75) < 1e-6);
+        QCOMPARE(clamped.fullWidth, 4096);
+    }
+
+    // 2. tileGeometryFor preserves aspect and strictly enforces <= 16 MiB tile VRAM cap.
+    {
+        PdfPages::TileSpec huge;
+        huge.active = true;
+        huge.tx = 0.0;
+        huge.ty = 0.0;
+        huge.tw = 1.0;
+        huge.th = 1.0;
+        huge.fullWidth = 12000;
+        const auto [scaled, clip] = PdfPages::tileGeometryFor(QSizeF(612.0, 792.0), huge);
+        QVERIFY(scaled.isValid() && !scaled.isEmpty());
+        QVERIFY(clip.isValid() && !clip.isEmpty());
+        QVERIFY2(qint64(clip.width()) * qint64(clip.height()) * 4 <= PdfPages::kMaxTileBytes,
+                 qPrintable(QStringLiteral("%1x%2").arg(clip.width()).arg(clip.height())));
+    }
+
+    // 3. Real PDF tile render: distinct top-left vs bottom-right quadrants + dark LUT + separate tile cache.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pdfPath = dir.filePath(QStringLiteral("tile_quads.pdf"));
+    {
+        QPdfWriter writer(pdfPath);
+        writer.setPageSize(QPageSize(QSizeF(300, 400), QPageSize::Point));
+        writer.setResolution(72);
+        QPainter p(&writer);
+        p.fillRect(0, 0, writer.width(), writer.height(), Qt::white);
+        // Distinct saturated blue block in top-left quadrant, blank paper in bottom-right.
+        p.fillRect(10, 10, writer.width() / 3, writer.height() / 3, QColor(0x20, 0x60, 0xD0));
+        p.setPen(Qt::black);
+        p.drawText(30, 60, QStringLiteral("Top Left Ink"));
+        p.end();
+    }
+
+    auto book = std::make_shared<PdfBook>(pdfPath);
+    QVERIFY(book->open());
+    const QString token = QStringLiteral("w5-tile-test");
+    PdfPages::add(token, book);
+
+    PdfPages pages;
+    // Seed a base page entry in s_cache and confirm tiling never evicts it.
+    const QString baseId = token + QStringLiteral("/0?bg=%231e1f24&fg=%23d6d2c9");
+    const QString baseKey = PdfPages::makeCacheKey(baseId, QSize(1024, 0));
+    QImage baseImg(1024, 1365, QImage::Format_RGB32);
+    baseImg.fill(QColor(0x1e, 0x1f, 0x24));
+    PdfPages::storeCached(token, baseId, 1024, baseKey, baseImg);
+    QVERIFY(!PdfPages::cached(baseKey).isNull());
+
+    auto fetch = [&](const QString &id, const QSize &reqSize, QImage &out) {
+        out = QImage();
+        std::unique_ptr<QQuickImageResponse> resp(pages.requestImageResponse(id, reqSize));
+        int done = 0;
+        connect(resp.get(), &QQuickImageResponse::finished, this, [&done] { ++done; });
+        QTRY_COMPARE_WITH_TIMEOUT(done, 1, 8000);
+        std::unique_ptr<QQuickTextureFactory> factory(resp->textureFactory());
+        if (factory)
+            out = factory->image();
+    };
+
+    const QString tlId =
+        token + QStringLiteral("/0?bg=%231e1f24&fg=%23d6d2c9&tx=0.0000&ty=0.0000&tw=0.3500&th=0.3500&fullw=3600");
+    const QString brId =
+        token + QStringLiteral("/0?bg=%231e1f24&fg=%23d6d2c9&tx=0.6500&ty=0.6500&tw=0.3500&th=0.3500&fullw=3600");
+
+    QImage tlImg;
+    fetch(tlId, QSize(), tlImg);
+    QVERIFY(!tlImg.isNull());
+    QVERIFY(tlImg.width() > 1000);
+    QVERIFY(tlImg.sizeInBytes() <= PdfPages::kMaxTileBytes);
+    // Colored blue block survives dark LUT recoloring in top-left quadrant.
+    const QColor tlCenter(tlImg.pixel(tlImg.width() / 2, tlImg.height() / 2));
+    QVERIFY2(tlCenter.blue() > tlCenter.red() + 40, qPrintable(tlCenter.name()));
+
+    QImage brImg;
+    fetch(brId, QSize(), brImg);
+    QVERIFY(!brImg.isNull());
+    QVERIFY(brImg.sizeInBytes() <= PdfPages::kMaxTileBytes);
+    // Unpainted bottom-right paper maps cleanly to dark theme bg #1e1f24.
+    QCOMPARE(QColor(brImg.pixel(brImg.width() / 2, brImg.height() / 2)).name(), QStringLiteral("#1e1f24"));
+
+    // Tile cached separately in s_tileCache and base page untouched in s_cache.
+    const QString tlKey = PdfPages::makeCacheKey(tlId, QSize());
+    QVERIFY(!PdfPages::cachedTile(tlKey).isNull());
+    QVERIFY(!PdfPages::cached(baseKey).isNull());
+
+    // remove(token) cleans both base and tile caches cleanly.
+    PdfPages::remove(token);
+    QVERIFY(PdfPages::cached(baseKey).isNull());
+    QVERIFY(PdfPages::cachedTile(tlKey).isNull());
+}
+
+void ClothboundTests::w5ReaderCraftAsyncLightboxSnipAndPeek() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // 1. ReaderImageProvider async EPUB PNG + SVG decode & cache lifecycle.
+    const QByteArray samplePng = png(48, 32);
+    const QByteArray sampleSvg =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"80\" height=\"60\">"
+        "<rect width=\"80\" height=\"60\" fill=\"#336699\"/></svg>";
+    const QByteArray opf =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<package version=\"3.0\" unique-identifier=\"uid\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+        "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">"
+        "<dc:title>Images Book</dc:title><dc:creator>Ada</dc:creator><dc:language>en</dc:language></metadata>\n"
+        "  <manifest>\n"
+        "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+        "    <item id=\"i1\" href=\"images/plate.png\" media-type=\"image/png\"/>\n"
+        "    <item id=\"i2\" href=\"images/diagram.svg\" media-type=\"image/svg+xml\"/>\n"
+        "  </manifest>\n"
+        "  <spine><itemref idref=\"c1\"/></spine>\n"
+        "</package>";
+    const QString epubPath = dir.filePath(QStringLiteral("images.epub"));
+    QVERIFY(TestBooks::write(epubPath, TestBooks::epub({
+                                           {QStringLiteral("OEBPS/content.opf"), opf},
+                                           {QStringLiteral("OEBPS/c1.xhtml"),
+                                            TestBooks::chapter("Plate", "<p><img src=\"images/plate.png\"/></p>")},
+                                           {QStringLiteral("OEBPS/images/plate.png"), samplePng},
+                                           {QStringLiteral("OEBPS/images/diagram.svg"), sampleSvg},
+                                       })));
+
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    const int epubId = library.addBookFile(epubPath);
+    QVERIFY(epubId > 0);
+    BookScheme scheme;
+    Reader reader(&library, &scheme);
+    QVERIFY(reader.openBook(epubId));
+    const QString base = reader.manifest().value(QStringLiteral("base")).toString();
+    QVERIFY(!base.isEmpty());
+
+    // 1a. Fallback when ReaderImageProvider is NOT registered: async local temp file (no base64 on GUI thread).
+    QVERIFY(!ReaderImageProvider::isRegistered());
+    {
+        QSignalSpy chosenSpy(&reader, &Reader::imageChosen);
+        reader.imageClicked(QVariantMap{
+            {QStringLiteral("url"), base + QStringLiteral("OEBPS/images/plate.png")},
+            {QStringLiteral("caption"), QStringLiteral("Plate I")},
+        });
+        QTRY_COMPARE_WITH_TIMEOUT(chosenSpy.count(), 1, 5000);
+        const QString emittedUrl = chosenSpy.first().at(0).toString();
+        QCOMPARE(chosenSpy.first().at(1).toString(), QStringLiteral("Plate I"));
+        QVERIFY2(emittedUrl.startsWith(QStringLiteral("file://")), qPrintable(emittedUrl));
+        const QString localFile = QUrl(emittedUrl).toLocalFile();
+        QVERIFY(QFileInfo::exists(localFile));
+        const QImage loaded(localFile);
+        QCOMPARE(loaded.size(), QSize(48, 32));
+    }
+
+    // 1b. Registered ReaderImageProvider path: immediate image://bookimg/... URL + async off-thread decode.
+    {
+        ReaderImageProvider provider;
+        QVERIFY(ReaderImageProvider::isRegistered());
+        QSignalSpy chosenSpy(&reader, &Reader::imageChosen);
+        reader.imageClicked(QVariantMap{
+            {QStringLiteral("url"), base + QStringLiteral("OEBPS/images/plate.png")},
+            {QStringLiteral("caption"), QStringLiteral("Plate Async")},
+        });
+        QCOMPARE(chosenSpy.count(), 1);
+        const QString providerUrl = chosenSpy.first().at(0).toString();
+        QVERIFY2(providerUrl.startsWith(QStringLiteral("image://bookimg/")), qPrintable(providerUrl));
+        const QString id = providerUrl.mid(QStringLiteral("image://bookimg/").size());
+
+        std::unique_ptr<QQuickImageResponse> resp(provider.requestImageResponse(id, QSize()));
+        int done = 0;
+        connect(resp.get(), &QQuickImageResponse::finished, this, [&done] { ++done; });
+        QTRY_COMPARE_WITH_TIMEOUT(done, 1, 5000);
+        std::unique_ptr<QQuickTextureFactory> factory(resp->textureFactory());
+        QVERIFY(factory != nullptr);
+        QCOMPARE(factory->image().size(), QSize(48, 32));
+
+        // SVG decode also succeeds off-thread.
+        const QString svgId = id.section(QLatin1Char('/'), 0, 0) + QStringLiteral("/OEBPS/images/diagram.svg");
+        std::unique_ptr<QQuickImageResponse> svgResp(provider.requestImageResponse(svgId, QSize()));
+        int svgDone = 0;
+        connect(svgResp.get(), &QQuickImageResponse::finished, this, [&svgDone] { ++svgDone; });
+        QTRY_COMPARE_WITH_TIMEOUT(svgDone, 1, 5000);
+        std::unique_ptr<QQuickTextureFactory> svgFactory(svgResp->textureFactory());
+        QVERIFY(svgFactory != nullptr && !svgFactory->image().isNull());
+
+        // Closing the book cleans ReaderImageProvider cache & mapping.
+        reader.close();
+        std::unique_ptr<QQuickImageResponse> afterClose(provider.requestImageResponse(id, QSize()));
+        int closedDone = 0;
+        connect(afterClose.get(), &QQuickImageResponse::finished, this, [&closedDone] { ++closedDone; });
+        QTRY_COMPARE_WITH_TIMEOUT(closedDone, 1, 3000);
+        QVERIFY(afterClose->textureFactory() == nullptr);
+    }
+    QVERIFY(!ReaderImageProvider::isRegistered());
+
+    // 2. Async PDF snip & PDF peek offload off GUI thread and drop stale responses cleanly.
+    const QString pdfPath = dir.filePath(QStringLiteral("async_snip_peek.pdf"));
+    {
+        QPdfWriter writer(pdfPath);
+        writer.setPageSize(QPageSize(QSizeF(300, 400), QPageSize::Point));
+        writer.setResolution(72);
+        QPainter p(&writer);
+        p.drawText(QRect(24, 30, 240, 60), QStringLiteral("Page One Equation E = mc^2"));
+        writer.newPage();
+        p.drawText(QRect(24, 30, 240, 60), QStringLiteral("Reference [42] Attention Architecture"));
+        p.end();
+    }
+    const int pdfId = library.addBookFile(pdfPath);
+    QVERIFY(pdfId > 0);
+    QVERIFY(reader.openBook(pdfId));
+
+    {
+        QSignalSpy snipSpy(&reader, &Reader::pdfSnipReady);
+        const int reqId = reader.requestPdfSnip(0, 0.05, 0.05, 0.8, 0.25, QStringLiteral("explain"), QString());
+        QVERIFY(reqId > 0);
+        QTRY_COMPARE_WITH_TIMEOUT(snipSpy.count(), 1, 8000);
+        QCOMPARE(snipSpy.first().at(0).toInt(), reqId);
+        QCOMPARE(snipSpy.first().at(1).toString(), QStringLiteral("explain"));
+        const QString b64 = snipSpy.first().at(2).toString();
+        QVERIFY(!b64.isEmpty());
+        QVERIFY(!QImage::fromData(QByteArray::fromBase64(b64.toLatin1()), "PNG").isNull());
+        QCOMPARE(snipSpy.first().at(3).toInt(), 0);
+    }
+
+    {
+        QSignalSpy peekSpy(&reader, &Reader::pdfPeekReady);
+        const int staleId = reader.requestPdfPeek(0, 0.1);
+        const int latestId = reader.requestPdfPeek(1, 0.1);
+        QVERIFY(staleId > 0 && latestId > staleId);
+        QTRY_VERIFY_WITH_TIMEOUT(peekSpy.count() >= 1, 8000);
+        QVERIFY(QThreadPool::globalInstance()->waitForDone(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(peekSpy.count(), 1);
+        QCOMPARE(peekSpy.first().at(0).toInt(), latestId);
+        const QVariantMap info = peekSpy.first().at(1).toMap();
+        QCOMPARE(info.value(QStringLiteral("page")).toInt(), 1);
+        QVERIFY(info.value(QStringLiteral("imageDataUrl")).toString().startsWith(QStringLiteral("data:image/png;base64,")));
+        QVERIFY(info.value(QStringLiteral("excerpt")).toString().contains(QStringLiteral("Reference")));
+    }
+
+    // In-flight snip cancelled cleanly across reader.close() without crash or stale signal.
+    {
+        QSignalSpy snipSpy(&reader, &Reader::pdfSnipReady);
+        QVERIFY(reader.requestPdfSnip(0, 0.1, 0.1, 0.5, 0.3, QStringLiteral("latex"), QString()) > 0);
+        reader.close();
+        QVERIFY(QThreadPool::globalInstance()->waitForDone(5000));
+        QCoreApplication::processEvents();
+        QCOMPARE(snipSpy.count(), 0);
+    }
+}
+
+void ClothboundTests::w5ReaderCraftPdfSurfaceFocalZoomAndBaseCap() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString pdfPath = dir.filePath(QStringLiteral("focal.pdf"));
+    {
+        QPdfWriter writer(pdfPath);
+        writer.setPageSize(QPageSize(QSizeF(612, 792), QPageSize::Point));
+        writer.setResolution(72);
+        QPainter p(&writer);
+        for (int i = 0; i < 3; ++i) {
+            if (i > 0)
+                writer.newPage();
+            p.drawText(QRect(40, 60, 480, 100), QStringLiteral("Focal zoom page %1").arg(i + 1));
+        }
+        p.end();
+    }
+
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    const int bookId = library.addBookFile(pdfPath);
+    QVERIFY(bookId > 0);
+    BookScheme scheme;
+    Reader reader(&library, &scheme);
+    QVERIFY(reader.openBook(bookId));
+    Marks marks(&library);
+    marks.setBook(bookId);
+    BookSearch bookSearch(&reader);
+    GeminiProvider gemini;
+    MemoryKeyStore keys;
+    AiServices ai(&gemini, &keys, library.database().connectionName());
+    AudioCache audioCache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+    Narration narration(&ai, &audioCache, &reader, &library);
+    narration.m_player->setHeadless(true);
+    Theme theme(dir.filePath(QStringLiteral("no-omarchy")));
+
+    QQmlEngine engine;
+    engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
+    const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+    engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+    engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+    engine.rootContext()->setContextProperty(QStringLiteral("marks"), &marks);
+    engine.rootContext()->setContextProperty(QStringLiteral("bookSearch"), &bookSearch);
+    engine.rootContext()->setContextProperty(QStringLiteral("narration"), &narration);
+    QList<QQmlError> warnings;
+    QObject::connect(&engine, &QQmlEngine::warnings, &engine,
+                     [&](const QList<QQmlError> &errs) { warnings.append(errs); });
+
+    QQmlComponent surfComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/PdfSurface.qml")));
+    QVERIFY2(surfComp.status() == QQmlComponent::Ready, qPrintable(surfComp.errorString()));
+    const QVariantMap look{
+        {QStringLiteral("bg"), QStringLiteral("#FAF6EE")},
+        {QStringLiteral("fg"), QStringLiteral("#26221D")},
+        {QStringLiteral("muted"), QStringLiteral("#787066")},
+        {QStringLiteral("line"), QStringLiteral("#E2DCD0")},
+        {QStringLiteral("popover"), QStringLiteral("#FDFAF3")},
+        {QStringLiteral("link"), QStringLiteral("#8A5A12")},
+        {QStringLiteral("dark"), false},
+    };
+    std::unique_ptr<QObject> surfObj(surfComp.createWithInitialProperties({
+        {QStringLiteral("width"), 1000.0},
+        {QStringLiteral("height"), 760.0},
+        {QStringLiteral("look"), look},
+    }));
+    QVERIFY(surfObj != nullptr);
+    QCOMPARE(surfObj->property("maxBaseTextureWidth").toInt(), 2048);
+
+    QVariantMap styleMap{
+        {QStringLiteral("layout"), QStringLiteral("single")},
+        {QStringLiteral("pdfCrop"), false},
+        {QStringLiteral("pdfOriginalColors"), false},
+        {QStringLiteral("pdfFit"), QStringLiteral("page")},
+        {QStringLiteral("marginTop"), 60.0},
+        {QStringLiteral("marginBottom"), 76.0},
+        {QStringLiteral("animate"), false},
+    };
+    const QVariantMap openLoc{{QStringLiteral("chapter"), 0}};
+    QMetaObject::invokeMethod(surfObj.get(), "open", Q_ARG(QVariant, reader.manifest()),
+                              Q_ARG(QVariant, openLoc), Q_ARG(QVariant, styleMap));
+    QCoreApplication::processEvents();
+
+    // 1. Pure focal-scroll math locks document point under cursor (vx, vy).
+    {
+        QVariant ret;
+        const bool ok = QMetaObject::invokeMethod(
+            surfObj.get(), "computeFocalScroll", Q_RETURN_ARG(QVariant, ret),
+            Q_ARG(QVariant, 0.0), Q_ARG(QVariant, 0.0),         // oldContentX, oldContentY
+            Q_ARG(QVariant, 960.0), Q_ARG(QVariant, 1248.0),    // oldW, oldH
+            Q_ARG(QVariant, 1920.0), Q_ARG(QVariant, 2496.0),   // newW, newH (2x zoom)
+            Q_ARG(QVariant, 1000.0), Q_ARG(QVariant, 760.0),    // viewW, viewH
+            Q_ARG(QVariant, 60.0), Q_ARG(QVariant, 76.0),       // topPad, bottomPad
+            Q_ARG(QVariant, 620.0), Q_ARG(QVariant, 440.0));    // cursorX, cursorY
+        QVERIFY(ok);
+        const QVariantMap next = ret.toMap();
+        const double nx = next.value(QStringLiteral("x")).toDouble();
+        const double ny = next.value(QStringLiteral("y")).toDouble();
+        // Verify exact cursor lock: doc point under (620, 440) before zoom stays at (620, 440) after zoom!
+        const double relX = (620.0 - 24.0) / 960.0;
+        const double relY = (440.0 - 60.0) / 1248.0;
+        const double screenXAfter = 24.0 + relX * 1920.0 - nx;
+        const double screenYAfter = 60.0 + relY * 2496.0 - ny;
+        QVERIFY2(qAbs(screenXAfter - 620.0) < 0.5, qPrintable(QString::number(screenXAfter)));
+        QVERIFY2(qAbs(screenYAfter - 440.0) < 0.5, qPrintable(QString::number(screenYAfter)));
+    }
+
+    // 2. Pure scroll-mode focal horizontal pan math locks cursor X.
+    {
+        QVariant ret;
+        const bool ok = QMetaObject::invokeMethod(
+            surfObj.get(), "computeFocalPanX", Q_RETURN_ARG(QVariant, ret),
+            Q_ARG(QVariant, 0.0), Q_ARG(QVariant, 1000.0), Q_ARG(QVariant, 2000.0),
+            Q_ARG(QVariant, 1000.0), Q_ARG(QVariant, 952.0), Q_ARG(QVariant, 750.0));
+        QVERIFY(ok);
+        // Cursor is +250 px right of center; at 2x zoom that point moves to +500 px, requiring panX == +250.
+        QVERIFY2(qAbs(ret.toDouble() - 250.0) < 0.5, qPrintable(QString::number(ret.toDouble())));
+    }
+
+    // 3. Tile URL builder handles both themed (?bg=...&fg=...&tx=...) and originalColors (?tx=...).
+    {
+        QVariant themedUrl, rawUrl;
+        QVERIFY(QMetaObject::invokeMethod(
+            surfObj.get(), "buildTileUrl", Q_RETURN_ARG(QVariant, themedUrl),
+            Q_ARG(QVariant, 0), Q_ARG(QVariant, QStringLiteral("?bg=%231e1f24&fg=%23d6d2c9")),
+            Q_ARG(QVariant, QRectF(0.125, 0.25, 0.5, 0.4)), Q_ARG(QVariant, 3584)));
+        const QString u1 = themedUrl.toString();
+        QVERIFY2(u1.contains(QStringLiteral("&tx=0.1250&ty=0.2500&tw=0.5000&th=0.4000&fullw=3584")), qPrintable(u1));
+
+        QVERIFY(QMetaObject::invokeMethod(
+            surfObj.get(), "buildTileUrl", Q_RETURN_ARG(QVariant, rawUrl),
+            Q_ARG(QVariant, 0), Q_ARG(QVariant, QString()),
+            Q_ARG(QVariant, QRectF(0.0, 0.5, 0.5, 0.5)), Q_ARG(QVariant, 3072)));
+        const QString u2 = rawUrl.toString();
+        QVERIFY2(u2.contains(QStringLiteral("?tx=0.0000&ty=0.5000&tw=0.5000&th=0.5000&fullw=3072")), qPrintable(u2));
+    }
+
+    // 4. High zoom (4.0x on 1000x760 -> displayWidth > 2048) keeps basePixelWidth <= 2048 and enables tile overlay.
+    QMetaObject::invokeMethod(surfObj.get(), "setCustomZoom", Q_ARG(QVariant, 4.0));
+    QCoreApplication::processEvents();
+    const QString pdfQml = [&] {
+        QFile f(srcRoot + QStringLiteral("/ui/reader/PdfSurface.qml"));
+        return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+    }();
+    QVERIFY(pdfQml.contains(QStringLiteral("readonly property int maxBaseTextureWidth: 2048")));
+    QVERIFY(pdfQml.contains(QStringLiteral("sourceSize.width: pageItem.basePixelWidth")));
+    QVERIFY(pdfQml.contains(QStringLiteral("id: tileImage")));
+    QVERIFY(pdfQml.contains(QStringLiteral("reader.requestPdfPeek(")));
+    QVERIFY(pdfQml.contains(QStringLiteral("reader.requestPdfSnip(")));
+
+    // Live cursor-focal zoomByWheelAt around bottom-right cursor moves zoomed Flickable away from (0, 0).
+    QMetaObject::invokeMethod(surfObj.get(), "setFitMode", Q_ARG(QVariant, QStringLiteral("width")));
+    QCoreApplication::processEvents();
+    QVERIFY(QMetaObject::invokeMethod(surfObj.get(), "zoomByWheelAt",
+                                      Q_ARG(QVariant, 240.0), Q_ARG(QVariant, 800.0), Q_ARG(QVariant, 620.0)));
+    QCoreApplication::processEvents();
+    QVERIFY(surfObj->property("effectiveZoom").toDouble() > 1.5);
+    QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+}
+
+void ClothboundTests::w5ReaderCraftDecomposedReaderGpuFoldAndKeyboardA11y() {
+    const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+    QVERIFY(!srcRoot.isEmpty());
+    auto readSrc = [&](const QString &rel) -> QString {
+        QFile f(srcRoot + QLatin1Char('/') + rel);
+        return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+    };
+
+    // 1. EpubReader.qml LOC reduction (< 2100 LOC), zero software Canvas dog-ear, and resources.qrc registration.
+    const QString erQml = readSrc(QStringLiteral("ui/reader/EpubReader.qml"));
+    const int erLines = erQml.count(QLatin1Char('\n')) + 1;
+    QVERIFY2(erLines < 2100, qPrintable(QStringLiteral("EpubReader.qml has %1 lines (target < 2100)").arg(erLines)));
+    QVERIFY2(!erQml.contains(QStringLiteral("Canvas {")), "EpubReader.qml must not use software Canvas dog-ear");
+    QVERIFY(!erQml.contains(QStringLiteral("shadowBlur")));
+
+    const QString foldQml = readSrc(QStringLiteral("ui/reader/ReaderBookmarkFold.qml"));
+    QVERIFY(foldQml.contains(QStringLiteral("import QtQuick.Shapes")));
+    QVERIFY(foldQml.contains(QStringLiteral("Shape {")));
+    QVERIFY(!foldQml.contains(QStringLiteral("Canvas {")));
+
+    const QString qrc = readSrc(QStringLiteral("resources.qrc"));
+    for (const QString &sub : {QStringLiteral("ui/reader/ReaderBookmarkFold.qml"),
+                               QStringLiteral("ui/reader/ReaderChrome.qml"),
+                               QStringLiteral("ui/reader/ReaderLightbox.qml"),
+                               QStringLiteral("ui/reader/ReaderMenus.qml"),
+                               QStringLiteral("ui/reader/ReaderPanels.qml")}) {
+        QVERIFY2(qrc.contains(sub), qPrintable(sub));
+    }
+
+    // 2. Live QML compilation & zero warnings for all decomposed reader components + keyboard-accessible views.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    const int colId = library.createCollection(QStringLiteral("Essays"));
+    QVERIFY(colId > 0);
+    BookScheme scheme;
+    Reader reader(&library, &scheme);
+    Marks marks(&library);
+    BookSearch bookSearch(&reader);
+    GeminiProvider gemini;
+    MemoryKeyStore keys;
+    AiServices ai(&gemini, &keys, library.database().connectionName());
+    AudioCache audioCache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+    VoicePacks voicePacks(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                          packsManifest(QStringLiteral("http://127.0.0.1/")));
+    LocalSpeech localSpeech(&voicePacks);
+    VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
+                        dir.filePath(QStringLiteral("voices.json")));
+    Narration narration(&ai, &audioCache, &reader, &library);
+    narration.m_player->setHeadless(true);
+    Companion companion(&ai, &reader, library.database().connectionName());
+    Illustrator illustrator(&ai, &reader, library.database().connectionName(), dir.filePath(QStringLiteral("pics")));
+    OpdsClient opds(&library, &keys, dir.filePath(QStringLiteral("online")));
+    Theme theme(dir.filePath(QStringLiteral("no-omarchy")));
+    Translator translator;
+
+    QQmlEngine engine;
+    engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+    engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+    engine.rootContext()->setContextProperty(QStringLiteral("translator"), &translator);
+    engine.rootContext()->setContextProperty(QStringLiteral("library"), &library);
+    engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+    engine.rootContext()->setContextProperty(QStringLiteral("marks"), &marks);
+    engine.rootContext()->setContextProperty(QStringLiteral("bookSearch"), &bookSearch);
+    engine.rootContext()->setContextProperty(QStringLiteral("ai"), &ai);
+    engine.rootContext()->setContextProperty(QStringLiteral("narration"), &narration);
+    engine.rootContext()->setContextProperty(QStringLiteral("voicePacks"), &voicePacks);
+    engine.rootContext()->setContextProperty(QStringLiteral("localSpeech"), &localSpeech);
+    engine.rootContext()->setContextProperty(QStringLiteral("voices"), &voices);
+    engine.rootContext()->setContextProperty(QStringLiteral("companion"), &companion);
+    engine.rootContext()->setContextProperty(QStringLiteral("illustrator"), &illustrator);
+    engine.rootContext()->setContextProperty(QStringLiteral("opds"), &opds);
+    engine.rootContext()->setContextProperty(
+        QStringLiteral("settingsUrl"), QUrl::fromLocalFile(dir.filePath(QStringLiteral("settings.ini"))));
+    QList<QQmlError> warnings;
+    QObject::connect(&engine, &QQmlEngine::warnings, &engine,
+                     [&](const QList<QQmlError> &errs) { warnings.append(errs); });
+
+    const QVariantMap look{
+        {QStringLiteral("bg"), QStringLiteral("#FAF6EE")},
+        {QStringLiteral("fg"), QStringLiteral("#26221D")},
+        {QStringLiteral("inkSoft"), QStringLiteral("#3B352D")},
+        {QStringLiteral("muted"), QStringLiteral("#787066")},
+        {QStringLiteral("line"), QStringLiteral("#E2DCD0")},
+        {QStringLiteral("popover"), QStringLiteral("#FDFAF3")},
+        {QStringLiteral("link"), QStringLiteral("#8A5A12")},
+        {QStringLiteral("fold"), QStringLiteral("#DDD5C5")},
+        {QStringLiteral("dark"), false},
+    };
+
+    // 2a. GPU Shape ReaderBookmarkFold live behavior.
+    {
+        QQmlComponent comp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/ReaderBookmarkFold.qml")));
+        QVERIFY2(comp.status() == QQmlComponent::Ready, qPrintable(comp.errorString()));
+        theme.setReducedMotion(true);
+        std::unique_ptr<QObject> obj(comp.createWithInitialProperties({{QStringLiteral("look"), look}}));
+        QVERIFY(obj != nullptr);
+        QCOMPARE(obj->property("fold").toDouble(), 0.0);
+        obj->setProperty("bookmarked", true);
+        QCOMPARE(obj->property("fold").toDouble(), 1.0);
+    }
+
+    // 2b. ReaderLightbox live open/zoom/Esc behavior.
+    {
+        QQmlComponent comp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/ReaderLightbox.qml")));
+        QVERIFY2(comp.status() == QQmlComponent::Ready, qPrintable(comp.errorString()));
+        QQuickWindow win;
+        win.resize(800, 600);
+        std::unique_ptr<QObject> obj(comp.createWithInitialProperties({
+            {QStringLiteral("width"), 800.0},
+            {QStringLiteral("height"), 600.0},
+        }));
+        QVERIFY(obj != nullptr);
+        auto *item = qobject_cast<QQuickItem *>(obj.get());
+        QVERIFY(item != nullptr);
+        item->setParentItem(win.contentItem());
+        QSignalSpy closedSpy(item, SIGNAL(closed()));
+        QVERIFY(QMetaObject::invokeMethod(item, "openImage", Q_ARG(QVariant, QStringLiteral("data:image/png;base64,")),
+                                          Q_ARG(QVariant, QStringLiteral("Figure 1"))));
+        QCOMPARE(item->property("open").toBool(), true);
+        QVERIFY(QMetaObject::invokeMethod(item, "setZoom", Q_ARG(QVariant, 2.5)));
+        QCOMPARE(item->property("zoom").toDouble(), 2.5);
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(item, &esc);
+        QCOMPARE(item->property("open").toBool(), false);
+        QCOMPARE(closedSpy.count(), 1);
+        item->setParentItem(nullptr);
+    }
+
+    // 2c. ReaderMenus, ReaderChrome, ReaderPanels instantiate cleanly with zero warnings.
+    {
+        QQmlComponent mComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/ReaderMenus.qml")));
+        QVERIFY2(mComp.status() == QQmlComponent::Ready, qPrintable(mComp.errorString()));
+        std::unique_ptr<QObject> mObj(mComp.createWithInitialProperties({{QStringLiteral("look"), look}}));
+        QVERIFY(mObj != nullptr);
+
+        QQmlComponent cComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/ReaderChrome.qml")));
+        QVERIFY2(cComp.status() == QQmlComponent::Ready, qPrintable(cComp.errorString()));
+        std::unique_ptr<QObject> cObj(cComp.createWithInitialProperties({
+            {QStringLiteral("width"), 1000.0},
+            {QStringLiteral("height"), 700.0},
+            {QStringLiteral("look"), look},
+        }));
+        QVERIFY(cObj != nullptr);
+
+        QQmlComponent pComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/ReaderPanels.qml")));
+        QVERIFY2(pComp.status() == QQmlComponent::Ready, qPrintable(pComp.errorString()));
+        std::unique_ptr<QObject> pObj(pComp.createWithInitialProperties({
+            {QStringLiteral("width"), 1000.0},
+            {QStringLiteral("height"), 700.0},
+            {QStringLiteral("look"), look},
+        }));
+        QVERIFY(pObj != nullptr);
+    }
+
+    // 3. Keyboard accessibility for CatalogsSheet custom server delete, VoicePanel designed-voice delete,
+    //    and LibrarySidebar collection Rename (F2) / Delete (Del) / Context Menu.
+    {
+        const QString catalogsQml = readSrc(QStringLiteral("ui/library/CatalogsSheet.qml"));
+        QVERIFY(catalogsQml.contains(QStringLiteral("customRow.hovered || customRow.activeFocus || removeBtn.activeFocus || customWrap.confirming")));
+        QVERIFY(catalogsQml.contains(QStringLiteral("event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace")));
+        QVERIFY(catalogsQml.contains(QStringLiteral("id: confirmRemoveBtn")));
+
+        const QString vpQml = readSrc(QStringLiteral("ui/audio/VoicePanel.qml"));
+        QVERIFY(vpQml.contains(QStringLiteral("function deleteHighlightedDesignedVoice()")));
+        QVERIFY(vpQml.contains(QStringLiteral("function triggerForget()")));
+        QVERIFY(vpQml.contains(QStringLiteral("row.hovered || row.activeFocus || row.keyboardHighlighted || forgetButton.activeFocus || row.confirming")));
+
+        const QString sbQml = readSrc(QStringLiteral("ui/library/LibrarySidebar.qml"));
+        QVERIFY(sbQml.contains(QStringLiteral("event.key === Qt.Key_F2")));
+        QVERIFY(sbQml.contains(QStringLiteral("event.key === Qt.Key_Delete")));
+        QVERIFY(sbQml.contains(QStringLiteral("id: colMoreBtn")));
+
+        // Live LibrarySidebar F2 rename & Delete removal on a real collection row.
+        QQmlComponent sbComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/LibrarySidebar.qml")));
+        QVERIFY2(sbComp.status() == QQmlComponent::Ready, qPrintable(sbComp.errorString()));
+        QQuickWindow win;
+        win.resize(400, 640);
+        std::unique_ptr<QObject> sbObj(sbComp.createWithInitialProperties({{QStringLiteral("height"), 640.0}}));
+        QVERIFY(sbObj != nullptr);
+        auto *sbItem = qobject_cast<QQuickItem *>(sbObj.get());
+        QVERIFY(sbItem != nullptr);
+        sbItem->setParentItem(win.contentItem());
+        QCoreApplication::processEvents();
+
+        QQuickItem *essaysRow = nullptr;
+        std::function<void(QQuickItem *)> findEssays = [&](QQuickItem *node) {
+            if (!node || essaysRow)
+                return;
+            if (node->property("text").toString() == QStringLiteral("Essays")) {
+                essaysRow = node;
+                return;
+            }
+            for (QQuickItem *child : node->childItems())
+                findEssays(child);
+        };
+        findEssays(sbItem);
+        QVERIFY2(essaysRow != nullptr, "Collection row 'Essays' not found in LibrarySidebar");
+
+        QSignalSpy renameSpy(sbItem, SIGNAL(renameCollection(int, QString)));
+        QKeyEvent f2(QEvent::KeyPress, Qt::Key_F2, Qt::NoModifier);
+        QCoreApplication::sendEvent(essaysRow, &f2);
+        QCOMPARE(renameSpy.count(), 1);
+        QCOMPARE(renameSpy.first().at(0).toInt(), colId);
+        QCOMPARE(renameSpy.first().at(1).toString(), QStringLiteral("Essays"));
+
+        QKeyEvent del(QEvent::KeyPress, Qt::Key_Delete, Qt::NoModifier);
+        QCoreApplication::sendEvent(essaysRow, &del);
+        QCOMPARE(library.collections().size(), 0);
+        sbItem->setParentItem(nullptr);
+
+        // Live CatalogsSheet & VoicePanel instantiate cleanly with zero warnings.
+        QQmlComponent catComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/CatalogsSheet.qml")));
+        QVERIFY2(catComp.status() == QQmlComponent::Ready, qPrintable(catComp.errorString()));
+        std::unique_ptr<QObject> catObj(catComp.createWithInitialProperties({
+            {QStringLiteral("width"), 900.0},
+            {QStringLiteral("height"), 640.0},
+        }));
+        QVERIFY(catObj != nullptr);
+
+        QQmlComponent vpComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/audio/VoicePanel.qml")));
+        QVERIFY2(vpComp.status() == QQmlComponent::Ready, qPrintable(vpComp.errorString()));
+        std::unique_ptr<QObject> vpObj(vpComp.createWithInitialProperties({
+            {QStringLiteral("width"), 900.0},
+            {QStringLiteral("height"), 640.0},
+            {QStringLiteral("look"), look},
+        }));
+        QVERIFY(vpObj != nullptr);
+    }
+
+    QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+}
+// === end w5-reader-craft tests ===
 
 #include "clothbound_tests.moc"

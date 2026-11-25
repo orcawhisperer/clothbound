@@ -2,9 +2,10 @@
 
 #include "formats/bookscheme.h"
 #include "formats/epubbook.h"
-#include "library/library.h"
 #include "formats/pdfbook.h"
 #include "formats/pdfpages.h"
+#include "library/library.h"
+#include "reader/readerimageprovider.h"
 
 #include <QAudioDevice>
 #include <QAudioFormat>
@@ -46,6 +47,87 @@ bool sfxSuppressedEnvironment() {
         return true;
     const QString platform = QGuiApplication::platformName();
     return platform == QLatin1String("offscreen") || platform == QLatin1String("minimal");
+}
+
+// Ensures a shared PdfBook (and its thread-affine QPdfDocument) is always
+// destroyed on the main/UI thread even when a worker outlives Reader::close().
+struct MainThreadPdfRelease {
+    std::shared_ptr<PdfBook> handle;
+    ~MainThreadPdfRelease() {
+        if (!handle)
+            return;
+        if (QCoreApplication *app = QCoreApplication::instance(); app && QThread::currentThread() != app->thread()) {
+            auto keep = std::move(handle);
+            QMetaObject::invokeMethod(
+                app,
+                [b = std::move(keep), app]() mutable {
+                    Q_ASSERT(QThread::currentThread() == app->thread());
+                    b.reset();
+                },
+                Qt::QueuedConnection);
+        }
+    }
+};
+
+QString imageExtensionForMime(const QString &mime) {
+    const QString lower = mime.trimmed().toLower();
+    if (lower == QLatin1String("image/png"))
+        return QStringLiteral(".png");
+    if (lower == QLatin1String("image/jpeg") || lower == QLatin1String("image/jpg"))
+        return QStringLiteral(".jpg");
+    if (lower == QLatin1String("image/webp"))
+        return QStringLiteral(".webp");
+    if (lower == QLatin1String("image/gif"))
+        return QStringLiteral(".gif");
+    if (lower == QLatin1String("image/svg+xml"))
+        return QStringLiteral(".svg");
+    if (lower == QLatin1String("image/bmp"))
+        return QStringLiteral(".bmp");
+    if (lower == QLatin1String("image/tiff"))
+        return QStringLiteral(".tiff");
+    return QStringLiteral(".img");
+}
+
+QVariantMap buildPeekDestinationMap(const PdfBook &pdf, const QRectF &pdfCrop, int destPage, double destY) {
+    if (destPage < 0 || destPage >= pdf.pageCount())
+        return {};
+    constexpr double stripH = 0.38;
+    const double topY = (destY < 0.0 || !std::isfinite(destY))
+                            ? 0.0
+                            : std::clamp(std::clamp(destY, 0.0, 1.0) - stripH * 0.5, 0.0, 1.0 - stripH);
+
+    // Frame horizontally around the book's detected text bounds (with comfortable breathing room)
+    // so tiny citations and figure labels read clearly inside the Quick-Look card.
+    double normX = 0.0;
+    double normW = 1.0;
+    if (pdfCrop.width() >= 0.4 && pdfCrop.width() < 0.98) {
+        normX = qMax(0.0, pdfCrop.x() - 0.02);
+        normW = qMin(1.0 - normX, pdfCrop.width() + 0.04);
+    }
+
+    const QByteArray png = pdf.renderRegionPng(destPage, normX, topY, normW, stripH, 840);
+    const QString imageDataUrl =
+        png.isEmpty() ? QString() : QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
+
+    QString excerpt = pdf.pageTextInBand(destPage, topY, qMin(1.0, topY + stripH), 260);
+    if (excerpt.isEmpty())
+        excerpt = pdf.pageText(destPage);
+    excerpt.replace(QString(QChar(0xFFFE)) + QLatin1String("\r\n"), QString())
+        .replace(QLatin1String("\r\n"), QLatin1String(" "));
+    excerpt = excerpt.simplified();
+    if (excerpt.size() > 240) {
+        const qsizetype cut = excerpt.lastIndexOf(QLatin1Char(' '), 240);
+        excerpt = excerpt.left(cut > 140 ? cut : 240).trimmed() + QChar(0x2026);
+    }
+
+    const QString rawLabel = pdf.pageLabel(destPage).trimmed();
+    const QString pageLabel = rawLabel.isEmpty() ? QString::number(destPage + 1) : rawLabel;
+    return QVariantMap{
+        {QStringLiteral("page"), destPage},
+        {QStringLiteral("pageLabel"), pageLabel},
+        {QStringLiteral("imageDataUrl"), imageDataUrl},
+        {QStringLiteral("excerpt"), excerpt},
+    };
 }
 }
 
@@ -380,6 +462,7 @@ Reader::Reader(Library *library, BookScheme *scheme, QObject *parent)
 Reader::~Reader() { close(); }
 
 bool Reader::openBook(int bookId) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const BookRecord record = m_library->record(bookId);
     if (!record.id) {
         m_error = tr("That book isn't in the library.");
@@ -404,6 +487,7 @@ bool Reader::openBook(int bookId) {
 
     m_book = book;
     m_token = m_scheme->add(book);
+    ReaderImageProvider::add(m_token, book);
     m_bookId = bookId;
     ++m_session;
     m_activeSession->store(m_session, std::memory_order_relaxed);
@@ -519,6 +603,7 @@ bool Reader::openBook(int bookId) {
 }
 
 void Reader::close() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_bookId)
         return;
     if (m_saveTimer.isActive()) {
@@ -529,8 +614,11 @@ void Reader::close() {
     m_timeFlush.stop();
     ++m_session;
     m_activeSession->store(m_session, std::memory_order_relaxed);
+    m_latestPeekReqId = 0;
     m_scheme->remove(m_token);
+    ReaderImageProvider::remove(m_token);
     PdfPages::remove(m_token);
+    m_lightboxDir.reset();
     m_book.reset();
     m_pdf.reset();
     m_pdfCrop = QRectF(0, 0, 1, 1);
@@ -757,6 +845,7 @@ int Reader::minutesLeftInBook() const {
 }
 
 void Reader::setFontWeight(int weight) {
+    Q_ASSERT(QThread::currentThread() == thread());
     weight = qBound(300, weight, 700);
     if (weight == m_fontWeight)
         return;
@@ -769,6 +858,7 @@ void Reader::setFontWeight(int weight) {
 }
 
 void Reader::setParagraphSpacing(double spacing) {
+    Q_ASSERT(QThread::currentThread() == thread());
     spacing = std::round(qBound(0.0, spacing, 1.2) * 100.0) / 100.0;
     if (qFuzzyCompare(spacing + 1.0, m_paragraphSpacing + 1.0))
         return;
@@ -815,6 +905,7 @@ void Reader::setBookAppearanceOverride(bool enabled) {
 }
 
 void Reader::saveBookAppearance(const QVariantMap &appearance) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_bookId || !m_library)
         return;
     QVariantMap cleaned = appearance;
@@ -831,6 +922,7 @@ void Reader::saveBookAppearance(const QVariantMap &appearance) {
 }
 
 void Reader::clearBookAppearance() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_bookId || !m_library)
         return;
     const bool had = m_bookAppearanceOverride || !m_bookAppearance.isEmpty();
@@ -853,6 +945,7 @@ QString Reader::formatBackLabel(int chapter, const QString &pageLabel) const {
 }
 
 void Reader::relocated(const QVariantMap &location) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_bookId)
         return;
     if (location.contains(QStringLiteral("session")) && location.value(QStringLiteral("session")).toLongLong() != m_session)
@@ -909,6 +1002,7 @@ void Reader::relocated(const QVariantMap &location) {
 }
 
 void Reader::savePosition() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_bookId)
         return;
     // The chapter's name rides along, for the library's Continue card.
@@ -975,6 +1069,7 @@ void Reader::markClicked(int id, const QVariantMap &rect) {
 }
 
 void Reader::imageClicked(const QVariantMap &info) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_bookId)
         return;
     if (info.contains(QStringLiteral("session")) && info.value(QStringLiteral("session")).toLongLong() != m_session)
@@ -1000,26 +1095,74 @@ void Reader::imageClicked(const QVariantMap &info) {
     const QString prefix = QStringLiteral("/book/%1/").arg(m_token);
     if (!path.startsWith(prefix))
         return;
-    QString entry = path.mid(prefix.size());
-    QString mime, err;
-    QByteArray bytes = m_book->resource(entry, &mime, &err);
-    if (bytes.isEmpty() && !err.isEmpty()) {
-        const QString normalized = EpubBook::resolve(QString(), entry);
-        if (!normalized.isEmpty() && normalized != entry) {
-            err.clear();
-            bytes = m_book->resource(normalized, &mime, &err);
-            if (!bytes.isEmpty())
-                entry = normalized;
-        }
+    const QString entry = path.mid(prefix.size());
+    if (entry.isEmpty())
+        return;
+
+    // Fast zero-base64 async path once ReaderImageProvider ("bookimg") is registered on the QML engine.
+    if (ReaderImageProvider::isRegistered()) {
+        QString quickMime = m_book->mediaType(entry);
+        if (quickMime.isEmpty())
+            quickMime = EpubBook::mediaTypeForPath(entry);
+        if (!quickMime.isEmpty() && !quickMime.startsWith(QLatin1String("image/"), Qt::CaseInsensitive))
+            return;
+        emit imageChosen(ReaderImageProvider::imageUrl(m_token, entry), caption);
+        return;
     }
-    constexpr qsizetype maxImageBytes = 20 * 1024 * 1024;
-    if (bytes.isEmpty() || bytes.size() > maxImageBytes)
-        return;
-    if (mime.isEmpty())
-        mime = EpubBook::mediaTypeForPath(entry);
-    if (!mime.startsWith(QLatin1String("image/"), Qt::CaseInsensitive))
-        return;
-    emit imageChosen(QStringLiteral("data:%1;base64,%2").arg(mime, QString::fromLatin1(bytes.toBase64())), caption);
+
+    // Async off-GUI-thread fallback (eliminates synchronous 20 MB ZIP inflate and
+    // 27 MB base64 encoding on the GUI thread even before "bookimg" is wired in main.cpp).
+    if (!m_lightboxDir || !m_lightboxDir->isValid())
+        m_lightboxDir = std::make_unique<QTemporaryDir>();
+    const QString tempDirPath = (m_lightboxDir && m_lightboxDir->isValid()) ? m_lightboxDir->path() : QString();
+    const qint64 imgSeq = ++m_lightboxSeq;
+    const qint64 session = m_session;
+    auto book = m_book;
+    auto activeSession = m_activeSession;
+
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher, session, caption] {
+        Q_ASSERT(QThread::currentThread() == thread());
+        watcher->deleteLater();
+        const QString source = watcher->result();
+        if (source.isEmpty() || session != m_session || !m_bookId)
+            return;
+        emit imageChosen(source, caption);
+    });
+    watcher->setFuture(QtConcurrent::run([book, activeSession, session, entry, tempDirPath, imgSeq]() -> QString {
+        if (activeSession->load(std::memory_order_relaxed) != session)
+            return {};
+        QString resolvedEntry = entry;
+        QString mime, err;
+        QByteArray bytes = book->resource(resolvedEntry, &mime, &err);
+        if (bytes.isEmpty() && !err.isEmpty()) {
+            const QString normalized = EpubBook::resolve(QString(), resolvedEntry);
+            if (!normalized.isEmpty() && normalized != resolvedEntry) {
+                err.clear();
+                bytes = book->resource(normalized, &mime, &err);
+                if (!bytes.isEmpty())
+                    resolvedEntry = normalized;
+            }
+        }
+        if (activeSession->load(std::memory_order_relaxed) != session)
+            return {};
+        if (bytes.isEmpty() || bytes.size() > ReaderImageProvider::kMaxResourceBytes)
+            return {};
+        if (mime.isEmpty())
+            mime = EpubBook::mediaTypeForPath(resolvedEntry);
+        if (!mime.startsWith(QLatin1String("image/"), Qt::CaseInsensitive))
+            return {};
+
+        if (!tempDirPath.isEmpty()) {
+            const QString outPath = tempDirPath + QStringLiteral("/img-%1%2").arg(imgSeq).arg(imageExtensionForMime(mime));
+            QFile out(outPath);
+            if (out.open(QIODevice::WriteOnly | QIODevice::Truncate) && out.write(bytes) == bytes.size()) {
+                out.close();
+                return QUrl::fromLocalFile(outPath).toString();
+            }
+        }
+        return QStringLiteral("data:%1;base64,%2").arg(mime, QString::fromLatin1(bytes.toBase64()));
+    }));
 }
 
 void Reader::listenFromSession(qint64 session, int chapter, qint64 offset) {
@@ -1066,6 +1209,7 @@ void Reader::copyText(const QString &text) const {
 // --- PDFs ----------------------------------------------------------------------
 
 bool Reader::openPdf(int bookId) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const BookRecord record = m_library->record(bookId);
     auto book = std::make_shared<PdfBook>(record.path);
     if (!book->open()) {
@@ -1189,19 +1333,7 @@ bool Reader::openPdf(int bookId) {
         watcher->setFuture(QtConcurrent::run(
             [book, activeSession, session, needCrop, needLengths, pages](QPromise<PdfInitChunk> &promise) mutable {
                 // Ensure the shared QPdfDocument is always destroyed on its affine UI thread.
-                struct MainThreadRelease {
-                    std::shared_ptr<PdfBook> handle;
-                    ~MainThreadRelease() {
-                        if (!handle)
-                            return;
-                        if (QCoreApplication *app = QCoreApplication::instance();
-                            app && QThread::currentThread() != app->thread()) {
-                            auto keep = std::move(handle);
-                            QMetaObject::invokeMethod(
-                                app, [b = std::move(keep)]() mutable { b.reset(); }, Qt::QueuedConnection);
-                        }
-                    }
-                } releaseGuard{std::move(book)};
+                MainThreadPdfRelease releaseGuard{std::move(book)};
 
                 auto cancelled = [&]() {
                     return promise.isCanceled() || activeSession->load(std::memory_order_relaxed) != session;
@@ -1317,6 +1449,7 @@ QVariantList Reader::pdfLinks(int page) const {
 }
 
 QString Reader::snipPdfRegionBase64(int pageIndex, double normX, double normY, double normW, double normH) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_pdf)
         return {};
     const QByteArray png = m_pdf->renderRegionPng(pageIndex, normX, normY, normW, normH, 1400);
@@ -1325,46 +1458,72 @@ QString Reader::snipPdfRegionBase64(int pageIndex, double normX, double normY, d
     return QString::fromLatin1(png.toBase64());
 }
 
+int Reader::requestPdfSnip(int pageIndex, double normX, double normY, double normW, double normH,
+                           const QString &action, const QString &customPrompt) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_pdf || pageIndex < 0 || pageIndex >= m_pdf->pageCount())
+        return 0;
+    const int reqId = ++m_asyncPdfReqId;
+    const qint64 session = m_session;
+    auto book = m_pdf;
+    auto activeSession = m_activeSession;
+
+    auto *watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this,
+            [this, watcher, reqId, session, action, pageIndex, customPrompt] {
+                Q_ASSERT(QThread::currentThread() == thread());
+                watcher->deleteLater();
+                if (session != m_session || !m_pdf)
+                    return;
+                emit pdfSnipReady(reqId, action, watcher->result(), pageIndex, customPrompt);
+            });
+    watcher->setFuture(QtConcurrent::run(
+        [book, activeSession, session, pageIndex, normX, normY, normW, normH]() mutable -> QString {
+            MainThreadPdfRelease releaseGuard{std::move(book)};
+            if (activeSession->load(std::memory_order_relaxed) != session || !releaseGuard.handle)
+                return {};
+            const QByteArray png = releaseGuard.handle->renderRegionPng(pageIndex, normX, normY, normW, normH, 1400);
+            if (png.isEmpty() || activeSession->load(std::memory_order_relaxed) != session)
+                return {};
+            return QString::fromLatin1(png.toBase64());
+        }));
+    return reqId;
+}
+
 QVariantMap Reader::peekPdfDestination(int destPage, double destY) const {
-    if (!m_pdf || destPage < 0 || destPage >= m_pdf->pageCount())
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_pdf)
         return {};
-    constexpr double stripH = 0.38;
-    const double topY = (destY < 0.0 || !std::isfinite(destY))
-                            ? 0.0
-                            : std::clamp(std::clamp(destY, 0.0, 1.0) - stripH * 0.5, 0.0, 1.0 - stripH);
+    return buildPeekDestinationMap(*m_pdf, m_pdfCrop, destPage, destY);
+}
 
-    // Frame horizontally around the book's detected text bounds (with comfortable breathing room)
-    // so tiny citations and figure labels read clearly inside the Quick-Look card.
-    double normX = 0.0;
-    double normW = 1.0;
-    if (m_pdfCrop.width() >= 0.4 && m_pdfCrop.width() < 0.98) {
-        normX = qMax(0.0, m_pdfCrop.x() - 0.02);
-        normW = qMin(1.0 - normX, m_pdfCrop.width() + 0.04);
-    }
+int Reader::requestPdfPeek(int destPage, double destY) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_pdf || destPage < 0 || destPage >= m_pdf->pageCount())
+        return 0;
+    const int reqId = ++m_asyncPdfReqId;
+    m_latestPeekReqId = reqId;
+    const qint64 session = m_session;
+    const QRectF crop = m_pdfCrop;
+    auto book = m_pdf;
+    auto activeSession = m_activeSession;
 
-    const QByteArray png = m_pdf->renderRegionPng(destPage, normX, topY, normW, stripH, 840);
-    const QString imageDataUrl =
-        png.isEmpty() ? QString() : QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
-
-    QString excerpt = m_pdf->pageTextInBand(destPage, topY, qMin(1.0, topY + stripH), 260);
-    if (excerpt.isEmpty())
-        excerpt = m_pdf->pageText(destPage);
-    excerpt.replace(QString(QChar(0xFFFE)) + QLatin1String("\r\n"), QString())
-        .replace(QLatin1String("\r\n"), QLatin1String(" "));
-    excerpt = excerpt.simplified();
-    if (excerpt.size() > 240) {
-        const qsizetype cut = excerpt.lastIndexOf(QLatin1Char(' '), 240);
-        excerpt = excerpt.left(cut > 140 ? cut : 240).trimmed() + QChar(0x2026);
-    }
-
-    const QString rawLabel = m_pdf->pageLabel(destPage).trimmed();
-    const QString pageLabel = rawLabel.isEmpty() ? QString::number(destPage + 1) : rawLabel;
-    return QVariantMap{
-        {QStringLiteral("page"), destPage},
-        {QStringLiteral("pageLabel"), pageLabel},
-        {QStringLiteral("imageDataUrl"), imageDataUrl},
-        {QStringLiteral("excerpt"), excerpt},
-    };
+    auto *watcher = new QFutureWatcher<QVariantMap>(this);
+    connect(watcher, &QFutureWatcher<QVariantMap>::finished, this, [this, watcher, reqId, session] {
+        Q_ASSERT(QThread::currentThread() == thread());
+        watcher->deleteLater();
+        if (session != m_session || !m_pdf || reqId != m_latestPeekReqId)
+            return;
+        emit pdfPeekReady(reqId, watcher->result());
+    });
+    watcher->setFuture(
+        QtConcurrent::run([book, activeSession, session, crop, destPage, destY]() mutable -> QVariantMap {
+            MainThreadPdfRelease releaseGuard{std::move(book)};
+            if (activeSession->load(std::memory_order_relaxed) != session || !releaseGuard.handle)
+                return {};
+            return buildPeekDestinationMap(*releaseGuard.handle, crop, destPage, destY);
+        }));
+    return reqId;
 }
 
 namespace {
@@ -1702,8 +1861,10 @@ QString Reader::pdfPageLabel(int page) const { return m_pdf ? m_pdf->pageLabel(p
 QString Reader::pdfPageText(int page) const { return m_pdf ? m_pdf->pageText(page) : QString(); }
 
 void Reader::pdfPrefetch(const QVariantList &pages, int pixelWidth, const QString &colorQuery) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_pdf || m_token.isEmpty() || pages.isEmpty() || pixelWidth <= 0)
         return;
+    const int cappedWidth = qMin(pixelWidth, PdfPages::kMaxBaseWidthPx);
     QList<int> pageList;
     pageList.reserve(pages.size());
     const int total = m_pdf->pageCount();
@@ -1713,10 +1874,11 @@ void Reader::pdfPrefetch(const QVariantList &pages, int pixelWidth, const QStrin
             pageList.append(p);
     }
     if (!pageList.isEmpty())
-        PdfPages::prefetch(m_token, pageList, QSize(pixelWidth, 0), colorQuery);
+        PdfPages::prefetch(m_token, pageList, QSize(cappedWidth, 0), colorQuery);
 }
 
 void Reader::pdfSpeakable(int page) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_pdf)
         return;
     const QJsonArray blocks = PdfBook::speakable(m_pdf->pageText(page), m_title);

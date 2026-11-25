@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 #include <QObject>
 #include <QRectF>
+#include <QTemporaryDir>
 #include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
@@ -170,8 +171,13 @@ public:
     Q_INVOKABLE QVariantList pdfLinks(int page) const;
     // High-DPI PNG crop of a normalized [0..1] page region, encoded as base64.
     Q_INVOKABLE QString snipPdfRegionBase64(int pageIndex, double normX, double normY, double normW, double normH) const;
+    // Off-GUI-thread async PDF snip (emits pdfSnipReady when complete; returns request id or 0).
+    Q_INVOKABLE int requestPdfSnip(int pageIndex, double normX, double normY, double normW, double normH,
+                                   const QString &action = {}, const QString &customPrompt = {});
     // Zero-jump preview strip for an internal PDF link destination: {page, pageLabel, imageDataUrl, excerpt}.
     Q_INVOKABLE QVariantMap peekPdfDestination(int destPage, double destY = -1.0) const;
+    // Off-GUI-thread async PDF destination peek (emits pdfPeekReady when complete; returns request id or 0).
+    Q_INVOKABLE int requestPdfPeek(int destPage, double destY = -1.0);
     // Where a stretch of a page's text is: [{x, y, width, height}] in parts of the page.
     Q_INVOKABLE QVariantList pdfRects(int page, qint64 start, qint64 end) const;
     Q_INVOKABLE QString pdfPageLabel(int page) const;
@@ -212,6 +218,9 @@ signals:
     void listenRequested(int chapter, qint64 offset);
     void pageTurnRequested(int direction);
     void pdfCropChanged();
+    void pdfSnipReady(int requestId, const QString &action, const QString &base64Png, int pageIndex,
+                      const QString &customPrompt);
+    void pdfPeekReady(int requestId, const QVariantMap &info);
 
 private:
     friend class ClothboundTests;
@@ -286,4 +295,8 @@ private:
     qint64 m_pendingChars = 0;
     QTimer m_timeFlush;
     std::unique_ptr<PageTurnSfx> m_sfx;
+    std::unique_ptr<QTemporaryDir> m_lightboxDir;
+    qint64 m_lightboxSeq = 0;
+    int m_asyncPdfReqId = 0;
+    int m_latestPeekReqId = 0;
 };

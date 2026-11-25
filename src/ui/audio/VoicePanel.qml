@@ -195,6 +195,21 @@ FocusScope {
         preview(entry.voice.id)
     }
 
+    function deleteHighlightedDesignedVoice() {
+        const idx = voiceList.currentIndex
+        if (idx < 0 || idx >= listItems.length)
+            return false
+        const entry = listItems[idx]
+        if (entry.designEntry || !entry.voice || entry.voice.kind !== "designed")
+            return false
+        const del = voiceList.itemAtIndex(idx)
+        if (del && del.voiceRow) {
+            del.voiceRow.triggerForget()
+            return true
+        }
+        return false
+    }
+
     function startOrFinishListening() {
         panel.resumeAfter = false
         voices.stopPreview()
@@ -508,6 +523,12 @@ FocusScope {
             event.accepted = true
             return
         }
+        if ((event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) && !searchInput.activeFocus) {
+            if (panel.deleteHighlightedDesignedVoice()) {
+                event.accepted = true
+                return
+            }
+        }
         if ((event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier))
             || (event.key === Qt.Key_Slash && event.modifiers === Qt.NoModifier && !searchInput.activeFocus)) {
             searchInput.forceActiveFocus()
@@ -620,6 +641,19 @@ FocusScope {
             onTriggered: row.confirming = false
         }
 
+        function triggerForget() {
+            if (voice.kind !== "designed")
+                return
+            if (!confirming) {
+                confirming = true
+                return
+            }
+            confirming = false
+            if (narration.voice === voice.id)
+                narration.setVoice("sulafat", "Sulafat")
+            voices.forget(voice.id)
+        }
+
         implicitHeight: Math.max(52, rowLayout.implicitHeight + 14)
         hoverEnabled: true
         focusPolicy: Qt.TabFocus
@@ -628,6 +662,15 @@ FocusScope {
         Accessible.checked: chosen
         onClicked: panel.choose(voice)
         onHoveredChanged: if (hovered) panel.keyboardActive = false
+        Keys.onPressed: (event) => {
+            if (row.voice.kind === "designed" && (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace)) {
+                row.triggerForget()
+                event.accepted = true
+            } else if (row.confirming && event.key === Qt.Key_Escape) {
+                row.confirming = false
+                event.accepted = true
+            }
+        }
 
         background: Rectangle {
             radius: Ui.radius(10, theme.radius)
@@ -726,19 +769,25 @@ FocusScope {
                 }
             }
 
-            // Delete button for user-designed voices (4s confirmation).
+            // Delete button for user-designed voices (4s confirmation; reachable via hover, Tab, or Delete key).
             AbstractButton {
                 id: forgetButton
-                visible: row.voice.kind === "designed" && (row.hovered || row.confirming)
+                visible: row.voice.kind === "designed"
+                         && (row.hovered || row.activeFocus || row.keyboardHighlighted || forgetButton.activeFocus || row.confirming)
                 Layout.alignment: Qt.AlignVCenter
                 implicitHeight: 28
                 implicitWidth: row.confirming ? confirmLabel.implicitWidth + 16 : 28
                 hoverEnabled: true
                 focusPolicy: Qt.TabFocus
+                Accessible.name: row.confirming
+                    ? qsTr("Confirm delete %1").arg(row.voice.title || row.voice.name || "")
+                    : qsTr("Delete %1").arg(row.voice.title || row.voice.name || "")
                 background: Rectangle {
                     radius: Ui.radius(6, theme.radius)
                     color: row.confirming ? Ui.tint(theme.danger, 0.2)
                          : forgetButton.hovered ? theme.fillHover : "transparent"
+                    border.width: forgetButton.visualFocus ? 2 : 0
+                    border.color: theme.accent
                 }
                 contentItem: Item {
                     Glyph {
@@ -759,18 +808,9 @@ FocusScope {
                         font.weight: Font.DemiBold
                     }
                 }
-                onClicked: {
-                    if (!row.confirming) {
-                        row.confirming = true
-                        return
-                    }
-                    row.confirming = false
-                    if (narration.voice === row.voice.id)
-                        narration.setVoice("sulafat", "Sulafat")
-                    voices.forget(row.voice.id)
-                }
+                onClicked: row.triggerForget()
                 ToolTip.visible: hovered && !row.confirming
-                ToolTip.text: qsTr("Delete this voice")
+                ToolTip.text: qsTr("Delete this voice (Del)")
                 ToolTip.delay: 600
             }
 
@@ -1612,6 +1652,7 @@ FocusScope {
                             id: delWrap
                             required property var modelData
                             required property int index
+                            readonly property alias voiceRow: voiceItem
                             readonly property bool isDesign: !!modelData.designEntry
                             readonly property bool kbHighlight: panel.keyboardActive && voiceList.currentIndex === index
                             width: voiceList.width

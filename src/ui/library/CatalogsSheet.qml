@@ -476,6 +476,14 @@ FocusScope {
                                         searchField.text = ""
                                         opds.openCatalog(customWrap.modelData.id)
                                     }
+                                    Keys.onPressed: (event) => {
+                                        if (event.key === Qt.Key_Delete || event.key === Qt.Key_Backspace) {
+                                            sheet.confirmRemoveId = customWrap.confirming ? "" : customWrap.modelData.id
+                                            event.accepted = true
+                                            if (sheet.confirmRemoveId === customWrap.modelData.id)
+                                                Qt.callLater(() => confirmRemoveBtn.forceActiveFocus())
+                                        }
+                                    }
 
                                     background: Rectangle {
                                         radius: Ui.radius(8, theme.radius)
@@ -536,17 +544,21 @@ FocusScope {
                                         }
                                         IconButton {
                                             id: removeBtn
-                                            visible: customRow.hovered || customWrap.confirming
+                                            visible: customRow.hovered || customRow.activeFocus || removeBtn.activeFocus || customWrap.confirming
                                             anchors.right: parent.right
                                             anchors.rightMargin: 4
                                             anchors.verticalCenter: parent.verticalCenter
                                             width: 24
                                             height: 24
+                                            tabFocusable: true
                                             glyph: Icons.trash
                                             tone: theme.ink3
-                                            tip: qsTr("Remove server")
+                                            tip: qsTr("Remove server (Del)")
+                                            Accessible.name: qsTr("Remove %1").arg(customWrap.modelData.name)
                                             onClicked: {
                                                 sheet.confirmRemoveId = customWrap.confirming ? "" : customWrap.modelData.id
+                                                if (sheet.confirmRemoveId === customWrap.modelData.id)
+                                                    Qt.callLater(() => confirmRemoveBtn.forceActiveFocus())
                                             }
                                         }
                                     }
@@ -576,12 +588,17 @@ FocusScope {
                                             font.weight: Font.Medium
                                         }
                                         TextButton {
+                                            id: cancelRemoveBtn
                                             ghost: true
                                             size: "compact"
                                             text: qsTr("Cancel")
-                                            onClicked: sheet.confirmRemoveId = ""
+                                            onClicked: {
+                                                sheet.confirmRemoveId = ""
+                                                customRow.forceActiveFocus()
+                                            }
                                         }
                                         TextButton {
+                                            id: confirmRemoveBtn
                                             size: "compact"
                                             text: qsTr("Remove")
                                             onClicked: {
@@ -829,8 +846,8 @@ FocusScope {
                         }
 
                         IconButton {
-                            width: 28
-                            height: 28
+                            Layout.preferredWidth: 28
+                            Layout.preferredHeight: 28
                             glyph: Icons.close
                             tone: theme.ink3
                             tip: qsTr("Close (Esc)")
@@ -961,8 +978,8 @@ FocusScope {
                                             Keys.onEnterPressed: sheet.submitAddServer()
                                         }
                                         IconButton {
-                                            width: 30
-                                            height: 30
+                                            Layout.preferredWidth: 30
+                                            Layout.preferredHeight: 30
                                             glyph: sheet.showAddPassword ? sheet.eyeOffIcon : sheet.eyeIcon
                                             tone: theme.ink3
                                             tip: sheet.showAddPassword ? qsTr("Hide password") : qsTr("Show password")
@@ -976,8 +993,8 @@ FocusScope {
                                 Layout.fillWidth: true
                                 spacing: 7
                                 Glyph {
-                                    width: 14
-                                    height: 14
+                                    Layout.preferredWidth: 14
+                                    Layout.preferredHeight: 14
                                     stroke: 1.8
                                     path: Icons.shieldCheck
                                     color: theme.positiveInk
@@ -1092,8 +1109,8 @@ FocusScope {
                                 RowLayout {
                                     spacing: 10
                                     Rectangle {
-                                        width: 32
-                                        height: 32
+                                        Layout.preferredWidth: 32
+                                        Layout.preferredHeight: 32
                                         radius: Ui.radius(8, theme.radius)
                                         color: theme.accentSoft
                                         Glyph {
@@ -1176,8 +1193,8 @@ FocusScope {
                                             Keys.onEnterPressed: sheet.submitAuth()
                                         }
                                         IconButton {
-                                            width: 30
-                                            height: 30
+                                            Layout.preferredWidth: 30
+                                            Layout.preferredHeight: 30
                                             glyph: sheet.showAuthPassword ? sheet.eyeOffIcon : sheet.eyeIcon
                                             tone: theme.ink3
                                             tip: sheet.showAuthPassword ? qsTr("Hide password") : qsTr("Show password")
@@ -1190,8 +1207,8 @@ FocusScope {
                                     Layout.fillWidth: true
                                     spacing: 6
                                     Glyph {
-                                        width: 13
-                                        height: 13
+                                        Layout.preferredWidth: 13
+                                        Layout.preferredHeight: 13
                                         stroke: 1.8
                                         path: Icons.shieldCheck
                                         color: theme.positiveInk
@@ -1232,8 +1249,8 @@ FocusScope {
 
                             Glyph {
                                 Layout.alignment: Qt.AlignHCenter
-                                width: 28
-                                height: 28
+                                Layout.preferredWidth: 28
+                                Layout.preferredHeight: 28
                                 stroke: 1.6
                                 path: Icons.infoCircle
                                 color: theme.ink3
@@ -1799,8 +1816,8 @@ FocusScope {
                                             }
 
                                             IconButton {
-                                                width: 24
-                                                height: 24
+                                                Layout.preferredWidth: 24
+                                                Layout.preferredHeight: 24
                                                 glyph: Icons.close
                                                 tone: theme.ink3
                                                 tip: qsTr("Cancel download")

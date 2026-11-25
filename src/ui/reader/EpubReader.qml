@@ -1,14 +1,10 @@
-import QtCore
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Layouts
 import QtWebChannel
 import QtWebEngine
 import "../audio"
-import "../companion"
 import "../components"
 
-import "../components/Format.js" as Format
 import "../components/Icons.js" as Icons
 import "../components/Themes.js" as Themes
 import "../components/Ui.js" as Ui
@@ -45,28 +41,27 @@ FocusScope {
         readonly property bool pdfOriginalColors: !!pick("pdfOriginalColors", view.settings.pdfOriginalColors)
         readonly property string pdfFit: String(pick("pdfFit", view.settings.pdfFit || "page"))
     }
-    Settings {
-        id: folioSettings
-        location: settingsUrl
-        category: "typography"
-        // 0: time left in chapter, 1: time left in book, 2: % · time left
-        property int folioMode: 0
-    }
 
     readonly property var look: Themes.palette(activeSettings.theme, theme)
     // For driving the panels from outside (CommandPalette and tests).
-    readonly property alias contentsPanel: contents
-    readonly property alias appearancePanel: appearance
-    readonly property alias goToBox: goTo
-    readonly property alias voicePanel: voicePanel
-    readonly property alias searchBar: searchBar
-    readonly property alias pageMenu: pageMenu
+    readonly property alias contents: panels.contents
+    readonly property alias contentsPanel: panels.contents
+    readonly property alias appearance: panels.appearance
+    readonly property alias appearancePanel: panels.appearance
+    readonly property alias goTo: panels.goTo
+    readonly property alias goToBox: panels.goTo
+    readonly property alias voicePanel: panels.voicePanel
+    readonly property alias searchBar: panels.searchBar
+    readonly property alias pageMenu: menus.pageMenu
+    readonly property alias citeMenu: menus.citeMenu
+    readonly property alias readerMore: menus.readerMore
+    readonly property alias listenOffer: readerChrome.listenOffer
     // The words selected on the page, as the page last said ({} for none).
     property var selection: ({})
     property var lastCompanionTarget: null
-    readonly property alias marksPanel: marksPanel
-    readonly property alias companionPanel: companionPanel
-    readonly property alias noteEditor: noteEditor
+    readonly property alias marksPanel: panels.marksPanel
+    readonly property alias companionPanel: panels.companionPanel
+    readonly property alias noteEditor: panels.noteEditor
     readonly property var pdfSurface: pdfLoader.item
     readonly property alias listenBar: listenBar
     // Companion docks beside the page on wide screens without a blocking scrim (04_companion).
@@ -88,6 +83,17 @@ FocusScope {
     property string jumpPillLabel: ""
     readonly property bool firstBookTipsActive: onboarding.tips.indexOf("keys") < 0 && reader.open && !view.epubLoading
                                                 && !view.panelOpen && !narration.active
+    readonly property var firstBookTipsModel: view.pdf
+        ? [{ key: "← →", what: qsTr("Turn") },
+           { key: "P", what: qsTr("Listen") },
+           { key: "C", what: qsTr("Ask") },
+           { key: "X", what: qsTr("Snip") },
+           { key: "Ctrl K", what: qsTr("Find") }]
+        : [{ key: "← →", what: qsTr("Turn") },
+           { key: "P", what: qsTr("Listen") },
+           { key: "C", what: qsTr("Ask") },
+           { key: "Ctrl K", what: qsTr("Find") },
+           { key: "?", what: qsTr("All keys") }]
     readonly property real footerInset: Math.max(24, Math.min(144, Math.round(readingStage.width * 0.1125)))
 
     function propBool(obj, key) {
@@ -104,9 +110,9 @@ FocusScope {
     }
     readonly property Item focusedItem: Window.activeFocusItem
     readonly property bool chromeFocused: focusedItem !== null && (
-        isDescendantOf(focusedItem, chrome) || isDescendantOf(focusedItem, bottomFooter)
-        || isDescendantOf(focusedItem, jumpPill) || isDescendantOf(focusedItem, followVoicePill)
-        || isDescendantOf(focusedItem, keysStrip)
+        isDescendantOf(focusedItem, readerChrome.chromeItem) || isDescendantOf(focusedItem, readerChrome.bottomFooterItem)
+        || isDescendantOf(focusedItem, readerChrome.jumpPillItem) || isDescendantOf(focusedItem, readerChrome.followVoicePillItem)
+        || isDescendantOf(focusedItem, readerChrome.keysStripItem)
     )
     readonly property bool readingViewportFocused: {
         if (panelOpen || modalOpen || win.typing || lightbox.open || listenOffer.open
@@ -506,13 +512,7 @@ FocusScope {
         surfaceWatcher.resetSurfaceNudgeCooldown()
         pendingStartListening = false
         listenOffer.close()
-        if (pageMenu.opened)
-            pageMenu.close()
-        if (readerMore.opened)
-            readerMore.close()
-        if (citeMenu.opened)
-            citeMenu.close()
-        pageMenu.place = ({})
+        menus.closeAll()
         selectionBar.visible = false
         view.selection = ({})
         view.lastCompanionTarget = null
@@ -544,13 +544,7 @@ FocusScope {
         refreshLater.stop()
         pendingStartListening = false
         listenOffer.close()
-        if (pageMenu.opened)
-            pageMenu.close()
-        if (readerMore.opened)
-            readerMore.close()
-        if (citeMenu.opened)
-            citeMenu.close()
-        pageMenu.place = ({})
+        menus.closeAll()
         closePanels()
         if (searchBar.open)
             searchBar.close()
@@ -1313,52 +1307,6 @@ FocusScope {
             }
         }
 
-        // Soft theme-matched paper backdrop behind the top header and bottom
-        // progress footer whenever chrome is visible (or always in scroll mode)
-        // so zoomed PDFs and large text fade cleanly underneath instead of
-        // clashing with controls; fades out completely with chrome for pure
-        // edge-to-edge reading.
-        Rectangle {
-            id: topBackdrop
-            z: 2
-            anchors.top: parent.top
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: 70
-            opacity: activeSettings.layout === "scroll" ? 1 : chrome.chromeProgress
-            visible: opacity > 0.01
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: view.look.bg }
-                GradientStop { position: 0.68; color: Ui.tint(view.look.bg, 0.95) }
-                GradientStop { position: 1.0; color: Ui.tint(view.look.bg, 0) }
-            }
-            Rectangle {
-                anchors.left: parent.left
-                anchors.right: parent.right
-                y: 48
-                height: 1
-                color: view.look.line
-                opacity: (view.pdf && pdfSurface && pdfSurface.zoomedIn) || activeSettings.layout === "scroll"
-                         ? chrome.chromeProgress * 0.75 : 0
-            }
-        }
-        Rectangle {
-            id: bottomBackdrop
-            z: 2
-            anchors.bottom: parent.bottom
-            anchors.left: parent.left
-            anchors.right: parent.right
-            height: narration.active ? 84 : 108
-            opacity: activeSettings.layout === "scroll" ? 1
-                   : narration.active ? 0.96 : bottomFooter.footerProgress
-            visible: opacity > 0.01
-            gradient: Gradient {
-                GradientStop { position: 0.0; color: Ui.tint(view.look.bg, 0) }
-                GradientStop { position: 0.28; color: view.look.bg }
-                GradientStop { position: 1.0; color: view.look.bg }
-            }
-        }
-
         // Reveal reading chrome on pointer movement (2 s idle fade, 09:628).
         // When a PDF is zoomed in, only reveal chrome when approaching the top
         // or bottom edge so panning/reading never pops overlays over text.
@@ -1381,241 +1329,53 @@ FocusScope {
             }
         }
 
-        // --- Top Reading Chrome (02_reading.html:525-547) --------------------
-        Item {
-            id: chrome
-            z: 3
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.topMargin: theme.reducedMotion ? 0 : Math.round((1 - chromeProgress) * -6)
-            height: 48
-            property real chromeProgress: view.chromeShown ? 1 : 0
-            Behavior on chromeProgress {
-                NumberAnimation {
-                    duration: theme.reducedMotion ? 80 : (view.chromeShown ? 200 : 160)
-                    easing.type: view.chromeShown ? Easing.OutCubic : Easing.OutQuad
-                }
+        Timer {
+            id: jumpPillTimer
+            interval: 12000
+            onTriggered: view.jumpPillVisible = false
+        }
+
+        // Top/bottom chrome, running head, folios, first-book tips, jump-back pill,
+        // GPU-accelerated bookmark dog-ear, and first-listen offer popover.
+        ReaderChrome {
+            id: readerChrome
+            z: 2
+            anchors.fill: parent
+            stageItem: readingStage
+            look: view.look
+            pdf: view.pdf
+            chromeShown: view.chromeShown
+            modalPanelOpen: view.modalPanelOpen
+            scrollLayout: activeSettings.layout === "scroll"
+            pdfZoomedIn: !!(view.pdf && pdfSurface && pdfSurface.zoomedIn)
+            contentsOpen: contents.open
+            contentsWidth: contents.width
+            citeMenuOpened: citeMenu.opened
+            firstBookTipsActive: view.firstBookTipsActive
+            firstBookTipsModel: view.firstBookTipsModel
+            jumpPillVisible: view.jumpPillVisible
+            jumpPillLabel: view.jumpPillLabel
+            pageBookmark: view.pageBookmark
+            footerInset: view.footerInset
+            listenBarHeight: listenBar.height
+            rightToolsWidth: tools.width
+            rightToolsMargin: tools.anchors.rightMargin
+            listenButtonCenterX: tools.x + listenButton.x + listenButton.width / 2
+
+            onCloseRequested: view.closeRequested()
+            onToggleContents: contents.open ? contents.close() : view.showContents()
+            onCiteMenuRequested: (anchor, x, y) => citeMenu.popup(anchor, x, y)
+            onGoToTarget: (target) => view.goTo(target)
+            onShowGoTo: goTo.show()
+            onJumpBack: view.back()
+            onDismissJumpPill: view.jumpPillVisible = false
+            onDismissFirstBookTips: {
+                onboarding.tips = onboarding.tips.concat(["keys"])
+                chromeTimer.restart()
             }
-            opacity: chromeProgress
-            visible: chromeProgress > 0.01
-            HoverHandler { id: chromeHover }
-
-            Row {
-                id: leftTools
-                anchors.left: parent.left
-                anchors.leftMargin: 14
-                anchors.verticalCenter: parent.verticalCenter
-                spacing: 4
-
-                // Back to the library, as words: the way out is never a guess.
-                AbstractButton {
-                    id: backButton
-                    anchors.verticalCenter: parent.verticalCenter
-                    height: 30
-                    width: backRow.implicitWidth + 16
-                    hoverEnabled: true
-                    focusPolicy: view.chromeShown ? Qt.TabFocus : Qt.NoFocus
-                    Accessible.name: qsTr("Library")
-                    onClicked: view.closeRequested()
-                    background: Rectangle {
-                        radius: Ui.radius(7, theme.radius)
-                        color: backButton.pressed ? Ui.tint(view.look.fg, 0.12)
-                             : backButton.hovered ? Ui.tint(view.look.fg, 0.07) : "transparent"
-                        border.width: backButton.visualFocus ? 2 : 0
-                        border.color: view.look.link
-                    }
-                    contentItem: Item {
-                        Row {
-                            id: backRow
-                            x: 6
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: 4
-                            Glyph {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 16
-                                height: 16
-                                stroke: 2
-                                path: Icons.chevronLeft
-                                color: view.look.inkSoft || view.look.fg
-                            }
-                            Label {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: qsTr("Library")
-                                color: view.look.inkSoft || view.look.fg
-                                font.pixelSize: 13
-                                font.weight: Font.Medium
-                            }
-                        }
-                    }
-                    ToolTip.visible: hovered
-                    ToolTip.text: qsTr("Library (Esc)")
-                    ToolTip.delay: 600
-                }
-
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    implicitWidth: 32
-                    implicitHeight: 30
-                    tabFocusable: view.chromeShown
-                    look: view.look
-                    glyph: Icons.contents
-                    active: contents.open
-                    tip: qsTr("Contents (T)")
-                    onClicked: contents.open ? contents.close() : view.showContents()
-                }
-
-                // Quiet detected DOI / arXiv pill for academic PDFs: one click copies BibTeX / APA.
-                AbstractButton {
-                    id: citeBadge
-                    visible: reader.open && (reader.detectedDoi !== "" || reader.detectedArxiv !== "")
-                    anchors.verticalCenter: parent.verticalCenter
-                    implicitHeight: 26
-                    implicitWidth: Math.min(180, citeBadgeRow.implicitWidth + 16)
-                    hoverEnabled: true
-                    focusPolicy: view.chromeShown ? Qt.TabFocus : Qt.NoFocus
-                    Accessible.name: qsTr("Copy citation")
-                    onClicked: citeMenu.popup(citeBadge, 0, citeBadge.height + 6)
-                    background: Rectangle {
-                        radius: Ui.radius(13, theme.radius)
-                        color: citeBadge.pressed || citeMenu.opened ? Ui.tint(view.look.link, 0.16)
-                             : citeBadge.hovered ? Ui.tint(view.look.fg, 0.09) : Ui.tint(view.look.fg, 0.05)
-                        border.width: citeBadge.visualFocus ? 2 : 1
-                        border.color: citeBadge.visualFocus ? view.look.link
-                                    : citeMenu.opened ? Ui.tint(view.look.link, 0.45) : view.look.line
-                    }
-                    contentItem: Item {
-                        Row {
-                            id: citeBadgeRow
-                            anchors.centerIn: parent
-                            spacing: 5
-                            Glyph {
-                                anchors.verticalCenter: parent.verticalCenter
-                                width: 12
-                                height: 12
-                                stroke: 1.9
-                                path: Icons.copy
-                                color: citeMenu.opened ? view.look.link : view.look.muted
-                            }
-                            Label {
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: reader.detectedArxiv !== "" ? reader.detectedArxiv : ("DOI " + reader.detectedDoi)
-                                textFormat: Text.PlainText
-                                color: view.look.inkSoft || view.look.fg
-                                font.pixelSize: 12
-                                font.weight: Font.Medium
-                                font.features: ({ "tnum": 1 })
-                                elide: Text.ElideRight
-                                width: Math.min(implicitWidth, 146)
-                            }
-                        }
-                    }
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    ToolTip.visible: hovered && !citeMenu.opened
-                    ToolTip.text: qsTr("Copy citation (BibTeX / APA)")
-                    ToolTip.delay: 500
-                }
-            }
-
-            Menu {
-                id: citeMenu
-                topPadding: 6
-                bottomPadding: 6
-                background: Rectangle {
-                    implicitWidth: 248
-                    radius: Math.min(10, theme.radius)
-                    color: view.look.popover
-                    border.color: view.look.line
-                    Rectangle {
-                        z: -1
-                        anchors.fill: parent
-                        anchors.topMargin: 4
-                        anchors.bottomMargin: -4
-                        radius: parent.radius
-                        color: "black"
-                        opacity: view.look.dark ? 0.35 : 0.12
-                    }
-                }
-                MenuItem {
-                    text: qsTr("Copy BibTeX")
-                    onTriggered: view.copyCitation("bibtex")
-                }
-                MenuItem {
-                    text: qsTr("Copy APA")
-                    onTriggered: view.copyCitation("apa")
-                }
-                MenuSeparator { visible: reader.detectedDoi !== "" || reader.detectedArxiv !== "" }
-                MenuItem {
-                    visible: reader.detectedDoi !== ""
-                    height: visible ? implicitHeight : 0
-                    text: qsTr("Copy DOI")
-                    onTriggered: {
-                        reader.copyText(reader.detectedDoi)
-                        toast.show(qsTr("Copied DOI"))
-                    }
-                }
-                MenuItem {
-                    visible: reader.detectedArxiv !== ""
-                    height: visible ? implicitHeight : 0
-                    text: qsTr("Copy %1").arg(reader.detectedArxiv)
-                    onTriggered: {
-                        reader.copyText(reader.detectedArxiv)
-                        toast.show(qsTr("Copied arXiv ID"))
-                    }
-                }
-                MenuSeparator { visible: reader.detectedDoi !== "" || reader.detectedArxiv !== "" }
-                MenuItem {
-                    visible: reader.detectedDoi !== ""
-                    height: visible ? implicitHeight : 0
-                    text: qsTr("Open on doi.org")
-                    onTriggered: reader.openExternal("https://doi.org/" + reader.detectedDoi)
-                }
-                MenuItem {
-                    visible: reader.detectedArxiv !== ""
-                    height: visible ? implicitHeight : 0
-                    text: qsTr("Open on arXiv")
-                    onTriggered: reader.openExternal("https://arxiv.org/abs/" + reader.detectedArxiv.replace(/^arXiv:/i, ""))
-                }
-            }
-
-            // The book, and where in it: "The Time Machine — Chapter I".
-            Item {
-                id: heading
-                anchors.centerIn: parent
-                readonly property real sideReserve: Math.max(leftTools.width + 24, tools.width + tools.anchors.rightMargin + 14)
-                readonly property real room: Math.max(0, parent.width - 2 * sideReserve)
-                readonly property bool showChapter: reader.chapterTitle !== "" && reader.chapterTitle !== reader.title
-                TextMetrics { id: titleMetrics; text: reader.title; font: titleLabel.font }
-                TextMetrics { id: chapterMetrics; text: " — " + reader.chapterTitle; font: chapterLabel.font }
-                readonly property real chapterRoom: showChapter ? Math.min(chapterMetrics.advanceWidth + 2, room * 0.45) : 0
-                width: titleLabel.width + chapterLabel.width
-                height: parent.height
-                Label {
-                    id: titleLabel
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: Math.min(titleMetrics.advanceWidth + 2, heading.room - heading.chapterRoom)
-                    text: reader.title
-                    color: view.look.inkSoft || view.look.fg
-                    font.pixelSize: 12
-                    font.weight: Font.Medium
-                    font.letterSpacing: 0.12
-                    elide: Text.ElideRight
-                }
-                Label {
-                    id: chapterLabel
-                    anchors.left: titleLabel.right
-                    anchors.verticalCenter: parent.verticalCenter
-                    visible: heading.showChapter
-                    width: visible ? Math.min(chapterMetrics.advanceWidth + 2, heading.room - titleLabel.width) : 0
-                    text: " — " + reader.chapterTitle
-                    color: view.look.inkSoft || view.look.fg
-                    opacity: 0.55
-                    font.pixelSize: 12
-                    font.weight: Font.Medium
-                    font.letterSpacing: 0.12
-                    elide: Text.ElideRight
-                }
-            }
+            onToggleBookmark: view.toggleBookmark()
+            onShowVoices: view.showVoices()
+            onFocusPageRequested: view.focusPage()
 
             Row {
                 id: tools
@@ -1708,459 +1468,6 @@ FocusScope {
                     onClicked: companionPanel.open ? companionPanel.close() : view.showCompanion("ask")
                 }
             }
-
-            Menu {
-                id: readerMore
-                width: 260
-                MenuItem { text: qsTr("Contents") + "\tT"; onTriggered: view.showContents() }
-                MenuItem { text: qsTr("Highlights, notes, and bookmarks") + "\tM"; onTriggered: view.showMarks() }
-                MenuItem { text: (view.pageBookmark ? qsTr("Remove the bookmark") : qsTr("Bookmark this page")) + "\tB"; onTriggered: view.toggleBookmark() }
-                MenuItem { text: qsTr("Search in the book") + "\t/"; onTriggered: searchBar.show() }
-                MenuItem { text: qsTr("Go to a page") + "\tG"; onTriggered: goTo.show() }
-                MenuSeparator {}
-                MenuItem { text: qsTr("Full screen") + "\tF"; onTriggered: win.toggleFullScreen() }
-            }
-        }
-
-        // Top-center voice status / return pill while listening (03_listening.html:588-591).
-        AbstractButton {
-            id: followVoicePill
-            z: 3
-            anchors.top: parent.top
-            anchors.topMargin: 24 - (theme.reducedMotion ? 0 : Math.round((1 - opacity) * 6))
-            anchors.horizontalCenter: parent.horizontalCenter
-            readonly property bool shown: narration.active && !view.chromeShown
-            opacity: shown ? 1 : 0
-            visible: opacity > 0.01
-            Behavior on opacity {
-                NumberAnimation { duration: theme.reducedMotion ? 80 : 180; easing.type: Easing.OutCubic }
-            }
-            implicitHeight: 30
-            implicitWidth: followPillRow.implicitWidth + 22
-            hoverEnabled: true
-            focusPolicy: enabled ? Qt.TabFocus : Qt.NoFocus
-            enabled: shown && !narration.following
-            Accessible.name: narration.following ? qsTr("Pages follow the voice") : qsTr("Back to the voice")
-            onClicked: if (!narration.following) narration.following = true
-            background: Rectangle {
-                radius: Ui.radius(15, theme.radius)
-                color: !narration.following
-                     ? (followVoicePill.hovered ? Ui.tint(view.look.link, 0.22) : Ui.tint(view.look.link, 0.14))
-                     : Ui.tint(view.look.fg, 0.06)
-                border.width: followVoicePill.visualFocus ? 2 : 1
-                border.color: followVoicePill.visualFocus ? view.look.link
-                            : !narration.following ? Ui.tint(view.look.link, 0.35) : Ui.tint(view.look.fg, 0.10)
-            }
-            contentItem: Item {
-                Row {
-                    id: followPillRow
-                    anchors.centerIn: parent
-                    spacing: 6
-                    Glyph {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 13
-                        height: 13
-                        stroke: 2
-                        path: Icons.waveform
-                        color: !narration.following ? view.look.link : (view.look.inkSoft || view.look.fg)
-                    }
-                    Label {
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: narration.following ? qsTr("Pages follow the voice") : qsTr("Back to the voice")
-                        color: !narration.following ? view.look.link : (view.look.inkSoft || view.look.fg)
-                        font.pixelSize: 12
-                        font.weight: Font.Medium
-                    }
-                }
-            }
-            HoverHandler { cursorShape: !narration.following ? Qt.PointingHandCursor : Qt.ArrowCursor }
-        }
-
-        // --- Unified Inset Bottom Footer (02_reading.html:576-595) -----------
-        Item {
-            id: bottomFooter
-            z: 3
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.bottom: parent.bottom
-            anchors.leftMargin: view.footerInset
-            anchors.rightMargin: view.footerInset
-            anchors.bottomMargin: 24 - (theme.reducedMotion ? 0 : Math.round((1 - footerProgress) * 8))
-            height: footerCol.implicitHeight
-            readonly property bool shown: view.chromeShown && !narration.active && !keysStrip.wanted
-            property real footerProgress: shown ? 1 : 0
-            Behavior on footerProgress {
-                NumberAnimation {
-                    duration: theme.reducedMotion ? 80 : (bottomFooter.shown ? 200 : 160)
-                    easing.type: bottomFooter.shown ? Easing.OutCubic : Easing.OutQuad
-                }
-            }
-            opacity: footerProgress
-            visible: footerProgress > 0.01
-            HoverHandler { id: scrubberHover }
-
-            Column {
-                id: footerCol
-                width: parent.width
-                spacing: 8
-
-                ProgressScrubber {
-                    id: progressScrubber
-                    width: parent.width
-                    look: view.look
-                    onGo: (target) => view.goTo(target)
-                }
-
-                Item {
-                    width: parent.width
-                    height: 24
-
-                    // Left: time left (tappable to cycle chapter / book / % · time left; never bare %).
-                    AbstractButton {
-                        id: folioLeftButton
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        enabled: bottomFooter.shown
-                        hoverEnabled: true
-                        focusPolicy: bottomFooter.shown ? Qt.TabFocus : Qt.NoFocus
-                        Accessible.name: folioLeftLabel.text
-                        implicitWidth: folioLeftLabel.implicitWidth + 12
-                        implicitHeight: 24
-                        onClicked: folioSettings.folioMode = (folioSettings.folioMode + 1) % 3
-                        background: Rectangle {
-                            radius: Ui.radius(6, theme.radius)
-                            color: folioLeftButton.hovered ? Ui.tint(view.look.fg, 0.06) : "transparent"
-                            border.width: folioLeftButton.visualFocus ? 2 : 0
-                            border.color: view.look.link
-                        }
-                        contentItem: Label {
-                            id: folioLeftLabel
-                            horizontalAlignment: Text.AlignLeft
-                            verticalAlignment: Text.AlignVCenter
-                            leftPadding: 4
-                            rightPadding: 4
-                            text: {
-                                void(folioSettings.folioMode)
-                                void(reader.progress); void(reader.minutesLeftInChapter); void(reader.minutesLeftInBook)
-                                void(reader.atEnd); void(translator.language)
-                                return view.folioTimeText()
-                            }
-                            color: view.look.muted
-                            font.pixelSize: 12
-                            font.features: ({ "tnum": 1 })
-                        }
-                        HoverHandler { cursorShape: Qt.PointingHandCursor }
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 700
-                        ToolTip.text: qsTr("Click to switch time remaining")
-                    }
-
-                    // Right: spread page range ("Pages 3–4 of 148"), tappable for Go To (G).
-                    AbstractButton {
-                        id: folioRightButton
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        enabled: bottomFooter.shown
-                        hoverEnabled: true
-                        focusPolicy: bottomFooter.shown ? Qt.TabFocus : Qt.NoFocus
-                        Accessible.name: folioRightLabel.text
-                        implicitWidth: folioRightLabel.implicitWidth + 12
-                        implicitHeight: 24
-                        onClicked: goTo.show()
-                        background: Rectangle {
-                            radius: Ui.radius(6, theme.radius)
-                            color: folioRightButton.hovered ? Ui.tint(view.look.fg, 0.06) : "transparent"
-                            border.width: folioRightButton.visualFocus ? 2 : 0
-                            border.color: view.look.link
-                        }
-                        contentItem: Label {
-                            id: folioRightLabel
-                            horizontalAlignment: Text.AlignRight
-                            verticalAlignment: Text.AlignVCenter
-                            leftPadding: 4
-                            rightPadding: 4
-                            text: {
-                                void(reader.bookPageStart); void(reader.bookPageEnd); void(reader.bookPages)
-                                void(reader.pageLabel); void(translator.language)
-                                return view.folioPagesText()
-                            }
-                            color: view.look.muted
-                            font.pixelSize: 12
-                            font.features: ({ "tnum": 1 })
-                        }
-                        HoverHandler { cursorShape: Qt.PointingHandCursor }
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 700
-                        ToolTip.text: qsTr("Go to a page (G)")
-                    }
-                }
-            }
-        }
-
-        // J3 First-book tips: dark 760 px floating bar shown once, then behind ? (12_j3_first_book:489-500).
-        Rectangle {
-            id: keysStrip
-            z: 5
-            readonly property bool wanted: view.firstBookTipsActive
-            anchors.horizontalCenter: parent.horizontalCenter
-            y: wanted ? parent.height - height - 40 : parent.height + 16
-            Behavior on y {
-                enabled: !theme.reducedMotion
-                NumberAnimation { duration: 280; easing.type: Easing.OutQuart }
-            }
-            opacity: wanted ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 180 } }
-            visible: opacity > 0.01 && y < parent.height
-            width: Math.min(parent.width - 48, 760)
-            height: 62
-            radius: Ui.radius(14, theme.radius)
-            color: Qt.rgba(28 / 255, 27 / 255, 25 / 255, 0.95)
-            border.width: view.look.dark ? 1 : 0
-            border.color: Qt.rgba(1, 1, 1, 0.08)
-
-            // Warm elevation shadow (0 18px 50px rgba(40,30,10,0.28)).
-            Rectangle {
-                z: -2
-                anchors.fill: parent
-                anchors.leftMargin: -4
-                anchors.rightMargin: -4
-                anchors.topMargin: 10
-                anchors.bottomMargin: -16
-                radius: parent.radius > 0 ? parent.radius + 4 : 0
-                color: view.look.dark ? "#000000" : "#281E0A"
-                opacity: 0.24
-            }
-            Rectangle {
-                z: -1
-                anchors.fill: parent
-                anchors.topMargin: 4
-                anchors.bottomMargin: -6
-                radius: parent.radius
-                color: "#000000"
-                opacity: 0.20
-            }
-
-            RowLayout {
-                anchors.fill: parent
-                anchors.leftMargin: 18
-                anchors.rightMargin: 14
-                spacing: 16
-                Repeater {
-                    model: view.pdf
-                           ? [{ key: "← →", what: qsTr("Turn") },
-                              { key: "P", what: qsTr("Listen") },
-                              { key: "C", what: qsTr("Ask") },
-                              { key: "X", what: qsTr("Snip") },
-                              { key: "Ctrl K", what: qsTr("Find") }]
-                           : [{ key: "← →", what: qsTr("Turn") },
-                              { key: "P", what: qsTr("Listen") },
-                              { key: "C", what: qsTr("Ask") },
-                              { key: "Ctrl K", what: qsTr("Find") },
-                              { key: "?", what: qsTr("All keys") }]
-                    delegate: Row {
-                        required property var modelData
-                        Layout.alignment: Qt.AlignVCenter
-                        spacing: 7
-                        KeyHint {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: modelData.key
-                            keycap: true
-                            onDark: true
-                        }
-                        Label {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: modelData.what
-                            color: "#CFC9BE"
-                            font.pixelSize: 13
-                        }
-                    }
-                }
-                Item { Layout.fillWidth: true }
-                AbstractButton {
-                    id: gotItBtn
-                    Layout.alignment: Qt.AlignVCenter
-                    implicitHeight: 30
-                    implicitWidth: gotItLabel.implicitWidth + 28
-                    hoverEnabled: true
-                    focusPolicy: keysStrip.wanted ? Qt.TabFocus : Qt.NoFocus
-                    Accessible.name: qsTr("Got it")
-                    onClicked: {
-                        onboarding.tips = onboarding.tips.concat(["keys"])
-                        chromeTimer.restart()
-                    }
-                    background: Rectangle {
-                        radius: Ui.radius(7, theme.radius)
-                        color: gotItBtn.pressed ? Qt.rgba(1, 1, 1, 0.20)
-                             : gotItBtn.hovered ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.10)
-                        border.width: gotItBtn.visualFocus ? 2 : 0
-                        border.color: theme.accent
-                    }
-                    contentItem: Label {
-                        id: gotItLabel
-                        text: qsTr("Got it")
-                        color: "#F2EFE9"
-                        font.pixelSize: 13
-                        font.weight: Font.DemiBold
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                }
-            }
-        }
-
-        // Dismissible jump-back pill shown after TOC, link, scrubber, search,
-        // or Companion jumps so returning where you came from is one click away.
-        Timer {
-            id: jumpPillTimer
-            interval: 12000
-            onTriggered: view.jumpPillVisible = false
-        }
-        Rectangle {
-            id: jumpPill
-            z: 5
-            anchors.left: parent.left
-            anchors.leftMargin: 24 + (contents.open ? contents.width : 0)
-            Behavior on anchors.leftMargin {
-                enabled: !theme.reducedMotion
-                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
-            }
-            readonly property bool shown: view.jumpPillVisible && reader.canGoBack && view.jumpPillLabel !== ""
-            y: shown ? parent.height - height - (narration.active ? (listenBar.height + 28) : bottomFooter.shown ? 86 : 36) : parent.height + 16
-            Behavior on y {
-                enabled: !theme.reducedMotion
-                NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
-            }
-            opacity: shown ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 150 } }
-            visible: opacity > 0.01
-            width: jumpPillRow.implicitWidth + 16
-            height: 36
-            radius: Ui.radius(18, theme.radius)
-            color: view.look.popover
-            border.width: 1
-            border.color: view.look.line
-
-            Rectangle {
-                z: -1
-                anchors.fill: parent
-                anchors.topMargin: 3
-                anchors.bottomMargin: -3
-                radius: parent.radius
-                color: "black"
-                opacity: view.look.dark ? 0.35 : 0.12
-            }
-
-            Row {
-                id: jumpPillRow
-                anchors.centerIn: parent
-                spacing: 4
-
-                AbstractButton {
-                    id: jumpPillAction
-                    anchors.verticalCenter: parent.verticalCenter
-                    implicitHeight: 30
-                    implicitWidth: jumpActionRow.implicitWidth + 12
-                    hoverEnabled: true
-                    focusPolicy: jumpPill.shown ? Qt.TabFocus : Qt.NoFocus
-                    Accessible.name: qsTr("Return to %1").arg(view.jumpPillLabel)
-                    onClicked: view.back()
-                    background: Rectangle {
-                        radius: Ui.radius(15, theme.radius)
-                        color: jumpPillAction.hovered ? Ui.tint(view.look.link, 0.14) : "transparent"
-                        border.width: jumpPillAction.visualFocus ? 2 : 0
-                        border.color: view.look.link
-                    }
-                    contentItem: Row {
-                        id: jumpActionRow
-                        spacing: 6
-                        leftPadding: 6
-                        rightPadding: 6
-                        Glyph {
-                            anchors.verticalCenter: parent.verticalCenter
-                            width: 14
-                            height: 14
-                            path: Icons.back
-                            color: view.look.link
-                        }
-                        Label {
-                            anchors.verticalCenter: parent.verticalCenter
-                            text: qsTr("Return to %1").arg(view.jumpPillLabel)
-                            color: view.look.fg
-                            font.pixelSize: 13
-                            elide: Text.ElideRight
-                            width: Math.min(implicitWidth, 240)
-                        }
-                    }
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 600
-                    ToolTip.text: qsTr("Return (Alt+←)")
-                }
-
-                IconButton {
-                    anchors.verticalCenter: parent.verticalCenter
-                    implicitWidth: 26
-                    implicitHeight: 26
-                    tabFocusable: jumpPill.shown
-                    glyph: Icons.close
-                    look: view.look
-                    tone: view.look.muted
-                    tip: qsTr("Dismiss")
-                    onClicked: view.jumpPillVisible = false
-                }
-            }
-        }
-
-        // The bookmark is a 44×44 tactile paper dog-ear permanently anchored in the
-        // top-right corner (02_reading:550); header tools reserve 52 px on the right
-        // so the Companion button and bookmark corner never overlap.
-        Item {
-            id: pageFold
-            z: 4
-            anchors.top: parent.top
-            anchors.right: parent.right
-            width: 44
-            height: 44
-            visible: !view.modalPanelOpen || view.pageBookmark > 0
-            property real fold: view.pageBookmark > 0 ? 1 : earHover.hovered ? 0.55 : 0
-            Behavior on fold {
-                enabled: !theme.reducedMotion
-                NumberAnimation { duration: 160; easing.type: Easing.OutCubic }
-            }
-            HoverHandler { id: earHover; cursorShape: Qt.PointingHandCursor }
-            TapHandler { onTapped: view.toggleBookmark() }
-            ToolTip.visible: earHover.hovered
-            ToolTip.text: view.pageBookmark ? qsTr("Remove bookmark (B)") : qsTr("Bookmark this page (B)")
-            ToolTip.delay: 500
-            Canvas {
-                anchors.fill: parent
-                visible: pageFold.fold > 0.01
-                property real fold: pageFold.fold
-                property color page: view.look.bg
-                property color flap: view.pageBookmark > 0
-                                   ? (view.look.fold || Ui.mix(view.look.bg, view.look.fg, 0.12))
-                                   : Ui.mix(view.look.bg, view.look.fg, 0.08)
-                property bool darkPage: view.look.dark
-                onFoldChanged: requestPaint()
-                onPageChanged: requestPaint()
-                onFlapChanged: requestPaint()
-                onDarkPageChanged: requestPaint()
-                onPaint: {
-                    const g = getContext("2d")
-                    g.reset()
-                    const s = width * fold
-                    const x0 = width - s
-                    // Folded corner matches 02_reading: linear-gradient(225deg, paper 50%, fold 50%).
-                    g.fillStyle = page
-                    g.beginPath(); g.moveTo(x0, 0); g.lineTo(width, 0); g.lineTo(width, s); g.closePath(); g.fill()
-                    g.shadowColor = Qt.rgba(0, 0, 0, darkPage ? 0.24 : 0.08)
-                    g.shadowBlur = 4
-                    g.shadowOffsetX = -2
-                    g.shadowOffsetY = 2
-                    g.fillStyle = flap
-                    g.beginPath(); g.moveTo(x0, 0); g.lineTo(x0, s); g.lineTo(width, s); g.closePath(); g.fill()
-                }
-            }
         }
 
         SelectionBar {
@@ -2220,78 +1527,6 @@ FocusScope {
                 toast.show(qsTr("Highlight removed"), qsTr("Undo"), () => marks.undo())
             }
         }
-
-        // First-listen popover anchored beneath the top-right Listen button (13_j4_first_listen).
-        Loader {
-            id: listenOffer
-            active: false
-            readonly property var loaded: item
-            readonly property bool open: loaded ? !!loaded.open : false
-            function show() {
-                active = true
-                if (loaded)
-                    loaded.show()
-            }
-            function close() {
-                if (loaded)
-                    loaded.close()
-            }
-            sourceComponent: ListenOffer {
-                id: listenOfferInner
-                parent: readingStage
-                z: 7
-                look: view.look
-                anchors.top: readingStage.top
-                anchors.topMargin: chrome.height + 6
-                anchors.right: readingStage.right
-                anchors.rightMargin: 22
-                onMoreVoices: view.showVoices()
-                onClosed: view.focusPage()
-                Binding {
-                    target: listenOfferInner
-                    property: "caretRightOffset"
-                    value: Math.max(24, Math.min(Math.max(24, listenOfferInner.width - 24),
-                                    (readingStage.width - 22) - (tools.x + listenButton.x + listenButton.width / 2)))
-                    when: listenOfferInner.hasOwnProperty("caretRightOffset")
-                }
-            }
-        }
-    }
-
-    function folioTimeText() {
-        if (reader.atEnd)
-            return qsTr("Finished")
-        const mode = ((folioSettings.folioMode % 3) + 3) % 3
-        const loc = Qt.locale()
-        const percent = qsTr("%1%").arg(Math.round(reader.progress * 100).toLocaleString(loc, 'f', 0))
-        if (mode === 0) {
-            if (!view.pdf && reader.minutesLeftInChapter > 0)
-                return qsTr("%1 left in chapter").arg(Format.duration(reader.minutesLeftInChapter))
-            if (reader.minutesLeftInBook > 0)
-                return qsTr("%1 left").arg(Format.duration(reader.minutesLeftInBook))
-            return percent
-        }
-        if (mode === 1) {
-            if (reader.minutesLeftInBook > 0)
-                return qsTr("%1 left in book").arg(Format.duration(reader.minutesLeftInBook))
-            return percent
-        }
-        if (reader.minutesLeftInBook > 0)
-            return qsTr("%1 · %2 left").arg(percent).arg(Format.duration(reader.minutesLeftInBook))
-        return percent
-    }
-
-    function folioPagesText() {
-        const loc = Qt.locale()
-        const start = Math.max(1, reader.bookPageStart).toLocaleString(loc, 'f', 0)
-        const end = Math.max(1, reader.bookPageEnd).toLocaleString(loc, 'f', 0)
-        const total = Math.max(1, reader.bookPages).toLocaleString(loc, 'f', 0)
-        const spreadText = reader.bookPageEnd > reader.bookPageStart
-            ? qsTr("Pages %1–%2 of %3").arg(start).arg(end).arg(total)
-            : qsTr("Page %1 of %2").arg(start).arg(total)
-        if (!view.pdf && reader.pageLabel !== "")
-            return qsTr("%1 · p. %2").arg(spreadText).arg(reader.pageLabel)
-        return spreadText
     }
 
     Component {
@@ -2436,9 +1671,9 @@ FocusScope {
         id: chromeTimer
         interval: 2000
         onTriggered: {
-            if (!chromeHover.hovered && !scrubberHover.hovered && !progressScrubber.dragging && !view.chromeFocused
-                && !view.propBool(listenBar, "menuOpen") && !listenOffer.open
-                && !readerMore.opened && !citeMenu.opened && !pageMenu.opened && !selectionBar.visible && !keysStrip.wanted)
+            if (!readerChrome.chromeHovered && !readerChrome.scrubberHovered && !readerChrome.scrubberDragging
+                && !view.chromeFocused && !view.propBool(listenBar, "menuOpen") && !readerChrome.listenOfferOpen
+                && !menus.anyOpened && !selectionBar.visible && !readerChrome.keysStripWanted)
                 view.chromeShown = false
         }
     }
@@ -2485,307 +1720,101 @@ FocusScope {
         }
     }
 
-    Loader {
-        id: contents
-        active: false
-        readonly property var loaded: item
-        readonly property bool open: loaded ? !!loaded.open : false
-        width: loaded ? loaded.width : 0
-        function show() {
-            active = true
-            if (loaded)
-                loaded.show()
+    ReaderMenus {
+        id: menus
+        look: view.look
+        pdf: view.pdf
+        selection: view.selection
+        pageBookmark: view.pageBookmark
+        onListenFromPlace: (chapter, offset) => {
+            view.leaveVoice()
+            narration.start(chapter, offset)
         }
-        function close() {
-            if (loaded)
-                loaded.close()
+        onHighlightSelection: {
+            marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
+                               view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
+            view.surfaceClearSelection()
+            selectionBar.visible = false
         }
-        sourceComponent: ContentsPanel {
-            parent: view
-            z: 10
-            height: view.height
-            look: view.look
-            onClosed: view.focusPage()
-            onChosen: (chapter, fragment) => view.goTo({ chapter: chapter, fragment: fragment, instant: true })
+        onNoteSelection: {
+            const id = marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
+                                          view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
+            view.surfaceClearSelection()
+            selectionBar.visible = false
+            noteEditor.show(id)
         }
+        onCopySelection: {
+            reader.copyText(view.selection.text)
+            view.surfaceClearSelection()
+            selectionBar.visible = false
+            toast.show(qsTr("Copied"))
+        }
+        onAskCompanion: (feature, target) => view.askCompanion(feature, target)
+        onIllustrateRequested: (fromSelection, place) => {
+            view.showCompanion("pictures")
+            if (fromSelection)
+                illustrator.illustrate(view.selection.text, view.selection.chapter, view.selection.end)
+            else
+                illustrator.illustrate("", place.chapter, place.offset + 600)
+        }
+        onToggleSnip: view.toggleSnipMode()
+        onCopyCitation: (style) => view.copyCitation(style)
+        onToggleBookmark: view.toggleBookmark()
+        onShowContents: view.showContents()
+        onShowMarks: view.showMarks()
+        onShowSearch: searchBar.show()
+        onShowGoTo: goTo.show()
+        onToggleFullScreen: win.toggleFullScreen()
+        onToastMessage: (msg) => toast.show(msg)
     }
 
-    Loader {
-        id: voicePanel
-        active: false
-        readonly property var loaded: item
-        readonly property bool open: loaded ? !!loaded.open : false
-        function show() {
-            active = true
-            if (loaded)
-                loaded.show()
-        }
-        function close() {
-            if (loaded)
-                loaded.close()
-        }
-        sourceComponent: VoicePanel {
-            id: voicePanelInner
-            parent: view
-            z: 12
-            height: view.height
-            look: view.look
-            onClosed: view.focusPage()
-            onSampleWanted: view.surfaceSampleText(function(text) {
-                voicePanelInner.sample = text || ""
-                if (debugMode)
-                    console.log("voice sample:", voicePanelInner.sample)
-            })
-            onListenRequested: {
-                voicePanelInner.close()
-                view.startListening()
-            }
-        }
-    }
-
-    Loader {
-        id: appearance
-        active: false
-        readonly property var loaded: item
-        readonly property bool open: loaded ? !!loaded.open : false
-        width: loaded ? loaded.width : 0
-        function show() {
-            active = true
-            if (loaded)
-                loaded.show()
-        }
-        function close() {
-            if (loaded)
-                loaded.close()
-        }
-        sourceComponent: AppearancePanel {
-            parent: view
-            z: 10
-            height: view.height
-            look: view.look
-            settings: activeSettings
-            pdf: view.pdf
-            pdfSurface: view.pdfSurface
-            bookOverride: reader.bookAppearanceOverride
-            onClosed: view.focusPage()
-            onSettingChanged: (key, value) => view.setAppearance(key, value)
-            onPdfFitChosen: (mode) => view.setPdfFit(mode, false)
-            onBookOverrideToggled: (enabled) => view.setBookOverride(enabled)
-        }
-    }
-
-    Menu {
-        id: pageMenu
-        property var place: ({})
-        readonly property bool hasSelection: !!view.selection.text
-        topPadding: 6
-        bottomPadding: 6
-        background: Rectangle {
-            implicitWidth: 230
-            radius: Math.min(10, theme.radius)
-            color: view.look.popover
-            border.color: view.look.line
-            Rectangle {
-                z: -1
-                anchors.fill: parent
-                anchors.topMargin: 4
-                anchors.bottomMargin: -4
-                radius: parent.radius
-                color: "black"
-                opacity: view.look.dark ? 0.35 : 0.12
-            }
-        }
-
-        MenuItem {
-            text: narration.active ? qsTr("Listen from here instead") : qsTr("Listen from here")
-            onTriggered: {
-                view.leaveVoice()
-                narration.start(pageMenu.place.chapter, pageMenu.place.offset)
-            }
-        }
-        MenuSeparator { visible: pageMenu.hasSelection }
-        MenuItem {
-            visible: pageMenu.hasSelection
-            height: visible ? implicitHeight : 0
-            text: qsTr("Highlight")
-            onTriggered: {
-                marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
-                                   view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
-                view.surfaceClearSelection()
-                selectionBar.visible = false
-            }
-        }
-        MenuItem {
-            visible: pageMenu.hasSelection
-            height: visible ? implicitHeight : 0
-            text: qsTr("Add a note")
-            onTriggered: {
-                const id = marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
-                                              view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
-                view.surfaceClearSelection()
-                selectionBar.visible = false
-                noteEditor.show(id)
-            }
-        }
-        MenuItem {
-            visible: pageMenu.hasSelection
-            height: visible ? implicitHeight : 0
-            text: qsTr("Copy")
-            onTriggered: {
-                reader.copyText(view.selection.text)
-                view.surfaceClearSelection()
-                selectionBar.visible = false
-                toast.show(qsTr("Copied"))
-            }
-        }
-        MenuSeparator { visible: pageMenu.hasSelection }
-        MenuItem {
-            visible: pageMenu.hasSelection
-            height: visible ? implicitHeight : 0
-            text: qsTr("Define")
-            onTriggered: view.askCompanion("define", view.selection)
-        }
-        MenuItem {
-            visible: pageMenu.hasSelection
-            height: visible ? implicitHeight : 0
-            text: qsTr("Explain")
-            onTriggered: view.askCompanion("explain", view.selection)
-        }
-        MenuItem {
-            visible: pageMenu.hasSelection
-            height: visible ? implicitHeight : 0
-            text: qsTr("Translate")
-            onTriggered: view.askCompanion("translate", view.selection)
-        }
-        MenuItem {
-            visible: illustrator.available
-            height: visible ? implicitHeight : 0
-            text: pageMenu.hasSelection ? qsTr("Illustrate these words") : qsTr("Illustrate this moment")
-            onTriggered: {
-                view.showCompanion("pictures")
-                if (pageMenu.hasSelection)
-                    illustrator.illustrate(view.selection.text, view.selection.chapter, view.selection.end)
-                else
-                    illustrator.illustrate("", pageMenu.place.chapter, pageMenu.place.offset + 600)
-            }
-        }
-        MenuSeparator {}
-        MenuItem {
-            visible: view.pdf
-            height: visible ? implicitHeight : 0
-            text: qsTr("Snip region…") + "\tX"
-            onTriggered: view.toggleSnipMode()
-        }
-        MenuItem {
-            text: qsTr("Copy BibTeX")
-            onTriggered: view.copyCitation("bibtex")
-        }
-        MenuItem {
-            text: qsTr("Copy APA")
-            onTriggered: view.copyCitation("apa")
-        }
-        MenuSeparator {}
-        MenuItem {
-            text: view.pageBookmark ? qsTr("Remove the bookmark") : qsTr("Bookmark this page")
-            onTriggered: view.toggleBookmark()
-        }
-    }
-
-    Loader {
-        id: noteEditor
-        active: false
-        readonly property var loaded: item
-        readonly property bool open: loaded ? !!loaded.open : false
-        function show(id) {
-            active = true
-            if (loaded)
-                loaded.show(id)
-        }
-        function close() {
-            if (loaded)
-                loaded.close()
-        }
-        sourceComponent: NoteEditor {
-            parent: view
-            anchors.centerIn: view
-            z: 14
-            onClosed: view.focusPage()
-            look: view.look
-        }
-    }
-
-    Loader {
-        id: companionPanel
-        active: false
-        readonly property var loaded: item
-        readonly property bool open: loaded ? !!loaded.open : false
-        readonly property bool settledOpen: loaded ? !!loaded.settledOpen : false
-        readonly property bool resizing: loaded ? Boolean(loaded["resizing"]) : false
-        width: loaded ? loaded.width : 0
-        property bool pendingOpen: false
-        property string pendingTab: "ask"
-        property bool pendingFocus: false
-        function show(tab, focusInput) {
-            if (active && loaded) {
-                pendingOpen = false
-                loaded.show(tab, !!focusInput)
+    ReaderPanels {
+        id: panels
+        z: 10
+        anchors.fill: parent
+        look: view.look
+        activeSettings: activeSettings
+        pdf: view.pdf
+        pdfSurface: view.pdfSurface
+        readingStage: readingStage
+        debugModeEnabled: debugMode
+        onFocusPageRequested: view.focusPage()
+        onGoToRequested: (target) => view.goTo(target)
+        onSampleTextRequested: (callback) => view.surfaceSampleText(callback)
+        onStartListeningRequested: view.startListening()
+        onAppearanceSettingChanged: (key, value) => view.setAppearance(key, value)
+        onPdfFitChosen: (mode) => view.setPdfFit(mode, false)
+        onBookOverrideToggled: (enabled) => view.setBookOverride(enabled)
+        onSearchHitJumped: (hit) => view.showFound(hit)
+        onSaveAsNoteRequested: (quote, note) => {
+            if (!reader.open)
                 return
+            const trimmedQuote = (quote || "").trim()
+            const trimmedNote = (note || "").trim()
+            if (trimmedQuote === "" && trimmedNote === "")
+                return
+            const matchTarget = view.selection && view.selection.text && view.selection.text.trim() === trimmedQuote
+                ? view.selection
+                : (view.lastCompanionTarget && view.lastCompanionTarget.text && view.lastCompanionTarget.text.trim() === trimmedQuote
+                   ? view.lastCompanionTarget : null)
+            let id = 0
+            if (matchTarget && matchTarget.end > matchTarget.start) {
+                id = marks.addHighlight(matchTarget.chapter, matchTarget.start, matchTarget.end,
+                                        trimmedQuote, "blue", reader.titleOfChapter(matchTarget.chapter))
+            } else {
+                const label = reader.titleOfChapter(reader.chapter)
+                const excerpt = trimmedQuote !== "" ? trimmedQuote : (reader.snippet !== "" ? reader.snippet : label)
+                id = marks.addBookmark(reader.chapter, reader.pageStart, excerpt, label)
             }
-            pendingTab = tab || "ask"
-            pendingFocus = !!focusInput
-            pendingOpen = true
-            active = true
-            // Start the first slide-in on the next frame so initial QML
-            // instantiation never eats the beginning of the slide animation.
-            Qt.callLater(() => {
-                if (pendingOpen && loaded) {
-                    pendingOpen = false
-                    loaded.show(pendingTab, pendingFocus)
-                }
-            })
-        }
-        function close() {
-            pendingOpen = false
-            if (loaded)
-                loaded.close()
-        }
-        sourceComponent: CompanionPanel {
-            parent: view
-            z: 10
-            height: view.height
-            look: view.look
-            onClosed: view.focusPage()
-            onJumpRequested: (chapter, offset) => view.goTo({ chapter: chapter, offset: offset, instant: true })
-            onSaveAsNote: (quote, note) => {
-                if (!reader.open)
-                    return
-                const trimmedQuote = (quote || "").trim()
-                const trimmedNote = (note || "").trim()
-                if (trimmedQuote === "" && trimmedNote === "")
-                    return
-                const matchTarget = view.selection && view.selection.text && view.selection.text.trim() === trimmedQuote
-                    ? view.selection
-                    : (view.lastCompanionTarget && view.lastCompanionTarget.text && view.lastCompanionTarget.text.trim() === trimmedQuote
-                       ? view.lastCompanionTarget : null)
-                let id = 0
-                if (matchTarget && matchTarget.end > matchTarget.start) {
-                    id = marks.addHighlight(matchTarget.chapter, matchTarget.start, matchTarget.end,
-                                            trimmedQuote, "blue", reader.titleOfChapter(matchTarget.chapter))
-                } else {
-                    const label = reader.titleOfChapter(reader.chapter)
-                    const excerpt = trimmedQuote !== "" ? trimmedQuote : (reader.snippet !== "" ? reader.snippet : label)
-                    id = marks.addBookmark(reader.chapter, reader.pageStart, excerpt, label)
-                }
-                if (id > 0) {
-                    if (trimmedNote !== "")
-                        marks.setNote(id, trimmedNote)
-                    toast.show(qsTr("Saved as note"))
-                }
+            if (id > 0) {
+                if (trimmedNote !== "")
+                    marks.setNote(id, trimmedNote)
+                toast.show(qsTr("Saved as note"))
             }
         }
     }
 
-    // Inline EPUB image/SVG lightbox with zoom, wheel zoom, drag-to-pan, and caption.
+    // Inline EPUB image/SVG lightbox with async image loading, zoom, pan, and caption.
     Loader {
         id: lightbox
         anchors.fill: parent
@@ -2809,320 +1838,9 @@ FocusScope {
             if (loaded)
                 loaded.setZoom(next)
         }
-        sourceComponent: FocusScope {
-            id: lightboxInner
+        sourceComponent: ReaderLightbox {
             anchors.fill: parent
-            property bool open: false
-            property string source: ""
-            property string caption: ""
-            property real zoom: 1.0
-            Behavior on zoom {
-                enabled: !theme.reducedMotion && lightboxInner.open
-                NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
-            }
-            property real panX: 0
-            property real panY: 0
-            property real reveal: open ? 1 : 0
-            Behavior on reveal {
-                NumberAnimation {
-                    duration: theme.reducedMotion ? 90 : (lightboxInner.open ? 220 : 160)
-                    easing.type: lightboxInner.open ? Easing.OutCubic : Easing.OutQuad
-                }
-            }
-            visible: reveal > 0.01
-            opacity: reveal
-
-            function openImage(src, cap) {
-                if (!src || src === "")
-                    return
-                source = src
-                caption = cap || ""
-                zoom = 1.0
-                panX = 0
-                panY = 0
-                open = true
-                forceActiveFocus()
-            }
-            function close() {
-                if (!open)
-                    return
-                open = false
-                zoom = 1.0
-                panX = 0
-                panY = 0
-            }
-            function setZoom(next) {
-                zoom = Math.max(1.0, Math.min(5.0, Math.round(next * 100) / 100))
-                if (zoom <= 1.01) {
-                    panX = 0
-                    panY = 0
-                } else {
-                    clampPan()
-                }
-            }
-            function clampPan() {
-                const maxX = Math.max(0, (lightboxImage.paintedWidth * zoom - width + 96) / 2)
-                const maxY = Math.max(0, (lightboxImage.paintedHeight * zoom - height + 140) / 2)
-                panX = Math.max(-maxX, Math.min(maxX, panX))
-                panY = Math.max(-maxY, Math.min(maxY, panY))
-            }
-
-            Keys.onEscapePressed: { close(); view.focusPage() }
-            Keys.onPressed: (event) => {
-                if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) { setZoom(zoom * 1.25); event.accepted = true }
-                else if (event.key === Qt.Key_Minus) { setZoom(zoom / 1.25); event.accepted = true }
-                else if (event.key === Qt.Key_0) { setZoom(1.0); event.accepted = true }
-            }
-
-            Rectangle {
-                anchors.fill: parent
-                color: Ui.tint("black", 0.86)
-            }
-
-            MouseArea {
-                id: lightboxPan
-                anchors.fill: parent
-                acceptedButtons: Qt.LeftButton
-                cursorShape: lightboxInner.zoom > 1.01 ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor) : Qt.ArrowCursor
-                property bool dragged: false
-                property real startX: 0
-                property real startY: 0
-                property real startPanX: 0
-                property real startPanY: 0
-                onPressed: (event) => {
-                    dragged = false
-                    startX = event.x
-                    startY = event.y
-                    startPanX = lightboxInner.panX
-                    startPanY = lightboxInner.panY
-                }
-                onPositionChanged: (event) => {
-                    if (!pressed || lightboxInner.zoom <= 1.01)
-                        return
-                    const dx = event.x - startX, dy = event.y - startY
-                    if (!dragged && Math.abs(dx) + Math.abs(dy) < 4)
-                        return
-                    dragged = true
-                    lightboxInner.panX = startPanX + dx
-                    lightboxInner.panY = startPanY + dy
-                    lightboxInner.clampPan()
-                }
-                onDoubleClicked: lightboxInner.setZoom(lightboxInner.zoom > 1.2 ? 1.0 : 2.0)
-                onClicked: (event) => {
-                    if (dragged)
-                        return
-                    const hitW = lightboxImage.paintedWidth * lightboxInner.zoom
-                    const hitH = lightboxImage.paintedHeight * lightboxInner.zoom
-                    const cx = lightboxInner.width / 2 + lightboxInner.panX
-                    const cy = lightboxInner.height / 2 + lightboxInner.panY
-                    const onImage = event.x >= cx - hitW / 2 && event.x <= cx + hitW / 2
-                                    && event.y >= cy - hitH / 2 && event.y <= cy + hitH / 2
-                    if (!onImage) {
-                        lightboxInner.close()
-                        view.focusPage()
-                    }
-                }
-                onWheel: (wheel) => {
-                    wheel.accepted = true
-                    const factor = wheel.angleDelta.y > 0 ? 1.15 : (1 / 1.15)
-                    lightboxInner.setZoom(lightboxInner.zoom * factor)
-                }
-            }
-
-            Image {
-                id: lightboxImage
-                anchors.centerIn: parent
-                anchors.horizontalCenterOffset: lightboxInner.panX
-                anchors.verticalCenterOffset: lightboxInner.panY
-                width: Math.max(120, lightboxInner.width - 96)
-                height: Math.max(120, lightboxInner.height - (lightboxInner.caption !== "" ? 156 : 112))
-                source: lightboxInner.visible ? lightboxInner.source : ""
-                fillMode: Image.PreserveAspectFit
-                asynchronous: true
-                smooth: true
-                mipmap: true
-                scale: lightboxInner.zoom * (theme.reducedMotion ? 1.0 : (0.94 + 0.06 * lightboxInner.reveal))
-            }
-
-            // Top-right floating zoom & close controls.
-            Rectangle {
-                anchors.top: parent.top
-                anchors.right: parent.right
-                anchors.topMargin: 20
-                anchors.rightMargin: 20
-                width: lightboxControls.implicitWidth + 14
-                height: 40
-                radius: Ui.radius(20, theme.radius)
-                color: Ui.tint("#1c1c1e", 0.9)
-                border.color: Ui.tint("white", 0.16)
-
-                Row {
-                    id: lightboxControls
-                    anchors.centerIn: parent
-                    spacing: 4
-                    IconButton {
-                        anchors.verticalCenter: parent.verticalCenter
-                        glyph: Icons.zoomOut
-                        tone: "white"
-                        enabled: lightboxInner.zoom > 1.01
-                        tip: qsTr("Zoom out (−)")
-                        onClicked: lightboxInner.setZoom(lightboxInner.zoom / 1.25)
-                    }
-                    AbstractButton {
-                        anchors.verticalCenter: parent.verticalCenter
-                        implicitWidth: 48
-                        implicitHeight: 30
-                        hoverEnabled: true
-                        focusPolicy: Qt.NoFocus
-                        onClicked: lightboxInner.setZoom(1.0)
-                        background: Rectangle {
-                            radius: Ui.radius(6, theme.radius)
-                            color: parent.hovered ? Ui.tint("white", 0.12) : "transparent"
-                        }
-                        contentItem: Label {
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
-                            text: Math.round(lightboxInner.zoom * 100).toLocaleString(Qt.locale(), 'f', 0) + "%"
-                            color: "white"
-                            font.pixelSize: 12
-                            font.features: ({ "tnum": 1 })
-                        }
-                        ToolTip.visible: hovered
-                        ToolTip.delay: 600
-                        ToolTip.text: qsTr("Reset zoom (0)")
-                    }
-                    IconButton {
-                        anchors.verticalCenter: parent.verticalCenter
-                        glyph: Icons.zoomIn
-                        tone: "white"
-                        enabled: lightboxInner.zoom < 4.99
-                        tip: qsTr("Zoom in (+)")
-                        onClicked: lightboxInner.setZoom(lightboxInner.zoom * 1.25)
-                    }
-                    Rectangle {
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 1
-                        height: 18
-                        color: Ui.tint("white", 0.18)
-                    }
-                    IconButton {
-                        anchors.verticalCenter: parent.verticalCenter
-                        glyph: Icons.close
-                        tone: "white"
-                        tip: qsTr("Close (Esc)")
-                        onClicked: { lightboxInner.close(); view.focusPage() }
-                    }
-                }
-            }
-
-            // Caption pill shown when the image has alt text or a figcaption.
-            Rectangle {
-                visible: lightboxInner.caption !== ""
-                anchors.bottom: parent.bottom
-                anchors.bottomMargin: 24
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: Math.min(parent.width - 64, captionText.implicitWidth + 32)
-                height: captionText.implicitHeight + 18
-                radius: Ui.radius(10, theme.radius)
-                color: Ui.tint("#1c1c1e", 0.88)
-                border.color: Ui.tint("white", 0.14)
-                Label {
-                    id: captionText
-                    anchors.centerIn: parent
-                    width: Math.min(implicitWidth, lightboxInner.width - 96)
-                    text: lightboxInner.caption
-                    color: "#f2f0eb"
-                    font.pixelSize: 13
-                    wrapMode: Text.Wrap
-                    horizontalAlignment: Text.AlignHCenter
-                    maximumLineCount: 4
-                    elide: Text.ElideRight
-                }
-            }
-        }
-    }
-
-    Loader {
-        id: marksPanel
-        active: false
-        readonly property var loaded: item
-        readonly property bool open: loaded ? !!loaded.open : false
-        width: loaded ? loaded.width : 0
-        function show() {
-            active = true
-            if (loaded)
-                loaded.show()
-        }
-        function close() {
-            if (loaded)
-                loaded.close()
-        }
-        sourceComponent: MarksPanel {
-            parent: view
-            z: 10
-            height: view.height
-            look: view.look
             onClosed: view.focusPage()
-            onChosen: (chapter, offset) => view.goTo({ chapter: chapter, offset: offset, instant: true })
-        }
-    }
-
-    Loader {
-        id: searchBar
-        active: false
-        readonly property var loaded: item
-        readonly property bool open: loaded ? !!loaded.open : false
-        readonly property bool editing: loaded ? !!loaded.editing : false
-        function show() {
-            active = true
-            if (loaded)
-                loaded.show()
-        }
-        function close() {
-            if (loaded)
-                loaded.close()
-        }
-        function next() {
-            if (loaded)
-                loaded.next()
-        }
-        function previous() {
-            if (loaded)
-                loaded.previous()
-        }
-        sourceComponent: SearchBar {
-            parent: view
-            anchors.horizontalCenter: readingStage.horizontalCenter
-            y: 64
-            z: 14
-            onClosed: view.focusPage()
-            look: view.look
-            onJumped: (hit) => view.showFound(hit)
-        }
-    }
-
-    Loader {
-        id: goTo
-        active: false
-        readonly property var loaded: item
-        readonly property bool open: loaded ? !!loaded.open : false
-        function show() {
-            active = true
-            if (loaded)
-                loaded.show()
-        }
-        function close() {
-            if (loaded)
-                loaded.close()
-        }
-        sourceComponent: GoToBox {
-            parent: view
-            anchors.horizontalCenter: readingStage.horizontalCenter
-            y: 96
-            z: 14
-            onClosed: view.focusPage()
-            look: view.look
-            onGo: (target) => view.goTo(target)
         }
     }
 

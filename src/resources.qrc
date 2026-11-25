@@ -37,6 +37,11 @@
         <file alias="ui/library/CatalogsSheet.qml">ui/library/CatalogsSheet.qml</file>
         <file alias="ui/reader/EpubReader.qml">ui/reader/EpubReader.qml</file>
         <file alias="ui/reader/PdfSurface.qml">ui/reader/PdfSurface.qml</file>
+        <file alias="ui/reader/ReaderBookmarkFold.qml">ui/reader/ReaderBookmarkFold.qml</file>
+        <file alias="ui/reader/ReaderChrome.qml">ui/reader/ReaderChrome.qml</file>
+        <file alias="ui/reader/ReaderLightbox.qml">ui/reader/ReaderLightbox.qml</file>
+        <file alias="ui/reader/ReaderMenus.qml">ui/reader/ReaderMenus.qml</file>
+        <file alias="ui/reader/ReaderPanels.qml">ui/reader/ReaderPanels.qml</file>
         <file alias="ui/reader/AppearancePanel.qml">ui/reader/AppearancePanel.qml</file>
         <file alias="ui/reader/ContentsPanel.qml">ui/reader/ContentsPanel.qml</file>
         <file alias="ui/reader/MarksPanel.qml">ui/reader/MarksPanel.qml</file>

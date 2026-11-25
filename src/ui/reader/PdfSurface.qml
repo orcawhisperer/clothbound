@@ -61,6 +61,11 @@ Item {
     property int marksVersion: 0
     property bool snipMode: false
     readonly property bool peekOpen: peekCard.open
+    // Cap full-page base texture width so every base page fits inside s_rawCache
+    // (32 MiB) while zoomed viewports overlay a debounced crisp high-res tile.
+    readonly property int maxBaseTextureWidth: 2048
+    property int viewportRevision: 0
+    property int pendingSnipReqId: 0
 
     signal contextMenuRequested(real x, real y)
     signal snipActionTriggered(string action, string base64Png, int pageIndex, string customPrompt)
@@ -103,20 +108,120 @@ Item {
     onZoomChanged: {
         if (!canPanX)
             pageList.panX = 0
+        viewportRevision++
         prefetchTimer.restart()
     }
     onFitModeChanged: {
         if (!canPanX)
             pageList.panX = 0
+        viewportRevision++
         prefetchTimer.restart()
+    }
+    onWidthChanged: viewportRevision++
+    onHeightChanged: viewportRevision++
+    onCropChanged: viewportRevision++
+    onCurrentChanged: viewportRevision++
+    onScrollingChanged: viewportRevision++
+
+    // Pure cursor-focal scroll math for single/spread Flickable zooming: keeps the
+    // exact document point under (cursorX, cursorY) anchored as page dimensions scale.
+    function computeFocalScroll(oldContentX, oldContentY, oldW, oldH, newW, newH, viewW, viewH, topPad, bottomPad, cursorX, cursorY) {
+        if (oldW <= 0 || oldH <= 0 || newW <= 0 || newH <= 0)
+            return { x: oldContentX, y: oldContentY }
+        const slotX0 = Math.max(24, (viewW - oldW) / 2)
+        const slotY0 = Math.max(topPad, (viewH - oldH) / 2)
+        const relX = (oldContentX + cursorX - slotX0) / oldW
+        const relY = (oldContentY + cursorY - slotY0) / oldH
+        const slotX1 = Math.max(24, (viewW - newW) / 2)
+        const slotY1 = Math.max(topPad, (viewH - newH) / 2)
+        const targetX = slotX1 + relX * newW - cursorX
+        const targetY = slotY1 + relY * newH - cursorY
+        const maxX = Math.max(0, Math.max(viewW, newW + 48) - viewW)
+        const maxY = Math.max(0, Math.max(viewH, newH + topPad + bottomPad) - viewH)
+        return {
+            x: Math.max(0, Math.min(maxX, targetX)),
+            y: Math.max(0, Math.min(maxY, targetY))
+        }
+    }
+
+    // Pure cursor-focal horizontal pan math for continuous scroll mode.
+    function computeFocalPanX(oldPanX, oldW, newW, viewW, roomW, cursorX) {
+        const maxPan = Math.max(0, (newW - roomW) / 2)
+        if (maxPan <= 0 || oldW <= 0 || newW <= 0)
+            return 0
+        const ratio = newW / oldW
+        const fromCenter = cursorX - viewW / 2
+        const nextPan = (fromCenter + oldPanX) * ratio - fromCenter
+        return Math.max(-maxPan, Math.min(maxPan, nextPan))
+    }
+
+    // Builds the image://pdf viewport tile URL for a normalized [0..1] page sub-rect.
+    function buildTileUrl(pageIdx, colorsQuery, normRect, fullPxW) {
+        if (pageIdx < 0 || reader.pdfSource === "" || !normRect || normRect.width <= 0.0005 || normRect.height <= 0.0005)
+            return ""
+        const base = reader.pdfSource + "/" + pageIdx + (colorsQuery || "")
+        const sep = (!colorsQuery || colorsQuery === "") ? "?" : "&"
+        return base + sep
+            + "tx=" + normRect.x.toFixed(4)
+            + "&ty=" + normRect.y.toFixed(4)
+            + "&tw=" + normRect.width.toFixed(4)
+            + "&th=" + normRect.height.toFixed(4)
+            + "&fullw=" + Math.round(fullPxW)
     }
 
     function zoomByWheel(angleDeltaY) {
+        zoomByWheelAt(angleDeltaY, NaN, NaN)
+    }
+
+    function zoomByWheelAt(angleDeltaY, cursorX, cursorY) {
         const ay = Number(angleDeltaY) || 0
         if (ay === 0)
             return
         const steps = Math.max(-2.0, Math.min(2.0, ay / 120.0))
-        nudgeZoom(Math.pow(1.1, steps))
+        const factor = Math.pow(1.1, steps)
+        if (scrolling) {
+            const oldW = pageList.currentDisplayWidth
+            const oldPanX = pageList.panX
+            const oldContentY = pageList.contentY
+            const vx = (cursorX !== undefined && cursorX !== null && isFinite(cursorX)) ? Number(cursorX) : (pageList.width / 2)
+            const vy = (cursorY !== undefined && cursorY !== null && isFinite(cursorY)) ? Number(cursorY) : (pageList.height / 2)
+            const hitY = oldContentY + vy
+            const anchorIdx = scrollIndexAt(hitY)
+            const anchorDel = anchorIdx >= 0 ? pageList.itemAtIndex(anchorIdx) : null
+            const anchorFracY = (anchorDel && anchorDel.height > 0) ? ((hitY - anchorDel.y) / anchorDel.height) : 0
+            nudgeZoom(factor)
+            const newW = pageList.currentDisplayWidth
+            pageList.panX = computeFocalPanX(oldPanX, oldW, newW, pageList.width, pageList.roomWidth, vx)
+            if (anchorIdx >= 0) {
+                pageList.forceLayout()
+                const newDel = pageList.itemAtIndex(anchorIdx)
+                if (newDel) {
+                    const minY = pageList.originY
+                    const maxY = Math.max(minY, pageList.originY + pageList.contentHeight - pageList.height)
+                    const desiredY = newDel.y + anchorFracY * newDel.height - vy
+                    pageList.contentY = Math.max(minY, Math.min(maxY, desiredY))
+                }
+            }
+            viewportRevision++
+            return
+        }
+        const slot = spreadRow.activeSlotItem
+        const oldW = slot ? slot.contentW : 0
+        const oldH = slot ? slot.contentH : 0
+        const oldCX = zoomed.contentX
+        const oldCY = zoomed.contentY
+        const vx = (cursorX !== undefined && cursorX !== null && isFinite(cursorX)) ? Number(cursorX) : (zoomed.width / 2)
+        const vy = (cursorY !== undefined && cursorY !== null && isFinite(cursorY)) ? Number(cursorY) : (zoomed.height / 2)
+        nudgeZoom(factor)
+        const newW = slot ? slot.contentW : 0
+        const newH = slot ? slot.contentH : 0
+        if (oldW > 0 && oldH > 0 && newW > 0 && newH > 0) {
+            const next = computeFocalScroll(oldCX, oldCY, oldW, oldH, newW, newH,
+                                            zoomed.width, zoomed.height, surface.topRoom, surface.bottomRoom, vx, vy)
+            zoomed.contentX = next.x
+            zoomed.contentY = next.y
+        }
+        viewportRevision++
     }
 
     function fitPageWidthFor(pageIndex, pageCount, roomW, roomH, cropRect, secondPage) {
@@ -346,15 +451,41 @@ Item {
     }
     function closePeek() {
         peekCard.open = false
+        peekCard.loading = false
+        peekCard.pendingRequestId = 0
     }
     function openPeek(destPage, destY, anchorRect) {
         if (destPage === undefined || destPage < 0)
             return
-        const data = reader.peekPdfDestination(destPage, destY !== undefined ? destY : -1.0)
+        const yArg = destY !== undefined ? destY : -1.0
+        if (typeof reader.requestPdfPeek === "function") {
+            const rawLbl = reader.pdfPageLabel(destPage)
+            peekCard.peekInfo = {
+                page: destPage,
+                pageLabel: rawLbl !== "" ? rawLbl : String(destPage + 1),
+                imageDataUrl: "",
+                excerpt: ""
+            }
+            peekCard.anchorRect = anchorRect
+            peekCard.loading = true
+            peekCard.open = true
+            peekCard.place()
+            const reqId = reader.requestPdfPeek(destPage, yArg)
+            if (reqId > 0) {
+                peekCard.pendingRequestId = reqId
+                return
+            }
+            peekCard.loading = false
+            peekCard.open = false
+            goTo({ chapter: destPage, recordHistory: true })
+            return
+        }
+        const data = reader.peekPdfDestination(destPage, yArg)
         if (!data || data.page === undefined) {
             goTo({ chapter: destPage, recordHistory: true })
             return
         }
+        peekCard.loading = false
         peekCard.peekInfo = data
         peekCard.anchorRect = anchorRect
         peekCard.open = true
@@ -571,7 +702,7 @@ Item {
         if (!targets.length)
             return
         const fullW = spreadRow.activeSlotItem ? (spreadRow.activeSlotItem.fitWidth / surface.crop.width) : 600
-        const pixelWidth = Math.max(64, Math.ceil(fullW * Screen.devicePixelRatio / 64) * 64)
+        const pixelWidth = Math.min(surface.maxBaseTextureWidth, Math.max(64, Math.ceil(fullW * Screen.devicePixelRatio / 64) * 64))
         if (typeof reader.pdfPrefetch === "function")
             reader.pdfPrefetch(targets, pixelWidth, surface.colors)
     }
@@ -584,10 +715,38 @@ Item {
 
     onLayoutChanged: Qt.callLater(() => show(current, false, 0, false))
     onSpreadChanged: Qt.callLater(() => show(current, false, 0, false))
-    onColorsChanged: prefetchTimer.restart()
+    onColorsChanged: {
+        viewportRevision++
+        prefetchTimer.restart()
+    }
     Connections {
         target: marks
         function onChanged() { surface.marksVersion++ }
+    }
+    Connections {
+        target: reader
+        ignoreUnknownSignals: true
+        function onPdfPeekReady(requestId, info) {
+            if (!peekCard.open || requestId !== peekCard.pendingRequestId)
+                return
+            peekCard.loading = false
+            if (!info || info.page === undefined) {
+                const fallbackPage = peekCard.peekInfo && peekCard.peekInfo.page !== undefined ? peekCard.peekInfo.page : -1
+                surface.closePeek()
+                if (fallbackPage >= 0)
+                    surface.goTo({ chapter: fallbackPage, recordHistory: true })
+                return
+            }
+            peekCard.peekInfo = info
+            peekCard.place()
+        }
+        function onPdfSnipReady(requestId, action, base64Png, pageIndex, customPrompt) {
+            if (requestId !== surface.pendingSnipReqId)
+                return
+            surface.pendingSnipReqId = 0
+            if (base64Png && base64Png !== "")
+                surface.snipActionTriggered(action, base64Png, pageIndex, customPrompt || "")
+        }
     }
 
     // One page: rendered, cropped, and drawn over (highlights, search,
@@ -606,8 +765,114 @@ Item {
         readonly property var pageLinks: page >= 0 ? reader.pdfLinks(page) : []
         readonly property bool imageReady: page < 0 || reader.pdfSource === "" || pageImage.status === Image.Ready || pageImage.status === Image.Error
         property bool showPlaceholder: false
+        // Full desired pixel width at current zoom/DPR; base layer stays ≤ 2048 px
+        // while zoomed viewports (> 2048 px) layer a debounced crisp tile on top.
+        readonly property int targetPixelWidth: Math.max(64, Math.min(12000, Math.ceil(pageItem.fullWidth * Screen.devicePixelRatio / 64) * 64))
+        readonly property int basePixelWidth: Math.min(surface.maxBaseTextureWidth, targetPixelWidth)
+        readonly property bool needsHiResTile: pageItem.page >= 0 && reader.pdfSource !== "" && targetPixelWidth > surface.maxBaseTextureWidth
+        property string tileSource: ""
+        property rect pendingTileRect: Qt.rect(0, 0, 0, 0)
+        property int pendingTilePage: -1
+        property string pendingTileColors: ""
+        property int pendingTileFullW: 0
+        property rect loadedTileRect: Qt.rect(0, 0, 0, 0)
+        property int loadedTilePage: -1
+        property string loadedTileColors: ""
+        property int loadedTileFullW: 0
+        property bool tileHasLoaded: false
         width: fullWidth * surface.crop.width
         height: fullHeight * surface.crop.height
+
+        function clearTile() {
+            tileDebounce.stop()
+            tileSource = ""
+            tileHasLoaded = false
+            pendingTileRect = Qt.rect(0, 0, 0, 0)
+            loadedTileRect = Qt.rect(0, 0, 0, 0)
+            pendingTilePage = -1
+            loadedTilePage = -1
+            pendingTileFullW = 0
+            loadedTileFullW = 0
+        }
+        function scheduleTileUpdate() {
+            if (!needsHiResTile || suppressPlaceholder || !visible || !surface.visible) {
+                if (tileSource !== "" || tileHasLoaded)
+                    clearTile()
+                return
+            }
+            tileDebounce.restart()
+        }
+        function updateTile() {
+            if (!needsHiResTile || suppressPlaceholder || !visible || !surface.visible
+                    || whole.width <= 1 || whole.height <= 1 || surface.width <= 1 || surface.height <= 1) {
+                clearTile()
+                return
+            }
+            const vpTop = surface.scrolling ? surface.topRoom : 0
+            const vpBottom = surface.scrolling ? (surface.height - surface.bottomRoom) : surface.height
+            const tl = whole.mapFromItem(surface, 0, vpTop)
+            const br = whole.mapFromItem(surface, surface.width, vpBottom)
+            const visX1 = Math.max(0, Math.min(whole.width, Math.min(tl.x, br.x)))
+            const visY1 = Math.max(0, Math.min(whole.height, Math.min(tl.y, br.y)))
+            const visX2 = Math.max(0, Math.min(whole.width, Math.max(tl.x, br.x)))
+            const visY2 = Math.max(0, Math.min(whole.height, Math.max(tl.y, br.y)))
+            if (visX2 - visX1 < 2 || visY2 - visY1 < 2) {
+                clearTile()
+                return
+            }
+            const vnx1 = visX1 / whole.width
+            const vny1 = visY1 / whole.height
+            const vnx2 = visX2 / whole.width
+            const vny2 = visY2 / whole.height
+            const eps = 0.0005
+            if (tileHasLoaded && loadedTilePage === page && loadedTileColors === surface.colors
+                    && loadedTileFullW === targetPixelWidth
+                    && loadedTileRect.x <= vnx1 + eps && loadedTileRect.y <= vny1 + eps
+                    && (loadedTileRect.x + loadedTileRect.width) >= vnx2 - eps
+                    && (loadedTileRect.y + loadedTileRect.height) >= vny2 - eps) {
+                return
+            }
+            const pad = 200
+            const snap = 32
+            const px1 = Math.max(0, Math.floor((visX1 - pad) / snap) * snap)
+            const py1 = Math.max(0, Math.floor((visY1 - pad) / snap) * snap)
+            const px2 = Math.min(whole.width, Math.ceil((visX2 + pad) / snap) * snap)
+            const py2 = Math.min(whole.height, Math.ceil((visY2 + pad) / snap) * snap)
+            if (px2 - px1 < 2 || py2 - py1 < 2) {
+                clearTile()
+                return
+            }
+            const nx = Math.max(0, Math.min(1, px1 / whole.width))
+            const ny = Math.max(0, Math.min(1, py1 / whole.height))
+            const nw = Math.max(0.001, Math.min(1 - nx, (px2 - px1) / whole.width))
+            const nh = Math.max(0.001, Math.min(1 - ny, (py2 - py1) / whole.height))
+            const normRect = Qt.rect(nx, ny, nw, nh)
+            const url = surface.buildTileUrl(page, surface.colors, normRect, targetPixelWidth)
+            if (url === "" || url === tileSource)
+                return
+            pendingTileRect = normRect
+            pendingTilePage = page
+            pendingTileColors = surface.colors
+            pendingTileFullW = targetPixelWidth
+            tileSource = url
+        }
+        onPageChanged: {
+            clearTile()
+            scheduleTileUpdate()
+        }
+        onNeedsHiResTileChanged: scheduleTileUpdate()
+        onFullWidthChanged: scheduleTileUpdate()
+        onVisibleChanged: scheduleTileUpdate()
+        onSuppressPlaceholderChanged: scheduleTileUpdate()
+        Timer {
+            id: tileDebounce
+            interval: 90
+            onTriggered: pageItem.updateTile()
+        }
+        Connections {
+            target: surface
+            function onViewportRevisionChanged() { pageItem.scheduleTileUpdate() }
+        }
 
         function toPageX(x) { return (x + surface.crop.x * fullWidth) / fullWidth }
         function toPageY(y) { return (y + surface.crop.y * fullHeight) / fullHeight }
@@ -680,8 +945,9 @@ Item {
                     smooth: true
                     mipmap: true
                     source: pageItem.page >= 0 && reader.pdfSource !== "" ? reader.pdfSource + "/" + pageItem.page + surface.colors : ""
-                    // Bucket width to 64 px steps so slight resizes hit the LRU cache.
-                    sourceSize.width: Math.max(64, Math.ceil(pageItem.fullWidth * Screen.devicePixelRatio / 64) * 64)
+                    // Bucket width to 64 px steps and cap base layer ≤ 2048 px so
+                    // zoomed pages always fit s_rawCache while crisp tiles cover > 2048 px.
+                    sourceSize.width: pageItem.basePixelWidth
                     fillMode: Image.Stretch
                     onStatusChanged: {
                         if (status === Image.Loading && !pageItem.suppressPlaceholder) {
@@ -689,6 +955,35 @@ Item {
                         } else {
                             placeholderDelay.stop()
                             pageItem.showPlaceholder = false
+                        }
+                    }
+                }
+                // Crisp debounced visible-viewport tile overlay when zoomed beyond 2048 px.
+                Image {
+                    id: tileImage
+                    x: pageItem.loadedTileRect.x * whole.width
+                    y: pageItem.loadedTileRect.y * whole.height
+                    width: pageItem.loadedTileRect.width * whole.width
+                    height: pageItem.loadedTileRect.height * whole.height
+                    visible: pageItem.needsHiResTile && pageItem.tileHasLoaded
+                             && pageItem.loadedTilePage === pageItem.page
+                             && pageItem.loadedTileColors === surface.colors
+                    asynchronous: true
+                    cache: false
+                    retainWhileLoading: true
+                    smooth: true
+                    mipmap: false
+                    fillMode: Image.Stretch
+                    source: pageItem.tileSource
+                    onStatusChanged: {
+                        if (status === Image.Ready && pageItem.tileSource !== "") {
+                            pageItem.loadedTileRect = pageItem.pendingTileRect
+                            pageItem.loadedTilePage = pageItem.pendingTilePage
+                            pageItem.loadedTileColors = pageItem.pendingTileColors
+                            pageItem.loadedTileFullW = pageItem.pendingTileFullW
+                            pageItem.tileHasLoaded = true
+                        } else if (status === Image.Error || status === Image.Null) {
+                            pageItem.tileHasLoaded = false
                         }
                     }
                 }
@@ -1344,15 +1639,19 @@ Item {
                 if (contentY > maxY)
                     contentY = maxY
             }
+            onContentXChanged: surface.viewportRevision++
+            onContentYChanged: surface.viewportRevision++
             onContentWidthChanged: {
                 const maxX = Math.max(0, contentWidth - width)
                 if (contentX > maxX)
                     contentX = maxX
+                surface.viewportRevision++
             }
             onContentHeightChanged: {
                 const maxY = Math.max(0, contentHeight - height)
                 if (contentY > maxY)
                     contentY = maxY
+                surface.viewportRevision++
             }
 
             SpreadSlot {
@@ -1373,7 +1672,7 @@ Item {
             WheelHandler {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 acceptedModifiers: Qt.ControlModifier
-                onWheel: (event) => surface.zoomByWheel(event.angleDelta.y)
+                onWheel: (event) => surface.zoomByWheelAt(event.angleDelta.y, event.x, event.y)
             }
         }
 
@@ -1453,6 +1752,7 @@ Item {
         ScrollBar.vertical: ScrollBar {}
         SmoothWheel { stepSize: 165 }
         property real panX: 0
+        onPanXChanged: surface.viewportRevision++
         readonly property real roomWidth: Math.max(120, width - 48)
         readonly property real roomHeight: Math.max(120, height - 16)
         readonly property real currentFitPageWidth: surface.fitPageWidthFor(surface.current, 1, roomWidth, roomHeight, surface.crop)
@@ -1462,7 +1762,7 @@ Item {
         WheelHandler {
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
             acceptedModifiers: Qt.ControlModifier
-            onWheel: (event) => surface.zoomByWheel(event.angleDelta.y)
+            onWheel: (event) => surface.zoomByWheelAt(event.angleDelta.y, event.x, event.y)
         }
         WheelHandler {
             enabled: pageList.maxPanX > 2
@@ -1505,7 +1805,10 @@ Item {
                 fullWidth: surface.displayWidthFor(index, 1, pageList.roomWidth, pageList.roomHeight, surface.fitMode, surface.zoom, surface.crop) / surface.crop.width
             }
         }
-        onContentYChanged: reportTimer.restart()
+        onContentYChanged: {
+            surface.viewportRevision++
+            reportTimer.restart()
+        }
         Timer {
             id: reportTimer
             interval: 250
@@ -1537,6 +1840,8 @@ Item {
         id: peekCard
         z: 20
         property bool open: false
+        property bool loading: false
+        property int pendingRequestId: 0
         property var peekInfo: ({})
         property var anchorRect: null
         property real reveal: open ? 1 : 0
@@ -1709,6 +2014,22 @@ Item {
                     spacing: 8
 
                     Rectangle {
+                        visible: peekCard.loading && !peekCard.hasImage
+                        width: parent.width
+                        height: 112
+                        radius: Ui.radius(8, theme.radius)
+                        color: surface.look && surface.look.dark ? Qt.rgba(1, 1, 1, 0.04) : Qt.rgba(0, 0, 0, 0.03)
+                        border.width: 1
+                        border.color: surface.look ? surface.look.line : "#D8D2C6"
+                        BusyIndicator {
+                            anchors.centerIn: parent
+                            running: parent.visible
+                            implicitWidth: 24
+                            implicitHeight: 24
+                        }
+                    }
+
+                    Rectangle {
                         visible: peekCard.hasImage
                         width: parent.width
                         readonly property real naturalRatio: peekImage.implicitWidth > 0 && peekImage.implicitHeight > 0
@@ -1830,8 +2151,14 @@ Item {
             const ny = normBox.y
             const nw = normBox.width
             const nh = normBox.height
-            const b64 = reader.snipPdfRegionBase64(page, nx, ny, nw, nh)
             surface.cancelSnip()
+            if (typeof reader.requestPdfSnip === "function") {
+                const reqId = reader.requestPdfSnip(page, nx, ny, nw, nh, action, "")
+                if (reqId > 0)
+                    surface.pendingSnipReqId = reqId
+                return
+            }
+            const b64 = reader.snipPdfRegionBase64(page, nx, ny, nw, nh)
             if (b64 && b64 !== "")
                 surface.snipActionTriggered(action, b64, page, "")
         }
