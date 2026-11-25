@@ -346,10 +346,15 @@ foreach(_style_qml IN LISTS CLOTHBOUND_STYLE_QML_FILES)
     set_source_files_properties("${_style_qml}" PROPERTIES QT_RESOURCE_ALIAS "${_style_alias}")
 endforeach()
 
+set(_clothbound_qml_module_extra_args)
+if(Qt6_VERSION VERSION_GREATER_EQUAL "6.11.0")
+    list(APPEND _clothbound_qml_module_extra_args NO_GENERATE_AOT_VALIDATION)
+endif()
+
 qt_add_qml_module(clothbound_style
     STATIC
     NO_PLUGIN
-    NO_GENERATE_AOT_VALIDATION
+    ${_clothbound_qml_module_extra_args}
     URI Clothbound
     VERSION 6.0
     RESOURCE_PREFIX /ui/style
@@ -446,7 +451,7 @@ qt_add_qml_module(clothbound
     VERSION 1.0
     RESOURCE_PREFIX /
     NO_RESOURCE_TARGET_PATH
-    NO_GENERATE_AOT_VALIDATION
+    ${_clothbound_qml_module_extra_args}
     QML_FILES ${CLOTHBOUND_UI_QML_FILES}
 )
 set_target_properties(clothbound PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
