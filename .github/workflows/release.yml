@@ -20,6 +20,8 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             git \
+            cmake \
+            ninja \
             qt6-base \
             qt6-declarative \
             qt6-wayland \
@@ -61,9 +63,17 @@ jobs:
           pkg=$(find /tmp/pkg-out -maxdepth 1 -name 'clothbound-[0-9]*.pkg.tar.zst' | head -n 1)
           test -n "$pkg"
           bsdtar -xf "$pkg" -C /tmp/pkg-check
-          count=$(readelf -Ws /tmp/pkg-check/usr/bin/clothbound | grep -c '@Qt_6_PRIVATE_API' || true)
-          echo "PRIVATE_API symbol count: $count"
-          test "$count" -eq 0
+          for bin in /tmp/pkg-check/usr/bin/clothbound /tmp/pkg-check/usr/bin/clothbound-mcp; do
+            count=$(readelf -Ws "$bin" | grep -c '@Qt_6_PRIVATE_API' || true)
+            echo "$bin PRIVATE_API symbol count: $count"
+            test "$count" -eq 0
+            readelf -d "$bin" | grep -q 'BIND_NOW'
+          done
+          bad_deps=$(ldd /tmp/pkg-check/usr/bin/clothbound-mcp | grep -iE 'webengine|quick|qml|multimedia' || true)
+          test -z "$bad_deps"
+          i18n_count=$(find /tmp/pkg-check/usr/share/clothbound/i18n -maxdepth 1 -name '*.json' | wc -l)
+          echo "Packaged i18n catalogs: $i18n_count"
+          test "$i18n_count" -eq 50
           (cd /tmp/pkg-out && sha256sum "$(basename "$pkg")" > SHA256SUMS)
           cat /tmp/pkg-out/SHA256SUMS
 

@@ -15292,6 +15292,10 @@ async function flushMicrotasks(n = 8) {
     void w5ReaderCraftPdfSurfaceFocalZoomAndBaseCap();
     void w5ReaderCraftDecomposedReaderGpuFoldAndKeyboardA11y();
     // === end w5-reader-craft tests ===
+
+    // === w6-cmake-aot tests ===
+    void w6CmakeAotExternalizedI18nAndWebEngineFreeMcp();
+    // === end w6-cmake-aot tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS
@@ -17591,12 +17595,13 @@ void ClothboundTests::w5ReaderCraftDecomposedReaderGpuFoldAndKeyboardA11y() {
     QVERIFY(!foldQml.contains(QStringLiteral("Canvas {")));
 
     const QString qrc = readSrc(QStringLiteral("resources.qrc"));
+    const QString cmakeLists = readSrc(QStringLiteral("../CMakeLists.txt"));
     for (const QString &sub : {QStringLiteral("ui/reader/ReaderBookmarkFold.qml"),
                                QStringLiteral("ui/reader/ReaderChrome.qml"),
                                QStringLiteral("ui/reader/ReaderLightbox.qml"),
                                QStringLiteral("ui/reader/ReaderMenus.qml"),
                                QStringLiteral("ui/reader/ReaderPanels.qml")}) {
-        QVERIFY2(qrc.contains(sub), qPrintable(sub));
+        QVERIFY2(qrc.contains(sub) || cmakeLists.contains(sub), qPrintable(sub));
     }
 
     // 2. Live QML compilation & zero warnings for all decomposed reader components + keyboard-accessible views.
@@ -17804,5 +17809,176 @@ void ClothboundTests::w5ReaderCraftDecomposedReaderGpuFoldAndKeyboardA11y() {
     QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
 }
 // === end w5-reader-craft tests ===
+
+// === w6-cmake-aot tests ===
+void ClothboundTests::w6CmakeAotExternalizedI18nAndWebEngineFreeMcp() {
+    const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+    QVERIFY(!srcRoot.isEmpty());
+
+    // 1. src/resources.qrc embeds ONLY en.json (all 49 non-English catalogs are externalized).
+    {
+        QFile qrcFile(srcRoot + QStringLiteral("/resources.qrc"));
+        QVERIFY(qrcFile.open(QIODevice::ReadOnly));
+        const QString qrc = QString::fromUtf8(qrcFile.readAll());
+        QVERIFY(qrc.contains(QStringLiteral("i18n/en.json")));
+        QVERIFY(!qrc.contains(QStringLiteral("i18n/de.json")));
+        QVERIFY(!qrc.contains(QStringLiteral("i18n/fr.json")));
+        QVERIFY(!qrc.contains(QStringLiteral("i18n/ar.json")));
+        QVERIFY(!qrc.contains(QStringLiteral("i18n/zh-CN.json")));
+    }
+
+    // 2. Externalized lazy i18n resolution order:
+    //    CLOTHBOUND_I18N_DIR > <appDir>/i18n > <appDir>/../share/clothbound/i18n > CLOTHBOUND_SOURCE_I18N_DIR > :/i18n.
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString envI18nDir = dir.filePath(QStringLiteral("env-i18n"));
+        QVERIFY(QDir().mkpath(envI18nDir));
+        write(envI18nDir + QStringLiteral("/de.json"), R"({"Save":"EnvSpeichern"})");
+
+        const QByteArray prevEnv = qgetenv("CLOTHBOUND_I18N_DIR");
+        auto restoreEnv = qScopeGuard([&] {
+            if (prevEnv.isEmpty())
+                qunsetenv("CLOTHBOUND_I18N_DIR");
+            else
+                qputenv("CLOTHBOUND_I18N_DIR", prevEnv);
+        });
+
+        qputenv("CLOTHBOUND_I18N_DIR", envI18nDir.toUtf8());
+        const QStringList paths = Translator::catalogSearchPaths();
+        QVERIFY(!paths.isEmpty());
+        QCOMPARE(paths.first(), QDir::cleanPath(envI18nDir));
+        QCOMPARE(paths.last(), QStringLiteral(":/i18n"));
+
+        const QString langFile = dir.filePath(QStringLiteral("language"));
+        write(langFile, "de\n");
+        {
+            Translator tr(langFile);
+            QCOMPARE(tr.language(), QStringLiteral("de"));
+            QCOMPARE(tr.translate("Main", "Save"), QStringLiteral("EnvSpeichern"));
+            // English plural rules still resolve via lower search tiers when not in CLOTHBOUND_I18N_DIR.
+            QCOMPARE(tr.translate("Main", "%n books", nullptr, 1), QStringLiteral("%n book"));
+        }
+
+        // Without CLOTHBOUND_I18N_DIR, lazy disk load resolves shipped catalogs (e.g. de, pt-BR)
+        // from CLOTHBOUND_SOURCE_I18N_DIR / install share dir without embedding them in QRC.
+        qunsetenv("CLOTHBOUND_I18N_DIR");
+        QVERIFY(QFile::exists(QStringLiteral(":/i18n/en.json")));
+        QVERIFY(!QFile::exists(QStringLiteral(":/i18n/de.json")));
+        {
+            Translator tr(langFile);
+            QCOMPARE(tr.language(), QStringLiteral("de"));
+            QVERIFY(!tr.translate("Main", "Save").isEmpty());
+            QVERIFY(tr.translate("Main", "Save") != QStringLiteral("EnvSpeichern"));
+            tr.setLanguage(QStringLiteral("pt-BR"));
+            QCOMPARE(tr.language(), QStringLiteral("pt-BR"));
+            QVERIFY(!tr.translate("Main", "Save").isEmpty());
+        }
+
+        // Direct embedded :/i18n fallback still carries en.json plurals even without disk files.
+        write(langFile, "en\n");
+        {
+            Translator embeddedFallback(langFile, QStringLiteral(":/i18n"));
+            QCOMPARE(embeddedFallback.language(), QStringLiteral("en"));
+            QVERIFY(!embeddedFallback.isEmpty());
+            QCOMPARE(embeddedFallback.translate("Main", "%n books", nullptr, 1), QStringLiteral("%n book"));
+            QCOMPARE(embeddedFallback.translate("Main", "%n books", nullptr, 4), QStringLiteral("%n books"));
+        }
+    }
+
+    // 3. WebEngine-free clothbound-mcp executable: --version, zero forbidden shared libs,
+    //    and full stdio JSON-RPC 2.0 initialize + tools/list + list_books handshake.
+    {
+        const QString mcpBin = QCoreApplication::applicationDirPath() + QStringLiteral("/clothbound-mcp");
+        QVERIFY2(QFileInfo::exists(mcpBin), qPrintable(QStringLiteral("Missing clothbound-mcp at %1").arg(mcpBin)));
+
+        // 3a. --version exits 0 and prints version string.
+        {
+            QProcess proc;
+            proc.start(mcpBin, {QStringLiteral("--version")});
+            QVERIFY(proc.waitForFinished(10000));
+            QCOMPARE(proc.exitStatus(), QProcess::NormalExit);
+            QCOMPARE(proc.exitCode(), 0);
+            const QString out = QString::fromUtf8(proc.readAllStandardOutput()).trimmed();
+            QVERIFY2(out.startsWith(QStringLiteral("clothbound-mcp ")), qPrintable(out));
+        }
+
+        // 3b. ldd verifies zero QtWebEngine / QtQuick / QtQml / QtMultimedia linkage.
+        {
+            QProcess ldd;
+            ldd.start(QStringLiteral("ldd"), {mcpBin});
+            if (ldd.waitForStarted(3000) && ldd.waitForFinished(10000) && ldd.exitCode() == 0) {
+                const QString deps = QString::fromUtf8(ldd.readAllStandardOutput()).toLower();
+                QVERIFY2(!deps.contains(QStringLiteral("webengine")), qPrintable(deps));
+                QVERIFY2(!deps.contains(QStringLiteral("qt6quick")), qPrintable(deps));
+                QVERIFY2(!deps.contains(QStringLiteral("qt6qml")), qPrintable(deps));
+                QVERIFY2(!deps.contains(QStringLiteral("qt6multimedia")), qPrintable(deps));
+            }
+        }
+
+        // 3c. Stdio JSON-RPC 2.0 handshake against a seeded read-only library (both default and `mcp` arg).
+        QTemporaryDir xdg;
+        QVERIFY(xdg.isValid());
+        const QString cfgDir = xdg.filePath(QStringLiteral("config"));
+        const QString dataDir = xdg.filePath(QStringLiteral("data"));
+        const QString cacheDir = xdg.filePath(QStringLiteral("cache"));
+        QVERIFY(QDir().mkpath(cfgDir + QStringLiteral("/clothbound")));
+        QVERIFY(QDir().mkpath(dataDir + QStringLiteral("/clothbound")));
+        QVERIFY(QDir().mkpath(cacheDir + QStringLiteral("/clothbound")));
+
+        const QString epubPath = xdg.filePath(QStringLiteral("mcp_smoke.epub"));
+        write(epubPath, TestBooks::epub2({}));
+        {
+            Library lib(dataDir + QStringLiteral("/clothbound"), cacheDir + QStringLiteral("/clothbound"));
+            QVERIFY(lib.open());
+            QVERIFY(lib.addBookFile(epubPath) > 0);
+        }
+
+        const QByteArray payload =
+            "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1\"}}}\n"
+            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n"
+            "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n"
+            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"list_books\",\"arguments\":{}}}\n";
+
+        for (const QStringList &invokeArgs : {QStringList{}, QStringList{QStringLiteral("mcp")}}) {
+            QProcess proc;
+            QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+            env.insert(QStringLiteral("XDG_CONFIG_HOME"), cfgDir);
+            env.insert(QStringLiteral("XDG_DATA_HOME"), dataDir);
+            env.insert(QStringLiteral("XDG_CACHE_HOME"), cacheDir);
+            proc.setProcessEnvironment(env);
+            proc.start(mcpBin, invokeArgs);
+            QVERIFY(proc.waitForStarted(10000));
+            QCOMPARE(proc.write(payload), payload.size());
+            proc.closeWriteChannel();
+            QVERIFY2(proc.waitForFinished(15000), "clothbound-mcp timed out on stdio handshake");
+            QCOMPARE(proc.exitStatus(), QProcess::NormalExit);
+            const QByteArray errOut = proc.readAllStandardError();
+            QCOMPARE(proc.exitCode(), 0);
+            QVERIFY2(errOut.isEmpty(), errOut.constData());
+
+            const QList<QByteArray> lines = proc.readAllStandardOutput().trimmed().split('\n');
+            QCOMPARE(lines.size(), 3);
+
+            const QJsonObject initResp = QJsonDocument::fromJson(lines[0]).object();
+            QCOMPARE(initResp.value(QStringLiteral("id")).toInt(), 1);
+            QVERIFY(initResp.value(QStringLiteral("result")).toObject().contains(QStringLiteral("serverInfo")));
+
+            const QJsonObject toolsResp = QJsonDocument::fromJson(lines[1]).object();
+            QCOMPARE(toolsResp.value(QStringLiteral("id")).toInt(), 2);
+            QCOMPARE(toolsResp.value(QStringLiteral("result")).toObject().value(QStringLiteral("tools")).toArray().size(), 6);
+
+            const QJsonObject listResp = QJsonDocument::fromJson(lines[2]).object();
+            QCOMPARE(listResp.value(QStringLiteral("id")).toInt(), 3);
+            const QJsonObject structured =
+                listResp.value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject();
+            QCOMPARE(structured.value(QStringLiteral("count")).toInt(), 1);
+            const QJsonArray books = structured.value(QStringLiteral("books")).toArray();
+            QCOMPARE(books.size(), 1);
+            QVERIFY(books[0].toObject().value(QStringLiteral("title")).toString().contains(QStringLiteral("Lantern Keeper")));
+        }
+    }
+}
+// === end w6-cmake-aot tests ===
 
 #include "clothbound_tests.moc"

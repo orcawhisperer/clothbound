@@ -3,37 +3,26 @@ set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 BUILD_DIR="$ROOT/build"
-PRO_FILE="$ROOT/clothbound.pro"
-STAMP_FILE="$BUILD_DIR/.stamp"
 
-mkdir -p "$BUILD_DIR"
-
-# qmake does not track DEFINES/flag/repo-path changes as dependencies of .o
-# files. Stamp the resolved root, version/flag lines, and compiler env so
-# version bumps, flag edits, or moved repos automatically trigger a clean build.
-PRO_FLAGS="$(grep -E '^[[:space:]]*(DEFINES|CONFIG|QMAKE_CXXFLAGS|QMAKE_LFLAGS)' "$PRO_FILE" || true)"
-STAMP="root=$ROOT
-cxxflags=${CXXFLAGS:-}
-cflags=${CFLAGS:-}
-cppflags=${CPPFLAGS:-}
-ldflags=${LDFLAGS:-}
-args=$*
-$PRO_FLAGS"
-
-PREV_STAMP=""
-if [ -f "$STAMP_FILE" ]; then
-    PREV_STAMP="$(cat "$STAMP_FILE")"
+if command -v ninja >/dev/null 2>&1; then
+    GENERATOR="Ninja"
+else
+    GENERATOR="Unix Makefiles"
 fi
 
-if [ "$STAMP" != "$PREV_STAMP" ]; then
-    rm -f "$BUILD_DIR/Makefile" "$BUILD_DIR/.qmake.stash" "$BUILD_DIR/clothbound" \
+# Clear stale build cache if switching from qmake or between CMake generators.
+if [ -f "$BUILD_DIR/.qmake.stash" ]; then
+    rm -rf "$BUILD_DIR/Makefile" "$BUILD_DIR/.qmake.stash" "$BUILD_DIR/.stamp" \
         "$BUILD_DIR"/*.o "$BUILD_DIR"/moc_* "$BUILD_DIR"/qrc_* "$BUILD_DIR"/ui_*
-    printf '%s\n' "$STAMP" > "$STAMP_FILE"
+fi
+if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    CACHED_GEN="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$BUILD_DIR/CMakeCache.txt" | head -n 1)"
+    if [ -n "$CACHED_GEN" ] && [ "$CACHED_GEN" != "$GENERATOR" ]; then
+        rm -rf "$BUILD_DIR/CMakeCache.txt" "$BUILD_DIR/CMakeFiles"
+    fi
 fi
 
-cd "$BUILD_DIR"
+cmake -S "$ROOT" -B "$BUILD_DIR" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release "$@"
+cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target clothbound clothbound-mcp
 
-qmake6 "$PRO_FILE" "$@"
-make -j"$(nproc)"
-
-echo "Built $BUILD_DIR/clothbound"
+echo "Built $BUILD_DIR/clothbound and $BUILD_DIR/clothbound-mcp"

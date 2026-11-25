@@ -5,20 +5,15 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-APP="$ROOT/build/clothbound"
-BENCH_DIR="$ROOT/build/bench"
-BENCH_BIN="$BENCH_DIR/clothbound_bench"
+BUILD_DIR="$ROOT/build"
+APP="$BUILD_DIR/clothbound"
+BENCH_BIN="$BUILD_DIR/clothbound_bench"
 RUNS="${CLOTHBOUND_BENCH_RUNS:-3}"
 BOOK_COUNT="${CLOTHBOUND_BENCH_BOOKS:-500}"
 
-echo "Building release clothbound + clothbound_bench..."
-"$ROOT/bin/build" >/dev/null
-mkdir -p "$BENCH_DIR"
-(
-    cd "$BENCH_DIR"
-    qmake6 "$ROOT/tests/clothbound_bench.pro" >/dev/null
-    make -j"$(nproc)" >/dev/null
-)
+echo "Building release clothbound + clothbound-mcp + clothbound_bench..."
+"$ROOT/bin/build" -DCLOTHBOUND_BUILD_BENCH=ON >/dev/null
+cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target clothbound_bench >/dev/null
 
 echo ""
 QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic "$BENCH_BIN"

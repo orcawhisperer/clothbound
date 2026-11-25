@@ -2,5 +2,10 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-cd "$ROOT/pkgbuild"
-exec makepkg -fsi "$@"
+if command -v makepkg >/dev/null 2>&1; then
+    cd "$ROOT/pkgbuild"
+    exec makepkg -fsi "$@"
+fi
+
+"$ROOT/bin/build"
+exec cmake --install "$ROOT/build" "$@"

@@ -151,6 +151,57 @@ QLocale Translator::formatLocale(const QString &language) {
     return QLocale(language);
 }
 
+QStringList Translator::catalogSearchPaths() {
+    QStringList dirs;
+    auto addDir = [&dirs](const QString &raw) {
+        const QString trimmed = raw.trimmed();
+        if (trimmed.isEmpty())
+            return;
+        const QString normalized =
+            trimmed.startsWith(QLatin1String(":/")) ? trimmed : QDir::cleanPath(trimmed);
+        if (!normalized.isEmpty() && !dirs.contains(normalized))
+            dirs.append(normalized);
+    };
+
+    // 1. Explicit runtime override via CLOTHBOUND_I18N_DIR.
+    addDir(qEnvironmentVariable("CLOTHBOUND_I18N_DIR"));
+
+    // 2. Installed & portable locations relative to the executable.
+    if (QCoreApplication::instance()) {
+        const QString appDir = QCoreApplication::applicationDirPath();
+        if (!appDir.isEmpty()) {
+            addDir(appDir + QStringLiteral("/i18n"));
+            addDir(appDir + QStringLiteral("/../share/clothbound/i18n"));
+        }
+    }
+
+    // 3. Compile-time source tree directory (for dev / build-tree / test runs).
+#ifdef CLOTHBOUND_SOURCE_I18N_DIR
+    addDir(QStringLiteral(CLOTHBOUND_SOURCE_I18N_DIR));
+#endif
+
+    // 4. Embedded QRC fallback (carries en.json even if disk catalogs are missing).
+    addDir(QStringLiteral(":/i18n"));
+    return dirs;
+}
+
+QString Translator::resolveCatalogFile(const QString &code, const QString &explicitDirectory) {
+    if (code.isEmpty())
+        return {};
+    const QString suffix = QLatin1Char('/') + code + QStringLiteral(".json");
+    if (!explicitDirectory.isEmpty()) {
+        const QString candidate = explicitDirectory + suffix;
+        return QFile::exists(candidate) ? candidate : QString();
+    }
+    const QStringList dirs = catalogSearchPaths();
+    for (const QString &dir : dirs) {
+        const QString candidate = dir + suffix;
+        if (QFile::exists(candidate))
+            return candidate;
+    }
+    return {};
+}
+
 QString Translator::translate(const char *, const char *sourceText, const char *, int n) const {
     // A null string tells Qt there is no translation, so it shows the English.
     if (!sourceText)
@@ -206,7 +257,7 @@ void Translator::reload() {
     if (QFileInfo::exists(m_languageFile))
         m_watcher.addPath(m_languageFile);
 
-    // Catalogs are compiled in, so only a different language needs a reload.
+    // Catalogs are loaded lazily on demand, so only a different language needs a reload.
     const QString overrideCode = languageOverride();
     const QString language = overrideCode.isEmpty() ? readLanguage(m_languageFile) : overrideCode;
     if (language == this->language())
@@ -219,7 +270,10 @@ void Translator::reload() {
     QStringList codes{"en", language.section('-', 0, 0), language};
     codes.removeDuplicates();
     for (const auto &code : codes) {
-        QFile catalogFile(m_catalogDirectory + "/" + code + ".json");
+        const QString catalogPath = resolveCatalogFile(code, m_catalogDirectory);
+        if (catalogPath.isEmpty())
+            continue;
+        QFile catalogFile(catalogPath);
         if (!catalogFile.open(QIODevice::ReadOnly))
             continue;
         const QJsonObject object = QJsonDocument::fromJson(catalogFile.readAll()).object();

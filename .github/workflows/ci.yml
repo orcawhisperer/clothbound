@@ -5,7 +5,7 @@ on:
     paths:
       - "src/**"
       - "tests/**"
-      - "clothbound.pro"
+      - "CMakeLists.txt"
       - "pkgbuild/**"
       - "bin/**"
       - ".github/workflows/ci.yml"
@@ -16,7 +16,7 @@ on:
     paths:
       - "src/**"
       - "tests/**"
-      - "clothbound.pro"
+      - "CMakeLists.txt"
       - "pkgbuild/**"
       - "bin/**"
       - ".github/workflows/ci.yml"
@@ -40,6 +40,8 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             git \
+            cmake \
+            ninja \
             qt6-base \
             qt6-declarative \
             qt6-wayland \
@@ -61,15 +63,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Build Clothbound (hardened, -Wall -Wextra)
+      - name: Build Clothbound & clothbound-mcp (CMake, qmlcachegen AOT, hardened)
         run: ./bin/build
 
-      - name: Verify ELF hardening and zero private Qt6 ABI symbols
+      - name: Verify ELF hardening, zero private Qt6 ABI symbols, and WebEngine-free MCP
         run: |
-          count=$(readelf -Ws build/clothbound | grep -c '@Qt_6_PRIVATE_API' || true)
-          echo "PRIVATE_API symbol count: $count"
-          test "$count" -eq 0
-          readelf -d build/clothbound | grep -q 'BIND_NOW'
+          for bin in build/clothbound build/clothbound-mcp; do
+            count=$(readelf -Ws "$bin" | grep -c '@Qt_6_PRIVATE_API' || true)
+            echo "$bin PRIVATE_API symbol count: $count"
+            test "$count" -eq 0
+            readelf -d "$bin" | grep -q 'BIND_NOW'
+          done
+          bad_deps=$(ldd build/clothbound-mcp | grep -iE 'webengine|quick|qml|multimedia' || true)
+          test -z "$bad_deps"
 
       - name: Run unit and QML smoke tests (with D-Bus session)
         run: ./bin/test
@@ -84,9 +90,12 @@ jobs:
           /usr/lib/qt6/bin/qmllint --unqualified disable -I src/ui -I src/ui/style $(find src/ui -name '*.qml' | sort)
           desktop-file-validate pkgbuild/clothbound.desktop
 
-      - name: Smoke-test local stdio MCP server
+      - name: Smoke-test local stdio MCP server (clothbound-mcp and clothbound mcp)
         run: |
-          XDG_DATA_HOME=$(mktemp -d) XDG_CONFIG_HOME=$(mktemp -d) XDG_CACHE_HOME=$(mktemp -d) \
+          TMP_XDG=$(mktemp -d)
+          trap 'rm -rf "$TMP_XDG"' EXIT
+          export XDG_DATA_HOME="$TMP_XDG/data" XDG_CONFIG_HOME="$TMP_XDG/config" XDG_CACHE_HOME="$TMP_XDG/cache"
+          ./build/clothbound list >/dev/null
           python3 -c '
           import json, subprocess
           reqs = [
@@ -94,10 +103,12 @@ jobs:
               {"jsonrpc": "2.0", "method": "notifications/initialized"},
               {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
           ]
-          p = subprocess.run(["./build/clothbound", "mcp"], input="\n".join(json.dumps(r) for r in reqs) + "\n", capture_output=True, text=True, timeout=15)
-          assert p.returncode == 0, p.stderr
-          assert p.stderr == "", f"unexpected stderr: {p.stderr}"
-          lines = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
-          assert len(lines) == 2 and len(lines[1]["result"]["tools"]) == 6
-          print("MCP stdio smoke OK:", [t["name"] for t in lines[1]["result"]["tools"]])
+          payload = "\n".join(json.dumps(r) for r in reqs) + "\n"
+          for cmd in [["./build/clothbound-mcp"], ["./build/clothbound-mcp", "mcp"], ["./build/clothbound", "mcp"]]:
+              p = subprocess.run(cmd, input=payload, capture_output=True, text=True, timeout=15)
+              assert p.returncode == 0, f"{cmd} failed: {p.stderr}"
+              assert p.stderr == "", f"{cmd} unexpected stderr: {p.stderr}"
+              lines = [json.loads(l) for l in p.stdout.splitlines() if l.strip()]
+              assert len(lines) == 2 and len(lines[1]["result"]["tools"]) == 6
+              print("MCP stdio smoke OK:", cmd, [t["name"] for t in lines[1]["result"]["tools"]])
           '

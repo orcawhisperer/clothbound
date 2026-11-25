@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QLocale>
 #include <QReadWriteLock>
+#include <QStringList>
 #include <QTimer>
 #include <QTranslator>
 #include <atomic>
@@ -22,7 +23,7 @@ class Translator : public QTranslator {
     Q_PROPERTY(QString languageOverride READ languageOverride WRITE setLanguage NOTIFY changed)
 
 public:
-    explicit Translator(const QString &languageFile = {}, const QString &catalogDirectory = ":/i18n",
+    explicit Translator(const QString &languageFile = {}, const QString &catalogDirectory = {},
                         QObject *parent = nullptr);
     ~Translator() override;
 
@@ -36,6 +37,8 @@ public:
     static QString readLanguage(const QString &path);
     static QString pluralCategory(const QString &language, long long count);
     static QLocale formatLocale(const QString &language);
+    static QStringList catalogSearchPaths();
+    static QString resolveCatalogFile(const QString &code, const QString &explicitDirectory = {});
 
 signals:
     void changed();

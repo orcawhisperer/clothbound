@@ -2,58 +2,57 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-PRO_FILE="$ROOT/tests/clothbound_tests.pro"
 
-ASAN=0
-if [ "${1:-}" = "--asan" ]; then
-    ASAN=1
-    shift
-fi
+SANITIZER=""
+case "${1:-}" in
+    --asan)
+        SANITIZER="asan"
+        shift
+        ;;
+    --tsan)
+        SANITIZER="tsan"
+        shift
+        ;;
+esac
 
-if [ "$ASAN" -eq 1 ]; then
-    BUILD_DIR="$ROOT/build/tests-asan"
-    MODE="asan-o1"
+case "$SANITIZER" in
+    asan)
+        BUILD_DIR="$ROOT/build/tests-asan"
+        ;;
+    tsan)
+        BUILD_DIR="$ROOT/build/tests-tsan"
+        ;;
+    *)
+        BUILD_DIR="$ROOT/build/tests"
+        ;;
+esac
+
+if command -v ninja >/dev/null 2>&1; then
+    GENERATOR="Ninja"
 else
-    BUILD_DIR="$ROOT/build/tests"
-    MODE="default"
+    GENERATOR="Unix Makefiles"
 fi
 
-STAMP_FILE="$BUILD_DIR/.stamp"
-mkdir -p "$BUILD_DIR"
-
-# Clean stale qmake objects when repo path, DEFINES, compiler flags, or build
-# mode change (qmake does not track Makefile/DEFINES changes for .o targets).
-PRO_FLAGS="$(grep -E '^[[:space:]]*(DEFINES|CONFIG|QMAKE_CXXFLAGS|QMAKE_LFLAGS)' "$PRO_FILE" || true)"
-STAMP="root=$ROOT
-mode=$MODE
-cxxflags=${CXXFLAGS:-}
-cflags=${CFLAGS:-}
-cppflags=${CPPFLAGS:-}
-ldflags=${LDFLAGS:-}
-$PRO_FLAGS"
-
-PREV_STAMP=""
-if [ -f "$STAMP_FILE" ]; then
-    PREV_STAMP="$(cat "$STAMP_FILE")"
-fi
-
-if [ "$STAMP" != "$PREV_STAMP" ]; then
-    rm -f "$BUILD_DIR/Makefile" "$BUILD_DIR/.qmake.stash" "$BUILD_DIR/clothbound_tests" \
+# Clear stale qmake files or mismatched CMake generator caches.
+if [ -f "$BUILD_DIR/.qmake.stash" ]; then
+    rm -rf "$BUILD_DIR/Makefile" "$BUILD_DIR/.qmake.stash" "$BUILD_DIR/.stamp" \
         "$BUILD_DIR"/*.o "$BUILD_DIR"/moc_* "$BUILD_DIR"/qrc_* "$BUILD_DIR"/ui_*
-    printf '%s\n' "$STAMP" > "$STAMP_FILE"
+fi
+if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    CACHED_GEN="$(sed -n 's/^CMAKE_GENERATOR:INTERNAL=//p' "$BUILD_DIR/CMakeCache.txt" | head -n 1)"
+    if [ -n "$CACHED_GEN" ] && [ "$CACHED_GEN" != "$GENERATOR" ]; then
+        rm -rf "$BUILD_DIR/CMakeCache.txt" "$BUILD_DIR/CMakeFiles"
+    fi
 fi
 
-cd "$BUILD_DIR"
+cmake -S "$ROOT" -B "$BUILD_DIR" \
+    -G "$GENERATOR" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCLOTHBOUND_BUILD_TESTS=ON \
+    -DCLOTHBOUND_FORCE_ASSERTS=ON \
+    -DCLOTHBOUND_SANITIZER="$SANITIZER"
 
-if [ "$ASAN" -eq 1 ]; then
-    qmake6 "$PRO_FILE" \
-        "QMAKE_CXXFLAGS+=-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
-        "QMAKE_CXXFLAGS_RELEASE+=-O1" \
-        "QMAKE_LFLAGS+=-fsanitize=address,undefined"
-else
-    qmake6 "$PRO_FILE"
-fi
-make -j"$(nproc)"
+cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target clothbound_tests clothbound-mcp
 
 TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/clothbound-test.XXXXXX")"
 trap 'rm -rf "$TEST_HOME"' EXIT INT TERM
@@ -65,11 +64,14 @@ export XDG_CACHE_HOME="$TEST_HOME/cache"
 export QT_QPA_PLATFORM=offscreen
 export QT_QPA_PLATFORMTHEME=generic
 
-if [ "$ASAN" -eq 1 ]; then
+if [ "$SANITIZER" = "asan" ]; then
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
     export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}"
+elif [ "$SANITIZER" = "tsan" ]; then
+    export TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}"
 fi
 
+cd "$BUILD_DIR"
 if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
     dbus-run-session -- ./clothbound_tests "$@"
 else

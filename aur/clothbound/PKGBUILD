@@ -12,24 +12,24 @@ optdepends=('ffmpeg: keep listened narration small (Opus), and save downloads as
             'sdcv: look words up in your own StarDict dictionaries, offline'
             'ollama: run local text, vision, and embedding models on this computer'
             'llama.cpp: run text, embedding and voice models on this computer')
-makedepends=('gcc' 'make' 'pkgconf')
+makedepends=('cmake' 'gcc' 'make' 'pkgconf')
 options=('!debug' '!lto')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/orcawhisperer/clothbound/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('68857593321906791d2c911642467e07d628cfa404986c5a32793849a07a961f')
 
 build() {
-  mkdir -p build
-  cd build
-  qmake6 "../$pkgname-$pkgver/clothbound.pro"
-  make -j"$(nproc)"
+  local generator="Unix Makefiles"
+  if command -v ninja >/dev/null 2>&1; then
+    generator="Ninja"
+  fi
+  cmake -S "$pkgname-$pkgver" -B build \
+    -G "$generator" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -Wno-dev
+  cmake --build build --parallel "$(nproc)"
 }
 
 package() {
-  cd "$pkgname-$pkgver"
-  install -Dm755 ../build/clothbound "$pkgdir/usr/bin/clothbound"
-  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
-  install -Dm644 src/fonts/OFL.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-Literata.txt"
-  install -Dm644 src/fonts/Inter-OFL.txt "$pkgdir/usr/share/licenses/$pkgname/OFL-Inter.txt"
-  install -Dm644 pkgbuild/clothbound.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/clothbound.svg"
-  install -Dm644 pkgbuild/clothbound.desktop "$pkgdir/usr/share/applications/clothbound.desktop"
+  DESTDIR="$pkgdir" cmake --install build
 }
