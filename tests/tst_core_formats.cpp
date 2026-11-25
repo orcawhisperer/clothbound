@@ -446,7 +446,7 @@ void ClothboundTests::shippedCatalogsAreValidJson() {
         if (code == "en")
             continue;
         const QStringList forms = requiredForms.value(code, {"one", "other"});
-        for (auto it = obj.cbegin(); it != obj.cend(); ++it) {
+        for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
             const QString key = it.key();
             const bool counted = enObj.contains(key) || key.contains("%n") || key.contains("%Ln");
             const QStringList expPh = normalizedPh(key);
