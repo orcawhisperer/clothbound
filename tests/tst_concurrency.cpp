@@ -27,12 +27,14 @@
 #include <thread>
 #include <vector>
 
+#ifndef CLOTHBOUND_TSAN_ACTIVE
 #if defined(__linux__)
 #if defined(__SANITIZE_THREAD__)
 #define CLOTHBOUND_TSAN_ACTIVE 1
 #elif defined(__has_feature)
 #if __has_feature(thread_sanitizer)
 #define CLOTHBOUND_TSAN_ACTIVE 1
+#endif
 #endif
 #endif
 #endif

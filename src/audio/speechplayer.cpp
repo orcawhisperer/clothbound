@@ -8,9 +8,9 @@
 #include <QElapsedTimer>
 #include <QMediaDevices>
 #include <QMetaObject>
-#include <QMutexLocker>
 #include <QTimer>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -428,7 +428,7 @@ private:
         if (!m_out || !m_sink)
             return;
         {
-            QMutexLocker lock(&m_owner->m_mutex);
+            std::unique_lock<std::mutex> lock(m_owner->m_mutex);
             if (!m_owner->m_playing || m_owner->m_headless || m_owner->m_clearGeneration != m_clearGen)
                 return;
         }
@@ -439,7 +439,7 @@ private:
         for (;;) {
             SpeechPlayer::ReadyChunk chunk;
             {
-                QMutexLocker lock(&m_owner->m_mutex);
+                std::unique_lock<std::mutex> lock(m_owner->m_mutex);
                 if (!m_owner->m_playing || m_owner->m_headless || m_owner->m_clearGeneration != m_clearGen ||
                     m_owner->m_ready.isEmpty())
                     break;
@@ -469,7 +469,7 @@ private:
                 room -= sinkBytesToSourceSamples(qMax<qint64>(0, wrote));
             }
             if (chunk.trackDone) {
-                QMutexLocker lock(&m_owner->m_mutex);
+                std::unique_lock<std::mutex> lock(m_owner->m_mutex);
                 if (m_owner->m_clearGeneration == m_clearGen) {
                     if (SpeechPlayer::Track *t = m_owner->trackLocked(chunk.trackId, lock)) {
                         t->blocks.clear();
@@ -483,8 +483,8 @@ private:
                 break;
         }
         if (poppedAny) {
-            QMutexLocker lock(&m_owner->m_mutex);
-            m_owner->m_cond.wakeOne();
+            std::unique_lock<std::mutex> lock(m_owner->m_mutex);
+            m_owner->m_cond.notify_one();
         }
         // Marks already behind what's audible are kept only as far as needed.
         while (m_marks.size() > 64)
@@ -498,7 +498,7 @@ private:
         bool allConsumed = false;
         bool playingNow = false;
         {
-            QMutexLocker lock(&m_owner->m_mutex);
+            std::unique_lock<std::mutex> lock(m_owner->m_mutex);
             if (m_owner->m_clearGeneration != m_clearGen)
                 return;
             allConsumed = m_owner->m_ready.isEmpty() && m_owner->m_workerFinishedAll &&
@@ -738,7 +738,7 @@ void SpeechPlayer::ensureAudioThread() {
     double initialVolume = 1.0;
     bool initialMuted = false;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (m_pump)
             return;
         initialVolume = m_volume;
@@ -751,7 +751,7 @@ void SpeechPlayer::ensureAudioThread() {
         [this](quint64 clearGen, int track, qint64 sample) {
             quint64 currentGen = 0;
             {
-                QMutexLocker lock(&m_mutex);
+                std::unique_lock<std::mutex> lock(m_mutex);
                 currentGen = m_clearGeneration;
             }
             if (clearGen == currentGen)
@@ -763,7 +763,7 @@ void SpeechPlayer::ensureAudioThread() {
         [this](quint64 clearGen, bool starved) {
             quint64 currentGen = 0;
             {
-                QMutexLocker lock(&m_mutex);
+                std::unique_lock<std::mutex> lock(m_mutex);
                 currentGen = m_clearGeneration;
             }
             if (clearGen == currentGen)
@@ -775,7 +775,7 @@ void SpeechPlayer::ensureAudioThread() {
         [this](quint64 clearGen) {
             bool shouldEmit = false;
             {
-                QMutexLocker lock(&m_mutex);
+                std::unique_lock<std::mutex> lock(m_mutex);
                 if (clearGen == m_clearGeneration && !m_drained) {
                     m_drained = true;
                     shouldEmit = true;
@@ -795,7 +795,7 @@ void SpeechPlayer::ensureAudioThread() {
     m_audioThread.setObjectName(QStringLiteral("ClothboundAudio"));
     m_audioThread.start(QThread::HighPriority);
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         Q_ASSERT(!m_pump);
         m_pump = pump;
     }
@@ -805,7 +805,7 @@ void SpeechPlayer::stopAudioThread() {
     Q_ASSERT(QThread::currentThread() == thread());
     AudioOutputPump *pump = nullptr;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         pump = std::exchange(m_pump, nullptr);
     }
     if (!pump)
@@ -818,12 +818,9 @@ void SpeechPlayer::stopAudioThread() {
     delete pump;
 }
 
-void SpeechPlayer::startWorker() {
-    // Caller must hold m_mutex (non-recursive QMutex::tryLock fails immediately when held).
-    const bool wasUnlocked = m_mutex.tryLock();
-    if (wasUnlocked)
-        m_mutex.unlock();
-    Q_ASSERT(!wasUnlocked);
+void SpeechPlayer::startWorker(const std::unique_lock<std::mutex> &lock) {
+    Q_ASSERT(lock.mutex() == &m_mutex && lock.owns_lock());
+    Q_UNUSED(lock);
     if (m_worker.joinable())
         return;
     m_stopWorker = false;
@@ -833,10 +830,10 @@ void SpeechPlayer::startWorker() {
 void SpeechPlayer::stopWorker() {
     std::thread worker;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         m_stopWorker = true;
         ++m_generation;
-        m_cond.wakeAll();
+        m_cond.notify_all();
         worker = std::move(m_worker);
     }
     if (worker.joinable())
@@ -866,7 +863,7 @@ void SpeechPlayer::workerLoop() {
         bool doReseed = false;
 
         {
-            QMutexLocker lock(&m_mutex);
+            std::unique_lock<std::mutex> lock(m_mutex);
             for (;;) {
                 if (m_stopWorker)
                     return;
@@ -933,7 +930,7 @@ void SpeechPlayer::workerLoop() {
                         break;
                     }
                 }
-                m_cond.wait(&m_mutex);
+                m_cond.wait(lock);
             }
         }
 
@@ -991,7 +988,7 @@ void SpeechPlayer::workerLoop() {
 
         AudioOutputPump *pumpToNotify = nullptr;
         {
-            QMutexLocker lock(&m_mutex);
+            std::unique_lock<std::mutex> lock(m_mutex);
             if (m_stopWorker)
                 return;
             if (gen != m_generation || rateGen != m_rateGeneration)
@@ -1014,7 +1011,7 @@ void SpeechPlayer::workerLoop() {
             } else {
                 m_workerRead = newReadPos;
                 if (out.isEmpty())
-                    m_cond.wait(&m_mutex, 15);
+                    m_cond.wait_for(lock, std::chrono::milliseconds(15));
             }
         }
 
@@ -1023,8 +1020,8 @@ void SpeechPlayer::workerLoop() {
     }
 }
 
-SpeechPlayer::Track *SpeechPlayer::trackLocked(int id, const QMutexLocker<QMutex> &lock) {
-    Q_ASSERT(lock.mutex() == &m_mutex && lock.isLocked());
+SpeechPlayer::Track *SpeechPlayer::trackLocked(int id, const std::unique_lock<std::mutex> &lock) {
+    Q_ASSERT(lock.mutex() == &m_mutex && lock.owns_lock());
     Q_UNUSED(lock);
     for (Track &t : m_tracks)
         if (t.id == id)
@@ -1032,8 +1029,8 @@ SpeechPlayer::Track *SpeechPlayer::trackLocked(int id, const QMutexLocker<QMutex
     return nullptr;
 }
 
-int SpeechPlayer::trackIndexLocked(int id, const QMutexLocker<QMutex> &lock) const {
-    Q_ASSERT(lock.mutex() == &m_mutex && lock.isLocked());
+int SpeechPlayer::trackIndexLocked(int id, const std::unique_lock<std::mutex> &lock) const {
+    Q_ASSERT(lock.mutex() == &m_mutex && lock.owns_lock());
     Q_UNUSED(lock);
     for (int i = 0; i < m_tracks.size(); ++i)
         if (m_tracks[i].id == id)
@@ -1042,7 +1039,7 @@ int SpeechPlayer::trackIndexLocked(int id, const QMutexLocker<QMutex> &lock) con
 }
 
 void SpeechPlayer::addTrack(int id, qint64 startSample) {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (trackLocked(id, lock))
         return;
     Track t;
@@ -1056,13 +1053,13 @@ void SpeechPlayer::addTrack(int id, qint64 startSample) {
     m_workerFinishedAll = false;
     m_drained = false;
     Q_ASSERT(m_workerIndex >= 0 && m_workerIndex <= m_tracks.size());
-    m_cond.wakeOne();
+    m_cond.notify_one();
 }
 
 void SpeechPlayer::appendAudio(int id, const QByteArray &pcm) {
     if (pcm.isEmpty())
         return;
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (Track *t = trackLocked(id, lock)) {
         const qsizetype totalBytes = (t->hasTrailingByte ? 1 : 0) + pcm.size();
         const qsizetype evenBytes = totalBytes & ~qsizetype(1);
@@ -1081,7 +1078,7 @@ void SpeechPlayer::appendAudio(int id, const QByteArray &pcm) {
             t->blocks.push_back({t->totalSamples, std::move(block)});
             t->totalSamples += blockSamples;
             Q_ASSERT(t->totalSamples >= 0);
-            m_cond.wakeOne();
+            m_cond.notify_one();
         }
         t->hasTrailingByte = nextHasTrailing;
         t->trailingByte = nextTrailing;
@@ -1089,26 +1086,26 @@ void SpeechPlayer::appendAudio(int id, const QByteArray &pcm) {
 }
 
 void SpeechPlayer::finishTrack(int id) {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (Track *t = trackLocked(id, lock)) {
         t->complete = true;
-        m_cond.wakeOne();
+        m_cond.notify_one();
     }
 }
 
 bool SpeechPlayer::hasTrack(int id) const {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     return trackIndexLocked(id, lock) >= 0;
 }
 
 qint64 SpeechPlayer::trackSamples(int id) const {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     const int idx = trackIndexLocked(id, lock);
     return idx >= 0 ? m_tracks[idx].totalSamples : 0;
 }
 
 bool SpeechPlayer::trackComplete(int id) const {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     const int idx = trackIndexLocked(id, lock);
     return idx >= 0 ? m_tracks[idx].complete : false;
 }
@@ -1118,7 +1115,7 @@ void SpeechPlayer::clear() {
     quint64 clearGen = 0;
     AudioOutputPump *pump = nullptr;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         m_tracks.clear();
         m_ready.clear();
         m_readySamples = 0;
@@ -1132,7 +1129,7 @@ void SpeechPlayer::clear() {
         pump = m_pump;
         Q_ASSERT(m_tracks.isEmpty() && m_ready.isEmpty() && m_readySamples == 0);
         Q_ASSERT(m_workerIndex == 0 && m_workerRead == 0 && m_workerFinishedAll);
-        m_cond.wakeOne();
+        m_cond.notify_one();
     }
     setStarved(false);
     if (pump) {
@@ -1143,25 +1140,25 @@ void SpeechPlayer::clear() {
 }
 
 bool SpeechPlayer::isPlaying() const {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     return m_playing;
 }
 
 void SpeechPlayer::setHeadless(bool headless) {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     m_headless = headless;
-    m_cond.wakeOne();
+    m_cond.notify_one();
 }
 
 bool SpeechPlayer::isHeadless() const {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     return m_headless;
 }
 
 void SpeechPlayer::play() {
     bool needAudioThread = false;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (m_headless) {
             m_playing = true;
             return;
@@ -1173,16 +1170,16 @@ void SpeechPlayer::play() {
     quint64 clearGen = 0;
     AudioOutputPump *pump = nullptr;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (m_headless) {
             m_playing = true;
             return;
         }
         m_playing = true;
-        startWorker();
+        startWorker(lock);
         clearGen = m_clearGeneration;
         pump = m_pump;
-        m_cond.wakeOne();
+        m_cond.notify_one();
     }
     if (pump) {
         QMetaObject::invokeMethod(
@@ -1193,10 +1190,10 @@ void SpeechPlayer::play() {
 void SpeechPlayer::pause() {
     AudioOutputPump *pump = nullptr;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         m_playing = false;
         pump = m_pump;
-        m_cond.wakeOne();
+        m_cond.notify_one();
     }
     if (pump)
         QMetaObject::invokeMethod(pump, &AudioOutputPump::pausePlayback, Qt::QueuedConnection);
@@ -1206,7 +1203,7 @@ void SpeechPlayer::pause() {
 void SpeechPlayer::setMuted(bool muted) {
     AudioOutputPump *pump = nullptr;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         m_muted = muted;
         pump = m_pump;
     }
@@ -1215,7 +1212,7 @@ void SpeechPlayer::setMuted(bool muted) {
 }
 
 double SpeechPlayer::volume() const {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     return m_volume;
 }
 
@@ -1223,7 +1220,7 @@ void SpeechPlayer::setVolume(double volume) {
     const double clamped = std::clamp(volume, 0.0, 1.0);
     AudioOutputPump *pump = nullptr;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (qFuzzyCompare(clamped, m_volume))
             return;
         m_volume = clamped;
@@ -1238,18 +1235,18 @@ void SpeechPlayer::setVolume(double volume) {
 }
 
 bool SpeechPlayer::starved() const {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     return m_starved;
 }
 
 bool SpeechPlayer::drainedOut() const {
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     return m_drained;
 }
 
 void SpeechPlayer::setRate(double rate) {
     const double clamped = std::clamp(rate, 0.25, 4.0);
-    QMutexLocker lock(&m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
     if (qFuzzyCompare(clamped, m_rate))
         return;
     // Discard buffered output produced at the old rate and rewind the worker
@@ -1272,13 +1269,13 @@ void SpeechPlayer::setRate(double rate) {
     Q_ASSERT(m_rate >= 0.25 && m_rate <= 4.0);
     Q_ASSERT(m_workerIndex >= 0 && m_workerIndex <= m_tracks.size());
     Q_ASSERT(m_workerRead >= 0 && m_readySamples == 0);
-    m_cond.wakeOne();
+    m_cond.notify_one();
 }
 
 void SpeechPlayer::setStarved(bool starved) {
     bool changed = false;
     {
-        QMutexLocker lock(&m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         if (starved != m_starved) {
             m_starved = starved;
             changed = true;
@@ -1294,7 +1291,7 @@ void SpeechPlayer::setStarved(bool starved) {
             [this] {
                 bool current = false;
                 {
-                    QMutexLocker lock(&m_mutex);
+                    std::unique_lock<std::mutex> lock(m_mutex);
                     current = m_starved;
                 }
                 emit starvedChanged(current);

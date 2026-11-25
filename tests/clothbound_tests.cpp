@@ -4695,23 +4695,23 @@ private slots:
 
         // Drive the real off-thread WSOLA std::thread worker without opening a hardware QAudioSink.
         {
-            QMutexLocker lock(&player.m_mutex);
+            std::unique_lock<std::mutex> lock(player.m_mutex);
             player.m_headless = false;
             player.m_playing = true;
-            player.startWorker();
-            player.m_cond.wakeOne();
+            player.startWorker(lock);
+            player.m_cond.notify_one();
         }
 
         // Wait for the off-thread worker to populate at least 2 ready chunks at 1.0x.
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
-            QMutexLocker lock(&player.m_mutex);
+            std::unique_lock<std::mutex> lock(player.m_mutex);
             return player.m_ready.size() >= 2;
         }()), 5000);
 
         // Simulate sink consuming chunk 0; record exact sourceStart of the first unplayed chunk.
         qint64 expectedRewind = -1;
         {
-            QMutexLocker lock(&player.m_mutex);
+            std::unique_lock<std::mutex> lock(player.m_mutex);
             const SpeechPlayer::ReadyChunk played = player.m_ready.takeFirst();
             player.m_readySamples = qMax<qint64>(0, player.m_readySamples - played.bytes.size() / 2);
             QVERIFY(!player.m_ready.isEmpty());
@@ -4722,7 +4722,7 @@ private slots:
         // Mid-playback setRate(1.5) must discard stale ready chunks and rewind worker to expectedRewind.
         player.setRate(1.5);
         {
-            QMutexLocker lock(&player.m_mutex);
+            std::unique_lock<std::mutex> lock(player.m_mutex);
             QCOMPARE(player.m_rate, 1.5);
             QVERIFY(player.m_ready.isEmpty() || player.m_ready.first().sourceStart == expectedRewind);
             if (player.m_ready.isEmpty()) {
@@ -4737,7 +4737,7 @@ private slots:
         bool allRateOk = true;
         qint64 firstRateSourceStart = -1;
         QTRY_VERIFY_WITH_TIMEOUT(([&] {
-            QMutexLocker lock(&player.m_mutex);
+            std::unique_lock<std::mutex> lock(player.m_mutex);
             while (!player.m_ready.isEmpty()) {
                 const SpeechPlayer::ReadyChunk chunk = player.m_ready.takeFirst();
                 player.m_readySamples = qMax<qint64>(0, player.m_readySamples - chunk.bytes.size() / 2);
@@ -4753,7 +4753,7 @@ private slots:
                     std::memcpy(stretched.data() + prev, chunk.bytes.constData(), size_t(n) * sizeof(qint16));
                 }
             }
-            player.m_cond.wakeOne();
+            player.m_cond.notify_one();
             return player.m_workerFinishedAll && player.m_ready.isEmpty();
         }()), 5000);
 
@@ -16494,11 +16494,11 @@ void ClothboundTests::w5AudioSpeechPlayerConcurrencyStress() {
 
     // Start the real off-thread WSOLA std::thread worker without requiring a hardware QAudioSink.
     {
-        QMutexLocker lock(&player.m_mutex);
+        std::unique_lock<std::mutex> lock(player.m_mutex);
         player.m_headless = false;
         player.m_playing = true;
-        player.startWorker();
-        player.m_cond.wakeOne();
+        player.startWorker(lock);
+        player.m_cond.notify_one();
     }
 
     std::atomic<bool> go{false};
@@ -16577,7 +16577,7 @@ void ClothboundTests::w5AudioSpeechPlayerConcurrencyStress() {
         while (!stop.load(std::memory_order_relaxed)) {
             bool woke = false;
             {
-                QMutexLocker lock(&player.m_mutex);
+                std::unique_lock<std::mutex> lock(player.m_mutex);
                 if (player.m_readySamples < 0 || (player.m_ready.isEmpty() && player.m_readySamples != 0))
                     invariantFailed.store(true, std::memory_order_relaxed);
                 while (!player.m_ready.isEmpty()) {
@@ -16591,7 +16591,7 @@ void ClothboundTests::w5AudioSpeechPlayerConcurrencyStress() {
                     woke = true;
                 }
                 if (woke)
-                    player.m_cond.wakeOne();
+                    player.m_cond.notify_one();
             }
             std::this_thread::yield();
         }
@@ -16619,20 +16619,20 @@ void ClothboundTests::w5AudioSpeechPlayerConcurrencyStress() {
     player.appendAudio(99999, sinePcm);
     player.finishTrack(99999);
     {
-        QMutexLocker lock(&player.m_mutex);
+        std::unique_lock<std::mutex> lock(player.m_mutex);
         player.m_playing = true;
-        player.m_cond.wakeOne();
+        player.m_cond.notify_one();
     }
 
     qint64 recoveredSamples = 0;
     QTRY_VERIFY_WITH_TIMEOUT(([&] {
-        QMutexLocker lock(&player.m_mutex);
+        std::unique_lock<std::mutex> lock(player.m_mutex);
         while (!player.m_ready.isEmpty()) {
             const SpeechPlayer::ReadyChunk c = player.m_ready.takeFirst();
             player.m_readySamples = qMax<qint64>(0, player.m_readySamples - c.bytes.size() / 2);
             recoveredSamples += c.bytes.size() / 2;
         }
-        player.m_cond.wakeOne();
+        player.m_cond.notify_one();
         return player.m_workerFinishedAll && player.m_ready.isEmpty() && player.m_readySamples == 0;
     }()), 5000);
 

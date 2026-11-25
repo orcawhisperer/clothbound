@@ -1,0 +1,16 @@
+# ThreadSanitizer suppressions for Clothbound on uninstrumented system Qt6.
+#
+# System libQt6Core.so.6 is compiled without -fsanitize=thread, so TSan cannot
+# observe the internal queue mutex release/acquire edge inside QThreadPool::start()
+# when a pooled thread is reused. This causes false positives when a worker thread
+# reads constructor-initialized members or lambda captures of a freshly enqueued
+# QRunnable.
+#
+# Keep every rule tightly scoped to QThreadPool runnable handoffs; never suppress
+# libQt6Core.so globally or Clothbound's own threading/synchronization subsystems.
+race:qrunnable.h
+race:QRunnable::QGenericRunnable
+race_top:CoverResponse::run
+race_top:BookImageResponse::run
+race_top:PageResponse::run
+race_top:PrefetchTask::run

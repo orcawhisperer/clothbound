@@ -77,11 +77,14 @@ jobs:
           bad_deps=$(ldd build/clothbound-mcp | grep -iE 'webengine|quick|qml|multimedia' || true)
           test -z "$bad_deps"
 
-      - name: Run unit and QML smoke tests (with D-Bus session)
+      - name: Run unit, QML smoke, concurrency, and headless WebEngine E2E tests
         run: ./bin/test
 
-      - name: Run unit and QML smoke tests under ASan + UBSan
+      - name: Run full test suite under ASan + UBSan
         run: ./bin/test --asan
+
+      - name: Run concurrency stress suite under TSan (strict halt_on_error=1)
+        run: ./bin/test --tsan
 
       - name: Validate translations, JS, QML lint, and desktop entry
         run: |

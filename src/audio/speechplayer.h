@@ -2,13 +2,13 @@
 
 #include <QByteArray>
 #include <QList>
-#include <QMutex>
 #include <QObject>
 #include <QThread>
 #include <QVector>
-#include <QWaitCondition>
 #include <atomic>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -125,14 +125,14 @@ private:
         double rate;
     };
 
-    void startWorker();
+    void startWorker(const std::unique_lock<std::mutex> &lock);
     void stopWorker();
     void workerLoop();
     void ensureAudioThread();
     void stopAudioThread();
     static void copySampleRange(const std::vector<PcmBlock> &blocks, qint64 startSample, qint64 count, qint16 *dst);
-    Track *trackLocked(int id, const QMutexLocker<QMutex> &lock);
-    int trackIndexLocked(int id, const QMutexLocker<QMutex> &lock) const;
+    Track *trackLocked(int id, const std::unique_lock<std::mutex> &lock);
+    int trackIndexLocked(int id, const std::unique_lock<std::mutex> &lock) const;
     void setStarved(bool starved);
 
     const int m_sampleRate;
@@ -143,8 +143,8 @@ private:
     AudioOutputPump *m_pump = nullptr;  // guarded by m_mutex
 
     // Shared between the GUI thread, WSOLA worker thread, and audio output thread.
-    mutable QMutex m_mutex;
-    QWaitCondition m_cond;
+    mutable std::mutex m_mutex;
+    std::condition_variable m_cond;
     std::thread m_worker;
     QList<Track> m_tracks;
     QList<ReadyChunk> m_ready;

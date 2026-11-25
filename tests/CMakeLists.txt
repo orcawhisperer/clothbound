@@ -32,6 +32,62 @@ if(CLOTHBOUND_BUILD_TESTS)
     )
 
     add_test(NAME clothbound_tests COMMAND clothbound_tests)
+    set_tests_properties(clothbound_tests PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic"
+        TIMEOUT 180
+    )
+
+    add_executable(tst_concurrency
+        tst_concurrency.cpp
+        fakeserver.h
+        testbooks.h
+    )
+    set_target_properties(tst_concurrency PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    target_include_directories(tst_concurrency PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(tst_concurrency PRIVATE QT_FORCE_ASSERTS)
+    target_link_libraries(tst_concurrency
+        PRIVATE
+            clothbound_app
+            Qt6::Test
+    )
+    add_test(NAME tst_concurrency COMMAND tst_concurrency)
+    set(_tsan_test_env
+        "QT_QPA_PLATFORM=offscreen"
+        "QT_QPA_PLATFORMTHEME=generic"
+    )
+    if(CLOTHBOUND_SANITIZER STREQUAL "tsan")
+        list(APPEND _tsan_test_env
+            "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp:ignore_noninstrumented_modules=1:report_thread_leaks=0:halt_on_error=1"
+        )
+    endif()
+    set_tests_properties(tst_concurrency PROPERTIES
+        ENVIRONMENT "${_tsan_test_env}"
+        TIMEOUT 180
+    )
+
+    add_executable(tst_webengine_e2e
+        tst_webengine_e2e.cpp
+        fakeserver.h
+        testbooks.h
+        "${CMAKE_SOURCE_DIR}/src/resources.qrc"
+    )
+    set_target_properties(tst_webengine_e2e PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    target_include_directories(tst_webengine_e2e PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(tst_webengine_e2e PRIVATE QT_FORCE_ASSERTS)
+    target_link_libraries(tst_webengine_e2e
+        PRIVATE
+            clothbound_app
+            Qt6::Test
+    )
+    add_test(NAME tst_webengine_e2e COMMAND tst_webengine_e2e)
+    set_tests_properties(tst_webengine_e2e PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic;QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --disable-gpu --disable-dev-shm-usage"
+        TIMEOUT 180
+    )
 endif()
 
 if(CLOTHBOUND_BUILD_BENCH)

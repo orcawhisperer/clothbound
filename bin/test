@@ -52,7 +52,11 @@ cmake -S "$ROOT" -B "$BUILD_DIR" \
     -DCLOTHBOUND_FORCE_ASSERTS=ON \
     -DCLOTHBOUND_SANITIZER="$SANITIZER"
 
-cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target clothbound_tests clothbound-mcp
+if [ "$SANITIZER" = "tsan" ]; then
+    cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target tst_concurrency
+else
+    cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target clothbound_tests tst_concurrency tst_webengine_e2e clothbound-mcp
+fi
 
 TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/clothbound-test.XXXXXX")"
 trap 'rm -rf "$TEST_HOME"' EXIT INT TERM
@@ -63,17 +67,30 @@ export XDG_DATA_HOME="$TEST_HOME/data"
 export XDG_CACHE_HOME="$TEST_HOME/cache"
 export QT_QPA_PLATFORM=offscreen
 export QT_QPA_PLATFORMTHEME=generic
+export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:---no-sandbox --disable-gpu --disable-dev-shm-usage}"
 
 if [ "$SANITIZER" = "asan" ]; then
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
     export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}"
 elif [ "$SANITIZER" = "tsan" ]; then
-    export TSAN_OPTIONS="${TSAN_OPTIONS:-halt_on_error=1:second_deadlock_stack=1}"
+    export TSAN_OPTIONS="${TSAN_OPTIONS:-suppressions=$ROOT/tests/tsan.supp:ignore_noninstrumented_modules=1:report_thread_leaks=0:halt_on_error=1}"
 fi
 
+run_in_session() {
+    if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+        dbus-run-session -- "$@"
+    else
+        "$@"
+    fi
+}
+
 cd "$BUILD_DIR"
-if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
-    dbus-run-session -- ./clothbound_tests "$@"
+if [ "$SANITIZER" = "tsan" ]; then
+    run_in_session ./tst_concurrency "$@"
+elif [ "$#" -gt 0 ]; then
+    run_in_session ./clothbound_tests "$@"
 else
-    ./clothbound_tests "$@"
+    run_in_session ./clothbound_tests
+    run_in_session ./tst_concurrency
+    run_in_session ./tst_webengine_e2e
 fi
