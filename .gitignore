@@ -1,4 +1,5 @@
 /build/
+/.ccache/
 /pkgbuild/pkg/
 /pkgbuild/src/
 /pkgbuild/clothbound/

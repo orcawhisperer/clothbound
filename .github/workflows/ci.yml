@@ -32,12 +32,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Arch Linux Qt6 Build & Tests
+  arch-release:
+    name: Arch Linux Release, Tests & Lint
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
-      options: --security-opt seccomp=unconfined
+    env:
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_MAXSIZE: 1G
+      CCACHE_COMPRESS: "true"
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime
     steps:
       - name: Install dependencies
         run: |
@@ -45,6 +51,7 @@ jobs:
             git \
             cmake \
             ninja \
+            ccache \
             qt6-base \
             qt6-declarative \
             qt6-wayland \
@@ -66,8 +73,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Restore ccache (release)
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-arch-release-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'src/**/*.h', 'src/**/*.cpp', 'tests/**/*.h', 'tests/**/*.cpp') }}
+          restore-keys: |
+            ccache-arch-release-${{ runner.arch }}-
+
       - name: Build Clothbound & clothbound-mcp (CMake, qmlcachegen AOT, hardened)
-        run: ./bin/build
+        run: |
+          ccache --zero-stats
+          ./bin/build
 
       - name: Verify ELF hardening, zero private Qt6 ABI symbols, and WebEngine-free MCP
         run: |
@@ -81,13 +98,9 @@ jobs:
           test -z "$bad_deps"
 
       - name: Run unit, QML smoke, concurrency, WebEngine E2E, and Wave-8 tests
-        run: ./bin/test
-
-      - name: Run full test suite under ASan + UBSan
-        run: ./bin/test --asan
-
-      - name: Run concurrency and async palette stress suites under TSan (strict halt_on_error=1)
-        run: ./bin/test --tsan
+        run: |
+          ./bin/test
+          ccache --show-stats
 
       - name: Validate translations, JS, QML lint, and desktop entry
         run: |
@@ -119,6 +132,109 @@ jobs:
               assert len(lines) == 2 and len(lines[1]["result"]["tools"]) == 6
               print("MCP stdio smoke OK:", cmd, [t["name"] for t in lines[1]["result"]["tools"]])
           '
+
+  arch-asan:
+    name: Arch Linux ASan + UBSan
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+    env:
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_MAXSIZE: 1G
+      CCACHE_COMPRESS: "true"
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git \
+            cmake \
+            ninja \
+            ccache \
+            qt6-base \
+            qt6-declarative \
+            qt6-wayland \
+            qt6-webengine \
+            qt6-webchannel \
+            qt6-svg \
+            qt6-multimedia \
+            libsecret \
+            dbus \
+            zlib \
+            tar \
+            bzip2 \
+            nodejs \
+            xorg-server-xvfb
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Restore ccache (asan)
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-arch-asan-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'src/**/*.h', 'src/**/*.cpp', 'tests/**/*.h', 'tests/**/*.cpp') }}
+          restore-keys: |
+            ccache-arch-asan-${{ runner.arch }}-
+
+      - name: Run full test suite under ASan + UBSan
+        run: |
+          ccache --zero-stats
+          ./bin/test --asan
+          ccache --show-stats
+
+  arch-tsan:
+    name: Arch Linux TSan Concurrency
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+      options: --security-opt seccomp=unconfined
+    env:
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_MAXSIZE: 1G
+      CCACHE_COMPRESS: "true"
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            git \
+            cmake \
+            ninja \
+            ccache \
+            qt6-base \
+            qt6-declarative \
+            qt6-wayland \
+            qt6-webengine \
+            qt6-webchannel \
+            qt6-svg \
+            qt6-multimedia \
+            libsecret \
+            dbus \
+            zlib \
+            tar \
+            bzip2
+
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Restore ccache (tsan)
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-arch-tsan-${{ runner.arch }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'src/**/*.h', 'src/**/*.cpp', 'tests/**/*.h', 'tests/**/*.cpp') }}
+          restore-keys: |
+            ccache-arch-tsan-${{ runner.arch }}-
+
+      - name: Run concurrency and async palette stress suites under TSan (strict halt_on_error=1)
+        run: |
+          ccache --zero-stats
+          ./bin/test --tsan
+          ccache --show-stats
 
   flatpak:
     name: Flatpak Build & AppStream Lint
