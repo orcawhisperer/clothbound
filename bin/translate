@@ -3,6 +3,7 @@
 
     bin/translate extract            list the strings to translate (and how many each language lacks)
     bin/translate check [--strict]   validate all catalogs offline (report missing/orphan keys; --strict fails on drift)
+    bin/translate prune [--dry-run]  losslessly remove orphan keys absent from extracted strings across all catalogs
     bin/translate [code ...]         translate what's missing into these languages (all of Omarchy's by default)
 
 Strings come from qsTr() in the QML and JS, tr(), translate(), and QT_TR_NOOP()
@@ -118,14 +119,32 @@ def is_valid_entry(code, text, counted, value):
 
 def catalog(code):
     path = I18N / f"{code}.json"
-    return json.loads(path.read_text()) if path.exists() else {}
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def format_catalog(entries, raw=None):
+    """Serialize a catalog preserving existing indentation (or compact sorted JSON) in UTF-8."""
+    ordered = dict(sorted(entries.items()))
+    if raw is not None:
+        lines = raw.splitlines()
+        if len(lines) > 1:
+            indent = None
+            for line in lines[1:]:
+                stripped = line.lstrip(" \t")
+                if stripped and stripped != "}":
+                    prefix = line[: len(line) - len(stripped)]
+                    if prefix:
+                        indent = len(prefix) if prefix.strip(" ") == "" else prefix
+                        break
+            if indent is not None:
+                trailing = "\n" if raw.endswith("\n") else ""
+                return json.dumps(ordered, ensure_ascii=False, indent=indent) + trailing
+    return json.dumps(ordered, ensure_ascii=False, separators=(",", ":")) + "\n"
 
 
 def save(code, entries):
     I18N.mkdir(exist_ok=True)
-    (I18N / f"{code}.json").write_text(
-        json.dumps(dict(sorted(entries.items())), ensure_ascii=False, separators=(",", ":")) + "\n"
-    )
+    (I18N / f"{code}.json").write_text(format_catalog(entries), encoding="utf-8")
 
 
 SCHEMA = {
@@ -227,7 +246,55 @@ def english(strings):
             if forms.get("other") and valid_form("en", text, forms["other"], form="other"):
                 one = forms.get("one") if valid_form("en", text, forms.get("one"), form="one") else forms["other"]
                 entries[text] = {"one": one, "other": forms["other"]}
-    save("en", entries)
+    save("en", {text: value for text, value in entries.items() if text == "_meta" or strings.get(text)})
+
+
+def prune(strings, dry_run=False):
+    """Losslessly remove orphan keys absent from extracted strings across all catalogs."""
+    catalog_paths = sorted(I18N.glob("*.json"))
+    total_removed = 0
+    total_bytes_before = 0
+    total_bytes_after = 0
+    touched = 0
+
+    for path in catalog_paths:
+        code = path.stem
+        raw = path.read_text(encoding="utf-8")
+        try:
+            entries = json.loads(raw)
+        except ValueError as err:
+            print(f"{code}: invalid JSON: {err}", file=sys.stderr)
+            return 1
+        if not isinstance(entries, dict):
+            print(f"{code}: top-level JSON value must be an object", file=sys.stderr)
+            return 1
+
+        if code == "en":
+            pruned = {k: v for k, v in entries.items() if k == "_meta" or strings.get(k)}
+        else:
+            pruned = {k: v for k, v in entries.items() if k == "_meta" or k in strings}
+
+        removed = len(entries) - len(pruned)
+        before = len(raw.encode("utf-8"))
+        serialized = format_catalog(pruned, raw=raw) if removed else raw
+        after = len(serialized.encode("utf-8"))
+        total_removed += removed
+        total_bytes_before += before
+        total_bytes_after += after
+        if removed:
+            touched += 1
+            if not dry_run:
+                path.write_text(serialized, encoding="utf-8")
+            print(f"  {code}: pruned {removed} orphan key(s) ({after - before:+d} bytes -> {after} bytes)")
+
+    saved = total_bytes_before - total_bytes_after
+    pct = (100.0 * saved / total_bytes_before) if total_bytes_before else 0.0
+    verb = "Would prune" if dry_run else "Pruned"
+    print(
+        f"{verb} {total_removed} orphan key(s) across {touched}/{len(catalog_paths)} catalogs "
+        f"({total_bytes_before} -> {total_bytes_after} bytes, saved {saved} bytes / {pct:.2f}%)."
+    )
+    return 0
 
 
 def check(strings, strict=False):
@@ -238,17 +305,19 @@ def check(strings, strict=False):
     en = {}
     if en_path.exists():
         try:
-            en = json.loads(en_path.read_text())
+            en = json.loads(en_path.read_text(encoding="utf-8"))
         except ValueError as err:
             errors.append(f"en: invalid JSON: {err}")
     for text, counted in sorted(strings.items()):
         if counted and (text not in en or not is_valid_entry("en", text, True, en[text])):
             errors.append(f"en: missing or invalid plural entry for {text!r}")
     for text, value in en.items():
+        if text == "_meta":
+            continue
         if not is_valid_entry("en", text, True, value):
             errors.append(f"en: invalid plural entry for {text!r}: {value!r}")
     en_missing = sum(1 for text, counted in strings.items() if counted and text not in en)
-    en_orphans = sum(1 for text in en if text not in strings or not strings[text])
+    en_orphans = sum(1 for text in en if text != "_meta" and (text not in strings or not strings[text]))
     locale_stats.append(("en", en_missing, en_orphans))
 
     catalog_paths = sorted(I18N.glob("*.json"))
@@ -257,7 +326,7 @@ def check(strings, strict=False):
         if code == "en":
             continue
         try:
-            entries = json.loads(path.read_text())
+            entries = json.loads(path.read_text(encoding="utf-8"))
         except ValueError as err:
             errors.append(f"{code}: invalid JSON: {err}")
             continue
@@ -265,11 +334,13 @@ def check(strings, strict=False):
             errors.append(f"{code}: top-level JSON value must be an object")
             continue
         for text, value in entries.items():
+            if text == "_meta":
+                continue
             counted = strings.get(text, "%n" in text or "%Ln" in text)
             if not is_valid_entry(code, text, counted, value):
                 errors.append(f"{code}: invalid entry for {text!r}: {value!r}")
         missing = sum(1 for text in strings if text not in entries)
-        orphans = sum(1 for text in entries if text not in strings)
+        orphans = sum(1 for text in entries if text != "_meta" and text not in strings)
         locale_stats.append((code, missing, orphans))
 
     for code, missing, orphans in locale_stats:
@@ -353,13 +424,18 @@ def main():
         if extra and extra != ["--strict"]:
             sys.exit("Usage: bin/translate check [--strict]")
         sys.exit(check(strings, strict=("--strict" in extra)))
+    if sys.argv[1:2] == ["prune"]:
+        extra = sys.argv[2:]
+        if extra and extra != ["--dry-run"]:
+            sys.exit("Usage: bin/translate prune [--dry-run]")
+        sys.exit(prune(strings, dry_run=("--dry-run" in extra)))
     codes = sys.argv[1:] or [code for code in locales if code != "en"]
     english(strings)
     for code in codes:
         name = locales.get(code, {}).get("englishName", code)
         entries, asked = translate(code, name, strings, catalog(code))
         # Strings no longer in the app are dropped.
-        save(code, {text: value for text, value in entries.items() if text in strings})
+        save(code, {text: value for text, value in entries.items() if text == "_meta" or text in strings})
         print(f"{code}: {asked} translated")
     register([code for code in locales if code != "en"])
 
