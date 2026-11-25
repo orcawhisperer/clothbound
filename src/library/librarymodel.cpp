@@ -3,12 +3,18 @@
 #include "library/library.h"
 
 #include <QDateTime>
+#include <QThread>
 #include <algorithm>
 #include <tuple>
 
-WorksModel::WorksModel(Library *library) : QAbstractListModel(library), m_library(library) {}
+WorksModel::WorksModel(Library *library) : QAbstractListModel(library), m_library(library) {
+    Q_ASSERT(m_library != nullptr);
+}
 
-int WorksModel::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : int(m_works.size()); }
+int WorksModel::rowCount(const QModelIndex &parent) const {
+    Q_ASSERT(QThread::currentThread() == thread());
+    return parent.isValid() ? 0 : int(m_works.size());
+}
 
 QHash<int, QByteArray> WorksModel::roleNames() const {
     return {{KeyRole, "key"},
@@ -38,9 +44,12 @@ QHash<int, QByteArray> WorksModel::roleNames() const {
 }
 
 QVariant WorksModel::data(const QModelIndex &index, int role) const {
-    if (!index.isValid() || index.row() >= m_works.size())
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_works.size())
         return {};
+    Q_ASSERT(index.row() >= 0 && index.row() < m_works.size());
     const Work &work = m_works[index.row()];
+    Q_ASSERT(work.representative > 0);
     const auto it = m_books.constFind(work.representative);
     if (it == m_books.cend())
         return {};
@@ -99,6 +108,7 @@ QVariant WorksModel::data(const QModelIndex &index, int role) const {
 }
 
 QVariantMap WorksModel::get(int row) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     QVariantMap map;
     if (row < 0 || row >= m_works.size())
         return map;
@@ -109,10 +119,12 @@ QVariantMap WorksModel::get(int row) const {
 }
 
 int WorksModel::rowOfBook(int bookId) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     return m_bookRow.value(bookId, -1);
 }
 
 void WorksModel::setSearchText(const QString &text) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (text == m_search)
         return;
     m_search = text;
@@ -121,6 +133,7 @@ void WorksModel::setSearchText(const QString &text) {
 }
 
 void WorksModel::setSortOrder(const QString &order) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (order == m_sort)
         return;
     m_sort = order;
@@ -129,6 +142,7 @@ void WorksModel::setSortOrder(const QString &order) {
 }
 
 void WorksModel::setGrouped(bool grouped) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (grouped == m_grouped)
         return;
     m_grouped = grouped;
@@ -137,6 +151,7 @@ void WorksModel::setGrouped(bool grouped) {
 }
 
 void WorksModel::setStatusFilter(const QString &status) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QString normalized = (status == QLatin1String("all")) ? QString() : status.trimmed().toLower();
     if (normalized == m_statusFilter)
         return;
@@ -147,6 +162,7 @@ void WorksModel::setStatusFilter(const QString &status) {
 }
 
 void WorksModel::setFormatFilter(const QString &format) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QString normalized = (format == QLatin1String("all")) ? QString() : format.trimmed().toLower();
     if (normalized == m_formatFilter)
         return;
@@ -157,6 +173,7 @@ void WorksModel::setFormatFilter(const QString &format) {
 }
 
 void WorksModel::setSeriesFilter(const QString &series) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QString normalized = series.trimmed();
     if (normalized == m_seriesFilter)
         return;
@@ -167,6 +184,7 @@ void WorksModel::setSeriesFilter(const QString &series) {
 }
 
 void WorksModel::setCollectionId(int id) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const int normalized = qMax(0, id);
     if (normalized == m_collectionId)
         return;
@@ -181,6 +199,7 @@ bool WorksModel::hasActiveFilters() const {
 }
 
 void WorksModel::clearFilters() {
+    Q_ASSERT(QThread::currentThread() == thread());
     const bool statusChanged = !m_statusFilter.isEmpty();
     const bool formatChanged = !m_formatFilter.isEmpty();
     const bool seriesChanged = !m_seriesFilter.isEmpty();
@@ -204,6 +223,7 @@ void WorksModel::clearFilters() {
 }
 
 void WorksModel::setBooks(const QHash<int, BookRecord> &books) {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_books = books;
     m_searchable.clear();
     m_searchable.reserve(m_books.size());
@@ -214,12 +234,14 @@ void WorksModel::setBooks(const QHash<int, BookRecord> &books) {
 }
 
 void WorksModel::setCollections(const QHash<int, QSet<int>> &collectionBooks, bool rebuildNow) {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_collectionBooks = collectionBooks;
     if (rebuildNow && m_collectionId > 0)
         rebuild();
 }
 
 void WorksModel::setAudioSets(const QSet<int> &downloaded, const QSet<int> &audiobooks) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_downloaded == downloaded && m_audiobooks == audiobooks)
         return;
     m_downloaded = downloaded;
@@ -231,6 +253,7 @@ void WorksModel::setAudioSets(const QSet<int> &downloaded, const QSet<int> &audi
 }
 
 void WorksModel::setArticleSet(const QSet<int> &articles) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_articles == articles)
         return;
     m_articles = articles;
@@ -241,6 +264,7 @@ void WorksModel::setArticleSet(const QSet<int> &articles) {
 }
 
 void WorksModel::updateBook(const BookRecord &book) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const auto oldIt = m_books.constFind(book.id);
     if (oldIt == m_books.cend()) {
         m_books.insert(book.id, book);
@@ -401,6 +425,7 @@ bool WorksModel::matches(int id, const QStringList &tokens) const {
 }
 
 void WorksModel::rebuild() {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QStringList tokens = searchable(m_search).split(' ', Qt::SkipEmptyParts);
     QHash<QString, Work> groups;
     QStringList order;
@@ -515,9 +540,13 @@ void WorksModel::rebuild() {
         sameShape = works[i].key == m_works[i].key && works[i].books == m_works[i].books;
     auto rebuildRowIndex = [this] {
         m_bookRow.clear();
-        for (int row = 0; row < m_works.size(); ++row)
+        for (int row = 0; row < m_works.size(); ++row) {
+            Q_ASSERT(!m_works[row].books.isEmpty());
+            Q_ASSERT(m_books.contains(m_works[row].representative));
             for (const int id : std::as_const(m_works[row].books))
                 m_bookRow.insert(id, row);
+            Q_ASSERT(m_bookRow.value(m_works[row].representative, -1) == row);
+        }
     };
     if (sameShape) {
         m_works = works;

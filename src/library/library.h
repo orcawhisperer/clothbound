@@ -2,6 +2,7 @@
 
 #include "formats/bookrecord.h"
 #include "library/librarymodel.h"
+#include "library/libraryschema.h"
 
 #include <QHash>
 #include <QMultiHash>
@@ -40,6 +41,10 @@ public:
     ~Library() override;
 
     bool open();
+    // Opens library.sqlite strictly with QSQLITE_OPEN_READONLY, skipping any
+    // directory creation, DDL, migrations, or WAL mode writes.
+    bool openReadOnly(const QString &dbPath = {});
+    bool isReadOnly() const { return m_readOnly; }
     int schemaVersion() const;
     QString errorString() const { return m_error; }
     QString coverDirectory() const { return m_coverDirectory; }
@@ -127,6 +132,11 @@ public:
 
     QSqlDatabase database() const { return QSqlDatabase::database(m_connection); }
 
+    // Resolves a book's filesystem path from active Library instances on the
+    // calling thread (used by BookSearch without depending on Reader).
+    static QString resolveBookPath(int bookId, const QString &format = {}, const QString &title = {},
+                                   const QString &author = {});
+
 signals:
     void booksChanged();
     void bookChanged(int id);
@@ -148,11 +158,6 @@ private:
         QString oldPath;
         QString fingerprint;
         bool updated = false;
-    };
-    struct CollectionRecord {
-        int id = 0;
-        QString name;
-        qint64 createdAt = 0;
     };
     struct ImportBatch {
         int firstBookId = 0;
@@ -191,13 +196,8 @@ private:
         }
     };
 
-    bool migrate();
-    void loadBooks();
-    void loadFolders();
-    void loadCollections();
-    void loadAudioBadges();
-    void loadOnlineMeta();
-    void loadHighlightCounts();
+    bool openDatabase(const QString &dbPath, bool readOnly);
+    bool rejectIfReadOnly();
     void refreshArticles();
     bool isArticleRecord(const BookRecord &record) const;
     void syncWorksCollections();
@@ -206,23 +206,21 @@ private:
     void enrichBookMap(QVariantMap &map, int id) const;
     bool storeInDb(const ScannedBook &book, QList<StagedBook> &staged);
     void applyStaged(const QList<StagedBook> &staged);
-    bool writeChapterLengths(QSqlDatabase &db, int id, const QList<int> &lengths, qint64 *totalOut = nullptr);
     void flushPending();
     void markListed(const QStringList &paths, const QStringList &folders);
     void changed(bool statsDirty = true, bool collectionsDirty = true);
-    BookRecord readRecord(const class QSqlQuery &query) const;
-    bool exec(class QSqlQuery &query);
 
     QString m_dataDirectory;
     QString m_canonicalDataDirectory;
     QString m_coverDirectory;
     QString m_connection;
     QString m_error;
+    bool m_readOnly = false;
     QHash<int, BookRecord> m_books;
     QHash<QString, int> m_pathToId;
     QHash<int, QString> m_fingerprints;
     QMultiHash<QString, int> m_fingerprintToIds;
-    QHash<int, CollectionRecord> m_collections;
+    QHash<int, LibraryCollectionRow> m_collections;
     QHash<int, QSet<int>> m_collectionBooks;
     QHash<int, QSet<int>> m_bookCollections;
     QSet<int> m_downloadedBooks;

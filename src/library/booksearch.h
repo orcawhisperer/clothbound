@@ -3,13 +3,14 @@
 #include <QList>
 #include <QObject>
 #include <QPair>
+#include <QPointer>
 #include <QVariantList>
 #include <atomic>
 #include <memory>
 
 class AiServices;
+class Library;
 class PassageIndex;
-class Reader;
 
 // Finding words in the open book. Every chapter's text is searched the way
 // the page counts it, so a hit's place is exact. Case, accents and curly
@@ -41,8 +42,15 @@ class BookSearch : public QObject {
 public:
     static constexpr int limit = 2000;
 
-    explicit BookSearch(Reader *reader, QObject *parent = nullptr);
+    // Decoupled from concrete Reader to avoid a library <-> reader module cycle:
+    // `reader` may be a Reader* (implicitly upcast to QObject*) or any QObject
+    // exposing bookId/format/chapter/pageStart/pageEnd/(bookPath|path) properties
+    // and an optional bookChanged() signal.
+    explicit BookSearch(QObject *reader, QObject *parent = nullptr);
     ~BookSearch() override;
+
+    // Optional explicit Library binding for resolving bookPath from bookId.
+    void setLibrary(Library *library);
 
     QString query() const { return m_query; }
     bool searching() const { return m_searching; }
@@ -88,12 +96,22 @@ signals:
     void currentChanged();
     void libraryResultsChanged();
 
+private slots:
+    void onReaderBookChanged();
+
 private:
     struct BookCache;
 
     void findByMeaning(const QString &query);
+    QString readerBookPath() const;
+    QString readerFormat() const;
+    int readerBookId() const;
+    int readerChapter() const;
+    qint64 readerPageStart() const;
+    qint64 readerPageEnd() const;
 
-    Reader *m_reader;
+    QPointer<QObject> m_reader;
+    QPointer<Library> m_library;
     AiServices *m_ai = nullptr;
     PassageIndex *m_index = nullptr;
     QVariantList m_libraryResults;

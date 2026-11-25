@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QUrl>
+#include <limits>
 
 namespace {
 const QString idpfObfuscation = QStringLiteral("http://www.idpf.org/2008/embedding");
@@ -593,6 +594,37 @@ QString EpubBook::chapterText(int index) const {
         type == QLatin1String("application/octet-stream"))
         return {};
     return extractText(m_zip.read(m_spine[index].path));
+}
+
+qint64 EpubBook::chapterUncompressedBytes(int index) const {
+    if (index < 0 || index >= m_spine.size())
+        return 0;
+    const QString type = m_spine[index].mediaType.isEmpty() ? mediaType(m_spine[index].path) : m_spine[index].mediaType;
+    if ((type.startsWith(QLatin1String("image/")) && type != QLatin1String("image/svg+xml")) ||
+        type.startsWith(QLatin1String("audio/")) || type.startsWith(QLatin1String("video/")) ||
+        type == QLatin1String("application/octet-stream"))
+        return 0;
+    return qMax<qint64>(0, m_zip.size(m_spine[index].path));
+}
+
+int EpubBook::estimatedChapterLength(int index) const {
+    const qint64 rawBytes = chapterUncompressedBytes(index);
+    if (rawBytes <= 0)
+        return 0;
+    // Monotonic estimate of visible characters from XHTML uncompressed byte
+    // size straight out of the ZIP central directory (zero zlib inflation).
+    // Small chapters are dominated by XHTML boilerplate (~25% text), while
+    // longer prose chapters average ~60% visible characters after markup.
+    const qint64 estimated = (rawBytes <= 300) ? qMax<qint64>(1, rawBytes / 4) : (75 + ((rawBytes - 300) * 60) / 100);
+    return int(qMin<qint64>(estimated, std::numeric_limits<int>::max()));
+}
+
+QList<int> EpubBook::estimatedChapterLengths() const {
+    QList<int> lengths;
+    lengths.reserve(m_spine.size());
+    for (int i = 0; i < m_spine.size(); ++i)
+        lengths.append(estimatedChapterLength(i));
+    return lengths;
 }
 
 QString EpubBook::extractText(const QByteArray &document) {

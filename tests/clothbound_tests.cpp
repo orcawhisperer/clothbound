@@ -15267,6 +15267,12 @@ async function flushMicrotasks(n = 8) {
         QCoreApplication::processEvents();
     }
     // === end final-audit-polish tests ===
+
+    // === w5-core-lib tests ===
+    void w5CoreLibNoReaderCycleAndDecoupledBookSearch();
+    void w5CoreLibSchemaTelemetryAndReadOnlyOpen();
+    void w5CoreLibFastEpubImportScanPerformance();
+    // === end w5-core-lib tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS
@@ -15885,5 +15891,327 @@ void ClothboundTests::aPlusCoreParserFuzzStress() {
     QVERIFY2(timer.elapsed() < 5000, qPrintable(QStringLiteral("Parser fuzz took %1 ms").arg(timer.elapsed())));
 }
 // === end a-plus-core tests ===
+
+// === w5-core-lib tests ===
+#include "library/libraryschema.h"
+#include "library/readingtelemetry.h"
+
+void ClothboundTests::w5CoreLibNoReaderCycleAndDecoupledBookSearch() {
+    // 1. Strict DAG check: ZERO #include "reader/..." anywhere in src/library/.
+    const QString libDir = QFINDTESTDATA("../src/library");
+    QVERIFY2(QFileInfo(libDir).isDir(), qPrintable(libDir));
+    int checkedFiles = 0;
+    QDirIterator it(libDir, QStringList{QStringLiteral("*.h"), QStringLiteral("*.cpp")}, QDir::Files,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QString filePath = it.next();
+        QFile f(filePath);
+        QVERIFY2(f.open(QIODevice::ReadOnly), qPrintable(filePath));
+        const QByteArray bytes = f.readAll();
+        QVERIFY2(!bytes.contains("#include \"reader/") && !bytes.contains("#include <reader/"),
+                 qPrintable(QStringLiteral("Forbidden reader/ include found in %1").arg(filePath)));
+        ++checkedFiles;
+    }
+    QVERIFY(checkedFiles >= 14);
+
+    // 2. BookSearch works cleanly with a decoupled QObject exposing meta-object
+    // properties and bookChanged() signal (zero Reader dependency).
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString epubPath = dir.filePath(QStringLiteral("decoupled.epub"));
+    QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+
+    QQmlEngine qmlEngine;
+    QQmlComponent sourceComp(&qmlEngine);
+    sourceComp.setData(QByteArrayLiteral(R"QML(
+import QtQml
+QtObject {
+    property bool open: true
+    property int bookId: 42
+    property string format: "epub"
+    property string bookPath: ""
+    property int chapter: 0
+    property int pageStart: 0
+    property int pageEnd: 0
+    signal bookChanged()
+}
+)QML"),
+                       QUrl(QStringLiteral("inline:/DecoupledBookSource.qml")));
+    QVERIFY2(sourceComp.status() == QQmlComponent::Ready, qPrintable(sourceComp.errorString()));
+    std::unique_ptr<QObject> source(sourceComp.create());
+    QVERIFY(source != nullptr);
+    QVERIFY(source->setProperty("bookPath", epubPath));
+
+    BookSearch search(source.get());
+    search.find(QStringLiteral("storm"));
+    QVERIFY(search.searching());
+    QTRY_VERIFY_WITH_TIMEOUT(!search.searching(), 5000);
+    QCOMPARE(search.count(), 1);
+    QCOMPARE(search.results().first().toMap().value(QStringLiteral("chapter")).toInt(), 0);
+    QCOMPARE(search.results().first().toMap().value(QStringLiteral("match")).toString(), QStringLiteral("storm"));
+
+    // Emitting bookChanged() on the decoupled QObject resets cache and clears results.
+    QVERIFY(source->setProperty("open", false));
+    QVERIFY(source->setProperty("bookPath", QString()));
+    QVERIFY(QMetaObject::invokeMethod(source.get(), "bookChanged", Qt::DirectConnection));
+    QCOMPARE(search.count(), 0);
+    QVERIFY(search.query().isEmpty());
+
+    // 3. Also supports a plain QObject exposing dynamic `path` + `format` properties.
+    QObject pathOnly;
+    pathOnly.setProperty("path", epubPath);
+    pathOnly.setProperty("format", QStringLiteral("epub"));
+    BookSearch pathSearch(&pathOnly);
+    pathSearch.find(QStringLiteral("lamp"));
+    QTRY_VERIFY_WITH_TIMEOUT(!pathSearch.searching(), 5000);
+    QCOMPARE(pathSearch.count(), 1);
+}
+
+void ClothboundTests::w5CoreLibSchemaTelemetryAndReadOnlyOpen() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString dataDir = dir.filePath(QStringLiteral("data"));
+    const QString cacheDir = dir.filePath(QStringLiteral("cache"));
+    const QString dbPath = dataDir + QStringLiteral("/library.sqlite");
+
+    const QString epub1 = dir.filePath(QStringLiteral("one.epub"));
+    const QString epub2 = dir.filePath(QStringLiteral("two.epub"));
+    QVERIFY(TestBooks::write(epub1, TestBooks::epub2(png(20, 30))));
+    QVERIFY(TestBooks::write(epub2, TestBooks::epub3(QByteArray(128, 'a'))));
+
+    int id1 = 0, id2 = 0, colId = 0;
+    {
+        Library rw(dataDir, cacheDir);
+        QVERIFY2(rw.open(), qPrintable(rw.errorString()));
+        QVERIFY(!rw.isReadOnly());
+        QCOMPARE(rw.schemaVersion(), LibrarySchema::kLatestVersion);
+        QCOMPARE(LibrarySavepoint::activeDepth(), 0);
+
+        id1 = rw.addBookFile(epub1);
+        id2 = rw.addBookFile(epub2);
+        QVERIFY(id1 > 0 && id2 > 0);
+        colId = rw.createCollection(QStringLiteral("Essays"));
+        QVERIFY(colId > 0);
+        QVERIFY(rw.addToCollection(id1, colId));
+        rw.setFinished(id2, true);
+        rw.markOpened(id1);
+        rw.setBookSetting(id1, QStringLiteral("voiceName"), QStringLiteral("Kokoro"));
+
+        // Verify nested LibrarySavepoint depth tracking and automatic rollback.
+        {
+            QSqlDatabase db = rw.database();
+            LibrarySavepoint outer(db, "test_outer");
+            QVERIFY(outer.isActive());
+            QCOMPARE(LibrarySavepoint::activeDepth(), 1);
+            {
+                LibrarySavepoint inner(db, "test_inner");
+                QVERIFY(inner.isActive());
+                QCOMPARE(LibrarySavepoint::activeDepth(), 2);
+                QSqlQuery ins(db);
+                QVERIFY(ins.exec(QStringLiteral("INSERT INTO meta (key, value) VALUES ('rolled_back', '1')")));
+            }  // inner auto-rolls back
+            QCOMPARE(LibrarySavepoint::activeDepth(), 1);
+            QVERIFY(outer.commit());
+            QCOMPARE(LibrarySavepoint::activeDepth(), 0);
+            QSqlQuery chk(db);
+            QVERIFY(chk.exec(QStringLiteral("SELECT value FROM meta WHERE key = 'rolled_back'")));
+            QVERIFY(!chk.next());
+        }
+
+        // Verify ReadingTelemetry deterministic pace learning, streaks, and per-book stats.
+        const QDate refDay(2026, 6, 15);
+        QSqlDatabase db = rw.database();
+        const auto r1 = ReadingTelemetry::recordReadingTime(db, id1, 300, 7500, 1300.0, refDay.addDays(-2));
+        QVERIFY(r1.ok);
+        QVERIFY(!r1.paceUpdated);  // < 600s paced so far
+        const auto r2 = ReadingTelemetry::recordReadingTime(db, id1, 360, 10800, r1.newCharsPerMinute, refDay.addDays(-1));
+        QVERIFY(r2.ok);
+        QVERIFY(r2.paceUpdated);  // 660s total paced -> (18300 / 660) * 60 = 1663.6 cpm
+        QVERIFY(r2.newCharsPerMinute > 1600.0 && r2.newCharsPerMinute < 1700.0);
+        const auto r3 = ReadingTelemetry::recordReadingTime(db, id1, 120, 2400, r2.newCharsPerMinute, refDay);
+        QVERIFY(r3.ok);
+        QCOMPARE(LibrarySavepoint::activeDepth(), 0);
+
+        const QVariantMap stats = ReadingTelemetry::readingStats(db, {{id1, rw.record(id1)}, {id2, rw.record(id2)}},
+                                                                 r3.newCharsPerMinute, refDay);
+        QCOMPARE(stats.value(QStringLiteral("streakDays")).toInt(), 3);
+        QCOMPARE(stats.value(QStringLiteral("longestStreak")).toInt(), 3);
+        QCOMPARE(stats.value(QStringLiteral("todaySeconds")).toLongLong(), qint64(120));
+        QCOMPARE(stats.value(QStringLiteral("weekSeconds")).toLongLong(), qint64(780));
+        QCOMPARE(stats.value(QStringLiteral("recentDays")).toList().size(), 14);
+
+        const QVariantMap bStats = ReadingTelemetry::bookReadingStats(db, rw.record(id1), r3.newCharsPerMinute);
+        QCOMPARE(bStats.value(QStringLiteral("daysRead")).toInt(), 3);
+        QCOMPARE(bStats.value(QStringLiteral("firstDay")).toString(), QStringLiteral("2026-06-13"));
+        QCOMPARE(bStats.value(QStringLiteral("lastDay")).toString(), QStringLiteral("2026-06-15"));
+    }
+
+    // Record exact DB digest before locking file + directory strictly read-only.
+    auto sha256Of = [](const QString &path) -> QByteArray {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly))
+            return {};
+        return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex();
+    };
+    const QByteArray digestBefore = sha256Of(dbPath);
+    QVERIFY(!digestBefore.isEmpty());
+
+    QVERIFY(QFile::setPermissions(dbPath, QFileDevice::ReadOwner | QFileDevice::ReadGroup | QFileDevice::ReadOther));
+    QVERIFY(QFile::setPermissions(dataDir, QFileDevice::ReadOwner | QFileDevice::ExeOwner |
+                                               QFileDevice::ReadGroup | QFileDevice::ExeGroup |
+                                               QFileDevice::ReadOther | QFileDevice::ExeOther));
+    auto restorePerms = qScopeGuard([&] {
+        QFile::setPermissions(dataDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+        QFile::setPermissions(dbPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    });
+
+    const QString untouchedCache = dir.filePath(QStringLiteral("never_created_cache"));
+    {
+        Library ro(dataDir, untouchedCache);
+        QVERIFY2(ro.openReadOnly(dbPath), qPrintable(ro.errorString()));
+        QVERIFY(ro.isReadOnly());
+        QCOMPARE(ro.schemaVersion(), LibrarySchema::kLatestVersion);
+        QCOMPARE(ro.bookCount(), 2);
+        QCOMPARE(ro.record(id1).title, QStringLiteral("The Lantern Keeper"));
+        QCOMPARE(ro.record(id2).title, QStringLiteral("Salt Roads"));
+        QCOMPARE(ro.collections().size(), 1);
+        QVERIFY(ro.isInCollection(id1, colId));
+        QCOMPARE(ro.bookSetting(id1, QStringLiteral("voiceName")), QStringLiteral("Kokoro"));
+        QCOMPARE(ro.chapterLengths(id1).size(), 2);
+        QCOMPARE(ro.shelfCounts().value(QStringLiteral("all")).toInt(), 2);
+        QCOMPARE(ro.bookReadingStats(id1).value(QStringLiteral("daysRead")).toInt(), 3);
+
+        // Mutations on read-only Library fail cleanly without touching disk.
+        QCOMPARE(ro.createCollection(QStringLiteral("Forbidden")), 0);
+        QVERIFY(!ro.errorString().isEmpty());
+        QCOMPARE(ro.addBookFile(epub1), 0);
+        QVERIFY(!ro.deleteCollection(colId));
+        QVERIFY(!ro.addToCollection(id2, colId));
+        ro.setFinished(id1, true);
+        QCOMPARE(ro.record(id1).finishedAt, qint64(0));
+        ro.addReadingTime(id1, 60, 1000);
+    }
+
+    QVERIFY(!QFileInfo::exists(untouchedCache));
+    QCOMPARE(sha256Of(dbPath), digestBefore);
+
+    // Verify fail-closed on future schema version > kLatestVersion for both open() and openReadOnly().
+    QFile::setPermissions(dataDir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
+    QFile::setPermissions(dbPath, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
+    {
+        const QString conn = QStringLiteral("w5-future-schema");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+            db.setDatabaseName(dbPath);
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            QVERIFY(q.exec(QStringLiteral("PRAGMA user_version = 99")));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(conn);
+    }
+    {
+        Library roFuture(dataDir, cacheDir);
+        QVERIFY(!roFuture.openReadOnly(dbPath));
+        QVERIFY2(roFuture.errorString().contains(QStringLiteral("99")), qPrintable(roFuture.errorString()));
+        Library rwFuture(dataDir, cacheDir);
+        QVERIFY(!rwFuture.open());
+        QVERIFY2(rwFuture.errorString().contains(QStringLiteral("99")), qPrintable(rwFuture.errorString()));
+    }
+}
+
+void ClothboundTests::w5CoreLibFastEpubImportScanPerformance() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    // Build a realistic ~200k-word, 40-chapter EPUB (~1.35 MB uncompressed XHTML).
+    constexpr int kChapters = 40;
+    QByteArray manifestItems;
+    QByteArray spineRefs;
+    QList<QPair<QString, QByteArray>> files;
+    files.reserve(kChapters + 2);
+
+    const QByteArray para =
+        "<p>The lantern keeper walked slowly along the weathered basalt seawall watching the northern fog drift "
+        "past the iron bell tower while distant harbor buoys chimed across the cold dark tide.</p>\n";
+    QByteArray longBody;
+    longBody.reserve(para.size() * 190);
+    for (int p = 0; p < 190; ++p)  // ~5,300 words / ~33 KB per chapter -> ~212k words total
+        longBody += para;
+    const QByteArray longChapter = TestBooks::chapter("Chapter", longBody);
+    const QByteArray shortChapter = TestBooks::chapter("Short", "<p>A brief epigraph.</p>");
+
+    for (int i = 0; i < kChapters; ++i) {
+        const QByteArray id = "c" + QByteArray::number(i);
+        const QByteArray href = "text/ch" + QByteArray::number(i) + ".xhtml";
+        manifestItems += "    <item id=\"" + id + "\" href=\"" + href + "\" media-type=\"application/xhtml+xml\"/>\n";
+        spineRefs += "    <itemref idref=\"" + id + "\"/>\n";
+        files.append({QStringLiteral("OEBPS/") + QString::fromLatin1(href), (i == 0) ? shortChapter : longChapter});
+    }
+    const QByteArray opf =
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+        "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+        "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+        "    <dc:title>Large Novel</dc:title><dc:creator>Ada Marsh</dc:creator><dc:language>en</dc:language>\n"
+        "    <meta name=\"cover\" content=\"cover-img\"/>\n"
+        "  </metadata>\n"
+        "  <manifest>\n"
+        "    <item id=\"cover-img\" href=\"cover.png\" media-type=\"image/png\"/>\n" +
+        manifestItems +
+        "  </manifest>\n"
+        "  <spine>\n" +
+        spineRefs +
+        "  </spine>\n"
+        "</package>";
+    files.prepend({QStringLiteral("OEBPS/cover.png"), png(40, 60)});
+    files.prepend({QStringLiteral("OEBPS/content.opf"), opf});
+
+    const QString epubPath = dir.filePath(QStringLiteral("big_200k.epub"));
+    QVERIFY(TestBooks::write(epubPath, TestBooks::epub(files)));
+
+    // 1. EpubBook::estimatedChapterLengths() inflates literally ZERO chapter bytes.
+    EpubBook book(epubPath);
+    QVERIFY2(book.open(), qPrintable(book.errorString()));
+    const quint64 inflatedBefore = book.inflatedBytes();
+    const QList<int> estLengths = book.estimatedChapterLengths();
+    QCOMPARE(book.inflatedBytes(), inflatedBefore);
+    QCOMPARE(estLengths.size(), kChapters);
+    QVERIFY(estLengths[0] > 0);
+    QVERIFY(estLengths[1] > estLengths[0] * 10);
+
+    // 2. Fast default BookFiles::read() avoids chapter inflation and runs much faster than exact measurement.
+    QList<int> fastLengths, exactLengths;
+    QElapsedTimer fastTimer;
+    fastTimer.start();
+    const BookInfo fastInfo = BookFiles::read(epubPath, 0, &fastLengths, false);
+    const qint64 fastUs = fastTimer.nsecsElapsed() / 1000;
+
+    QElapsedTimer exactTimer;
+    exactTimer.start();
+    const BookInfo exactInfo = BookFiles::read(epubPath, 0, &exactLengths, true);
+    const qint64 exactUs = exactTimer.nsecsElapsed() / 1000;
+
+    QVERIFY(fastInfo.ok() && exactInfo.ok());
+    QCOMPARE(fastLengths.size(), kChapters);
+    QCOMPARE(exactLengths.size(), kChapters);
+    QCOMPARE(fastLengths, estLengths);
+    QVERIFY2(fastUs * 5 < exactUs,
+             qPrintable(QStringLiteral("Expected fast scan (%1 us) to be >5x faster than exact scan (%2 us)")
+                            .arg(fastUs)
+                            .arg(exactUs)));
+
+    // 3. Library::addBookFile() imports the 200k-word EPUB quickly with populated proportional chapter lengths.
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    QElapsedTimer importTimer;
+    importTimer.start();
+    const int bookId = library.addBookFile(epubPath);
+    const qint64 importMs = importTimer.elapsed();
+    QVERIFY(bookId > 0);
+    QCOMPARE(library.chapterLengths(bookId), fastLengths);
+    QVERIFY(library.record(bookId).length > 500000);
+    QVERIFY2(importMs < 250, qPrintable(QStringLiteral("200k-word EPUB import took %1 ms").arg(importMs)));
+}
+// === end w5-core-lib tests ===
 
 #include "clothbound_tests.moc"

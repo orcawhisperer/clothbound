@@ -91,7 +91,7 @@ QImage decodeImage(const QByteArray &bytes, int height) {
 }
 }
 
-BookInfo read(const QString &path, int coverHeight, QList<int> *chapterLengths) {
+BookInfo read(const QString &path, int coverHeight, QList<int> *chapterLengths, bool measureExactChapters) {
     BookInfo info;
     const QFileInfo file(path);
     const QString resolved = file.canonicalFilePath();
@@ -126,10 +126,14 @@ BookInfo read(const QString &path, int coverHeight, QList<int> *chapterLengths) 
         if (coverHeight > 0)
             info.cover = decodeImage(book.coverImage(), coverHeight);
         if (chapterLengths && info.ok()) {
-            chapterLengths->clear();
-            chapterLengths->reserve(book.spine().size());
-            for (int i = 0; i < book.spine().size(); ++i)
-                chapterLengths->append(int(book.chapterText(i).size()));
+            if (measureExactChapters) {
+                chapterLengths->clear();
+                chapterLengths->reserve(book.spine().size());
+                for (int i = 0; i < book.spine().size(); ++i)
+                    chapterLengths->append(int(book.chapterText(i).size()));
+            } else {
+                *chapterLengths = book.estimatedChapterLengths();
+            }
         }
     } else if (info.format == "pdf") {
         PdfBook book(path);

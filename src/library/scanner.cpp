@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QImageWriter>
 #include <QSaveFile>
+#include <QThread>
 #include <QtConcurrentRun>
 
 namespace {
@@ -126,8 +127,9 @@ ScannedBook Scanner::read(const QString &path, const QString &coverDirectory) {
 Scanner::Scanner(const QString &coverDirectory, QObject *parent)
     : QObject(parent), m_coverDirectory(coverDirectory), m_cancelled(std::make_shared<std::atomic<bool>>(false)) {
     qRegisterMetaType<ScannedBook>();
-    QDir().mkpath(m_coverDirectory);
     // Reading is mostly decompression and parsing; leave a core for the UI.
+    // Do not create directories in the constructor so read-only Library opens
+    // never mutate the filesystem; read() and Library::rescan() call mkpath().
     m_pool.setMaxThreadCount(qMax(1, QThread::idealThreadCount() - 1));
 }
 
@@ -142,6 +144,7 @@ QString Scanner::coverFileFor(const QString &bookPath) {
 }
 
 void Scanner::cancel() {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_cancelled->store(true);
     m_queue.clear();
     m_running = false;
@@ -149,6 +152,7 @@ void Scanner::cancel() {
 
 void Scanner::scan(const QStringList &folders, const QStringList &files,
                    const QHash<QString, QPair<qint64, qint64>> &known) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_running)
         cancel();
     m_cancelled = std::make_shared<std::atomic<bool>>(false);
@@ -176,6 +180,7 @@ void Scanner::scan(const QStringList &folders, const QStringList &files,
 }
 
 void Scanner::readNext() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_queue.isEmpty()) {
         if (m_inFlight == 0 && m_running) {
             m_running = false;

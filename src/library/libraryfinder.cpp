@@ -5,6 +5,7 @@
 #include <QFutureWatcher>
 #include <QPointer>
 #include <QStandardPaths>
+#include <QThread>
 #include <QtConcurrentRun>
 #include <algorithm>
 
@@ -114,6 +115,7 @@ QVariantList LibraryFinder::search(const QStringList &candidates, const QStringL
 }
 
 void LibraryFinder::find(const QStringList &watched) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const int generation = ++m_generation;
     m_searching = true;
     emit changed();

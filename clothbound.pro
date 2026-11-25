@@ -51,7 +51,9 @@ HEADERS += \
     src/library/libraryfinder.h \
     src/library/libraryindex.h \
     src/library/librarymodel.h \
+    src/library/libraryschema.h \
     src/library/marks.h \
+    src/library/readingtelemetry.h \
     src/library/scanner.h \
     src/reader/reader.h \
     src/audio/audiobook.h \
@@ -112,7 +114,9 @@ SOURCES += \
     src/library/libraryfinder.cpp \
     src/library/libraryindex.cpp \
     src/library/librarymodel.cpp \
+    src/library/libraryschema.cpp \
     src/library/marks.cpp \
+    src/library/readingtelemetry.cpp \
     src/library/scanner.cpp \
     src/reader/reader.cpp \
     src/audio/audiobook.cpp \

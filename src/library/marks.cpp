@@ -2,6 +2,7 @@
 
 #include "library/library.h"
 #include "library/librarymodel.h"
+#include "library/libraryschema.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -12,6 +13,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
+#include <QThread>
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QUrl>
@@ -20,45 +22,6 @@
 #include <limits>
 
 namespace {
-// Nested-safe SQLite transaction guard using SAVEPOINT, rolling back
-// automatically on early return or error.
-struct Savepoint {
-    QSqlDatabase db;
-    QString name;
-    bool active = false;
-
-    Savepoint(QSqlDatabase database, const char *label) : db(std::move(database)), name(QString::fromLatin1(label)) {
-        QSqlQuery q(db);
-        active = q.exec(QStringLiteral("SAVEPOINT ") + name);
-        if (!active)
-            qWarning("marks: SAVEPOINT %s failed: %s", label, qPrintable(q.lastError().text()));
-    }
-
-    bool commit() {
-        if (!active)
-            return false;
-        active = false;
-        QSqlQuery q(db);
-        if (q.exec(QStringLiteral("RELEASE SAVEPOINT ") + name))
-            return true;
-        qWarning("marks: RELEASE SAVEPOINT %s failed: %s", qPrintable(name), qPrintable(q.lastError().text()));
-        QSqlQuery rb(db);
-        rb.exec(QStringLiteral("ROLLBACK TO SAVEPOINT ") + name);
-        rb.exec(QStringLiteral("RELEASE SAVEPOINT ") + name);
-        return false;
-    }
-
-    void rollback() {
-        if (!active)
-            return;
-        active = false;
-        QSqlQuery q(db);
-        q.exec(QStringLiteral("ROLLBACK TO SAVEPOINT ") + name);
-        q.exec(QStringLiteral("RELEASE SAVEPOINT ") + name);
-    }
-
-    ~Savepoint() { rollback(); }
-};
 // An empty text, never a null one: a null QString is SQL's NULL, which the
 // columns refuse.
 QVariant text(const QString &value) { return value.isNull() ? QStringLiteral("") : value; }
@@ -250,6 +213,7 @@ private:
 
 Marks::Marks(Library *library, QObject *parent)
     : QAbstractListModel(parent), m_library(library), m_undo(new QUndoStack(this)) {
+    Q_ASSERT(m_library != nullptr);
     connect(m_undo, &QUndoStack::canUndoChanged, this, &Marks::undoChanged);
     connect(m_undo, &QUndoStack::canRedoChanged, this, &Marks::undoChanged);
     connect(m_undo, &QUndoStack::undoTextChanged, this, &Marks::undoChanged);
@@ -261,11 +225,16 @@ bool Marks::canUndo() const { return m_undo->canUndo(); }
 bool Marks::canRedo() const { return m_undo->canRedo(); }
 QString Marks::undoText() const { return m_undo->undoText(); }
 
-int Marks::rowCount(const QModelIndex &parent) const { return parent.isValid() ? 0 : int(m_marks.size()); }
+int Marks::rowCount(const QModelIndex &parent) const {
+    Q_ASSERT(QThread::currentThread() == thread());
+    return parent.isValid() ? 0 : int(m_marks.size());
+}
 
 QVariant Marks::data(const QModelIndex &index, int role) const {
-    if (!index.isValid() || index.row() >= m_marks.size())
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!index.isValid() || index.row() < 0 || index.row() >= m_marks.size())
         return {};
+    Q_ASSERT(index.row() >= 0 && index.row() < m_marks.size());
     const Mark &mark = m_marks[index.row()];
     switch (role) {
     case IdRole: return mark.id;
@@ -291,6 +260,7 @@ QHash<int, QByteArray> Marks::roleNames() const {
 }
 
 void Marks::setBook(int bookId) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (bookId == m_bookId)
         return;
     m_bookId = bookId;
@@ -301,6 +271,7 @@ void Marks::setBook(int bookId) {
 }
 
 void Marks::load() {
+    Q_ASSERT(QThread::currentThread() == thread());
     beginResetModel();
     m_marks.clear();
     if (m_bookId > 0) {
@@ -375,6 +346,7 @@ void Marks::remapIdToken(int oldId, int newId, const std::shared_ptr<int> &token
 }
 
 int Marks::insert(Mark mark) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_bookId <= 0)
         return 0;
     if (!mark.created.isValid())
@@ -433,9 +405,11 @@ int Marks::insert(Mark mark) {
     m_minNextId = qMax(m_minNextId, mark.id + 1);
     const auto at = std::lower_bound(m_marks.begin(), m_marks.end(), mark, before);
     const int row = int(at - m_marks.begin());
+    Q_ASSERT(row >= 0 && row <= m_marks.size());
     beginInsertRows({}, row, row);
     m_marks.insert(row, mark);
     endInsertRows();
+    Q_ASSERT(m_marks[row].id == mark.id);
     if (mark.kind == QLatin1String("highlight"))
         m_library->adjustHighlightCount(m_bookId, 1);
     emit changed();
@@ -443,9 +417,11 @@ int Marks::insert(Mark mark) {
 }
 
 void Marks::erase(int id) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const int row = rowOf(id);
     if (row < 0)
         return;
+    Q_ASSERT(row >= 0 && row < m_marks.size());
     const bool wasHighlight = (m_marks[row].kind == QLatin1String("highlight"));
     QSqlQuery query(m_library->database());
     query.prepare(QStringLiteral("DELETE FROM annotations WHERE id = ? AND book_id = ?"));
@@ -466,9 +442,11 @@ void Marks::erase(int id) {
 }
 
 void Marks::update(const Mark &mark) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const int row = rowOf(mark.id);
     if (row < 0)
         return;
+    Q_ASSERT(row >= 0 && row < m_marks.size());
     Mark changed = mark;
     changed.updated = QDateTime::currentDateTime();
     QSqlQuery query(m_library->database());
@@ -501,6 +479,7 @@ void Marks::update(const Mark &mark) {
 
 int Marks::addBookmark(int chapter, qint64 offset, const QString &text, const QString &label, const QString &prefix,
                        const QString &suffix) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_bookId <= 0 || !m_library->database().isOpen())
         return 0;
     Mark mark;
@@ -519,6 +498,7 @@ int Marks::addBookmark(int chapter, qint64 offset, const QString &text, const QS
 
 int Marks::addHighlight(int chapter, qint64 start, qint64 end, const QString &text, const QString &color,
                         const QString &label, const QString &prefix, const QString &suffix) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (end <= start || m_bookId <= 0 || !m_library->database().isOpen())
         return 0;
     Mark mark;
@@ -538,6 +518,7 @@ int Marks::addHighlight(int chapter, qint64 start, qint64 end, const QString &te
 }
 
 void Marks::setNote(int id, const QString &note) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const Mark before = find(id);
     const QString trimmed = note.trimmed();
     if (before.id == 0 || before.note == trimmed)
@@ -546,6 +527,7 @@ void Marks::setNote(int id, const QString &note) {
 }
 
 void Marks::setColor(int id, const QString &color) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const Mark before = find(id);
     if (before.id == 0 || before.color == color)
         return;
@@ -553,6 +535,7 @@ void Marks::setColor(int id, const QString &color) {
 }
 
 void Marks::remove(int id) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const Mark mark = find(id);
     if (mark.id == 0)
         return;
@@ -560,8 +543,14 @@ void Marks::remove(int id) {
                            mark.kind == QStringLiteral("bookmark") ? tr("Remove the bookmark") : tr("Remove the highlight")));
 }
 
-void Marks::undo() { m_undo->undo(); }
-void Marks::redo() { m_undo->redo(); }
+void Marks::undo() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_undo->undo();
+}
+void Marks::redo() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_undo->redo();
+}
 
 QVariantMap Marks::mark(int id) const {
     const Mark mark = find(id);
@@ -625,6 +614,7 @@ QVariantList Marks::filtered(const QString &filter) const {
 }
 
 QVariantList Marks::searchAll(const QString &query, int limit) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     QVariantList out;
     if (!m_library || !m_library->database().isOpen() || limit <= 0)
         return out;
@@ -932,6 +922,7 @@ QVariantMap Marks::resolveOffset(int id, const QString &chapterText) const {
 }
 
 bool Marks::healMark(int id, const QString &chapterText) {
+    Q_ASSERT(QThread::currentThread() == thread());
     Mark m = find(id);
     if (m.id == 0)
         return false;
@@ -948,6 +939,7 @@ bool Marks::healMark(int id, const QString &chapterText) {
 }
 
 int Marks::healChapter(int chapter, const QString &chapterText) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_library || !m_library->database().isOpen() || chapterText.isEmpty())
         return 0;
 
@@ -974,8 +966,8 @@ int Marks::healChapter(int chapter, const QString &chapterText) {
         return 0;
 
     QSqlDatabase db = m_library->database();
-    Savepoint sp(db, "heal_chapter");
-    if (!sp.active)
+    LibrarySavepoint sp(db, "heal_chapter");
+    if (!sp.isActive())
         return 0;
 
     const QDateTime now = QDateTime::currentDateTime();
@@ -1000,6 +992,7 @@ int Marks::healChapter(int chapter, const QString &chapterText) {
     int firstRow = int(m_marks.size());
     int lastRow = -1;
     for (const PendingHeal &h : std::as_const(pending)) {
+        Q_ASSERT(h.row >= 0 && h.row < updated.size());
         updated[h.row].start = h.start;
         updated[h.row].end = h.end;
         updated[h.row].updated = now;
@@ -1014,6 +1007,7 @@ int Marks::healChapter(int chapter, const QString &chapterText) {
         endResetModel();
     } else {
         m_marks = std::move(updated);
+        Q_ASSERT(firstRow >= 0 && lastRow >= firstRow && lastRow < m_marks.size());
         emit dataChanged(index(firstRow), index(lastRow), {StartRole, EndRole});
     }
     emit changed();

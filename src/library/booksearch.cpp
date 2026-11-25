@@ -2,13 +2,14 @@
 
 #include "ai/aiservices.h"
 #include "ai/companion.h"
-#include "formats/epubbook.h"
 #include "ai/passageindex.h"
+#include "formats/epubbook.h"
 #include "formats/pdfbook.h"
-#include "reader/reader.h"
+#include "library/library.h"
 
 #include <QCoreApplication>
 #include <QHash>
+#include <QMetaObject>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QPointer>
@@ -16,6 +17,7 @@
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QThread>
 #include <QThreadPool>
 
 namespace {
@@ -131,6 +133,8 @@ Normalized normalizeText(const QString &raw) {
         }
         emitChar(c.toLower(), i, i + 1);
     }
+    Q_ASSERT(out.text.size() == out.starts.size());
+    Q_ASSERT(out.text.size() == out.ends.size());
     return out;
 }
 
@@ -168,13 +172,68 @@ struct BookSearch::BookCache {
     QHash<int, Normalized> normalized;
 };
 
-BookSearch::BookSearch(Reader *reader, QObject *parent) : QObject(parent), m_reader(reader) {
+BookSearch::BookSearch(QObject *reader, QObject *parent) : QObject(parent), m_reader(reader) {
     m_spoilerFree = searchSettings().value(QStringLiteral("search/spoilerFree"), false).toBool();
-    connect(reader, &Reader::bookChanged, this, [this] {
-        m_cache.reset();
-        clear();
-    });
+    if (m_reader && m_reader->metaObject()->indexOfSignal("bookChanged()") >= 0)
+        connect(m_reader, SIGNAL(bookChanged()), this, SLOT(onReaderBookChanged()));
 }
+
+void BookSearch::setLibrary(Library *library) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_library = library;
+}
+
+void BookSearch::onReaderBookChanged() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_cache.reset();
+    clear();
+}
+
+QString BookSearch::readerBookPath() const {
+    if (!m_reader)
+        return {};
+    const QVariant openProp = m_reader->property("open");
+    if (openProp.isValid() && !openProp.toBool())
+        return {};
+    const QVariant bookPathProp = m_reader->property("bookPath");
+    if (bookPathProp.isValid()) {
+        const QString p = bookPathProp.toString();
+        if (!p.isEmpty())
+            return p;
+    }
+    const QVariant pathProp = m_reader->property("path");
+    if (pathProp.isValid()) {
+        const QString p = pathProp.toString();
+        if (!p.isEmpty())
+            return p;
+    }
+    if (m_reader->metaObject()->indexOfMethod("bookPath()") >= 0) {
+        QString invoked;
+        if (QMetaObject::invokeMethod(m_reader, "bookPath", Qt::DirectConnection, Q_RETURN_ARG(QString, invoked)) &&
+            !invoked.isEmpty())
+            return invoked;
+    }
+    const int bookId = readerBookId();
+    if (bookId <= 0)
+        return {};
+    if (m_library) {
+        const QString p = m_library->record(bookId).path;
+        if (!p.isEmpty())
+            return p;
+    }
+    return Library::resolveBookPath(bookId, readerFormat(), m_reader->property("title").toString(),
+                                    m_reader->property("author").toString());
+}
+
+QString BookSearch::readerFormat() const { return m_reader ? m_reader->property("format").toString() : QString(); }
+
+int BookSearch::readerBookId() const { return m_reader ? m_reader->property("bookId").toInt() : 0; }
+
+int BookSearch::readerChapter() const { return m_reader ? m_reader->property("chapter").toInt() : 0; }
+
+qint64 BookSearch::readerPageStart() const { return m_reader ? m_reader->property("pageStart").toLongLong() : 0; }
+
+qint64 BookSearch::readerPageEnd() const { return m_reader ? m_reader->property("pageEnd").toLongLong() : 0; }
 
 BookSearch::~BookSearch() {
     if (m_cancel)
@@ -283,6 +342,7 @@ QVariantMap BookSearch::hit(const QString &text, int chapter, qint64 start, qint
 }
 
 void BookSearch::find(const QString &query) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_byMeaning) {
         findByMeaning(query);
         return;
@@ -301,7 +361,7 @@ void BookSearch::find(const QString &query) {
     m_capped = false;
     m_current = -1;
     m_searching = false;
-    const QString path = m_reader->bookPath();
+    const QString path = readerBookPath();
     const QString needle = normalizeText(wanted).text.trimmed();
     // Single Latin characters match everything; single CJK characters are words.
     if (isTooShort(wanted) || needle.isEmpty() || path.isEmpty()) {
@@ -315,7 +375,7 @@ void BookSearch::find(const QString &query) {
 
     auto cancel = std::make_shared<std::atomic_bool>(false);
     m_cancel = cancel;
-    const bool pdf = m_reader->format() == QStringLiteral("pdf");
+    const bool pdf = readerFormat() == QStringLiteral("pdf");
     if (!m_cache || m_cache->path != path || m_cache->pdf != pdf) {
         m_cache = std::make_shared<BookCache>();
         m_cache->path = path;
@@ -408,6 +468,7 @@ void BookSearch::find(const QString &query) {
 }
 
 void BookSearch::clear() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_cancel)
         *m_cancel = true;
     m_cancel.reset();
@@ -428,10 +489,12 @@ void BookSearch::clear() {
 }
 
 void BookSearch::setCurrent(int current) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_results.isEmpty())
         current = -1;
     else
         current = (current % int(m_results.size()) + int(m_results.size())) % int(m_results.size());
+    Q_ASSERT(m_results.isEmpty() ? current == -1 : (current >= 0 && current < int(m_results.size())));
     if (current == m_current)
         return;
     m_current = current;
@@ -439,6 +502,7 @@ void BookSearch::setCurrent(int current) {
 }
 
 QVariantList BookSearch::inChapter(int chapter) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     QVariantList spans;
     for (const QVariant &value : m_results) {
         const QVariantMap hit = value.toMap();
@@ -571,6 +635,7 @@ QPair<qint64, qint64> BookSearch::sentenceSpan(const QString &chapterText, qint6
 // --- By meaning -----------------------------------------------------------------
 
 void BookSearch::setMeaning(AiServices *ai, const QString &databaseConnection) {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_ai = ai;
     m_index = new PassageIndex(ai, databaseConnection, this);
     connect(ai, &AiServices::changed, this, &BookSearch::changed);
@@ -582,6 +647,7 @@ bool BookSearch::canSearchByMeaning() const { return m_ai && m_ai->embedder(); }
 int BookSearch::booksPrepared() const { return m_index ? m_index->booksPrepared() : 0; }
 
 void BookSearch::searchLibrary(const QString &query) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const int run = ++m_libraryRun;
     if (!m_index || query.trimmed().size() < 3) {
         if (!m_libraryResults.isEmpty()) {
@@ -606,6 +672,7 @@ void BookSearch::searchLibrary(const QString &query) {
 QString BookSearch::where() const { return m_ai ? m_ai->whereFor(QStringLiteral("search")) : QString(); }
 
 void BookSearch::setByMeaning(bool byMeaning) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (byMeaning == m_byMeaning)
         return;
     m_byMeaning = byMeaning;
@@ -617,6 +684,7 @@ void BookSearch::setByMeaning(bool byMeaning) {
 }
 
 void BookSearch::setSpoilerFree(bool spoilerFree) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (spoilerFree == m_spoilerFree)
         return;
     m_spoilerFree = spoilerFree;
@@ -627,6 +695,7 @@ void BookSearch::setSpoilerFree(bool spoilerFree) {
 }
 
 void BookSearch::findByMeaning(const QString &query) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QString wanted = query.trimmed();
     if (m_cancel)
         *m_cancel = true;
@@ -638,7 +707,8 @@ void BookSearch::findByMeaning(const QString &query) {
     m_capped = false;
     m_preparing.clear();
     const int run = ++m_meaningRun;
-    if (wanted.size() < 3 || !canSearchByMeaning() || m_reader->bookPath().isEmpty()) {
+    const QString path = readerBookPath();
+    if (wanted.size() < 3 || !canSearchByMeaning() || path.isEmpty()) {
         m_searching = false;
         emit changed();
         emit currentChanged();
@@ -647,13 +717,12 @@ void BookSearch::findByMeaning(const QString &query) {
     m_searching = true;
     emit changed();
     emit currentChanged();
-    const QString path = m_reader->bookPath();
-    const QString format = m_reader->format();
-    const int bookId = m_reader->bookId();
+    const QString format = readerFormat();
+    const int bookId = readerBookId();
     const bool spoilerFree = m_spoilerFree;
-    const int limitChapter = spoilerFree ? m_reader->chapter() : (1 << 30);
-    const qint64 limitOffset =
-        spoilerFree ? (m_reader->pageEnd() > 0 ? m_reader->pageEnd() : m_reader->pageStart()) : -1;
+    const int limitChapter = spoilerFree ? readerChapter() : (1 << 30);
+    const qint64 pageEnd = readerPageEnd();
+    const qint64 limitOffset = spoilerFree ? (pageEnd > 0 ? pageEnd : readerPageStart()) : -1;
     auto cancel = std::make_shared<std::atomic_bool>(false);
     m_cancel = cancel;
     QPointer<BookSearch> self(this);

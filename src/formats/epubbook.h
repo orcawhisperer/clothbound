@@ -84,6 +84,14 @@ public:
     QByteArray coverImage(QString *mediaType = nullptr) const;
     // The chapter's text exactly as the reader counts it (see extractText).
     QString chapterText(int spineIndex) const;
+    // Uncompressed byte length of a spine chapter straight from the ZIP
+    // central directory (O(1), zero inflation); 0 for non-text entries.
+    qint64 chapterUncompressedBytes(int spineIndex) const;
+    // Fast O(1) text-character estimate for a spine chapter derived from ZIP
+    // central directory uncompressed byte size (zero chapter inflation).
+    int estimatedChapterLength(int spineIndex) const;
+    QList<int> estimatedChapterLengths() const;
+    quint64 inflatedBytes() const { return m_zip.inflatedBytes(); }
 
     // The text of a chapter's <body>: every text node in document order,
     // outside script and style, with soft hyphens removed. Positions,
