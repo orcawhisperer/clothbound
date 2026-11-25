@@ -144,7 +144,10 @@ def format_catalog(entries, raw=None):
 
 def save(code, entries):
     I18N.mkdir(exist_ok=True)
-    (I18N / f"{code}.json").write_text(format_catalog(entries), encoding="utf-8")
+    path = I18N / f"{code}.json"
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(format_catalog(entries), encoding="utf-8")
+    tmp.replace(path)
 
 
 SCHEMA = {
@@ -161,6 +164,8 @@ SCHEMA = {
     },
 }
 
+MIN_SPLIT_BATCH = 12
+
 
 def ask(prompt):
     """The model's answers, by entry number: {i: {"translation": …} or {"forms": …}}."""
@@ -169,7 +174,12 @@ def ask(prompt):
         sys.exit("Set GEMINI_API_KEY to translate.")
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "responseSchema": SCHEMA, "temperature": 0.2},
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "responseSchema": SCHEMA,
+            "temperature": 0.2,
+            "maxOutputTokens": 65536,
+        },
     }
     for attempt in range(3):
         request = urllib.request.Request(
@@ -178,12 +188,64 @@ def ask(prompt):
         try:
             with urllib.request.urlopen(request, timeout=300) as response:
                 answer = json.load(response)
-            parts = answer["candidates"][0]["content"]["parts"]
+            candidate = answer["candidates"][0]
+            if candidate.get("finishReason") == "MAX_TOKENS":
+                print("  (output truncated at MAX_TOKENS; splitting batch)", flush=True)
+                return {}
+            parts = candidate["content"]["parts"]
             items = json.loads("".join(part.get("text", "") for part in parts))
+            if not isinstance(items, list):
+                raise ValueError("expected JSON array")
             return {item["i"]: item for item in items if isinstance(item, dict) and "i" in item}
-        except (ValueError, KeyError, OSError) as error:
+        except (ValueError, KeyError, IndexError, OSError) as error:
             print(f"  (trying again: {error})", flush=True)
     return {}
+
+
+def _build_batch_prompt(code, name, strings, forms, batch):
+    listed = [{"i": i, "text": text, "counted": strings[text]} for i, text in enumerate(batch)]
+    return f"""Translate the interface text of Clothbound, an ebook reader and audiobook app for the Omarchy desktop, into {name} ({code}).
+
+Rules:
+- Natural, friendly, concise {name}, as a native speaker would write a well-made desktop app; keep the same tone (plain, warm, no jargon).
+- Keep placeholders exactly: %1, %2, %n, %Ln, and keep HTML tags, URLs, and keyboard keys (P, ⇧, Ctrl, Esc, Super W) as they are.
+- Keep brand and product names as they are: Clothbound, Omarchy, Gemini, Google, Kokoro, Piper, Ollama, llama.cpp, LM Studio, MLX, vLLM, EPUB, PDF, M4B, MPRIS.
+- For an entry with "counted": true, give "forms": the plural forms {name} uses ({", ".join(forms)}), ALWAYS including "other", each containing %n (or %Ln) where the number goes. Otherwise give "translation".
+
+Answer with a JSON array: for each entry, its "i" and its translation.
+
+{json.dumps(listed, ensure_ascii=False, indent=0)}"""
+
+
+def _translate_batch(code, name, strings, forms, batch, done):
+    answer = ask(_build_batch_prompt(code, name, strings, forms, batch))
+    if not answer and len(batch) > MIN_SPLIT_BATCH:
+        mid = len(batch) // 2
+        print(f"  {code}: batch of {len(batch)} empty/failed; splitting into {mid} + {len(batch) - mid}", flush=True)
+        _translate_batch(code, name, strings, forms, batch[:mid], done)
+        _translate_batch(code, name, strings, forms, batch[mid:], done)
+        return
+    for i, text in enumerate(batch):
+        item = answer.get(i, {})
+        value, plural = item.get("translation"), item.get("forms")
+        if strings[text]:
+            if isinstance(plural, dict):
+                # Never fabricate "other" from exact-singular/dual forms ("one"/"two"/"zero").
+                fallback = plural.get("other") or plural.get("many")
+                if fallback and valid_form(code, text, fallback, form="other"):
+                    built = {}
+                    for form in forms:
+                        candidate = plural.get(form)
+                        built[form] = candidate if valid_form(code, text, candidate, form=form) else fallback
+                    if is_valid_entry(code, text, True, built):
+                        done[text] = built
+                        continue
+            if isinstance(value, str) and valid_form(code, text, value, form="other"):
+                done[text] = {form: value for form in forms}
+        elif isinstance(value, str) and valid_form(code, text, value):
+            done[text] = value
+    if answer:
+        save(code, done)
 
 
 def translate(code, name, strings, existing):
@@ -195,38 +257,8 @@ def translate(code, name, strings, existing):
     done = dict(existing)
     for start in range(0, len(missing), 100):
         batch = missing[start:start + 100]
-        listed = [{"i": i, "text": text, "counted": strings[text]} for i, text in enumerate(batch)]
-        prompt = f"""Translate the interface text of Clothbound, an ebook reader and audiobook app for the Omarchy desktop, into {name} ({code}).
-
-Rules:
-- Natural, friendly, concise {name}, as a native speaker would write a well-made desktop app; keep the same tone (plain, warm, no jargon).
-- Keep placeholders exactly: %1, %2, %n, %Ln, and keep HTML tags, URLs, and keyboard keys (P, ⇧, Ctrl, Esc, Super W) as they are.
-- Keep brand and product names as they are: Clothbound, Omarchy, Gemini, Google, Kokoro, Piper, Ollama, llama.cpp, LM Studio, MLX, vLLM, EPUB, PDF, M4B, MPRIS.
-- For an entry with "counted": true, give "forms": the plural forms {name} uses ({", ".join(forms)}), ALWAYS including "other", each containing %n (or %Ln) where the number goes. Otherwise give "translation".
-
-Answer with a JSON array: for each entry, its "i" and its translation.
-
-{json.dumps(listed, ensure_ascii=False, indent=0)}"""
-        answer = ask(prompt)
-        for i, text in enumerate(batch):
-            item = answer.get(i, {})
-            value, plural = item.get("translation"), item.get("forms")
-            if strings[text]:
-                if isinstance(plural, dict):
-                    # Never fabricate "other" from exact-singular/dual forms ("one"/"two"/"zero").
-                    fallback = plural.get("other") or plural.get("many")
-                    if fallback and valid_form(code, text, fallback, form="other"):
-                        built = {}
-                        for form in forms:
-                            candidate = plural.get(form)
-                            built[form] = candidate if valid_form(code, text, candidate, form=form) else fallback
-                        if is_valid_entry(code, text, True, built):
-                            done[text] = built
-                            continue
-                if isinstance(value, str) and valid_form(code, text, value, form="other"):
-                    done[text] = {form: value for form in forms}
-            elif isinstance(value, str) and valid_form(code, text, value):
-                done[text] = value
+        _translate_batch(code, name, strings, forms, batch, done)
+        save(code, done)
         print(f"  {code}: {min(start + 100, len(missing))} of {len(missing)}", flush=True)
     return done, len(missing)
 

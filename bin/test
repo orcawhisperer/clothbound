@@ -113,9 +113,12 @@ cmake -S "$ROOT" -B "$BUILD_DIR" \
     -DCLOTHBOUND_SANITIZER="$SANITIZER"
 
 if [ "$SANITIZER" = "tsan" ]; then
-    cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target tst_concurrency
+    cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target tst_concurrency tst_w8_storage_palette
 else
-    cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target clothbound_tests tst_concurrency tst_webengine_e2e clothbound-mcp
+    cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target \
+        clothbound_tests tst_concurrency tst_webengine_e2e \
+        tst_w8_storage_palette tst_w8_passage_quant tst_w8_mcp_cli \
+        clothbound-mcp
 fi
 
 TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/clothbound-test.XXXXXX")"
@@ -128,6 +131,7 @@ export XDG_CACHE_HOME="$TEST_HOME/cache"
 export QT_QPA_PLATFORM=offscreen
 export QT_QPA_PLATFORMTHEME=generic
 export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:---no-sandbox --disable-gpu --disable-dev-shm-usage}"
+export CLOTHBOUND_MCP_BIN="$BUILD_DIR/clothbound-mcp"
 
 if [ "$SANITIZER" = "asan" ]; then
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
@@ -146,11 +150,19 @@ run_in_session() {
 
 cd "$BUILD_DIR"
 if [ "$SANITIZER" = "tsan" ]; then
-    run_in_session ./tst_concurrency "$@"
+    if [ "$#" -gt 0 ]; then
+        run_in_session ./tst_concurrency "$@"
+    else
+        run_in_session ./tst_concurrency
+        run_in_session ./tst_w8_storage_palette
+    fi
 elif [ "$#" -gt 0 ]; then
     run_in_session ./clothbound_tests "$@"
 else
     run_in_session ./clothbound_tests
     run_in_session ./tst_concurrency
     run_in_session ./tst_webengine_e2e
+    run_in_session ./tst_w8_storage_palette
+    run_in_session ./tst_w8_passage_quant
+    run_in_session ./tst_w8_mcp_cli
 fi

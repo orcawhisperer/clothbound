@@ -48,6 +48,7 @@ if(CLOTHBOUND_BUILD_TESTS)
         tst_concurrency.cpp
         fakeserver.h
         testbooks.h
+        tsan_shims.h
     )
     set_target_properties(tst_concurrency PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
@@ -93,6 +94,68 @@ if(CLOTHBOUND_BUILD_TESTS)
     add_test(NAME tst_webengine_e2e COMMAND tst_webengine_e2e)
     set_tests_properties(tst_webengine_e2e PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic;QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --disable-gpu --disable-dev-shm-usage"
+        TIMEOUT 180
+    )
+
+    add_executable(tst_w8_storage_palette
+        tst_w8_storage_palette.cpp
+        testbooks.h
+        tsan_shims.h
+    )
+    set_target_properties(tst_w8_storage_palette PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    target_include_directories(tst_w8_storage_palette PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(tst_w8_storage_palette PRIVATE QT_FORCE_ASSERTS)
+    target_link_libraries(tst_w8_storage_palette
+        PRIVATE
+            clothbound_app
+            Qt6::Test
+    )
+    add_test(NAME tst_w8_storage_palette COMMAND tst_w8_storage_palette)
+    set_tests_properties(tst_w8_storage_palette PROPERTIES
+        ENVIRONMENT "${_tsan_test_env}"
+        TIMEOUT 180
+    )
+
+    add_executable(tst_w8_passage_quant
+        tst_w8_passage_quant.cpp
+        fakeserver.h
+    )
+    set_target_properties(tst_w8_passage_quant PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    target_include_directories(tst_w8_passage_quant PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(tst_w8_passage_quant PRIVATE QT_FORCE_ASSERTS)
+    target_link_libraries(tst_w8_passage_quant
+        PRIVATE
+            clothbound_headless
+            Qt6::Test
+    )
+    add_test(NAME tst_w8_passage_quant COMMAND tst_w8_passage_quant)
+    set_tests_properties(tst_w8_passage_quant PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic"
+        TIMEOUT 180
+    )
+
+    add_executable(tst_w8_mcp_cli
+        tst_w8_mcp_cli.cpp
+        testbooks.h
+    )
+    set_target_properties(tst_w8_mcp_cli PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    target_include_directories(tst_w8_mcp_cli PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(tst_w8_mcp_cli PRIVATE QT_FORCE_ASSERTS)
+    target_link_libraries(tst_w8_mcp_cli
+        PRIVATE
+            clothbound_mcp
+            Qt6::Test
+    )
+    add_dependencies(tst_w8_mcp_cli clothbound-mcp)
+    add_test(NAME tst_w8_mcp_cli COMMAND tst_w8_mcp_cli)
+    set_tests_properties(tst_w8_mcp_cli PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic;CLOTHBOUND_MCP_BIN=$<TARGET_FILE:clothbound-mcp>"
         TIMEOUT 180
     )
 endif()

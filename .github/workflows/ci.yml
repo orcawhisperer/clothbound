@@ -77,13 +77,13 @@ jobs:
           bad_deps=$(ldd build/clothbound-mcp | grep -iE 'webengine|quick|qml|multimedia' || true)
           test -z "$bad_deps"
 
-      - name: Run unit, QML smoke, concurrency, and headless WebEngine E2E tests
+      - name: Run unit, QML smoke, concurrency, WebEngine E2E, and Wave-8 tests
         run: ./bin/test
 
       - name: Run full test suite under ASan + UBSan
         run: ./bin/test --asan
 
-      - name: Run concurrency stress suite under TSan (strict halt_on_error=1)
+      - name: Run concurrency and async palette stress suites under TSan (strict halt_on_error=1)
         run: ./bin/test --tsan
 
       - name: Validate translations, JS, QML lint, and desktop entry
@@ -93,12 +93,13 @@ jobs:
           /usr/lib/qt6/bin/qmllint --unqualified disable -I src/ui -I src/ui/style $(find src/ui -name '*.qml' | sort)
           desktop-file-validate pkgbuild/clothbound.desktop
 
-      - name: Smoke-test local stdio MCP server (clothbound-mcp and clothbound mcp)
+      - name: Smoke-test local stdio MCP server and headless CLI (clothbound-mcp and clothbound)
         run: |
           TMP_XDG=$(mktemp -d)
           trap 'rm -rf "$TMP_XDG"' EXIT
           export XDG_DATA_HOME="$TMP_XDG/data" XDG_CONFIG_HOME="$TMP_XDG/config" XDG_CACHE_HOME="$TMP_XDG/cache"
           ./build/clothbound list >/dev/null
+          ./build/clothbound-mcp list --json >/dev/null
           python3 -c '
           import json, subprocess
           reqs = [

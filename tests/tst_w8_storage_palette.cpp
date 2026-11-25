@@ -1,5 +1,7 @@
 #include <QtTest>
 
+#include "tsan_shims.h"
+
 #include "ai/aiservices.h"
 #include "ai/booksearch.h"
 #include "ai/companion.h"
