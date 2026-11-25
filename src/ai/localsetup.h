@@ -1,16 +1,36 @@
 #pragma once
 
-#include "app/systemcheck.h"
-
 #include <QHash>
 #include <QNetworkAccessManager>
 #include <QObject>
+#include <QPair>
 #include <QPointer>
+#include <QString>
 #include <QTimer>
 #include <QVariantMap>
+#include <functional>
 
 class AiServices;
 class QNetworkReply;
+
+// Hardware specs needed by LocalSetup to pick Ollama packages and model tiers,
+// decoupled from src/app/systemcheck.h so src/ai/ never includes src/app/.
+struct LocalHardwareInfo {
+    double memoryGb = 0;
+    QString graphics;
+    double graphicsMemoryGb = 0;
+    bool discreteGraphics = false;
+};
+
+// Abstract hardware probe interface implemented by SystemCheck (in src/app/)
+// or test doubles. Allows dependency inversion without introducing an ai -> app edge.
+class LocalHardwareProbe {
+public:
+    virtual ~LocalHardwareProbe() = default;
+    virtual LocalHardwareInfo probeHardware() const = 0;
+    // Optional stateless functor safe to run on a worker thread without touching `this`.
+    virtual std::function<LocalHardwareInfo()> makeAsyncProbe() const { return {}; }
+};
 
 // Setting up a model on this computer, for someone who has never heard of
 // Ollama: whether it's installed and running, the model that suits this
@@ -33,8 +53,14 @@ class LocalSetup : public QObject {
     Q_PROPERTY(QString problem READ problem NOTIFY changed)
 
 public:
-    LocalSetup(AiServices *ai, QObject *parent = nullptr);
+    explicit LocalSetup(AiServices *ai, QObject *parent = nullptr);
+    LocalSetup(AiServices *ai, LocalHardwareProbe *probe, QObject *parent = nullptr);
     ~LocalSetup() override { cancel(); }
+
+    void setHardwareProbe(LocalHardwareProbe *probe);
+    // Registers the default background hardware probe used when no per-instance
+    // probe is injected (wired by SystemCheck in src/app/systemcheck.cpp).
+    static void setDefaultHardwareProbe(std::function<LocalHardwareInfo()> probeFn);
 
     bool installed() const { return m_installed; }
     bool running() const { return m_running; }
@@ -61,21 +87,22 @@ public:
     // Ollama's tags for a computer with this much memory (GB) and graphics
     // memory: {text, search}; empty text when it's too small.
     static QPair<QString, QString> modelsFor(double memoryGb, double graphicsGb);
-    static QPair<QString, QString> modelsFor(const SystemCheck::Machine &machine);
+    static QPair<QString, QString> modelsFor(const LocalHardwareInfo &machine);
 
 signals:
     void changed();
 
 private:
-    void applyMachine(const SystemCheck::Machine &machine);
+    void applyMachine(const LocalHardwareInfo &machine);
     void probe();
     void size(const QString &model, bool text);
     void pull(const QStringList &models);
     QString ollamaPackage() const;
 
     AiServices *m_ai;
+    LocalHardwareProbe *m_probe = nullptr;
     QNetworkAccessManager m_network;
-    SystemCheck::Machine m_machine;
+    LocalHardwareInfo m_machine;
     bool m_inspected = false;
     bool m_inspecting = false;
     bool m_installed = false;

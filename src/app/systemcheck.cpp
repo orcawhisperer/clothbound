@@ -45,7 +45,22 @@ QString samplePassage() {
     return text;
 }
 
+LocalHardwareInfo inspectHardwareInfo() {
+    const SystemCheck::Machine m = SystemCheck::inspect();
+    return LocalHardwareInfo{m.memoryGb, m.graphics, m.graphicsMemoryGb, m.discreteGraphics};
+}
+
+// Register SystemCheck::inspect() as LocalSetup's default hardware probe
+// without introducing an ai -> app include dependency.
+struct SystemCheckHardwareProbeRegistrar {
+    SystemCheckHardwareProbeRegistrar() { LocalSetup::setDefaultHardwareProbe(&inspectHardwareInfo); }
+} s_systemCheckHardwareProbeRegistrar;
+
 }  // namespace
+
+LocalHardwareInfo SystemCheck::probeHardware() const { return inspectHardwareInfo(); }
+
+std::function<LocalHardwareInfo()> SystemCheck::makeAsyncProbe() const { return &inspectHardwareInfo; }
 
 SystemCheck::SystemCheck(AiServices *ai, LocalSpeech *speech, QObject *parent)
     : QObject(parent), m_ai(ai), m_speech(speech) {

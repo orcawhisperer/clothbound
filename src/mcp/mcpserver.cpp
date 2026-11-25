@@ -26,8 +26,10 @@
 #include <QSet>
 #include <QSettings>
 #include <QSqlDatabase>
+#include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <QUuid>
@@ -179,6 +181,64 @@ QString defaultIndexFile() {
     return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/index.sqlite");
 }
 
+QString defaultLibraryFile() {
+    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/library.sqlite");
+}
+
+// Opens an existing SQLite database strictly read-only (never creating files,
+// running WAL pragmas, or writing migrations). Falls back to SQLite URI
+// `mode=ro&immutable=1` ONLY when a cleanly-closed WAL-format DB resides inside
+// a read-only directory (e.g. chmod 0555) where SQLite cannot create `-shm`.
+bool openSqliteReadOnly(const QString &dbPath, const QString &connName, QSqlDatabase *outDb,
+                        QString *errorOut = nullptr) {
+    if (dbPath.isEmpty() || !QFileInfo::exists(dbPath)) {
+        if (errorOut)
+            *errorOut = QStringLiteral("Database file not found: %1").arg(dbPath);
+        return false;
+    }
+
+    auto tryOpen = [&](const QString &name, const QString &opts) -> bool {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
+        db.setDatabaseName(name);
+        db.setConnectOptions(opts);
+        Q_ASSERT(db.connectOptions().contains(QLatin1String("QSQLITE_OPEN_READONLY")));
+        if (!db.open()) {
+            if (errorOut)
+                *errorOut = db.lastError().text();
+            return false;
+        }
+        QSqlQuery pragma(db);
+        pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
+        pragma.exec(QStringLiteral("PRAGMA query_only=ON"));
+        QSqlQuery probe(db);
+        if (!probe.exec(QStringLiteral("SELECT 1 FROM sqlite_master LIMIT 1"))) {
+            if (errorOut)
+                *errorOut = probe.lastError().text();
+            db.close();
+            return false;
+        }
+        if (outDb)
+            *outDb = db;
+        return true;
+    };
+
+    if (tryOpen(dbPath, QStringLiteral("QSQLITE_OPEN_READONLY")))
+        return true;
+    QSqlDatabase::removeDatabase(connName);
+
+    // Fallback for WAL-mode SQLite files in non-writable directories (no active -wal sidecar).
+    const QFileInfo walInfo(dbPath + QStringLiteral("-wal"));
+    if (QFileInfo(dbPath).isReadable() && (!walInfo.exists() || walInfo.size() == 0)) {
+        const QString absPath = QFileInfo(dbPath).absoluteFilePath();
+        const QString uri =
+            QUrl::fromLocalFile(absPath).toString(QUrl::FullyEncoded) + QStringLiteral("?mode=ro&immutable=1");
+        if (tryOpen(uri, QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI")))
+            return true;
+        QSqlDatabase::removeDatabase(connName);
+    }
+    return false;
+}
+
 QStringList significantQueryTerms(const QString &query) {
     static const QSet<QString> stop = {
         QStringLiteral("a"),     QStringLiteral("an"),    QStringLiteral("and"),   QStringLiteral("are"),
@@ -233,9 +293,9 @@ QString pdfSectionTitle(const PdfBook &pdf, int pageIndex) {
     return best;
 }
 
-QJsonArray collectionNamesForBook(const Library *library, int bookId) {
+QJsonArray collectionNamesFromList(const QVariantList &cols) {
     QJsonArray names;
-    for (const QVariant &v : library->collectionsForBook(bookId)) {
+    for (const QVariant &v : cols) {
         const QString name = v.toMap().value(QStringLiteral("name")).toString();
         if (!name.isEmpty())
             names.append(name);
@@ -243,13 +303,13 @@ QJsonArray collectionNamesForBook(const Library *library, int bookId) {
     return names;
 }
 
-int resolveCollectionId(const Library *library, const QString &collectionArg) {
+int resolveCollectionIdFromList(const QVariantList &cols, const QString &collectionArg) {
     const QString trimmed = collectionArg.trimmed();
     if (trimmed.isEmpty())
         return 0;
     bool okNum = false;
     const int asId = trimmed.toInt(&okNum);
-    for (const QVariant &v : library->collections()) {
+    for (const QVariant &v : cols) {
         const QVariantMap m = v.toMap();
         const int id = m.value(QStringLiteral("id")).toInt();
         const QString name = m.value(QStringLiteral("name")).toString();
@@ -461,32 +521,32 @@ QJsonArray buildToolDefinitions() {
     return tools;
 }
 
+bool databasePathHasPassageVectorsReadOnly(const QString &dbPath) {
+    if (dbPath.isEmpty() || !QFileInfo::exists(dbPath))
+        return false;
+    bool hasVectors = false;
+    const QString connName = QStringLiteral("mcp-pv-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    {
+        QSqlDatabase db;
+        if (openSqliteReadOnly(dbPath, connName, &db)) {
+            Q_ASSERT(db.connectOptions().contains(QLatin1String("QSQLITE_OPEN_READONLY")));
+            QSqlQuery q(db);
+            if (q.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name='passage_vectors'")) &&
+                q.next()) {
+                QSqlQuery c(db);
+                hasVectors = c.exec(QStringLiteral("SELECT 1 FROM passage_vectors LIMIT 1")) && c.next();
+            }
+            db.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connName);
+    return hasVectors;
+}
+
 bool databaseHasPassageVectorsReadOnly(const QSqlDatabase &existingDb) {
     const QString dbPath = existingDb.databaseName();
-    if (!dbPath.isEmpty() && dbPath != QLatin1String(":memory:")) {
-        if (!QFileInfo::exists(dbPath))
-            return false;
-        bool hasVectors = false;
-        const QString connName = QStringLiteral("mcp-pv-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
-        {
-            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
-            db.setDatabaseName(dbPath);
-            db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
-            if (db.open()) {
-                QSqlQuery pragma(db);
-                pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
-                QSqlQuery q(db);
-                if (q.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name='passage_vectors'")) &&
-                    q.next()) {
-                    QSqlQuery c(db);
-                    hasVectors = c.exec(QStringLiteral("SELECT 1 FROM passage_vectors LIMIT 1")) && c.next();
-                }
-                db.close();
-            }
-        }
-        QSqlDatabase::removeDatabase(connName);
-        return hasVectors;
-    }
+    if (!dbPath.isEmpty() && dbPath != QLatin1String(":memory:"))
+        return databasePathHasPassageVectorsReadOnly(dbPath);
     if (!existingDb.isOpen())
         return false;
     QSqlQuery q(existingDb);
@@ -503,12 +563,9 @@ QHash<int, QPair<qint64, QString>> readIndexedMapReadOnly(const QString &dbPath)
         return indexed;
     const QString connName = QStringLiteral("mcp-idx-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
     {
-        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
-        db.setDatabaseName(dbPath);
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
-        if (db.open()) {
-            QSqlQuery pragma(db);
-            pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
+        QSqlDatabase db;
+        if (openSqliteReadOnly(dbPath, connName, &db)) {
+            Q_ASSERT(db.connectOptions().contains(QLatin1String("QSQLITE_OPEN_READONLY")));
             QSqlQuery q(db);
             if (q.exec(QStringLiteral("SELECT book, mtime, path FROM indexed"))) {
                 while (q.next())
@@ -528,12 +585,9 @@ QVariantList searchFtsReadOnly(const QString &dbPath, const QString &query, int 
         return results;
     const QString connName = QStringLiteral("mcp-fts-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
     {
-        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
-        db.setDatabaseName(dbPath);
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
-        if (db.open()) {
-            QSqlQuery pragma(db);
-            pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
+        QSqlDatabase db;
+        if (openSqliteReadOnly(dbPath, connName, &db)) {
+            Q_ASSERT(db.connectOptions().contains(QLatin1String("QSQLITE_OPEN_READONLY")));
             QSqlQuery q(db);
             if (bookId > 0) {
                 q.prepare(QStringLiteral(
@@ -582,12 +636,9 @@ QString readPassageFromIndexReadOnly(const QString &dbPath, int bookId, int chap
     QString out;
     const QString connName = QStringLiteral("mcp-psg-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
     {
-        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
-        db.setDatabaseName(dbPath);
-        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
-        if (db.open()) {
-            QSqlQuery pragma(db);
-            pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
+        QSqlDatabase db;
+        if (openSqliteReadOnly(dbPath, connName, &db)) {
+            Q_ASSERT(db.connectOptions().contains(QLatin1String("QSQLITE_OPEN_READONLY")));
             bool found = false;
             {
                 QSqlQuery fast(db);
@@ -635,13 +686,12 @@ QString makeLexicalSnippet(const QString &body, qsizetype pos, qsizetype matchLe
     return raw;
 }
 
-QVariantList searchUnindexedBooksLexical(const Library *library,
+QVariantList searchUnindexedBooksLexical(const QList<BookRecord> &candidateBooks,
                                          const QHash<int, QPair<qint64, QString>> &indexedMap,
                                          const QString &query,
-                                         int limit,
-                                         int bookId) {
+                                         int limit) {
     QVariantList out;
-    if (!library || limit <= 0)
+    if (candidateBooks.isEmpty() || limit <= 0)
         return out;
     static const QRegularExpression wordRe(QStringLiteral("[\\p{L}\\p{N}][\\p{L}\\p{N}\\p{M}'’]*"));
     QStringList terms;
@@ -660,16 +710,10 @@ QVariantList searchUnindexedBooksLexical(const Library *library,
     };
 
     QList<BookRecord> toScan;
-    if (bookId > 0) {
-        const BookRecord rec = library->record(bookId);
-        if (rec.visible() && !rec.path.isEmpty() && QFileInfo::exists(rec.path) && !isIndexedFresh(rec))
-            toScan.append(rec);
-    } else {
-        for (const BookRecord &rec : library->visibleRecords()) {
-            if (!rec.visible() || rec.path.isEmpty() || !QFileInfo::exists(rec.path) || isIndexedFresh(rec))
-                continue;
-            toScan.append(rec);
-        }
+    for (const BookRecord &rec : candidateBooks) {
+        if (!rec.visible() || rec.path.isEmpty() || !QFileInfo::exists(rec.path) || isIndexedFresh(rec))
+            continue;
+        toScan.append(rec);
     }
 
     QElapsedTimer budget;
@@ -734,9 +778,254 @@ McpServer::McpServer(Library *library, LibraryIndex *index, AiServices *ai, cons
       m_index(index),
       m_ai(ai),
       m_settingsPath(options.settingsPath),
-      m_indexPath(options.indexPath) {}
+      m_indexPath(options.indexPath),
+      m_libraryPath(options.libraryPath) {}
 
-McpServer::~McpServer() = default;
+McpServer::~McpServer() {
+    m_passageIndex.reset();
+    if (!m_roLibraryConn.isEmpty()) {
+        {
+            QSqlDatabase db = QSqlDatabase::database(m_roLibraryConn, false);
+            if (db.isOpen())
+                db.close();
+        }
+        QSqlDatabase::removeDatabase(m_roLibraryConn);
+        m_roLibraryConn.clear();
+        m_roLibraryOpen = false;
+    }
+}
+
+bool McpServer::openReadOnlyLibrary(QString *errorOut) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (m_library)
+        return true;
+    if (m_roLibraryOpen)
+        return ensureReadOnlyLibraryLoaded();
+    const QString path = m_libraryPath.isEmpty() ? defaultLibraryFile() : m_libraryPath;
+    m_roLibraryConn = QStringLiteral("mcp-lib-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QSqlDatabase db;
+    if (!openSqliteReadOnly(path, m_roLibraryConn, &db, errorOut)) {
+        m_roLibraryConn.clear();
+        m_roLibraryOpen = false;
+        return false;
+    }
+    Q_ASSERT(db.connectOptions().contains(QLatin1String("QSQLITE_OPEN_READONLY")));
+    m_libraryPath = path;
+    m_roLibraryOpen = true;
+    m_roDataVersion = -1;
+    m_roSnapshotLoaded = false;
+    return ensureReadOnlyLibraryLoaded();
+}
+
+bool McpServer::ensureReadOnlyLibraryLoaded() const {
+    if (m_library)
+        return true;
+    if (!m_roLibraryOpen && !m_libraryPath.isEmpty()) {
+        m_roLibraryConn = QStringLiteral("mcp-lib-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+        QSqlDatabase db;
+        if (!openSqliteReadOnly(m_libraryPath, m_roLibraryConn, &db)) {
+            m_roLibraryConn.clear();
+            return false;
+        }
+        m_roLibraryOpen = true;
+        m_roDataVersion = -1;
+        m_roSnapshotLoaded = false;
+    }
+    if (!m_roLibraryOpen)
+        return false;
+    Q_ASSERT(m_library == nullptr);
+    QSqlDatabase db = QSqlDatabase::database(m_roLibraryConn, false);
+    if (!db.isOpen())
+        return false;
+    Q_ASSERT(db.connectOptions().contains(QLatin1String("QSQLITE_OPEN_READONLY")));
+
+    qint64 dataVersion = -1;
+    {
+        QSqlQuery dv(db);
+        if (dv.exec(QStringLiteral("PRAGMA data_version")) && dv.next())
+            dataVersion = dv.value(0).toLongLong();
+    }
+    if (m_roSnapshotLoaded && dataVersion >= 0 && dataVersion == m_roDataVersion)
+        return true;
+
+    m_roBooks.clear();
+    m_roCollections.clear();
+    m_roCollectionNames.clear();
+    m_roBookCollections.clear();
+
+    bool hasWantAt = false;
+    bool hasListenedAt = false;
+    {
+        QSqlQuery cols(db);
+        if (cols.exec(QStringLiteral("PRAGMA table_info(books)"))) {
+            while (cols.next()) {
+                const QString name = cols.value(1).toString();
+                if (name == QLatin1String("want_at"))
+                    hasWantAt = true;
+                else if (name == QLatin1String("listened_at"))
+                    hasListenedAt = true;
+            }
+        }
+    }
+
+    const QString sql = QStringLiteral(
+                            "SELECT id, path, format, size, mtime, title, sort_title, author, sort_author, editor, "
+                            "publisher, year, language, description, subjects, isbn, series, series_index, work_key, "
+                            "chapters, pages, length, cover, problem, added_at, opened_at, finished_at, progress, "
+                            "position, seconds_read, missing, hidden, loose%1%2 FROM books")
+                            .arg(hasWantAt ? QStringLiteral(", want_at") : QStringLiteral(", 0"),
+                                 hasListenedAt ? QStringLiteral(", listened_at") : QStringLiteral(", 0"));
+    QSqlQuery q(db);
+    if (q.exec(sql)) {
+        while (q.next()) {
+            BookRecord r;
+            int i = 0;
+            r.id = q.value(i++).toInt();
+            r.path = q.value(i++).toString();
+            r.format = q.value(i++).toString();
+            r.size = q.value(i++).toLongLong();
+            r.mtime = q.value(i++).toLongLong();
+            r.title = q.value(i++).toString();
+            r.sortTitle = q.value(i++).toString();
+            r.author = q.value(i++).toString();
+            r.sortAuthor = q.value(i++).toString();
+            r.editor = q.value(i++).toString();
+            r.publisher = q.value(i++).toString();
+            r.year = q.value(i++).toInt();
+            r.language = q.value(i++).toString();
+            r.description = q.value(i++).toString();
+            r.subjects = q.value(i++).toString();
+            r.isbn = q.value(i++).toString();
+            r.series = q.value(i++).toString();
+            r.seriesIndex = q.value(i++).toDouble();
+            r.workKey = q.value(i++).toString();
+            r.chapters = q.value(i++).toInt();
+            r.pages = q.value(i++).toInt();
+            r.length = q.value(i++).toLongLong();
+            r.cover = q.value(i++).toString();
+            r.problem = q.value(i++).toString();
+            r.addedAt = q.value(i++).toLongLong();
+            r.openedAt = q.value(i++).toLongLong();
+            r.finishedAt = q.value(i++).toLongLong();
+            r.progress = q.value(i++).toDouble();
+            r.position = q.value(i++).toString();
+            r.secondsRead = q.value(i++).toLongLong();
+            r.missing = q.value(i++).toBool();
+            r.hidden = q.value(i++).toBool();
+            r.loose = q.value(i++).toBool();
+            r.wantAt = q.value(i++).toLongLong();
+            r.listenedAt = q.value(i++).toLongLong();
+            m_roBooks.insert(r.id, std::move(r));
+        }
+    }
+
+    QSqlQuery hasColTable(db);
+    if (hasColTable.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name='collections'")) &&
+        hasColTable.next()) {
+        QSqlQuery cq(db);
+        if (cq.exec(QStringLiteral("SELECT id, name FROM collections ORDER BY name COLLATE NOCASE"))) {
+            while (cq.next()) {
+                const int id = cq.value(0).toInt();
+                const QString name = cq.value(1).toString();
+                m_roCollections.append({id, name});
+                m_roCollectionNames.insert(id, name);
+            }
+        }
+        QSqlQuery lq(db);
+        if (lq.exec(QStringLiteral("SELECT book_id, collection_id FROM book_collections"))) {
+            while (lq.next()) {
+                const int bId = lq.value(0).toInt();
+                const int cId = lq.value(1).toInt();
+                if (m_roCollectionNames.contains(cId))
+                    m_roBookCollections[bId].insert(cId);
+            }
+        }
+    }
+
+    m_roDataVersion = dataVersion;
+    m_roSnapshotLoaded = true;
+    return true;
+}
+
+bool McpServer::hasLibraryData() const {
+    return m_library != nullptr || ensureReadOnlyLibraryLoaded();
+}
+
+QList<BookRecord> McpServer::visibleRecords() const {
+    if (m_library)
+        return m_library->visibleRecords();
+    if (!ensureReadOnlyLibraryLoaded())
+        return {};
+    QList<BookRecord> list;
+    for (const BookRecord &r : std::as_const(m_roBooks))
+        if (r.visible())
+            list.append(r);
+    return list;
+}
+
+BookRecord McpServer::bookRecord(int bookId) const {
+    if (m_library)
+        return m_library->record(bookId);
+    if (!ensureReadOnlyLibraryLoaded())
+        return {};
+    return m_roBooks.value(bookId);
+}
+
+QVariantList McpServer::allCollections() const {
+    if (m_library)
+        return m_library->collections();
+    if (!ensureReadOnlyLibraryLoaded())
+        return {};
+    QVariantList out;
+    out.reserve(m_roCollections.size());
+    for (const ReadOnlyCollection &c : std::as_const(m_roCollections))
+        out.append(QVariantMap{{QStringLiteral("id"), c.id}, {QStringLiteral("name"), c.name}});
+    return out;
+}
+
+QVariantList McpServer::collectionsForBook(int bookId) const {
+    if (m_library)
+        return m_library->collectionsForBook(bookId);
+    if (!ensureReadOnlyLibraryLoaded())
+        return {};
+    QVariantList out;
+    const QSet<int> cols = m_roBookCollections.value(bookId);
+    for (const ReadOnlyCollection &c : std::as_const(m_roCollections)) {
+        if (cols.contains(c.id))
+            out.append(QVariantMap{{QStringLiteral("id"), c.id}, {QStringLiteral("name"), c.name}});
+    }
+    return out;
+}
+
+bool McpServer::isBookInCollection(int bookId, int colId) const {
+    if (m_library)
+        return m_library->isInCollection(bookId, colId);
+    if (!ensureReadOnlyLibraryLoaded())
+        return false;
+    return m_roBookCollections.value(bookId).contains(colId);
+}
+
+QString McpServer::libraryDatabasePath() const {
+    if (m_library)
+        return m_library->database().databaseName();
+    return m_libraryPath;
+}
+
+bool McpServer::hasPassageVectors() const {
+    if (m_library)
+        return m_library->database().isOpen() && databaseHasPassageVectorsReadOnly(m_library->database());
+    if (!ensureReadOnlyLibraryLoaded())
+        return false;
+    QSqlDatabase db = QSqlDatabase::database(m_roLibraryConn, false);
+    if (!db.isOpen())
+        return false;
+    QSqlQuery q(db);
+    if (!q.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name='passage_vectors'")) ||
+        !q.next())
+        return false;
+    QSqlQuery c(db);
+    return c.exec(QStringLiteral("SELECT 1 FROM passage_vectors LIMIT 1")) && c.next();
+}
 
 void McpServer::installStderrMessageHandler() {
     qInstallMessageHandler(&mcpStderrMessageHandler);
@@ -751,7 +1040,10 @@ QString McpServer::resolvedIndexPath() const {
 }
 
 bool McpServer::isEnabled() const {
-    QSettings settings(settingsPath(), QSettings::IniFormat);
+    const QString path = settingsPath();
+    if (!QFileInfo::exists(path))
+        return true;
+    QSettings settings(path, QSettings::IniFormat);
     return settings.value(QStringLiteral("ai/mcpEnabled"), true).toBool();
 }
 
@@ -766,9 +1058,9 @@ QString McpServer::extractPassageText(int bookId, int chapter, qint64 start, qin
                 return fromInjected;
         }
     }
-    if (!m_library)
+    if (!hasLibraryData())
         return {};
-    const BookRecord rec = m_library->record(bookId);
+    const BookRecord rec = bookRecord(bookId);
     if (!rec.visible() || rec.path.isEmpty())
         return {};
     QString full;
@@ -789,6 +1081,7 @@ QString McpServer::extractPassageText(int bookId, int chapter, qint64 start, qin
 }
 
 QJsonObject McpServer::handleRequest(const QJsonObject &req) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const bool hasId = req.contains(QStringLiteral("id"));
     const QJsonValue id = hasId ? req.value(QStringLiteral("id")) : QJsonValue(QJsonValue::Null);
 
@@ -911,8 +1204,8 @@ QJsonObject McpServer::handleResourcesList(const QJsonValue &id) {
         {QStringLiteral("mimeType"), QStringLiteral("application/json")},
     });
 
-    if (m_library) {
-        QList<BookRecord> books = m_library->visibleRecords();
+    if (hasLibraryData()) {
+        QList<BookRecord> books = visibleRecords();
         std::sort(books.begin(), books.end(), [](const BookRecord &a, const BookRecord &b) {
             if (a.openedAt != b.openedAt)
                 return a.openedAt > b.openedAt;
@@ -1007,14 +1300,14 @@ QJsonObject McpServer::buildBooksListJson(const QString &query, const QString &f
                                           int limit) const {
     QJsonArray out;
     int totalMatched = 0;
-    if (!m_library)
+    if (!hasLibraryData())
         return QJsonObject{{QStringLiteral("books"), out}, {QStringLiteral("count"), 0}, {QStringLiteral("total"), 0}};
 
-    const int colId = collection.trimmed().isEmpty() ? 0 : resolveCollectionId(m_library, collection);
+    const int colId = collection.trimmed().isEmpty() ? 0 : resolveCollectionIdFromList(allCollections(), collection);
     const QString fmt = format.trimmed().toLower();
     const QStringList tokens = WorksModel::searchable(query).split(QLatin1Char(' '), Qt::SkipEmptyParts);
 
-    QList<BookRecord> books = m_library->visibleRecords();
+    QList<BookRecord> books = visibleRecords();
     std::sort(books.begin(), books.end(), [](const BookRecord &a, const BookRecord &b) {
         if (a.openedAt != b.openedAt)
             return a.openedAt > b.openedAt;
@@ -1027,7 +1320,7 @@ QJsonObject McpServer::buildBooksListJson(const QString &query, const QString &f
         for (const BookRecord &book : std::as_const(books)) {
             if (!fmt.isEmpty() && book.format.compare(fmt, Qt::CaseInsensitive) != 0)
                 continue;
-            if (colId > 0 && !m_library->isInCollection(book.id, colId))
+            if (colId > 0 && !isBookInCollection(book.id, colId))
                 continue;
             if (!tokens.isEmpty()) {
                 const QString hay = WorksModel::searchable(
@@ -1055,7 +1348,7 @@ QJsonObject McpServer::buildBooksListJson(const QString &query, const QString &f
                 {QStringLiteral("progress"), book.progress},
                 {QStringLiteral("pages"), book.pages},
                 {QStringLiteral("chapters"), book.chapters},
-                {QStringLiteral("collections"), collectionNamesForBook(m_library, book.id)},
+                {QStringLiteral("collections"), collectionNamesFromList(collectionsForBook(book.id))},
                 {QStringLiteral("filePath"), book.path},
                 {QStringLiteral("finished"), book.finishedAt > 0},
             };
@@ -1100,7 +1393,7 @@ QJsonObject McpServer::toolSearchLibrary(const QJsonObject &args) {
     if (!readOptionalInt(args, QStringLiteral("book_id"), &bookId, &hasBookId))
         return toolError(QStringLiteral("Invalid 'book_id': expected a positive integer."));
     if (hasBookId) {
-        if (bookId <= 0 || !m_library || !m_library->record(bookId).visible())
+        if (bookId <= 0 || !hasLibraryData() || !bookRecord(bookId).visible())
             return toolError(QStringLiteral("Book %1 not found in the library.").arg(bookId));
     }
 
@@ -1114,9 +1407,14 @@ QJsonObject McpServer::toolSearchLibrary(const QJsonObject &args) {
     QVariantList hits = searchFtsReadOnly(idxPath, query, limit, bookId);
     if (hits.isEmpty() && m_indexPath.isEmpty() && m_index && m_index->available())
         hits = m_index->search(query, limit, bookId);
-    if (hits.size() < limit) {
+    if (hits.size() < limit && hasLibraryData()) {
+        QList<BookRecord> candidates;
+        if (bookId > 0)
+            candidates.append(bookRecord(bookId));
+        else
+            candidates = visibleRecords();
         const QVariantList fallbackHits =
-            searchUnindexedBooksLexical(m_library, indexedMap, query, limit - int(hits.size()), bookId);
+            searchUnindexedBooksLexical(candidates, indexedMap, query, limit - int(hits.size()));
         hits.append(fallbackHits);
     }
 
@@ -1145,7 +1443,7 @@ QJsonObject McpServer::toolSearchLibrary(const QJsonObject &args) {
     for (const QVariant &v : hits) {
         const QVariantMap hit = v.toMap();
         const int hitBookId = hit.value(QStringLiteral("bookId")).toInt();
-        const BookRecord rec = m_library ? m_library->record(hitBookId) : BookRecord{};
+        const BookRecord rec = hasLibraryData() ? bookRecord(hitBookId) : BookRecord{};
         if (!rec.visible())
             continue;
         const int chapter = hit.value(QStringLiteral("chapter")).toInt();
@@ -1191,7 +1489,7 @@ QJsonObject McpServer::toolSearchPassages(const QJsonObject &args) {
     if (!readOptionalInt(args, QStringLiteral("book_id"), &bookId, &hasBookId))
         return toolError(QStringLiteral("Invalid 'book_id': expected a positive integer."));
     if (hasBookId) {
-        if (bookId <= 0 || !m_library || !m_library->record(bookId).visible())
+        if (bookId <= 0 || !hasLibraryData() || !bookRecord(bookId).visible())
             return toolError(QStringLiteral("Book %1 not found in the library.").arg(bookId));
     }
 
@@ -1203,9 +1501,9 @@ QJsonObject McpServer::toolSearchPassages(const QJsonObject &args) {
     const QString collection = args.value(QStringLiteral("collection")).toString().trimmed();
     int colId = 0;
     if (!collection.isEmpty()) {
-        if (!m_library)
+        if (!hasLibraryData())
             return toolError(QStringLiteral("Library is not available."));
-        colId = resolveCollectionId(m_library, collection);
+        colId = resolveCollectionIdFromList(allCollections(), collection);
         if (colId < 0) {
             return toolSuccessJson(QJsonObject{
                 {QStringLiteral("query"), query},
@@ -1217,13 +1515,13 @@ QJsonObject McpServer::toolSearchPassages(const QJsonObject &args) {
     }
 
     QSet<int> allowedBooks;
-    if (m_library) {
+    if (hasLibraryData()) {
         if (bookId > 0) {
-            if (colId == 0 || m_library->isInCollection(bookId, colId))
+            if (colId == 0 || isBookInCollection(bookId, colId))
                 allowedBooks.insert(bookId);
         } else {
-            for (const BookRecord &rec : m_library->visibleRecords()) {
-                if (colId > 0 && !m_library->isInCollection(rec.id, colId))
+            for (const BookRecord &rec : visibleRecords()) {
+                if (colId > 0 && !isBookInCollection(rec.id, colId))
                     continue;
                 allowedBooks.insert(rec.id);
             }
@@ -1256,11 +1554,11 @@ QJsonObject McpServer::toolSearchPassages(const QJsonObject &args) {
 
     // 1. Try strictly local, read-only semantic search when local loopback embeddings exist.
     //    MCP mode NEVER invokes cloud providers (Gemini) or writes ai_usage / DDL.
-    if (m_library && m_library->database().isOpen() && databaseHasPassageVectorsReadOnly(m_library->database())) {
+    if (hasPassageVectors()) {
         QList<PassageIndex::LibraryHit> semHits;
         const int askCount = qMin(60, limit * 2);
         if (m_localEmbedder && m_localEmbedder->embedder() && m_localEmbedder->isLocal()) {
-            const QString dbPath = m_library->database().databaseName();
+            const QString dbPath = libraryDatabasePath();
             const QString modelKey = QStringLiteral("local/") + m_localEmbedder->embeddingModelName();
             if (!dbPath.isEmpty() && dbPath != QLatin1String(":memory:")) {
                 Ai::Reply *reply = m_localEmbedder->embedder()->embed({query}, true);
@@ -1281,9 +1579,10 @@ QJsonObject McpServer::toolSearchPassages(const QJsonObject &args) {
                 }
                 reply->deleteLater();
             }
-        } else if (m_ai) {
+        } else if (m_ai && m_library) {
             Ai::Provider *embProvider = m_ai->embedderProvider();
             if (embProvider && embProvider->id() == QLatin1String("local") && embProvider->isLocal()) {
+                Q_ASSERT(embProvider->isLocal());
                 if (!m_passageIndex) {
                     m_passageIndex =
                         std::make_unique<PassageIndex>(m_ai, m_library->database().connectionName(), nullptr, true);
@@ -1453,11 +1752,11 @@ QJsonObject McpServer::toolSearchPassages(const QJsonObject &args) {
             for (int i = 0; i < maxCand; ++i)
                 byBook[candidates[i].first].append(candidates[i].second);
             for (auto it = byBook.cbegin(); it != byBook.cend(); ++it)
-                appendBookChapters(m_library->record(it.key()), it.value());
+                appendBookChapters(bookRecord(it.key()), it.value());
         } else if (allowedBooks.size() <= 8) {
             // Small scope (single book or small library) without FTS hits: direct BM25 scan.
             for (int allowedId : std::as_const(allowedBooks))
-                appendBookChapters(m_library->record(allowedId), {});
+                appendBookChapters(bookRecord(allowedId), {});
         }
 
         if (!bm25Input.isEmpty()) {
@@ -1486,7 +1785,7 @@ QJsonObject McpServer::toolSearchPassages(const QJsonObject &args) {
 
     QJsonArray passagesJson;
     for (const CitedPassage &p : std::as_const(chosen)) {
-        const BookRecord rec = m_library->record(p.bookId);
+        const BookRecord rec = bookRecord(p.bookId);
         if (!rec.visible())
             continue;
         const bool isPdf = rec.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0;
@@ -1519,12 +1818,12 @@ QJsonObject McpServer::toolSearchPassages(const QJsonObject &args) {
 }
 
 QJsonObject McpServer::buildBookOutlineJson(int bookId, QString *errorOut) const {
-    if (!m_library || bookId <= 0) {
+    if (!hasLibraryData() || bookId <= 0) {
         if (errorOut)
             *errorOut = QStringLiteral("Book %1 not found in the library.").arg(bookId);
         return {};
     }
-    const BookRecord rec = m_library->record(bookId);
+    const BookRecord rec = bookRecord(bookId);
     if (!rec.visible()) {
         if (errorOut)
             *errorOut = QStringLiteral("Book %1 not found in the library.").arg(bookId);
@@ -1545,7 +1844,7 @@ QJsonObject McpServer::buildBookOutlineJson(int bookId, QString *errorOut) const
         {QStringLiteral("progress"), rec.progress},
         {QStringLiteral("pages"), rec.pages},
         {QStringLiteral("chapters"), rec.chapters},
-        {QStringLiteral("collections"), collectionNamesForBook(m_library, rec.id)},
+        {QStringLiteral("collections"), collectionNamesFromList(collectionsForBook(rec.id))},
         {QStringLiteral("filePath"), rec.path},
     };
     if (!rec.editor.isEmpty())
@@ -1676,9 +1975,9 @@ QJsonObject McpServer::toolReadPassage(const QJsonObject &args) {
     if (!readOptionalInt(args, QStringLiteral("book_id"), &bookId, &hasBookId) || !hasBookId || bookId <= 0)
         return toolError(QStringLiteral("Missing or invalid required parameter 'book_id'."));
 
-    if (!m_library)
+    if (!hasLibraryData())
         return toolError(QStringLiteral("Library is not available."));
-    const BookRecord rec = m_library->record(bookId);
+    const BookRecord rec = bookRecord(bookId);
     if (!rec.visible())
         return toolError(QStringLiteral("Book %1 not found in the library.").arg(bookId));
     if (!QFileInfo::exists(rec.path))
@@ -1868,12 +2167,186 @@ QJsonObject McpServer::toolReadPassage(const QJsonObject &args) {
     return toolSuccess(formatted, structured);
 }
 
-QJsonObject McpServer::buildBookMarksJson(int bookId, const QString &query, int limit, QString *errorOut) const {
-    if (!m_library) {
+QJsonObject McpServer::buildReadOnlyMarksJson(int bookId, const QString &query, int limit, QString *errorOut) const {
+    if (!ensureReadOnlyLibraryLoaded()) {
         if (errorOut)
             *errorOut = QStringLiteral("Library is not available.");
         return {};
     }
+    QSqlDatabase db = QSqlDatabase::database(m_roLibraryConn, false);
+    if (!db.isOpen()) {
+        if (errorOut)
+            *errorOut = QStringLiteral("Library is not available.");
+        return {};
+    }
+    Q_ASSERT(db.connectOptions().contains(QLatin1String("QSQLITE_OPEN_READONLY")));
+
+    const QStringList tokens = WorksModel::searchable(query).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+    if (bookId > 0) {
+        const BookRecord rec = bookRecord(bookId);
+        if (!rec.visible()) {
+            if (errorOut)
+                *errorOut = QStringLiteral("Book %1 not found in the library.").arg(bookId);
+            return {};
+        }
+        const bool isPdf = rec.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0;
+        QSqlQuery sql(db);
+        sql.prepare(QStringLiteral(
+            "SELECT id, kind, chapter, start, finish, text, note, color, label, created_at "
+            "FROM annotations WHERE book_id = ? ORDER BY chapter ASC, start ASC, id ASC"));
+        sql.addBindValue(bookId);
+        QJsonArray arr;
+        if (sql.exec()) {
+            while (sql.next() && arr.size() < limit) {
+                const QString quote = sql.value(5).toString();
+                const QString note = sql.value(6).toString();
+                const QString label = sql.value(8).toString();
+                if (!tokens.isEmpty()) {
+                    const QString hay = WorksModel::searchable(quote + QLatin1Char(' ') + note + QLatin1Char(' ') +
+                                                               label + QLatin1Char(' ') + rec.title + QLatin1Char(' ') +
+                                                               rec.author);
+                    bool ok = true;
+                    for (const QString &tok : tokens) {
+                        if (!hay.contains(tok)) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (!ok)
+                        continue;
+                }
+                const int chapter = sql.value(2).toInt();
+                arr.append(QJsonObject{
+                    {QStringLiteral("id"), sql.value(0).toInt()},
+                    {QStringLiteral("book_id"), rec.id},
+                    {QStringLiteral("book_title"), rec.title},
+                    {QStringLiteral("book_author"), rec.author},
+                    {QStringLiteral("kind"), sql.value(1).toString()},
+                    {QStringLiteral("chapter"), chapter},
+                    {QStringLiteral("page"), isPdf ? QJsonValue(chapter + 1) : QJsonValue(QJsonValue::Null)},
+                    {QStringLiteral("label"), label},
+                    {QStringLiteral("quote"), quote},
+                    {QStringLiteral("note"), note},
+                    {QStringLiteral("color"), sql.value(7).toString()},
+                    {QStringLiteral("start"), double(sql.value(3).toLongLong())},
+                    {QStringLiteral("end"), double(sql.value(4).toLongLong())},
+                    {QStringLiteral("created"),
+                     QDateTime::fromSecsSinceEpoch(sql.value(9).toLongLong()).toString(Qt::ISODate)},
+                });
+            }
+        }
+        return QJsonObject{
+            {QStringLiteral("book_id"), rec.id},
+            {QStringLiteral("book_title"), rec.title},
+            {QStringLiteral("count"), int(arr.size())},
+            {QStringLiteral("marks"), arr},
+        };
+    }
+
+    QSqlQuery sql(db);
+    sql.prepare(QStringLiteral(
+        "SELECT a.id, a.book_id, a.kind, a.chapter, a.start, a.finish, a.text, a.note, a.color, a.label, "
+        "a.created_at, a.updated_at, b.title, b.author, b.format "
+        "FROM annotations a "
+        "JOIN books b ON b.id = a.book_id "
+        "WHERE b.hidden = 0 AND b.missing = 0 "
+        "ORDER BY a.updated_at DESC, a.id DESC"));
+
+    struct ScoredMark {
+        int score = 0;
+        qint64 updatedAt = 0;
+        QJsonObject entry;
+    };
+    QList<ScoredMark> hits;
+    const QString trimmed = query.trimmed();
+    if (sql.exec()) {
+        while (sql.next()) {
+            const int id = sql.value(0).toInt();
+            const int bId = sql.value(1).toInt();
+            const QString kind = sql.value(2).toString();
+            const int chapter = sql.value(3).toInt();
+            const qint64 start = sql.value(4).toLongLong();
+            const qint64 end = sql.value(5).toLongLong();
+            const QString quote = sql.value(6).toString();
+            const QString note = sql.value(7).toString();
+            const QString color = sql.value(8).toString();
+            const QString label = sql.value(9).toString();
+            const qint64 createdAt = sql.value(10).toLongLong();
+            const qint64 updatedAt = sql.value(11).toLongLong();
+            const QString bookTitle = sql.value(12).toString();
+            const QString bookAuthor = sql.value(13).toString();
+            const bool isPdf = sql.value(14).toString().compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0;
+
+            int score = 0;
+            if (!tokens.isEmpty()) {
+                const QString hayNote = note.isEmpty() ? QString() : WorksModel::searchable(note);
+                const QString hayText = quote.isEmpty() ? QString() : WorksModel::searchable(quote);
+                const QString hayMeta =
+                    WorksModel::searchable(label + QLatin1Char(' ') + bookTitle + QLatin1Char(' ') + bookAuthor);
+                bool ok = true;
+                for (const QString &tok : tokens) {
+                    const bool inNote = !hayNote.isEmpty() && hayNote.contains(tok);
+                    const bool inText = !hayText.isEmpty() && hayText.contains(tok);
+                    const bool inMeta = !hayMeta.isEmpty() && hayMeta.contains(tok);
+                    if (!inNote && !inText && !inMeta) {
+                        ok = false;
+                        break;
+                    }
+                    if (inNote)
+                        score += 30;
+                    if (inText)
+                        score += 20;
+                    if (inMeta)
+                        score += 10;
+                }
+                if (!ok)
+                    continue;
+                if (!trimmed.isEmpty()) {
+                    if (note.contains(trimmed, Qt::CaseInsensitive))
+                        score += 40;
+                    if (quote.contains(trimmed, Qt::CaseInsensitive))
+                        score += 30;
+                }
+            }
+            hits.append({score, updatedAt,
+                         QJsonObject{
+                             {QStringLiteral("id"), id},
+                             {QStringLiteral("book_id"), bId},
+                             {QStringLiteral("book_title"), bookTitle},
+                             {QStringLiteral("book_author"), bookAuthor},
+                             {QStringLiteral("kind"), kind},
+                             {QStringLiteral("chapter"), chapter},
+                             {QStringLiteral("page"), isPdf ? QJsonValue(chapter + 1) : QJsonValue(QJsonValue::Null)},
+                             {QStringLiteral("label"), label},
+                             {QStringLiteral("quote"), quote},
+                             {QStringLiteral("note"), note},
+                             {QStringLiteral("color"), color},
+                             {QStringLiteral("start"), double(start)},
+                             {QStringLiteral("end"), double(end)},
+                             {QStringLiteral("created"), QDateTime::fromSecsSinceEpoch(createdAt).toString(Qt::ISODate)},
+                         }});
+            if (tokens.isEmpty() && hits.size() >= limit)
+                break;
+        }
+    }
+    if (!tokens.isEmpty()) {
+        std::sort(hits.begin(), hits.end(), [](const ScoredMark &a, const ScoredMark &b) {
+            return a.score != b.score ? a.score > b.score : a.updatedAt > b.updatedAt;
+        });
+    }
+    QJsonArray arr;
+    const int n = qMin(limit, int(hits.size()));
+    for (int i = 0; i < n; ++i)
+        arr.append(hits[i].entry);
+    return QJsonObject{
+        {QStringLiteral("count"), int(arr.size())},
+        {QStringLiteral("marks"), arr},
+    };
+}
+
+QJsonObject McpServer::buildBookMarksJson(int bookId, const QString &query, int limit, QString *errorOut) const {
+    if (!m_library)
+        return buildReadOnlyMarksJson(bookId, query, limit, errorOut);
 
     if (bookId > 0) {
         const BookRecord rec = m_library->record(bookId);
@@ -2073,23 +2546,29 @@ void McpServer::runStdioLoop(std::FILE *in,
         flushFrame(buffer, oversized, hasNul);
 }
 
-int McpServer::runStdio(const QStringList &arguments) {
+int McpServer::runStdioWithStreams(const QStringList &arguments, std::FILE *in, std::FILE *out) {
     Q_UNUSED(arguments);
     installStderrMessageHandler();
 
-    Library library;
-    if (!library.open()) {
-        std::fprintf(stderr, "[clothbound-mcp ERROR] The library can't be opened: %s\n", qPrintable(library.errorString()));
+    const QString libraryDbPath = defaultLibraryFile();
+    const QString indexDbPath = defaultIndexFile();
+    const QString settingsFile = defaultSettingsFile();
+
+    McpServer server(nullptr, nullptr, nullptr, {settingsFile, indexDbPath, libraryDbPath});
+    QString openErr;
+    if (!server.openReadOnlyLibrary(&openErr)) {
+        std::fprintf(stderr, "[clothbound-mcp ERROR] The library can't be opened read-only: %s\n",
+                     qPrintable(openErr));
         std::fflush(stderr);
         return 1;
     }
 
     // Wire strictly local loopback embedder support ONLY when passage_vectors exist.
-    // NEVER instantiate GeminiProvider or AiServices here so GEMINI_API_KEY in the
-    // shell environment can never silently send queries to Google cloud or write ai_usage.
+    // NEVER instantiate GeminiProvider, AiServices, or read-write Library here so
+    // GEMINI_API_KEY can never send queries to Google cloud and SQLite is never written.
     std::unique_ptr<LocalModels> localModels;
-    if (databaseHasPassageVectorsReadOnly(library.database())) {
-        QSettings s(defaultSettingsFile(), QSettings::IniFormat);
+    if (server.hasPassageVectors() && QFileInfo::exists(settingsFile)) {
+        QSettings s(settingsFile, QSettings::IniFormat);
         const QUrl parsed = LocalModels::normalizeServerUrl(QUrl(s.value(QStringLiteral("local/url")).toString()));
         const QString embModel = s.value(QStringLiteral("local/embedding")).toString().trimmed();
         if (LocalModels::isLoopbackUrl(parsed) && !embModel.isEmpty()) {
@@ -2098,13 +2577,14 @@ int McpServer::runStdio(const QStringList &arguments) {
             cfg.kind = LocalModels::kindFromId(s.value(QStringLiteral("local/kind")).toString());
             cfg.url = parsed;
             localModels->configure(cfg, {}, embModel, {});
+            server.setLocalEmbedder(localModels.get());
         }
     }
 
-    McpServer server(&library, nullptr, nullptr);
-    if (localModels)
-        server.setLocalEmbedder(localModels.get());
-
-    runStdioLoop(stdin, stdout, [&server](const QJsonObject &req) { return server.handleRequest(req); });
+    runStdioLoop(in, out, [&server](const QJsonObject &req) { return server.handleRequest(req); });
     return 0;
+}
+
+int McpServer::runStdio(const QStringList &arguments) {
+    return runStdioWithStreams(arguments, stdin, stdout);
 }

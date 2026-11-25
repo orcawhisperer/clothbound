@@ -36,6 +36,7 @@ HEADERS += \
     src/app/theme.h \
     src/app/translator.h \
     src/app/trayicon.h \
+    src/formats/audiopcm.h \
     src/formats/bookinfo.h \
     src/formats/bookname.h \
     src/formats/bookrecord.h \
@@ -75,10 +76,13 @@ HEADERS += \
     src/ai/ai.h \
     src/ai/aiservices.h \
     src/ai/aiusage.h \
+    src/ai/bookcontextreader.h \
     src/ai/companion.h \
+    src/ai/companionstore.h \
     src/ai/gemini.h \
     src/ai/illustrator.h \
     src/ai/keystore.h \
+    src/ai/localdictionary.h \
     src/ai/localmodels.h \
     src/ai/localsetup.h \
     src/ai/mathformatter.h \
@@ -102,6 +106,7 @@ SOURCES += \
     src/app/theme.cpp \
     src/app/translator.cpp \
     src/app/trayicon.cpp \
+    src/formats/audiopcm.cpp \
     src/formats/bookinfo.cpp \
     src/formats/bookname.cpp \
     src/formats/bookscheme.cpp \
@@ -138,10 +143,13 @@ SOURCES += \
     src/audio/voicepacks.cpp \
     src/ai/aiservices.cpp \
     src/ai/aiusage.cpp \
+    src/ai/bookcontextreader.cpp \
     src/ai/companion.cpp \
+    src/ai/companionstore.cpp \
     src/ai/gemini.cpp \
     src/ai/illustrator.cpp \
     src/ai/keystore.cpp \
+    src/ai/localdictionary.cpp \
     src/ai/localmodels.cpp \
     src/ai/localsetup.cpp \
     src/ai/mathformatter.cpp \

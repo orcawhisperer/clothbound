@@ -1,9 +1,15 @@
 #pragma once
 
+#include "formats/bookrecord.h"
+
+#include <QHash>
 #include <QJsonObject>
+#include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QVariantList>
 
 #include <cstdio>
 #include <functional>
@@ -19,7 +25,7 @@ class PassageIndex;
 // Exposes strictly read-only, privacy-first tools and resources over JSON-RPC 2.0
 // so local coding and research agents can search the library, inspect outlines,
 // read verbatim cited passages, and query highlights/notes without data leaving
-// the user's computer.
+// the user's computer or mutating SQLite databases.
 class McpServer : public QObject {
     Q_OBJECT
 
@@ -29,6 +35,11 @@ public:
     struct Options {
         QString settingsPath;
         QString indexPath;
+        QString libraryPath;
+
+        Options() = default;
+        Options(QString settings, QString index, QString library = {})
+            : settingsPath(std::move(settings)), indexPath(std::move(index)), libraryPath(std::move(library)) {}
     };
 
     explicit McpServer(Library *library,
@@ -37,6 +48,11 @@ public:
                        const Options &options = {},
                        QObject *parent = nullptr);
     ~McpServer() override;
+
+    // Opens `options.libraryPath` strictly read-only (QSQLITE_OPEN_READONLY) when
+    // no live Library* was injected. Never runs WAL pragmas or schema migrations.
+    bool openReadOnlyLibrary(QString *errorOut = nullptr);
+    bool isReadOnlyLibraryOpen() const { return m_roLibraryOpen; }
 
     // Handles a single JSON-RPC 2.0 request object. Returns an empty QJsonObject
     // for notifications (messages without an "id") that must produce no reply.
@@ -61,11 +77,31 @@ public:
                              const std::function<QJsonObject(const QJsonObject &)> &handler,
                              qsizetype maxFrameBytes = kMaxStdioFrameBytes);
 
+    // Runs the headless stdio JSON-RPC 2.0 MCP loop using strictly read-only
+    // SQLite connections until `in` closes.
+    static int runStdioWithStreams(const QStringList &arguments, std::FILE *in, std::FILE *out);
+
     // Runs the headless stdio JSON-RPC 2.0 MCP loop until stdin closes.
     static int runStdio(const QStringList &arguments);
 
 private:
     friend class ClothboundTests;
+
+    struct ReadOnlyCollection {
+        int id = 0;
+        QString name;
+    };
+
+    bool ensureReadOnlyLibraryLoaded() const;
+    bool hasLibraryData() const;
+    QList<BookRecord> visibleRecords() const;
+    BookRecord bookRecord(int bookId) const;
+    QVariantList allCollections() const;
+    QVariantList collectionsForBook(int bookId) const;
+    bool isBookInCollection(int bookId, int colId) const;
+    QString libraryDatabasePath() const;
+    bool hasPassageVectors() const;
+    QJsonObject buildReadOnlyMarksJson(int bookId, const QString &query, int limit, QString *errorOut) const;
 
     QJsonObject handleInitialize(const QJsonValue &id, const QJsonObject &params);
     QJsonObject handleToolsList(const QJsonValue &id);
@@ -95,4 +131,15 @@ private:
     std::unique_ptr<PassageIndex> m_passageIndex;
     QString m_settingsPath;
     QString m_indexPath;
+    QString m_libraryPath;
+
+    // Strictly read-only SQLite library backing (used when m_library == nullptr).
+    mutable QString m_roLibraryConn;
+    mutable bool m_roLibraryOpen = false;
+    mutable qint64 m_roDataVersion = -1;
+    mutable bool m_roSnapshotLoaded = false;
+    mutable QHash<int, BookRecord> m_roBooks;
+    mutable QList<ReadOnlyCollection> m_roCollections;
+    mutable QHash<int, QString> m_roCollectionNames;
+    mutable QHash<int, QSet<int>> m_roBookCollections;
 };

@@ -51,6 +51,8 @@ public:
     static QList<Hit> fuseHybrid(const QList<Passage> &passages, const QList<double> &cosines,
                                  const QString &query, int count, double minCosine = minSemanticScore);
     static double cosine(const QList<float> &a, const QList<float> &b);
+    // Normalizes an embedding vector to unit L2 norm (returns input unchanged if norm == 0).
+    static QList<float> normalize(const QList<float> &vector);
 
     // Embeds what isn't yet (calling `progress` with the share done), then
     // `done` (with an error message, or "").
@@ -108,6 +110,7 @@ private:
 
     AiServices *m_ai;
     QString m_connection;
+    bool m_readOnly = false;
     std::shared_ptr<VectorCache> m_cache;
     // The build under way.
     QString m_buildModel;

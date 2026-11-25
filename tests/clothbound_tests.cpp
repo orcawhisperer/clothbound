@@ -15279,6 +15279,12 @@ async function flushMicrotasks(n = 8) {
     void w5AudioResponseSpeechAndFocusArbitration();
     void w5AudioSpeechPlayerConcurrencyStress();
     // === end w5-audio-arch tests ===
+
+    // === w5-ai-mcp-dag tests ===
+    void w5AiMcpDagCyclesAndAudioPcm();
+    void w5AiMcpDagCompanionExtraction();
+    void w5AiMcpDagReadOnlyMcpAndSimdPassageIndex();
+    // === end w5-ai-mcp-dag tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS
@@ -16624,5 +16630,511 @@ void ClothboundTests::w5AudioSpeechPlayerConcurrencyStress() {
     QVERIFY2(recoveredSamples > sineSamples / 2, qPrintable(QString::number(recoveredSamples)));
 }
 // === end w5-audio-arch tests ===
+
+// === w5-ai-mcp-dag tests ===
+#include "ai/bookcontextreader.h"
+#include "ai/companionstore.h"
+#include "ai/localdictionary.h"
+#include "formats/audiopcm.h"
+
+#include <sys/stat.h>
+
+void ClothboundTests::w5AiMcpDagCyclesAndAudioPcm() {
+    // 1. Strict DAG check: ZERO #include "audio/" or #include "app/" anywhere in src/ai/,
+    //    and ZERO audio/ai/app/QtMultimedia includes in pure leaf src/formats/audiopcm.{h,cpp}.
+    const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+    QVERIFY(!srcRoot.isEmpty());
+    QDirIterator aiIt(srcRoot + QStringLiteral("/ai"), {QStringLiteral("*.h"), QStringLiteral("*.cpp")},
+                      QDir::Files, QDirIterator::Subdirectories);
+    int aiFilesChecked = 0;
+    while (aiIt.hasNext()) {
+        const QString path = aiIt.next();
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QString content = QString::fromUtf8(f.readAll());
+        QVERIFY2(!content.contains(QStringLiteral("#include \"audio/")), qPrintable(path));
+        QVERIFY2(!content.contains(QStringLiteral("#include \"app/")), qPrintable(path));
+        ++aiFilesChecked;
+    }
+    QVERIFY(aiFilesChecked >= 18);
+
+    for (const QString &rel : {QStringLiteral("formats/audiopcm.h"), QStringLiteral("formats/audiopcm.cpp")}) {
+        QFile f(srcRoot + QLatin1Char('/') + rel);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        const QString content = QString::fromUtf8(f.readAll());
+        QVERIFY(!content.contains(QStringLiteral("#include \"audio/")));
+        QVERIFY(!content.contains(QStringLiteral("#include \"ai/")));
+        QVERIFY(!content.contains(QStringLiteral("#include \"app/")));
+        QVERIFY(!content.contains(QStringLiteral("#include <QtMultimedia")));
+        QVERIFY(!content.contains(QStringLiteral("#include <QAudio")));
+    }
+
+    // 2. AudioPcm WAV encoding/validation/stereo downmix + Blackman-sinc anti-aliased resampling.
+    QByteArray stereoPcm;
+    for (int i = 0; i < 64; ++i) {
+        const qint16 left = 12000;
+        const qint16 right = 4000;
+        stereoPcm.append(char(left & 0xff)).append(char((left >> 8) & 0xff));
+        stereoPcm.append(char(right & 0xff)).append(char((right >> 8) & 0xff));
+    }
+    const QByteArray stereoWav = AudioPcm::wavFromPcm16(stereoPcm, 48000, 2);
+    int parsedRate = 0;
+    const QByteArray mono = AudioPcm::pcmFromWav(stereoWav, &parsedRate, true);
+    QCOMPARE(parsedRate, 48000);
+    QCOMPARE(mono.size(), qsizetype(64 * 2));
+    const QVector<float> monoFloats = AudioPcm::pcm16ToFloat(mono);
+    QCOMPARE(monoFloats.size(), qsizetype(64));
+    QVERIFY(std::abs(monoFloats[10] - 8000.0f / 32768.0f) < 1e-4f);
+    QVERIFY(AudioPcm::pcmFromWav("<html>502</html>", nullptr, true).isEmpty());
+    QVERIFY(AudioPcm::pcmFromWav("raw-unwrapped", nullptr, true).isEmpty());
+
+    constexpr double kTwoPi = 6.28318530717958647692;
+    const int n48 = 4800;
+    QVector<float> pass48(n48), stop48(n48), dc48(n48, 0.5f);
+    for (int i = 0; i < n48; ++i) {
+        pass48[i] = float(std::sin(kTwoPi * 1000.0 * i / 48000.0));
+        stop48[i] = float(std::sin(kTwoPi * 18000.0 * i / 48000.0));
+    }
+    auto rms = [](const QVector<float> &v) {
+        double sum = 0.0;
+        const qsizetype margin = qMin<qsizetype>(64, v.size() / 4);
+        for (qsizetype i = margin; i < v.size() - margin; ++i)
+            sum += double(v[i]) * double(v[i]);
+        return std::sqrt(sum / double(qMax<qsizetype>(1, v.size() - 2 * margin)));
+    };
+    const QVector<float> pass24 = AudioPcm::resample(pass48, 48000, 24000);
+    const QVector<float> stop24 = AudioPcm::resample(stop48, 48000, 24000);
+    const QVector<float> dc24 = AudioPcm::resample(dc48, 48000, 24000);
+    QCOMPARE(pass24.size(), qsizetype(2400));
+    QVERIFY(rms(pass24) > 0.65);
+    QVERIFY2(rms(stop24) < 0.005, qPrintable(QString::number(rms(stop24))));
+    QVERIFY(std::abs(dc24[1200] - 0.5f) < 1e-4f);
+
+    const QByteArray resampledPcm = AudioPcm::resamplePcm16(AudioPcm::floatToPcm16(pass48), 48000, 24000);
+    QCOMPARE(resampledPcm.size(), qsizetype(2400 * 2));
+
+    // 3. LocalHardwareProbe decouples LocalSetup from SystemCheck while preserving implicit upcast.
+    class FakeProbe : public LocalHardwareProbe {
+    public:
+        LocalHardwareInfo info;
+        LocalHardwareInfo probeHardware() const override { return info; }
+    };
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    GeminiProvider gemini;
+    MemoryKeyStore keys;
+    AiServices ai(&gemini, &keys, library.database().connectionName());
+    ai.setPreset(QStringLiteral("local"));
+
+    // Verify SystemCheck* implicitly converts to LocalHardwareProbe* and Machine converts to LocalHardwareInfo.
+    SystemCheck sysCheck(&ai, nullptr);
+    LocalHardwareProbe *upcastProbe = &sysCheck;
+    QVERIFY(upcastProbe != nullptr);
+    SystemCheck::Machine appleMachine;
+    appleMachine.memoryGb = 24.0;
+    appleMachine.graphics = QStringLiteral("Apple");
+    QCOMPARE(LocalSetup::modelsFor(appleMachine).first, QStringLiteral("qwen3.5:9b"));
+
+    FakeProbe fakeProbe;
+    fakeProbe.info = {32.0, QStringLiteral("NVIDIA RTX 4080"), 16.0, true};
+    LocalSetup setup(&ai, &fakeProbe);
+    setup.refresh();
+    QCOMPARE(setup.textModel().value(QStringLiteral("model")).toString(), QStringLiteral("qwen3.5:9b"));
+    QCOMPARE(setup.searchModel().value(QStringLiteral("model")).toString(), QStringLiteral("qwen3-embedding:0.6b"));
+
+    fakeProbe.info = {4.0, {}, 0.0, false};
+    setup.setHardwareProbe(&fakeProbe);
+    setup.refresh();
+    QVERIFY(setup.textModel().isEmpty());
+}
+
+void ClothboundTests::w5AiMcpDagCompanionExtraction() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString epubPath = dir.filePath(QStringLiteral("study.epub"));
+    QVERIFY(TestBooks::write(
+        epubPath,
+        TestBooks::epub({
+            {"OEBPS/content.opf",
+             "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+             "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">"
+             "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">"
+             "<dc:title>Lecture Notes on Quantum Optics</dc:title><dc:creator>Ada Marsh</dc:creator>"
+             "</metadata>"
+             "<manifest>"
+             "<item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>"
+             "<item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/>"
+             "<item id=\"c3\" href=\"c3.xhtml\" media-type=\"application/xhtml+xml\"/>"
+             "</manifest>"
+             "<spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/><itemref idref=\"c3\"/></spine></package>"},
+            {"OEBPS/c1.xhtml",
+             TestBooks::chapter("Abstract", "<p>Theorem 1.1 establishes coherent photon interference in cavities.</p>")},
+            {"OEBPS/c2.xhtml",
+             TestBooks::chapter("Method", "<p>Dr. Clara Vance calibrated the interferometer using phase alpha.</p>")},
+            {"OEBPS/c3.xhtml",
+             TestBooks::chapter("References", "<p>Bibliography entry one. Bibliography entry two.</p>")},
+        })));
+
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    const int bookId = library.addBookFile(epubPath);
+    QVERIFY(bookId > 0);
+    const int colId = library.createCollection(QStringLiteral("Optics Shelf"));
+    QVERIFY(colId > 0);
+    QVERIFY(library.addToCollection(bookId, colId));
+
+    // 1. CompanionStore: tables, reading mode, thread, spoiler-safe snapshots, shelf, pictures.
+    CompanionStore store(library.database().connectionName());
+    store.ensureTables();
+    store.ensurePictureTable();
+    store.saveReadingMode(bookId, QStringLiteral("study"));
+    QCOMPARE(store.loadReadingMode(bookId), QStringLiteral("study"));
+
+    QString shelfLabel;
+    const auto shelfBooks = store.shelfBooksFor(bookId, &shelfLabel);
+    QCOMPARE(shelfLabel, QStringLiteral("Optics Shelf"));
+    QCOMPARE(shelfBooks.size(), 1);
+    QCOMPARE(shelfBooks.first().id, bookId);
+
+    CompanionStore::Citation cite{bookId, QStringLiteral("Lecture Notes"), 1, 10, QStringLiteral("Ch 2"),
+                                  QStringLiteral("interferometer")};
+    const QList<CompanionStore::Turn> turns{
+        {true, QStringLiteral("Who calibrated it?"), {}, {}, false, QStringLiteral("data:image/png;base64,AA=="), 1, 40},
+        {false, QStringLiteral("Dr. Clara Vance."), {cite}, QStringLiteral("Local"), true, {}, 1, 40},
+    };
+    QVERIFY(store.saveConversation(bookId, turns));
+    const auto reloaded = store.loadConversation(bookId);
+    QCOMPARE(reloaded.size(), 2);
+    QCOMPARE(reloaded[0].snipDataUrl, QStringLiteral("data:image/png;base64,AA=="));
+    QCOMPARE(reloaded[1].sources.size(), 1);
+    QCOMPARE(reloaded[1].sources[0].label, QStringLiteral("Ch 2"));
+
+    const QVariantList people{QVariantMap{{QStringLiteral("name"), QStringLiteral("Clara Vance")},
+                                          {QStringLiteral("who"), QStringLiteral("Physicist")}}};
+    QVERIFY(store.saveWhosWhoSnapshot(bookId, QStringLiteral("fiction"), 1, 50, 0, QStringLiteral("Local"), true, people));
+    CompanionStore::WhosWhoSnapshot wwSnap;
+    // Spoiler-safe: chapter 0 must NOT see chapter 1 snapshot!
+    QVERIFY(!store.loadWhosWhoSnapshot(bookId, QStringLiteral("fiction"), false, 0, 100, 0, false, &wwSnap));
+    QVERIFY(store.loadWhosWhoSnapshot(bookId, QStringLiteral("fiction"), false, 1, 60, 0, true, &wwSnap));
+    QCOMPARE(wwSnap.people.size(), 1);
+    QCOMPARE(wwSnap.chapter, 1);
+
+    QVERIFY(store.saveRecapSnapshot(bookId, QStringLiteral("study"), -1, 0, 0, QStringLiteral("Local"), true,
+                                    QStringLiteral("**Core Claims** — coherent interference.")));
+    CompanionStore::RecapSnapshot recapSnap;
+    QVERIFY(store.loadRecapSnapshot(bookId, QStringLiteral("study"), true, 0, 0, 0, false, &recapSnap));
+    QVERIFY(recapSnap.text.contains(QStringLiteral("Core Claims")));
+
+    CompanionStore::PictureRecord pic;
+    pic.bookId = bookId;
+    pic.chapter = 1;
+    pic.offset = 12;
+    pic.caption = QStringLiteral("Interferometer");
+    pic.prompt = QStringLiteral("Engraving of brass optical bench");
+    pic.file = dir.filePath(QStringLiteral("pic1.png"));
+    pic.style = QStringLiteral("engraving");
+    pic.passage = QStringLiteral("calibrated the interferometer");
+    const int picId = store.insertPicture(pic);
+    QVERIFY(picId > 0);
+    QCOMPARE(store.loadPictures(bookId).size(), 1);
+    CompanionStore::PictureRecord foundPic;
+    QVERIFY(store.findPicture(picId, bookId, &foundPic));
+    QCOMPARE(foundPic.caption, QStringLiteral("Interferometer"));
+    QCOMPARE(store.deletePicture(picId), pic.file);
+    QVERIFY(store.loadPictures(bookId).isEmpty());
+
+    store.clearBookHistory(bookId);
+    QVERIFY(store.loadConversation(bookId).isEmpty());
+
+    // 2. BookContextReader: spoiler-safe textUpTo, reading-mode detection, study join, firstSeen, JSON extraction.
+    const auto upToCh1 = BookContextReader::textUpTo(epubPath, QStringLiteral("epub"), 1, 20);
+    QCOMPARE(upToCh1.size(), 2);
+    QVERIFY(upToCh1[1].text.size() <= 20);
+    const auto whole = BookContextReader::textOfBook(epubPath, QStringLiteral("epub"));
+    QCOMPARE(whole.size(), 3);
+    QCOMPARE(BookContextReader::detectReadingMode(QStringLiteral("epub"), QStringLiteral("Lecture Notes on Quantum Optics"),
+                                                  {QStringLiteral("Abstract"), QStringLiteral("References")},
+                                                  upToCh1[0].text),
+             QStringLiteral("study"));
+    QCOMPARE(BookContextReader::detectReadingMode(QStringLiteral("epub"), QStringLiteral("The Quiet Harbor"),
+                                                  {QStringLiteral("Chapter 1")}, QStringLiteral("Fog drifted over the pier.")),
+             QStringLiteral("fiction"));
+
+    QList<BookContextReader::Chapter> titled = whole;
+    titled[0].title = QStringLiteral("Abstract");
+    titled[1].title = QStringLiteral("Method");
+    titled[2].title = QStringLiteral("References");
+    const auto seen = BookContextReader::resolveFirstSeen(titled, QStringLiteral("Clara Vance"), {}, {}, QStringLiteral("epub"));
+    QCOMPARE(seen.chapterIndex, 1);
+    QCOMPARE(seen.label, QStringLiteral("Method"));
+    QVERIFY(seen.offset >= 0);
+
+    const QJsonObject extracted =
+        BookContextReader::extractJsonObject(QStringLiteral("Sure:\n```json\n{\"ok\":true}\n```"));
+    QVERIFY(extracted.value(QStringLiteral("ok")).toBool());
+
+    // 3. LocalDictionary: word sanitization, JSON formatting, multi-word rejection.
+    QCOMPARE(LocalDictionary::cleanWord(QStringLiteral("  “don’t,”  ")), QStringLiteral("don't"));
+    const QStringList defs = LocalDictionary::parseSdcvJson(
+        R"([{"word":"other","dict":"D1","definition":"fallback"},{"word":"quanta","dict":"Physics","definition":"discrete packets"}])",
+        QStringLiteral("quanta"));
+    QCOMPARE(defs.size(), 2);
+    QVERIFY(defs[1].contains(QStringLiteral("discrete packets")));
+    QVERIFY(defs[1].contains(QStringLiteral("— Physics")));
+    LocalDictionary dict;
+    QVERIFY(!dict.lookupAsync(QStringLiteral("two words"), [](const QStringList &) {}));
+    QVERIFY(!dict.lookupAsync(QStringLiteral("   "), [](const QStringList &) {}));
+}
+
+void ClothboundTests::w5AiMcpDagReadOnlyMcpAndSimdPassageIndex() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QString xdgRoot = dir.filePath(QStringLiteral("ro-xdg"));
+    const QString dataDir = xdgRoot + QStringLiteral("/data/clothbound");
+    const QString cacheDir = xdgRoot + QStringLiteral("/cache/clothbound");
+    const QString configDir = xdgRoot + QStringLiteral("/config/clothbound");
+    QVERIFY(QDir().mkpath(dataDir));
+    QVERIFY(QDir().mkpath(cacheDir));
+    QVERIFY(QDir().mkpath(configDir));
+
+    const QString epubPath = dir.filePath(QStringLiteral("ro-book.epub"));
+    QVERIFY(TestBooks::write(
+        epubPath,
+        TestBooks::epub({
+            {"OEBPS/content.opf",
+             "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+             "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">"
+             "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">"
+             "<dc:title>Read-Only Atlas</dc:title><dc:creator>Nora Bell</dc:creator>"
+             "</metadata>"
+             "<manifest><item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>"
+             "<spine><itemref idref=\"c1\"/></spine></package>"},
+            {"OEBPS/c1.xhtml",
+             TestBooks::chapter("Chapter One", "<p>Astrolabes calibrated nocturnal navigation across calm straits.</p>")},
+        })));
+
+    int bookId = 0;
+    const QString libraryDb = dataDir + QStringLiteral("/library.sqlite");
+    const QString indexDb = cacheDir + QStringLiteral("/index.sqlite");
+    {
+        Library lib(dataDir, cacheDir);
+        QVERIFY(lib.open());
+        bookId = lib.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        const int colId = lib.createCollection(QStringLiteral("Maritime"));
+        QVERIFY(colId > 0);
+        QVERIFY(lib.addToCollection(bookId, colId));
+
+        Marks marks(&lib);
+        marks.setBook(bookId);
+        const int mid = marks.addHighlight(0, 0, 22, QStringLiteral("Astrolabes calibrated"), QStringLiteral("yellow"),
+                                           QStringLiteral("Chapter One"));
+        QVERIFY(mid > 0);
+        marks.setNote(mid, QStringLiteral("Key navigation instrument"));
+
+        // Seed both a pre-normalized vector (via PassageIndex::build) AND a legacy unnormalized BLOB.
+        FakeServer localSrv;
+        localSrv.routes.insert("/api/embed", {200, "application/json", "{\"embeddings\":[[3.0,4.0,0.0]]}"});
+        GeminiProvider gem;
+        MemoryKeyStore ks;
+        AiServices ai(&gem, &ks, lib.database().connectionName());
+        LocalModels lm;
+        LocalModels::Server scfg;
+        scfg.kind = LocalModels::Ollama;
+        scfg.url = QUrl(localSrv.origin());
+        lm.configure(scfg, QStringLiteral("qwen3.5:4b"), QStringLiteral("nomic-embed-text"));
+        ai.setLocalModels(&lm);
+        ai.setPreset(QStringLiteral("local"));
+
+        PassageIndex pi(&ai, lib.database().connectionName());
+        QString buildErr = QStringLiteral("unset");
+        pi.build(bookId, {{0, 0, 50, QStringLiteral("Astrolabes calibrated nocturnal navigation.")}}, nullptr,
+                 [&](const QString &e) { buildErr = e; });
+        QTRY_COMPARE(buildErr, QString());
+
+        // Verify stored vector in SQLite was pre-normalized to unit L2 norm ([0.6, 0.8, 0.0]).
+        QSqlQuery checkVec(lib.database());
+        QVERIFY(checkVec.exec(QStringLiteral("SELECT vector FROM passage_vectors WHERE book_id = %1").arg(bookId)));
+        QVERIFY(checkVec.next());
+        const QByteArray storedBlob = checkVec.value(0).toByteArray();
+        QCOMPARE(storedBlob.size(), qsizetype(3 * sizeof(float)));
+        float vals[3] = {};
+        std::memcpy(vals, storedBlob.constData(), sizeof(vals));
+        const double norm = std::sqrt(double(vals[0]) * vals[0] + double(vals[1]) * vals[1] + double(vals[2]) * vals[2]);
+        QVERIFY2(std::abs(norm - 1.0) < 1e-5, qPrintable(QString::number(norm)));
+        QVERIFY(std::abs(vals[0] - 0.6f) < 1e-5f);
+        QVERIFY(std::abs(vals[1] - 0.8f) < 1e-5f);
+
+        // Close writable Library + index cleanly.
+        LibraryIndex idx(indexDb);
+        QVERIFY(idx.available());
+        QVERIFY(LibraryIndex::indexBook(indexDb, {bookId, epubPath, QStringLiteral("epub"), 1}));
+    }
+
+    auto sha256File = [](const QString &path) {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex();
+    };
+    const QByteArray libHashBefore = sha256File(libraryDb);
+    const QByteArray idxHashBefore = sha256File(indexDb);
+    QVERIFY(!libHashBefore.isEmpty() && !idxHashBefore.isEmpty());
+
+    // Lock files to 0444 and parent directories to 0555 to enforce OS-level read-only guarantees!
+    QVERIFY(::chmod(libraryDb.toUtf8().constData(), 0444) == 0);
+    QVERIFY(::chmod(indexDb.toUtf8().constData(), 0444) == 0);
+    QVERIFY(::chmod(dataDir.toUtf8().constData(), 0555) == 0);
+    QVERIFY(::chmod(cacheDir.toUtf8().constData(), 0555) == 0);
+    QVERIFY(::chmod(configDir.toUtf8().constData(), 0555) == 0);
+
+    const QByteArray origData = qgetenv("XDG_DATA_HOME");
+    const QByteArray origCache = qgetenv("XDG_CACHE_HOME");
+    const QByteArray origConfig = qgetenv("XDG_CONFIG_HOME");
+    auto restorePermsAndEnv = qScopeGuard([&] {
+        ::chmod(dataDir.toUtf8().constData(), 0755);
+        ::chmod(cacheDir.toUtf8().constData(), 0755);
+        ::chmod(configDir.toUtf8().constData(), 0755);
+        ::chmod(libraryDb.toUtf8().constData(), 0644);
+        ::chmod(indexDb.toUtf8().constData(), 0644);
+        qputenv("XDG_DATA_HOME", origData);
+        qputenv("XDG_CACHE_HOME", origCache);
+        qputenv("XDG_CONFIG_HOME", origConfig);
+    });
+    qputenv("XDG_DATA_HOME", (xdgRoot + QStringLiteral("/data")).toUtf8());
+    qputenv("XDG_CACHE_HOME", (xdgRoot + QStringLiteral("/cache")).toUtf8());
+    qputenv("XDG_CONFIG_HOME", (xdgRoot + QStringLiteral("/config")).toUtf8());
+
+    // Run McpServer::runStdioWithStreams() (the exact code path of McpServer::runStdio()) against read-only tree!
+    QByteArray reqFrames;
+    reqFrames += "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}\n";
+    reqFrames += "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"list_books\",\"arguments\":{\"collection\":\"Maritime\"}}}\n";
+    reqFrames += "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"search_library\",\"arguments\":{\"query\":\"nocturnal\"}}}\n";
+    reqFrames += "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"search_passages\",\"arguments\":{\"query\":\"astrolabes navigation\"}}}\n";
+    reqFrames += QStringLiteral("{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"get_book_outline\",\"arguments\":{\"book_id\":%1}}}\n")
+                     .arg(bookId)
+                     .toUtf8();
+    reqFrames += QStringLiteral("{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"tools/call\",\"params\":{\"name\":\"read_passage\",\"arguments\":{\"book_id\":%1,\"chapter\":0}}}\n")
+                     .arg(bookId)
+                     .toUtf8();
+    reqFrames += "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"list_marks\",\"arguments\":{\"query\":\"navigation\"}}}\n";
+    reqFrames += "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"resources/list\"}\n";
+
+    std::FILE *inFile = std::tmpfile();
+    std::FILE *outFile = std::tmpfile();
+    QVERIFY(inFile && outFile);
+    QCOMPARE(std::fwrite(reqFrames.constData(), 1, size_t(reqFrames.size()), inFile), size_t(reqFrames.size()));
+    std::rewind(inFile);
+
+    const int rc = McpServer::runStdioWithStreams({}, inFile, outFile);
+    QCOMPARE(rc, 0);
+
+    std::rewind(outFile);
+    QByteArray outBytes;
+    char buf[4096];
+    while (const size_t n = std::fread(buf, 1, sizeof(buf), outFile))
+        outBytes.append(buf, qsizetype(n));
+    std::fclose(inFile);
+    std::fclose(outFile);
+
+    QList<QJsonObject> replies;
+    for (const QByteArray &line : outBytes.split('\n')) {
+        if (line.trimmed().isEmpty())
+            continue;
+        const QJsonDocument d = QJsonDocument::fromJson(line);
+        QVERIFY2(d.isObject(), line.constData());
+        replies.append(d.object());
+    }
+    QCOMPARE(replies.size(), 8);
+    // id 2: list_books
+    QCOMPARE(replies[1].value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("count")).toInt(), 1);
+    // id 3: search_library (read-only FTS5)
+    QCOMPARE(replies[2].value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("count")).toInt(), 1);
+    // id 4: search_passages
+    QVERIFY(replies[3].value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("count")).toInt() >= 1);
+    // id 5: get_book_outline
+    QCOMPARE(replies[4].value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("title")).toString(),
+             QStringLiteral("Read-Only Atlas"));
+    // id 6: read_passage
+    QVERIFY(replies[5].value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("text")).toString().contains(QStringLiteral("Astrolabes")));
+    // id 7: list_marks (read-only annotations query)
+    QCOMPARE(replies[6].value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("count")).toInt(), 1);
+    // id 8: resources/list
+    QVERIFY(replies[7].value(QStringLiteral("result")).toObject().value(QStringLiteral("resources")).toArray().size() >= 3);
+
+    // Byte-for-byte immutability: zero modifications & zero -wal/-shm sidecars created!
+    QCOMPARE(sha256File(libraryDb), libHashBefore);
+    QCOMPARE(sha256File(indexDb), idxHashBefore);
+    QVERIFY(!QFileInfo::exists(libraryDb + QStringLiteral("-wal")));
+    QVERIFY(!QFileInfo::exists(libraryDb + QStringLiteral("-shm")));
+    QVERIFY(!QFileInfo::exists(indexDb + QStringLiteral("-wal")));
+    QVERIFY(!QFileInfo::exists(indexDb + QStringLiteral("-shm")));
+
+    // 2. SIMD PassageIndex accuracy & backward-compatibility with legacy unnormalized 768-dim BLOBs.
+    constexpr int kDim = 768;
+    std::mt19937 rng(0x5EED1234u);
+    std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+    QList<float> query(kDim);
+    for (int j = 0; j < kDim; ++j)
+        query[j] = dist(rng);
+
+    auto refDoubleCosine = [](const QList<float> &a, const QList<float> &b) {
+        double dot = 0.0, na = 0.0, nb = 0.0;
+        for (qsizetype i = 0; i < a.size(); ++i) {
+            dot += double(a[i]) * double(b[i]);
+            na += double(a[i]) * double(a[i]);
+            nb += double(b[i]) * double(b[i]);
+        }
+        return (na > 0.0 && nb > 0.0) ? dot / std::sqrt(na * nb) : 0.0;
+    };
+
+    const QString simdDb = dir.filePath(QStringLiteral("simd-index.sqlite"));
+    const QString simdConn = QStringLiteral("w5-simd-test");
+    QList<double> expectedTop;
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), simdConn);
+        db.setDatabaseName(simdDb);
+        QVERIFY(db.open());
+        QSqlQuery q(db);
+        QVERIFY(q.exec(QStringLiteral(
+            "CREATE TABLE passage_vectors (book_id INTEGER NOT NULL, model TEXT NOT NULL, "
+            "passage TEXT NOT NULL, vector BLOB NOT NULL, PRIMARY KEY (book_id, model, passage))")));
+        QVERIFY(db.transaction());
+        QSqlQuery ins(db);
+        ins.prepare(QStringLiteral("INSERT INTO passage_vectors VALUES (?, 'm', ?, ?)"));
+        for (int row = 0; row < 200; ++row) {
+            QList<float> v(kDim);
+            const float scale = (row % 2 == 0) ? 1.0f : (0.05f + float(row) * 0.25f);  // mix unit & legacy unnormalized
+            for (int j = 0; j < kDim; ++j)
+                v[j] = (row == 42 ? query[j] * 17.5f : (row == 99 ? (query[j] * 0.8f + dist(rng) * 0.2f) : dist(rng))) * scale;
+            const QList<float> toStore = (row % 2 == 0) ? PassageIndex::normalize(v) : v;
+            const double ref = refDoubleCosine(query, v);
+            const double fast = PassageIndex::cosine(query, toStore);
+            QVERIFY2(std::abs(fast - ref) < 1e-5,
+                     qPrintable(QStringLiteral("cosine drift row %1: fast=%2 ref=%3").arg(row).arg(fast).arg(ref)));
+            if (row == 42 || row == 99)
+                expectedTop.append(ref);
+            ins.addBindValue(row + 1);
+            ins.addBindValue(QStringLiteral("0:0:100:r%1").arg(row));
+            ins.addBindValue(QByteArray(reinterpret_cast<const char *>(toStore.constData()),
+                                        toStore.size() * qsizetype(sizeof(float))));
+            QVERIFY(ins.exec());
+        }
+        QVERIFY(db.commit());
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(simdConn);
+
+    const auto ranked = PassageIndex::rankLibrary(simdDb, QStringLiteral("m"), query, 5, 0.25);
+    QVERIFY(ranked.size() >= 2);
+    QCOMPARE(ranked[0].bookId, 43);  // row 42 (legacy unnormalized 17.5x scaled exact match!)
+    QVERIFY2(std::abs(ranked[0].score - 1.0) < 1e-5, qPrintable(QString::number(ranked[0].score)));
+    QCOMPARE(ranked[1].bookId, 100);  // row 99 (unnormalized high-similarity match)
+    QVERIFY2(std::abs(ranked[1].score - expectedTop[1]) < 1e-5, qPrintable(QString::number(ranked[1].score)));
+}
+// === end w5-ai-mcp-dag tests ===
 
 #include "clothbound_tests.moc"

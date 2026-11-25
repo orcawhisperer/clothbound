@@ -1,6 +1,9 @@
 #pragma once
 
 #include "ai/ai.h"
+#include "ai/bookcontextreader.h"
+#include "ai/companionstore.h"
+#include "ai/localdictionary.h"
 #include "ai/mathformatter.h"
 #include "ai/passageindex.h"
 
@@ -12,7 +15,6 @@
 #include <memory>
 
 class AiServices;
-class QProcess;
 class Reader;
 
 // The reading companion: a word defined, a passage explained or translated,
@@ -77,29 +79,9 @@ class Companion : public QObject {
     Q_PROPERTY(bool hasPendingSnip READ hasPendingSnip NOTIFY pendingSnipChanged)
 
 public:
-    struct Chapter {
-        int index = 0;
-        QString title;
-        QString text;
-    };
-    struct Citation {
-        int bookId = 0;
-        QString bookTitle;
-        int chapter = 0;
-        qint64 offset = 0;
-        QString label;
-        QString excerpt;
-    };
-    struct Turn {
-        bool fromUser = true;
-        QString text;
-        QList<Citation> sources;
-        QString provenance;
-        bool local = false;
-        QString snipDataUrl;
-        int chapter = -1;
-        qint64 offset = -1;
-    };
+    using Chapter = BookContextReader::Chapter;
+    using Citation = CompanionStore::Citation;
+    using Turn = CompanionStore::Turn;
 
     Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent = nullptr);
     ~Companion() override;
@@ -220,41 +202,33 @@ private:
         QByteArray snipPng;
         QString snipAction;
     };
-    struct ShelfBook {
-        int id = 0;
-        QString title;
-        QString format;
-        QString path;
-    };
 
-    void ensureTables();
+    void resetPeopleState();
+    void resetRecapState();
+    void resetSelectionState();
     void loadBookState(int bookId);
-    QString loadSavedReadingMode(int bookId) const;
-    void saveReadingMode(int bookId, const QString &mode);
     QString detectCurrentBookMode() const;
-    QList<ShelfBook> shelfBooksFor(int bookId, QString *labelOut = nullptr) const;
     void refreshShelfLabel();
-    void saveConversation(int bookId);
-    void loadConversation(int bookId);
+    bool spoilerFilterActive() const;
+    bool isAheadOfReader(int chapter, qint64 offset) const;
     bool isTurnVisibleAtCurrentPlace(const Turn &turn) const;
     void pruneFutureTurnsIfSpoilerFree();
+    QList<Ai::Message> buildHistoryMessages(qint64 budget, bool filterSpoiler) const;
     bool loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qint64 pageStart, bool requireSameChapter);
-    void saveWhosWhoSnapshot(int bookId, int chapter, qint64 offset, qint64 pageStart, const QString &whereLabel,
-                             bool isLocal, const QVariantList &people);
     bool loadRecapSnapshot(int bookId, int chapter, qint64 pageEnd, qint64 pageStart, bool requireSameChapter);
-    void saveRecapSnapshot(int bookId, int chapter, qint64 offset, qint64 pageStart, const QString &whereLabel,
-                           bool isLocal, const QString &text);
     void begin(const QString &feature, const QString &subject);
     void setStatus(const QString &status);
     void fail(const QString &problem, bool isConfig = false);
     void rollbackPendingTurn();
+    void commitAssistantTurn(int bookId, const QList<Citation> &sources, int turnChapter, qint64 turnOffset);
+    void finishCachedSnapshot(const QString &where, bool whereLocal);
     void flushStreamedAnswer();
     void executeAction(const Action &action);
     qint64 soFarCharsEstimate() const;
     qint64 wholeBookCharsEstimate() const;
-    // Reads the book up to the reader's place on a worker thread, then `then`.
+    void readChapters(bool wholeBook, int chapter, qint64 offset, qint64 limit,
+                      std::function<void(const QList<Chapter> &)> then);
     void readSoFar(int chapter, qint64 offset, qint64 limit, std::function<void(const QList<Chapter> &)> then);
-    // Reads the entire book on a worker thread, then `then`.
     void readWholeBook(qint64 limit, std::function<void(const QList<Chapter> &)> then);
     void askShelf(const QString &asked);
     void sendSnipRequest(const QByteArray &pngBytes, const QString &action, const QString &prompt, int page);
@@ -272,8 +246,9 @@ private:
 
     AiServices *m_ai;
     Reader *m_reader;
-    QString m_connection;
+    CompanionStore m_store;
     PassageIndex m_index;
+    LocalDictionary m_dictionary;
     QString m_feature;
     QString m_subject;
     QString m_answer;
@@ -324,7 +299,6 @@ private:
     bool m_streamDirty = false;
     bool m_streamNotifiedFirst = false;
     QPointer<Ai::Reply> m_reply;
-    QPointer<QProcess> m_dictProcess;
     std::shared_ptr<std::atomic_bool> m_readCancel;
     int m_generation = 0;
 };

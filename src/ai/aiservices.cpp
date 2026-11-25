@@ -7,6 +7,8 @@
 #include <QJsonArray>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QThread>
+#include <cmath>
 
 namespace {
 QSettings settings() {
@@ -20,6 +22,7 @@ AiServices::AiServices(Ai::Provider *provider, KeyStore *keys, const QString &da
     m_ledger.migrate();
     QSettings s = settings();
     m_budget = qMax(0.0, s.value(QStringLiteral("ai/budget"), 10.0).toDouble());
+    Q_ASSERT(m_budget >= 0.0 && std::isfinite(m_budget));
     m_unlimitedBudget = s.value(QStringLiteral("ai/unlimitedBudget"), false).toBool();
     m_preset = s.value(QStringLiteral("ai/preset")).toString();
     s.beginGroup(QStringLiteral("ai/route"));
@@ -42,6 +45,7 @@ AiServices::AiServices(Ai::Provider *provider, KeyStore *keys, const QString &da
 }
 
 void AiServices::lookUpKeyIn(KeyStore *keys) {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_keys = keys;
     if (!keys || m_fromEnvironment)
         return;
@@ -96,11 +100,14 @@ double AiServices::spentThisMonth() const {
         m_spentLocalVersion = localVer;
         m_spentCache = m_ledger.spentSince(monthStart);
     }
+    Q_ASSERT(m_spentCache >= 0.0 && std::isfinite(m_spentCache));
     return m_spentCache;
 }
 
 void AiServices::setBudget(double budget) {
+    Q_ASSERT(QThread::currentThread() == thread());
     budget = qMax(0.0, budget);
+    Q_ASSERT(budget >= 0.0 && std::isfinite(budget));
     if (qFuzzyCompare(budget, m_budget))
         return;
     m_budget = budget;
@@ -109,6 +116,7 @@ void AiServices::setBudget(double budget) {
 }
 
 void AiServices::setUnlimitedBudget(bool unlimited) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (unlimited == m_unlimitedBudget)
         return;
     m_unlimitedBudget = unlimited;
@@ -119,12 +127,16 @@ void AiServices::setUnlimitedBudget(bool unlimited) {
 QVariantList AiServices::usageThisMonth() const { return m_ledger.monthByFeature(); }
 
 void AiServices::resetUsageThisMonth() {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_ledger.clearMonth();
     m_spentCache = -1;
     emit usageChanged();
 }
 
 bool AiServices::fitsBudget(double cost) const {
+    Q_ASSERT(QThread::currentThread() == thread());
+    Q_ASSERT(m_budget >= 0.0 && std::isfinite(m_budget));
+    Q_ASSERT(m_reservedUsd >= 0.0 && std::isfinite(m_reservedUsd));
     if (m_unlimitedBudget)
         return true;
     if (m_budget <= 0)
@@ -138,6 +150,7 @@ double AiServices::listeningCost(double minutes, bool economy, bool flex) const 
 }
 
 void AiServices::setKey(const QString &key) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QString trimmed = key.trimmed();
     if (trimmed.isEmpty())
         return;
@@ -195,6 +208,7 @@ void AiServices::setKey(const QString &key) {
 }
 
 void AiServices::forgetKey() {
+    Q_ASSERT(QThread::currentThread() == thread());
     ++m_keyGeneration;
     if (m_keyCheckReply)
         m_keyCheckReply->abort();
@@ -212,6 +226,7 @@ void AiServices::forgetKey() {
 }
 
 void AiServices::check() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!hasKey() || m_checking)
         return;
     const int generation = ++m_keyGeneration;
@@ -234,6 +249,7 @@ void AiServices::check() {
 }
 
 void AiServices::track(Ai::Reply *reply, bool flex, double estimatedCost) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!reply)
         return;
     // A reply belongs to the provider that made it (a local one costs nothing).
@@ -256,9 +272,11 @@ void AiServices::track(Ai::Reply *reply, bool flex, double estimatedCost) {
                 reserve = 0.01;
         }
         if (reserve > 0.0) {
+            Q_ASSERT(std::isfinite(reserve));
             reservationId = m_nextReservationId++;
             m_reservations.insert(reservationId, reserve);
             m_reservedUsd += reserve;
+            Q_ASSERT(m_reservedUsd >= 0.0 && std::isfinite(m_reservedUsd));
         }
     }
 
@@ -272,6 +290,7 @@ void AiServices::track(Ai::Reply *reply, bool flex, double estimatedCost) {
         m_reservations.erase(it);
         if (m_reservations.isEmpty())
             m_reservedUsd = 0.0;
+        Q_ASSERT(m_reservedUsd >= 0.0 && std::isfinite(m_reservedUsd));
     };
 
     if (reservationId != 0) {
@@ -360,6 +379,7 @@ QString AiServices::describeFor(const Ai::Provider *provider, int errorKind, con
 // --- Routing -----------------------------------------------------------------
 
 void AiServices::setLocalModels(LocalModels *local) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_localModels)
         disconnect(m_localModels, &LocalModels::contextWindowChanged, this, &AiServices::routingChanged);
     m_localModels = local;
@@ -393,6 +413,7 @@ QString AiServices::preset() const {
 }
 
 void AiServices::setPreset(const QString &preset) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!preset.isEmpty() && preset != QLatin1String("cloud") && preset != QLatin1String("hybrid") &&
         preset != QLatin1String("local"))
         return;
@@ -413,6 +434,7 @@ QString AiServices::overrideFor(const QString &feature) const {
 }
 
 void AiServices::setOverride(const QString &feature, const QString &route) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (feature.isEmpty())
         return;
     if (!route.isEmpty() && route != QLatin1String("cloud") && route != QLatin1String("local"))
@@ -473,6 +495,7 @@ QString AiServices::localModelsSummary() const {
 }
 
 void AiServices::clearOverrides() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_overrides.isEmpty())
         return;
     m_overrides.clear();
@@ -566,6 +589,7 @@ QString AiServices::whereFor(const QString &feature) const {
 }
 
 void AiServices::findLocal(const QString &url) {
+    Q_ASSERT(QThread::currentThread() == thread());
     auto sameEndpoint = [](const QUrl &a, const QUrl &b) {
         auto canon = [](const QUrl &u) {
             const QUrl n = LocalModels::normalizeServerUrl(u);
@@ -634,6 +658,7 @@ void AiServices::findLocal(const QString &url) {
 }
 
 void AiServices::testLocal() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_localModels || !m_localModels->isConfigured())
         return;
     if (m_localTestReply)
@@ -670,6 +695,7 @@ void AiServices::testLocal() {
 
 void AiServices::useLocal(const QString &kind, const QString &url, const QString &textModel,
                           const QString &embeddingModel, const QString &speechModel) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_localModels)
         return;
     const QUrl parsed = LocalModels::normalizeServerUrl(QUrl(url.trimmed()));
@@ -707,6 +733,7 @@ void AiServices::useLocal(const QString &kind, const QString &url, const QString
 }
 
 void AiServices::forgetLocal() {
+    Q_ASSERT(QThread::currentThread() == thread());
     ++m_localTestGen;
     if (m_localTestReply)
         m_localTestReply->abort();

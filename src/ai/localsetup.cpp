@@ -2,12 +2,13 @@
 
 #include "ai/aiservices.h"
 #include "ai/localmodels.h"
-#include "app/systemcheck.h"
 
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QNetworkReply>
 #include <QProcess>
 #include <QStandardPaths>
@@ -15,6 +16,21 @@
 
 namespace {
 const QString ollama = QStringLiteral("http://127.0.0.1:11434");
+
+QMutex &defaultProbeMutex() {
+    static QMutex mutex;
+    return mutex;
+}
+
+std::function<LocalHardwareInfo()> &defaultProbeStorage() {
+    static std::function<LocalHardwareInfo()> fn;
+    return fn;
+}
+
+std::function<LocalHardwareInfo()> currentDefaultProbe() {
+    QMutexLocker lock(&defaultProbeMutex());
+    return defaultProbeStorage();
+}
 
 QString titleOf(const QString &model) {
     static const QHash<QString, QString> titles{{QStringLiteral("qwen3.5:2b"), QStringLiteral("Qwen3.5 2B")},
@@ -25,7 +41,10 @@ QString titleOf(const QString &model) {
 }
 }  // namespace
 
-LocalSetup::LocalSetup(AiServices *ai, QObject *parent) : QObject(parent), m_ai(ai) {
+LocalSetup::LocalSetup(AiServices *ai, QObject *parent) : LocalSetup(ai, nullptr, parent) {}
+
+LocalSetup::LocalSetup(AiServices *ai, LocalHardwareProbe *probe, QObject *parent)
+    : QObject(parent), m_ai(ai), m_probe(probe) {
     // After the terminal opens: look for Ollama every few seconds, for a while.
     m_poll.setInterval(3000);
     connect(&m_poll, &QTimer::timeout, this, [this] {
@@ -35,8 +54,18 @@ LocalSetup::LocalSetup(AiServices *ai, QObject *parent) : QObject(parent), m_ai(
             emit changed();
             return;
         }
-        probe();
+        this->probe();
     });
+}
+
+void LocalSetup::setHardwareProbe(LocalHardwareProbe *probe) {
+    m_probe = probe;
+    m_inspected = false;
+}
+
+void LocalSetup::setDefaultHardwareProbe(std::function<LocalHardwareInfo()> probeFn) {
+    QMutexLocker lock(&defaultProbeMutex());
+    defaultProbeStorage() = std::move(probeFn);
 }
 
 QPair<QString, QString> LocalSetup::modelsFor(double memoryGb, double graphicsGb) {
@@ -50,13 +79,13 @@ QPair<QString, QString> LocalSetup::modelsFor(double memoryGb, double graphicsGb
     return {};
 }
 
-QPair<QString, QString> LocalSetup::modelsFor(const SystemCheck::Machine &machine) {
+QPair<QString, QString> LocalSetup::modelsFor(const LocalHardwareInfo &machine) {
     if (machine.graphics == QLatin1String("Apple") && machine.memoryGb >= 23)
         return {QStringLiteral("qwen3.5:9b"), QStringLiteral("qwen3-embedding:0.6b")};
     return modelsFor(machine.memoryGb, machine.graphicsMemoryGb);
 }
 
-void LocalSetup::applyMachine(const SystemCheck::Machine &machine) {
+void LocalSetup::applyMachine(const LocalHardwareInfo &machine) {
     m_machine = machine;
     m_inspected = true;
     const auto [text, search] = modelsFor(machine);
@@ -78,20 +107,37 @@ void LocalSetup::refresh() {
     if (m_inspected) {
         applyMachine(m_machine);
     } else if (!m_inspecting) {
-        m_inspecting = true;
-        QPointer<LocalSetup> self(this);
-        QThreadPool::globalInstance()->start([self] {
-            const SystemCheck::Machine machine = SystemCheck::inspect();
-            QMetaObject::invokeMethod(
-                qApp,
-                [self, machine] {
-                    if (!self)
-                        return;
-                    self->m_inspecting = false;
-                    self->applyMachine(machine);
-                },
-                Qt::QueuedConnection);
-        });
+        std::function<LocalHardwareInfo()> asyncProbe;
+        if (m_probe) {
+            asyncProbe = m_probe->makeAsyncProbe();
+            if (!asyncProbe) {
+                applyMachine(m_probe->probeHardware());
+                probe();
+                return;
+            }
+        } else {
+            asyncProbe = currentDefaultProbe();
+        }
+        if (asyncProbe) {
+            m_inspecting = true;
+            QPointer<LocalSetup> self(this);
+            QThreadPool::globalInstance()->start([self, asyncProbe = std::move(asyncProbe)] {
+                const LocalHardwareInfo machine = asyncProbe();
+                if (QCoreApplication *app = QCoreApplication::instance()) {
+                    QMetaObject::invokeMethod(
+                        app,
+                        [self, machine] {
+                            if (!self)
+                                return;
+                            self->m_inspecting = false;
+                            self->applyMachine(machine);
+                        },
+                        Qt::QueuedConnection);
+                }
+            });
+        } else {
+            applyMachine(LocalHardwareInfo{});
+        }
     }
     probe();
 }

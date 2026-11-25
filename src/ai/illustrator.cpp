@@ -1,7 +1,7 @@
 #include "ai/illustrator.h"
 
 #include "ai/aiservices.h"
-#include "ai/companion.h"
+#include "ai/bookcontextreader.h"
 #include "reader/reader.h"
 
 #include <QBuffer>
@@ -22,9 +22,8 @@
 #include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSettings>
-#include <QSqlDatabase>
-#include <QSqlQuery>
 #include <QStandardPaths>
+#include <QThread>
 #include <QThreadPool>
 #include <QUrl>
 
@@ -35,32 +34,6 @@ QByteArray portalPathBytes(const QString &path) {
     QByteArray bytes = path.toUtf8();
     bytes.append('\0');
     return bytes;
-}
-
-QJsonObject extractJsonObject(const QString &raw) {
-    const QString trimmed = raw.trimmed();
-    if (trimmed.isEmpty())
-        return {};
-    QJsonParseError err;
-    QJsonDocument doc = QJsonDocument::fromJson(trimmed.toUtf8(), &err);
-    if (err.error == QJsonParseError::NoError && doc.isObject())
-        return doc.object();
-    static const QRegularExpression fence(QStringLiteral("```(?:json)?\\s*([\\s\\S]*?)\\s*```"),
-                                          QRegularExpression::CaseInsensitiveOption);
-    const auto match = fence.match(trimmed);
-    if (match.hasMatch()) {
-        doc = QJsonDocument::fromJson(match.captured(1).trimmed().toUtf8(), &err);
-        if (err.error == QJsonParseError::NoError && doc.isObject())
-            return doc.object();
-    }
-    const qsizetype open = trimmed.indexOf(QLatin1Char('{'));
-    const qsizetype close = trimmed.lastIndexOf(QLatin1Char('}'));
-    if (open >= 0 && close > open) {
-        doc = QJsonDocument::fromJson(trimmed.mid(open, close - open + 1).toUtf8(), &err);
-        if (err.error == QJsonParseError::NoError && doc.isObject())
-            return doc.object();
-    }
-    return {};
 }
 
 QSettings illustratorSettings() {
@@ -107,30 +80,9 @@ QString extensionFor(const QByteArray &format, const QString &mime) {
 
 Illustrator::Illustrator(AiServices *ai, Reader *reader, const QString &databaseConnection, const QString &folder,
                          QObject *parent)
-    : QObject(parent), m_ai(ai), m_reader(reader), m_connection(databaseConnection), m_folder(folder) {
+    : QObject(parent), m_ai(ai), m_reader(reader), m_store(databaseConnection), m_folder(folder) {
     m_style = normalizeStyle(illustratorSettings().value(QStringLiteral("illustrator/style"), QStringLiteral("auto")).toString());
-    QSqlDatabase db = QSqlDatabase::database(m_connection);
-    QSqlQuery query(db);
-    query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS illustrations (id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, "
-                              "chapter INTEGER NOT NULL, offset INTEGER NOT NULL, caption TEXT NOT NULL, prompt TEXT NOT NULL, "
-                              "file TEXT NOT NULL, created INTEGER NOT NULL, style TEXT NOT NULL DEFAULT 'auto', "
-                              "passage TEXT NOT NULL DEFAULT '')"));
-    query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS illustrations_book ON illustrations (book_id)"));
-    bool hasStyle = false, hasPassage = false;
-    QSqlQuery info(db);
-    if (info.exec(QStringLiteral("PRAGMA table_info(illustrations)"))) {
-        while (info.next()) {
-            const QString col = info.value(1).toString();
-            if (col == QLatin1String("style"))
-                hasStyle = true;
-            else if (col == QLatin1String("passage"))
-                hasPassage = true;
-        }
-    }
-    if (!hasStyle)
-        query.exec(QStringLiteral("ALTER TABLE illustrations ADD COLUMN style TEXT NOT NULL DEFAULT 'auto'"));
-    if (!hasPassage)
-        query.exec(QStringLiteral("ALTER TABLE illustrations ADD COLUMN passage TEXT NOT NULL DEFAULT ''"));
+    m_store.ensurePictureTable();
     connect(reader, &Reader::bookChanged, this, [this] {
         stop();
         m_problem.clear();
@@ -191,22 +143,17 @@ QVariantList Illustrator::styles() const {
 
 QVariantList Illustrator::pictures() const {
     QVariantList out;
-    QSqlQuery query(QSqlDatabase::database(m_connection));
-    query.prepare(QStringLiteral("SELECT id, file, caption, chapter, offset, style FROM illustrations WHERE book_id = ? ORDER BY created DESC, id DESC"));
-    query.addBindValue(m_reader->bookId());
-    query.exec();
-    while (query.next()) {
-        const QString file = query.value(1).toString();
-        const QString styleId = normalizeStyle(query.value(5).toString());
-        out.append(QVariantMap{{"id", query.value(0)},
-                               {"url", QUrl::fromLocalFile(file)},
-                               {"caption", query.value(2)},
-                               {"chapter", query.value(3)},
-                               {"offset", query.value(4)},
+    for (const CompanionStore::PictureRecord &rec : m_store.loadPictures(m_reader->bookId())) {
+        const QString styleId = normalizeStyle(rec.style);
+        out.append(QVariantMap{{"id", rec.id},
+                               {"url", QUrl::fromLocalFile(rec.file)},
+                               {"caption", rec.caption},
+                               {"chapter", rec.chapter},
+                               {"offset", rec.offset},
                                {"style", styleId},
                                {"styleLabel", labelForStyle(styleId)},
                                {"where", where()},
-                               {"exists", !file.isEmpty() && QFileInfo::exists(file)}});
+                               {"exists", !rec.file.isEmpty() && QFileInfo::exists(rec.file)}});
     }
     return out;
 }
@@ -290,19 +237,15 @@ void Illustrator::stop() {
 }
 
 void Illustrator::regenerate(int id) {
-    QSqlQuery find(QSqlDatabase::database(m_connection));
-    find.prepare(QStringLiteral("SELECT chapter, offset, passage FROM illustrations WHERE id = ? AND book_id = ?"));
-    find.addBindValue(id);
-    find.addBindValue(m_reader->bookId());
-    if (!find.exec() || !find.next())
+    Q_ASSERT(QThread::currentThread() == thread());
+    CompanionStore::PictureRecord rec;
+    if (!m_store.findPicture(id, m_reader->bookId(), &rec))
         return;
-    const int chapter = find.value(0).toInt();
-    const qint64 offset = find.value(1).toLongLong();
-    const QString passage = find.value(2).toString();
-    illustrate(passage, chapter, offset);
+    illustrate(rec.passage, rec.chapter, rec.offset);
 }
 
 void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
+    Q_ASSERT(QThread::currentThread() == thread());
     stop();
     m_problem.clear();
     m_problemIsConfig = false;
@@ -337,7 +280,8 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
     m_readCancel = cancel;
     QPointer<Illustrator> self(this);
     QThreadPool::globalInstance()->start([self, path, format, chapter, upTo, text, title, author, styleId, cancel, generation] {
-        const QList<Companion::Chapter> chapters = Companion::textUpTo(path, format, chapter, upTo, 16000, cancel);
+        const QList<BookContextReader::Chapter> chapters =
+            BookContextReader::textUpTo(path, format, chapter, upTo, 16000, cancel);
         if (cancel->load())
             return;
         QMetaObject::invokeMethod(
@@ -372,7 +316,7 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
                                              {"required", QJsonArray{"prompt", "caption"}},
                                              {"additionalProperties", false}};
                 request.messages = {{true, QStringLiteral("Book: %1, by %2.\n\nWhat came before (for who is who):\n%3\n\nThe passage to illustrate:\n%4")
-                                               .arg(title, author, Companion::joined(chapters, 12000), passage)}};
+                                               .arg(title, author, BookContextReader::joined(chapters, 12000), passage)}};
                 self->m_status = tr("Imagining the picture…");
                 emit self->changed();
                 Ai::Reply *reply = writer->generate(request);
@@ -398,7 +342,7 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
                             }
                             QJsonObject result = reply->result();
                             if (result.isEmpty())
-                                result = extractJsonObject(reply->text());
+                                result = BookContextReader::extractJsonObject(reply->text());
                             QString prompt = result.value("prompt").toString().trimmed();
                             if (prompt.isEmpty()) {
                                 self->fail(tr("The picture couldn't be described. Try again, or choose a passage."));
@@ -483,20 +427,18 @@ void Illustrator::draw(const QString &prompt, const QString &caption, int chapte
                     return;
                 }
                 out.close();
-                QSqlQuery query(QSqlDatabase::database(m_connection));
-                query.prepare(QStringLiteral(
-                    "INSERT INTO illustrations (book_id, chapter, offset, caption, prompt, file, created, style, passage) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"));
-                query.addBindValue(bookId);
-                query.addBindValue(chapter);
-                query.addBindValue(offset);
-                query.addBindValue(caption);
-                query.addBindValue(prompt);
-                query.addBindValue(file);
-                query.addBindValue(QDateTime::currentSecsSinceEpoch());
-                query.addBindValue(normalizeStyle(styleId));
-                query.addBindValue(passage);
-                if (!query.exec()) {
+                CompanionStore::PictureRecord rec;
+                rec.bookId = bookId;
+                rec.chapter = chapter;
+                rec.offset = offset;
+                rec.caption = caption;
+                rec.prompt = prompt;
+                rec.file = file;
+                rec.created = QDateTime::currentSecsSinceEpoch();
+                rec.style = normalizeStyle(styleId);
+                rec.passage = passage;
+                const int insertedId = m_store.insertPicture(rec);
+                if (insertedId <= 0) {
                     QFile::remove(file);
                     fail(tr("The picture couldn't be kept in the library."));
                     return;
@@ -504,31 +446,23 @@ void Illustrator::draw(const QString &prompt, const QString &caption, int chapte
                 m_busy = false;
                 emit changed();
                 emit picturesChanged();
-                emit made(query.lastInsertId().toInt());
+                emit made(insertedId);
             });
 }
 
 void Illustrator::remove(int id) {
-    QSqlQuery find(QSqlDatabase::database(m_connection));
-    find.prepare(QStringLiteral("SELECT file FROM illustrations WHERE id = ?"));
-    find.addBindValue(id);
-    find.exec();
-    if (find.next())
-        QFile::remove(find.value(0).toString());
-    QSqlQuery query(QSqlDatabase::database(m_connection));
-    query.prepare(QStringLiteral("DELETE FROM illustrations WHERE id = ?"));
-    query.addBindValue(id);
-    query.exec();
+    Q_ASSERT(QThread::currentThread() == thread());
+    const QString file = m_store.deletePicture(id);
+    if (!file.isEmpty())
+        QFile::remove(file);
     emit picturesChanged();
 }
 
 QString Illustrator::suggestedFileName(int id, QString *sourceOut) const {
-    QSqlQuery find(QSqlDatabase::database(m_connection));
-    find.prepare(QStringLiteral("SELECT file FROM illustrations WHERE id = ?"));
-    find.addBindValue(id);
-    if (!find.exec() || !find.next())
+    CompanionStore::PictureRecord rec;
+    if (!m_store.findPicture(id, 0, &rec))
         return {};
-    const QString source = find.value(0).toString();
+    const QString source = rec.file;
     if (sourceOut)
         *sourceOut = source;
     const QString ext = QFileInfo(source).suffix().isEmpty() ? QStringLiteral("png") : QFileInfo(source).suffix().toLower();

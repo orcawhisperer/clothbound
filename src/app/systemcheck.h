@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ai/localsetup.h"
+
 #include <QElapsedTimer>
 #include <QObject>
 #include <QPointer>
@@ -14,7 +16,7 @@ namespace Ai { class Reply; }
 // how fast its built-in voice and local model run, and so, feature by
 // feature, what will work well here, what will be slow, and what needs
 // Gemini. Expectations set before anything is downloaded.
-class SystemCheck : public QObject {
+class SystemCheck : public QObject, public LocalHardwareProbe {
     Q_OBJECT
     Q_PROPERTY(bool running READ running NOTIFY changed)
     Q_PROPERTY(QVariantMap machine READ machine NOTIFY changed)
@@ -41,7 +43,14 @@ public:
         QString graphics;     // "AMD Radeon 780M", "NVIDIA RTX 4070", "Apple M1 Pro"
         double graphicsMemoryGb = 0;  // dedicated; 0 when shared with the system
         bool discreteGraphics = false;
+
+        operator LocalHardwareInfo() const {
+            return {memoryGb, graphics, graphicsMemoryGb, discreteGraphics};
+        }
     };
+
+    LocalHardwareInfo probeHardware() const override;
+    std::function<LocalHardwareInfo()> makeAsyncProbe() const override;
 
     // What this computer is; `root` lets tests supply /proc and /sys.
     static Machine inspect(const QString &root = QStringLiteral("/"));

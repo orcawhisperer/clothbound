@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ai/companionstore.h"
+
 #include <QObject>
 #include <QPointer>
 #include <QVariantList>
@@ -95,7 +97,7 @@ private:
 
     AiServices *m_ai;
     Reader *m_reader;
-    QString m_connection;
+    CompanionStore m_store;
     QString m_folder;
     QString m_style = QStringLiteral("auto");
     bool m_busy = false;
