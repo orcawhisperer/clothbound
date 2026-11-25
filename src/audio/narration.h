@@ -2,6 +2,7 @@
 
 #include "ai/ai.h"
 #include "audio/speech.h"
+#include "audio/speechcleaner.h"
 
 #include <QDateTime>
 #include <QElapsedTimer>

@@ -11,6 +11,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
+#include <cmath>
 #include <cstring>
 
 namespace {
@@ -130,6 +131,17 @@ public:
                     Qt::QueuedConnection);
             }
             samples = Speech::resample(samples, engineRate, outputRate);
+            // 2 ms raised-cosine micro-fade-out over the last ~48 samples before
+            // trailing silence padding to eliminate DC-offset clicks at sentence boundaries.
+            constexpr qsizetype kFadeSamples = (outputRate * 2) / 1000;
+            constexpr double kPi = 3.14159265358979323846;
+            const qsizetype fadeCount = qMin<qsizetype>(samples.size(), kFadeSamples);
+            const qsizetype fadeStart = samples.size() - fadeCount;
+            for (qsizetype j = 0; j < fadeCount; ++j) {
+                const double t = double(j + 1) / double(fadeCount);
+                const float gain = float(0.5 * (1.0 + std::cos(kPi * t)));
+                samples[fadeStart + j] *= gain;
+            }
             // A beat after each sentence, shorter at a mid-sentence dialogue
             // split (trailing comma/semicolon/dash), and longer where a
             // paragraph ends.

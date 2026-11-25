@@ -53,6 +53,7 @@ HEADERS += \
     ../src/audio/narration.h \
     ../src/audio/sherpaonnx.h \
     ../src/audio/speech.h \
+    ../src/audio/speechcleaner.h \
     ../src/audio/speechplayer.h \
     ../src/audio/voicecatalog.h \
     ../src/audio/voicepacks.h \
@@ -65,6 +66,7 @@ HEADERS += \
     ../src/ai/keystore.h \
     ../src/ai/localmodels.h \
     ../src/ai/localsetup.h \
+    ../src/ai/mathformatter.h \
     ../src/ai/passageindex.h \
     ../src/ai/sseparser.h \
     ../src/mcp/mcpserver.h \
@@ -113,6 +115,7 @@ SOURCES += \
     ../src/audio/mpris.cpp \
     ../src/audio/narration.cpp \
     ../src/audio/speech.cpp \
+    ../src/audio/speechcleaner.cpp \
     ../src/audio/speechplayer.cpp \
     ../src/audio/voicecatalog.cpp \
     ../src/audio/voicepacks.cpp \
@@ -124,6 +127,7 @@ SOURCES += \
     ../src/ai/keystore.cpp \
     ../src/ai/localmodels.cpp \
     ../src/ai/localsetup.cpp \
+    ../src/ai/mathformatter.cpp \
     ../src/ai/passageindex.cpp \
     ../src/ai/sseparser.cpp \
     ../src/mcp/mcpserver.cpp \

@@ -658,9 +658,68 @@ QVector<float> resample(const QVector<float> &samples, int from, int to) {
     if (from == to || from <= 0 || to <= 0 || samples.isEmpty())
         return samples;
     const qsizetype count = qsizetype(double(samples.size()) * to / from);
+    if (count <= 0)
+        return {};
     QVector<float> out(count);
-    const double step = double(from) / to;
+    const double step = double(from) / double(to);
     auto at = [&samples](qsizetype i) { return samples[qBound<qsizetype>(0, i, samples.size() - 1)]; };
+
+    if (from > to) {
+        // Downsampling: Blackman-windowed sinc low-pass anti-aliasing filter
+        // (cutoff = 0.45 * to / from cycles per input sample, 32 taps at 2:1)
+        // evaluated with exact double-precision angle-addition recurrences and
+        // unity DC gain normalization.
+        constexpr double kPi = 3.14159265358979323846;
+        const int halfWidth = std::clamp(int(std::ceil(8.0 * step)), 8, 32);
+        const double winRadius = double(halfWidth);
+        const double cutoff = 0.45 * double(to) / double(from);
+        const double omega = 2.0 * kPi * cutoff;
+        const double cosOmega = std::cos(omega);
+        const double sinOmega = std::sin(omega);
+        const double winStep = kPi / winRadius;
+        const double cosWinStep = std::cos(winStep);
+        const double sinWinStep = std::sin(winStep);
+
+        for (qsizetype n = 0; n < count; ++n) {
+            const double position = n * step;
+            const qsizetype center = qsizetype(std::floor(position));
+            const qsizetype kStart = center - halfWidth + 1;
+            const qsizetype kEnd = center + halfWidth;
+
+            const double d0 = double(kStart) - position;
+            double alpha = omega * d0;
+            double sinA = std::sin(alpha);
+            double cosA = std::cos(alpha);
+            const double beta0 = winStep * d0;
+            double sinB = std::sin(beta0);
+            double cosB = std::cos(beta0);
+
+            double sum = 0.0;
+            double weightSum = 0.0;
+            for (qsizetype k = kStart; k <= kEnd; ++k) {
+                const double sinc = (std::abs(alpha) < 1e-7) ? 1.0 : (sinA / alpha);
+                const double cos2B = 2.0 * cosB * cosB - 1.0;
+                const double win = 0.42 + 0.50 * cosB + 0.08 * cos2B;
+                const double w = sinc * win;
+                sum += w * double(at(k));
+                weightSum += w;
+
+                alpha += omega;
+                const double nextSinA = sinA * cosOmega + cosA * sinOmega;
+                const double nextCosA = cosA * cosOmega - sinA * sinOmega;
+                sinA = nextSinA;
+                cosA = nextCosA;
+
+                const double nextSinB = sinB * cosWinStep + cosB * sinWinStep;
+                const double nextCosB = cosB * cosWinStep - sinB * sinWinStep;
+                sinB = nextSinB;
+                cosB = nextCosB;
+            }
+            out[n] = (weightSum > 0.0) ? float(sum / weightSum) : 0.0f;
+        }
+        return out;
+    }
+
     for (qsizetype n = 0; n < count; ++n) {
         const double position = n * step;
         const qsizetype i = qsizetype(position);

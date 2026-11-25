@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ai/ai.h"
+#include "ai/mathformatter.h"
 #include "ai/passageindex.h"
 
 #include <QObject>

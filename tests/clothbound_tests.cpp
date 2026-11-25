@@ -14041,6 +14041,463 @@ private slots:
         QVERIFY(!catalogsQml.contains(QStringLiteral("source: navRow.isBookNav ? (entryWrap.modelData.thumbnailUrl")));
     }
     // === end wave-2 integration tests ===
+
+    // === a-plus-arch tests ===
+    void aPlusArchMathFormatterUnitAndFuzz() {
+        // 1. Direct unit coverage for pure MathFormatter namespace APIs and Companion wrapper parity.
+        const QString sample = QStringLiteral(
+            "Let $\\theta \\in \\mathbb{R}^d$ satisfy $$\\sum_{i=1}^n \\frac{x_i}{n} \\le \\sqrt[3]{a + b}$$.");
+        QVERIFY(MathFormatter::hasMath(sample));
+        QCOMPARE(MathFormatter::cleanMarkdown(sample), Companion::cleanMarkdown(sample));
+        const QString formatted = MathFormatter::formatLatexInMarkdown(QStringLiteral("Value $x_i^2$ and <b>raw</b>"));
+        QVERIFY(formatted.contains(QStringLiteral("class=\"math-inline\"")));
+        QVERIFY(formatted.contains(QStringLiteral("<sub>i</sub>")));
+        QVERIFY(formatted.contains(QStringLiteral("<sup><span style=\"font-style:normal;\">2</span></sup>")));
+        QVERIFY(formatted.contains(QStringLiteral("&lt;b&gt;raw&lt;/b&gt;")));
+
+        // 2. CommonMark backtick-fence desync resistance (4-tick fence containing 3-tick line, or info-string fake close).
+        const QString fenceDesync1 = QStringLiteral(
+            "````\n"
+            "```\n"
+            "````\n"
+            "<a href=\"javascript:alert(1)\">phish</a><img src=\"http://evil.invalid/a.png\">");
+        const QString fenceDesync2 = QStringLiteral(
+            "```\n"
+            "``` fakeinfo\n"
+            "```\n"
+            "<a href=\"javascript:alert(2)\">phish2</a><script>alert(2)</script>");
+        for (const QString &desync : {fenceDesync1, fenceDesync2}) {
+            const QString cleaned = MathFormatter::cleanMarkdown(desync);
+            QVERIFY2(!cleaned.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(cleaned));
+            QVERIFY2(!cleaned.contains(QStringLiteral("<img"), Qt::CaseInsensitive), qPrintable(cleaned));
+            QVERIFY2(!cleaned.contains(QStringLiteral("<script"), Qt::CaseInsensitive), qPrintable(cleaned));
+            const QString rich = MathFormatter::formatDisplayHtml(desync, QStringLiteral("#222633"));
+            QVERIFY2(!rich.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("<img"), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("<script"), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("javascript:"), Qt::CaseInsensitive), qPrintable(rich));
+        }
+
+        // 3. Deep brace nesting terminates cleanly in O(N) without blowing up output or stack,
+        //    and CSS injection via mathBlockBg is rejected.
+        const QString deepBraces = QStringLiteral("$") + QString(40, QLatin1Char('{')) + QStringLiteral("x<img src=1>") +
+                                   QString(40, QLatin1Char('}')) + QStringLiteral("$");
+        const QString deepHtml = MathFormatter::formatDisplayHtml(
+            deepBraces + QStringLiteral("\n\n$$a+b$$"),
+            QStringLiteral("red; background-image:url(javascript:alert(1))"));
+        QVERIFY2(!deepHtml.contains(QStringLiteral("<img"), Qt::CaseInsensitive), qPrintable(deepHtml));
+        QVERIFY2(!deepHtml.contains(QStringLiteral("javascript:"), Qt::CaseInsensitive), qPrintable(deepHtml));
+        QVERIFY2(deepHtml.contains(QStringLiteral("rgba(128,128,128,0.12)")), qPrintable(deepHtml));
+
+        // 4. Structured javascript: / link / tag escape vectors must produce ZERO javascript: anywhere in RichText.
+        const QStringList jsVectors = {
+            QStringLiteral("[click](javascript:alert(1))"),
+            QStringLiteral("[click](  JaVaScRiPt:alert(1)  )"),
+            QStringLiteral("[click](javascript:void(0))"),
+            QStringLiteral("[click](<javascript:alert(1)>)"),
+            QStringLiteral("[ref][1]\n\n[1]: javascript:alert(1)"),
+            QStringLiteral("![alt](javascript:alert(1))"),
+            QStringLiteral("<a href=\"javascript:alert(1)\">click</a>"),
+            QStringLiteral("<a href='javascript:alert(1)'>click</a>"),
+            QStringLiteral("<a href=javascript:alert(1)>click</a>"),
+            QStringLiteral("<img src=\"javascript:alert(1)\">"),
+            QStringLiteral("<iframe src=\"javascript:alert(1)\"></iframe>"),
+            QStringLiteral("<svg onload=\"javascript:alert(1)\"></svg>"),
+            QStringLiteral("<div class=\"math-block\"><a href=\"javascript:alert(1)\">x</a></div> $$x+1$$"),
+            QStringLiteral("<span class=\"math-inline\"><img src=\"javascript:alert(1)\"></span> $x$"),
+            QStringLiteral("`<a href=\"javascript:alert(1)\">code</a>`"),
+            QStringLiteral("```\n<a href=\"javascript:alert(1)\">fenced</a>\n```"),
+        };
+        for (const QString &vec : jsVectors) {
+            const QString rich = MathFormatter::formatDisplayHtml(vec, QStringLiteral("#1f2430"));
+            QVERIFY2(!rich.contains(QStringLiteral("<img"), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("<script"), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("<a\t"), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("<a\n"), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("href="), Qt::CaseInsensitive), qPrintable(rich));
+            QVERIFY2(!rich.contains(QStringLiteral("javascript:"), Qt::CaseInsensitive), qPrintable(rich));
+        }
+
+        // 5. Seeded deterministic fuzz-mutation of 550 adversarial HTML/LaTeX/Markdown inputs.
+        quint64 rng = 0xC107B00D5EED0001ULL;
+        auto nextU64 = [&rng]() -> quint64 {
+            rng ^= rng >> 12;
+            rng ^= rng << 25;
+            rng ^= rng >> 27;
+            return rng * 2685821657736338717ULL;
+        };
+        const QStringList atoms = {
+            QStringLiteral("<img src=\"http://evil.invalid/x.png\">"),
+            QStringLiteral("<IMG/SRC=x ONERROR=alert(1)>"),
+            QStringLiteral("<i<i<img >mg >mg src=http://evil.invalid/n.png>"),
+            QStringLiteral("<script>alert(1)</script>"),
+            QStringLiteral("<scr<script>ipt>alert(1)</script>"),
+            QStringLiteral("<a href=\"javascript:alert(1)\">click</a>"),
+            QStringLiteral("<A HREF=\"http://evil.invalid\">link</A>"),
+            QStringLiteral("[click](javascript:alert(1))"),
+            QStringLiteral("![leak](https://evil.invalid/i.png)"),
+            QStringLiteral("!![nest](http://evil.invalid/j.png)"),
+            QStringLiteral("<svg onload=alert(1)>"),
+            QStringLiteral("<iframe src=\"javascript:alert(1)\"></iframe>"),
+            QStringLiteral("<div class=\"math-block\">"),
+            QStringLiteral("<span class=\"math-inline\">"),
+            QStringLiteral("</div>"),
+            QStringLiteral("</span>"),
+            QStringLiteral("$\\frac{a}{b}$"),
+            QStringLiteral("$$\\sum_{i=1}^n x_i^2$$"),
+            QStringLiteral("\\(\\alpha + \\beta\\)"),
+            QStringLiteral("\\[\\sqrt[3]{x + y}\\]"),
+            QStringLiteral("$\\text{<img src=x>}$"),
+            QStringLiteral("$5 to $10"),
+            QStringLiteral("`"),
+            QStringLiteral("``"),
+            QStringLiteral("\n```\n"),
+            QStringLiteral("\n````\n"),
+            QStringLiteral("\n``` latex\n"),
+            QStringLiteral("{"),
+            QStringLiteral("}"),
+            QStringLiteral("^"),
+            QStringLiteral("_"),
+            QStringLiteral("\\"),
+            QStringLiteral("> "),
+            QStringLiteral("\n\n"),
+        };
+        const QStringList bgCandidates = {
+            QStringLiteral("#1f2430"),
+            QStringLiteral("rgba(128,128,128,0.12)"),
+            QStringLiteral("red; background:url(javascript:alert(1))"),
+            QStringLiteral("\"><img src=x>"),
+            QString(),
+        };
+        static const QRegularExpression anyTagRx(QStringLiteral("<[^>]*>"));
+        static const QRegularExpression anchorTagRx(QStringLiteral("<a(?:\\s|/|>|$)"),
+                                                    QRegularExpression::CaseInsensitiveOption);
+        static const QRegularExpression badTagAttrRx(
+            QStringLiteral("(?:javascript:|\\b(?:href|src|background|onerror|onload)\\s*=)"),
+            QRegularExpression::CaseInsensitiveOption);
+
+        constexpr int kFuzzCases = 550;
+        for (int iter = 0; iter < kFuzzCases; ++iter) {
+            QString input;
+            const int parts = 3 + int(nextU64() % 10);
+            for (int p = 0; p < parts; ++p)
+                input += atoms[qsizetype(nextU64() % quint64(atoms.size()))];
+            // Apply deterministic splice/mutation operations on half the cases.
+            const int mutOps = int(nextU64() % 4);
+            for (int m = 0; m < mutOps && !input.isEmpty(); ++m) {
+                const int op = int(nextU64() % 4);
+                const qsizetype pos = qsizetype(nextU64() % quint64(input.size()));
+                if (op == 0) {
+                    const QString extra = atoms[qsizetype(nextU64() % quint64(atoms.size()))];
+                    input.insert(pos, extra);
+                } else if (op == 1 && input.size() > 4) {
+                    const qsizetype delLen = 1 + qsizetype(nextU64() % qMin<quint64>(8, quint64(input.size() - pos)));
+                    input.remove(pos, delLen);
+                } else if (op == 2) {
+                    const QString chars = QStringLiteral("<>`$\\{}^_[]()\"'!\n");
+                    input.insert(pos, chars[qsizetype(nextU64() % quint64(chars.size()))]);
+                } else {
+                    input.insert(pos, QStringLiteral("CBMATH0000000000000000B0Z"));
+                }
+            }
+
+            const QString bg = bgCandidates[qsizetype(nextU64() % quint64(bgCandidates.size()))];
+            const QString html = MathFormatter::formatDisplayHtml(input, bg);
+            (void)MathFormatter::cleanMarkdown(input);
+            (void)MathFormatter::hasMath(input);
+
+            QVERIFY2(!html.contains(QStringLiteral("<img"), Qt::CaseInsensitive),
+                     qPrintable(QStringLiteral("iter %1 leaked <img: %2").arg(iter).arg(html)));
+            QVERIFY2(!html.contains(QStringLiteral("<script"), Qt::CaseInsensitive),
+                     qPrintable(QStringLiteral("iter %1 leaked <script: %2").arg(iter).arg(html)));
+            QVERIFY2(!anchorTagRx.match(html).hasMatch(),
+                     qPrintable(QStringLiteral("iter %1 leaked <a>: %2").arg(iter).arg(html)));
+            QVERIFY2(!html.contains(QStringLiteral("<a href"), Qt::CaseInsensitive),
+                     qPrintable(QStringLiteral("iter %1 leaked <a href: %2").arg(iter).arg(html)));
+
+            // Inspect every single HTML tag in RichText output for forbidden tags or javascript:/href=/src= escapes.
+            auto it = anyTagRx.globalMatch(html);
+            while (it.hasNext()) {
+                const QString tag = it.next().captured(0);
+                QVERIFY2(!badTagAttrRx.match(tag).hasMatch(),
+                         qPrintable(QStringLiteral("iter %1 unsafe tag attr in %2").arg(iter).arg(tag)));
+            }
+        }
+    }
+
+    void aPlusArchSpeechCleanerUnitAndFuzz() {
+        // 1. Direct unit tests for SpeechCleaner APIs + parity with Narration::cleanSpeechText.
+        const QString complexMd = QStringLiteral(
+            "### Results\n"
+            "> Compute $\\binom{n}{k}$, $\\sqrt[3]{x}$, $\\sqrt[4]{y}$, $\\sum_{i=1}^n x_i^2$, "
+            "$\\int_0^1 t^3 dt$, and $\\vec{v} + \\hat{u} + \\bar{w} + \\tilde{z}$.\n"
+            "| Metric | Score |\n| --- | --- |\n| BLEU | 42.1 |\n"
+            "See [Paper](https://example.test/p) [1, 2] [p. 14] and costs of $5 to $10.");
+        const QString spoken = SpeechCleaner::cleanSpeechText(complexMd);
+        QCOMPARE(spoken, Narration::cleanSpeechText(complexMd));
+        QVERIFY2(spoken.contains(QStringLiteral("n choose k")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("cube root of x")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("4th root of y")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("sum from i=1 to n")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("squared")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("cubed")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("vector v")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("u hat")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("w bar")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("z tilde")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("BLEU, 42.1")), qPrintable(spoken));
+        QVERIFY2(spoken.contains(QStringLiteral("$5 to $10")), qPrintable(spoken));
+        QVERIFY(!spoken.contains(QStringLiteral("https://")));
+        QVERIFY(!spoken.contains(QStringLiteral("[1, 2]")));
+        QVERIFY(!spoken.contains(QStringLiteral("[p. 14]")));
+
+        // 2. cleanLatexForSpeech directly on display/inline/bare commands & inline code preservation.
+        const QString latexOnly = SpeechCleaner::cleanLatexForSpeech(
+            QStringLiteral("$$\\frac{a}{b}$$ and `\\frac{raw}{code}` with \\nabla f"));
+        QVERIFY2(latexOnly.contains(QStringLiteral("a over b")), qPrintable(latexOnly));
+        QVERIFY2(latexOnly.contains(QStringLiteral("`\\frac{raw}{code}`")), qPrintable(latexOnly));
+        QVERIFY2(latexOnly.contains(QStringLiteral("gradient")), qPrintable(latexOnly));
+
+        // 3. splitOverlongSentence respects maxChars and splits cleanly at clause/word boundaries.
+        const QString longSent = QStringLiteral(
+            "First clause with enough words to exceed the limit, second clause with more words; "
+            "third clause continuing onwards without stopping until the very end of the sentence.");
+        const QStringList parts = SpeechCleaner::splitOverlongSentence(longSent, 60);
+        QVERIFY(parts.size() >= 3);
+        for (const QString &part : parts) {
+            QVERIFY(!part.isEmpty());
+            QVERIFY2(part.size() <= 60, qPrintable(part));
+        }
+        QVERIFY(SpeechCleaner::splitOverlongSentence(QStringLiteral("   "), 60).isEmpty());
+
+        // 4. Deterministic fuzz stress test (250 adversarial inputs incl. deep brace nesting).
+        quint64 rng = 0x59EEC4C1EA4E0002ULL;
+        auto nextU64 = [&rng]() -> quint64 {
+            rng ^= rng >> 12;
+            rng ^= rng << 25;
+            rng ^= rng >> 27;
+            return rng * 2685821657736338717ULL;
+        };
+        const QStringList pieces = {
+            QStringLiteral("$$\\frac{1}{2}$$"), QStringLiteral("$x_i^2$"), QStringLiteral("\\(\\alpha\\)"),
+            QStringLiteral("\\[\\sqrt[3]{z}\\]"), QStringLiteral("\\nabla"), QStringLiteral("`code`"),
+            QStringLiteral("**bold**"), QStringLiteral("<b>tag</b>"), QStringLiteral("[1, 2]"),
+            QStringLiteral("[link](http://x)"), QStringLiteral("$5 to $10"), QStringLiteral("{{{{{"),
+            QStringLiteral("}}}}}"), QStringLiteral("^^^"), QStringLiteral("___"), QStringLiteral("\\\\"),
+        };
+        for (int iter = 0; iter < 250; ++iter) {
+            QString s;
+            const int count = 2 + int(nextU64() % 12);
+            for (int k = 0; k < count; ++k)
+                s += pieces[qsizetype(nextU64() % quint64(pieces.size()))];
+            if (iter % 10 == 0)
+                s = QStringLiteral("$") + QString(36, QLatin1Char('{')) + s + QString(36, QLatin1Char('}')) + QStringLiteral("$");
+            const QString out = SpeechCleaner::cleanSpeechText(s);
+            const QStringList split = SpeechCleaner::splitOverlongSentence(out, 120);
+            for (const QString &chunk : split)
+                QVERIFY(chunk.size() <= 120);
+        }
+    }
+
+    void aPlusArchSseParserFuzz() {
+        quint64 rng = 0x55E9A45E4F022003ULL;
+        auto nextU64 = [&rng]() -> quint64 {
+            rng ^= rng >> 12;
+            rng ^= rng << 25;
+            rng ^= rng >> 27;
+            return rng * 2685821657736338717ULL;
+        };
+
+        // 1. 300 deterministic valid/edge-case SSE streams: arbitrary chunk splits must equal single-shot parse.
+        const QList<QByteArray> eols = {"\n", "\r\n", "\r"};
+        const QList<QByteArray> names = {"", "delta", "message", "content_block_delta", "done"};
+        const QList<QByteArray> payloads = {
+            "{\"text\":\"hello\"}",
+            "line with: colons: inside",
+            "",
+            "[DONE]",
+            "utf8-\xC3\xA9-\xE2\x80\x94-\xF0\x9F\x93\x96",
+            " leading-space-preserved",
+        };
+        for (int iter = 0; iter < 300; ++iter) {
+            QByteArray stream;
+            if (nextU64() % 3 == 0)
+                stream.append("\xEF\xBB\xBF", 3);
+            const int numEvents = 1 + int(nextU64() % 8);
+            for (int e = 0; e < numEvents; ++e) {
+                const QByteArray eol = eols[qsizetype(nextU64() % quint64(eols.size()))];
+                if (nextU64() % 3 == 0)
+                    stream += ": keepalive comment" + eol;
+                const QByteArray evName = names[qsizetype(nextU64() % quint64(names.size()))];
+                if (!evName.isEmpty())
+                    stream += "event: " + evName + eol;
+                const int dataLines = 1 + int(nextU64() % 4);
+                for (int d = 0; d < dataLines; ++d) {
+                    const QByteArray p = payloads[qsizetype(nextU64() % quint64(payloads.size()))];
+                    stream += (nextU64() % 4 == 0 ? "data:" : "data: ") + p + eol;
+                }
+                if (nextU64() % 4 == 0)
+                    stream += "id: 42" + eol;
+                // Occasionally omit final blank line to exercise finish() flush.
+                if (e + 1 < numEvents || nextU64() % 2 == 0)
+                    stream += eol;
+            }
+
+            SseParser whole;
+            const QList<SseParser::Event> expected = whole.feed(stream) + whole.finish();
+            QVERIFY(!whole.overflowed());
+
+            SseParser chunked;
+            QList<SseParser::Event> actual;
+            qsizetype pos = 0;
+            while (pos < stream.size()) {
+                if (nextU64() % 5 == 0)
+                    actual += chunked.feed(QByteArray());
+                const qsizetype step = 1 + qsizetype(nextU64() % 17);
+                actual += chunked.feed(stream.mid(pos, step));
+                pos += step;
+            }
+            actual += chunked.finish();
+            QVERIFY(!chunked.overflowed());
+            QCOMPARE(actual.size(), expected.size());
+            for (qsizetype i = 0; i < expected.size(); ++i) {
+                QCOMPARE(actual[i].name, expected[i].name);
+                QCOMPARE(actual[i].data, expected[i].data);
+            }
+        }
+
+        // 2. 300 deterministic adversarial / mutated binary chunk streams: no crash, UB, or runaway buffer.
+        const QByteArray alphabet = QByteArrayLiteral("event:data:\r\n \t\0\xEF\xBB\xBF\xFF{}[]\"a1");
+        for (int iter = 0; iter < 300; ++iter) {
+            SseParser parser;
+            const int numChunks = 1 + int(nextU64() % 24);
+            for (int c = 0; c < numChunks; ++c) {
+                const qsizetype len = qsizetype(nextU64() % 64);
+                QByteArray chunk(len, Qt::Uninitialized);
+                for (qsizetype i = 0; i < len; ++i)
+                    chunk[i] = alphabet[qsizetype(nextU64() % quint64(alphabet.size()))];
+                (void)parser.feed(chunk);
+            }
+            (void)parser.finish();
+        }
+
+        // 3. Multi-chunk overflow cap (> kMaxBufferBytes without delimiter) sets overflowed() cleanly without OOM.
+        {
+            SseParser capped;
+            const QByteArray block(65536, 'x');
+            const int chunksNeeded = int(SseParser::kMaxBufferBytes / block.size()) + 2;
+            for (int i = 0; i < chunksNeeded; ++i)
+                (void)capped.feed(block);
+            QVERIFY(capped.overflowed());
+            QVERIFY(capped.feed("data: after-overflow\n\n").isEmpty());
+            QVERIFY(capped.finish().isEmpty());
+        }
+    }
+
+    void aPlusArchSpeechResampleAntiAliasingAndMicroFade() {
+        // 1. Speech::resample() downsampling anti-aliasing (48 kHz -> 24 kHz and 44.1 kHz -> 24 kHz).
+        auto measureRms = [](const QVector<float> &buf, qsizetype trim) -> double {
+            const qsizetype start = qMin(trim, buf.size() / 4);
+            const qsizetype end = qMax(start + 1, buf.size() - start);
+            double sumSq = 0.0;
+            for (qsizetype i = start; i < end; ++i)
+                sumSq += double(buf[i]) * double(buf[i]);
+            return std::sqrt(sumSq / double(end - start));
+        };
+        auto makeSine = [](int rate, double freqHz, int numSamples) -> QVector<float> {
+            QVector<float> buf(numSamples);
+            for (int n = 0; n < numSamples; ++n)
+                buf[n] = float(std::sin(2.0 * M_PI * freqHz * double(n) / double(rate)));
+            return buf;
+        };
+
+        // 48 kHz -> 24 kHz (target Nyquist = 12 kHz):
+        // Passband 1 kHz sine wave must be preserved accurately (~0 dB).
+        const QVector<float> pass48 = makeSine(48000, 1000.0, 24000);
+        const QVector<float> pass24 = Speech::resample(pass48, 48000, 24000);
+        QCOMPARE(pass24.size(), qsizetype(12000));
+        const double passDb = 20.0 * std::log10(measureRms(pass24, 64) / measureRms(pass48, 128));
+        QVERIFY2(std::abs(passDb) < 0.25, qPrintable(QStringLiteral("1 kHz passband gain: %1 dB").arg(passDb)));
+
+        // Stopband sine waves above 12 kHz Nyquist (15 kHz, 16 kHz, 18 kHz) must be attenuated by > 25 dB.
+        for (const double stopFreq : {15000.0, 16000.0, 18000.0}) {
+            const QVector<float> stop48 = makeSine(48000, stopFreq, 24000);
+            const QVector<float> stop24 = Speech::resample(stop48, 48000, 24000);
+            const double rmsIn = measureRms(stop48, 128);
+            const double rmsOut = measureRms(stop24, 64);
+            const double attenDb = -20.0 * std::log10(qMax(rmsOut, 1e-12) / rmsIn);
+            QVERIFY2(attenDb > 25.0,
+                     qPrintable(QStringLiteral("48->24 kHz %1 Hz attenuation only %2 dB").arg(stopFreq).arg(attenDb)));
+        }
+
+        // Non-integer ratio 44.1 kHz -> 24 kHz: 1 kHz passband preserved, 16/18 kHz attenuated > 25 dB.
+        const QVector<float> pass44 = makeSine(44100, 1000.0, 22050);
+        const QVector<float> pass44To24 = Speech::resample(pass44, 44100, 24000);
+        const double pass44Db = 20.0 * std::log10(measureRms(pass44To24, 64) / measureRms(pass44, 128));
+        QVERIFY2(std::abs(pass44Db) < 0.25, qPrintable(QStringLiteral("44.1->24 passband gain: %1 dB").arg(pass44Db)));
+
+        for (const double stopFreq : {16000.0, 18000.0}) {
+            const QVector<float> stop44 = makeSine(44100, stopFreq, 22050);
+            const QVector<float> stop44To24 = Speech::resample(stop44, 44100, 24000);
+            const double attenDb = -20.0 * std::log10(qMax(measureRms(stop44To24, 64), 1e-12) / measureRms(stop44, 128));
+            QVERIFY2(attenDb > 25.0,
+                     qPrintable(QStringLiteral("44.1->24 kHz %1 Hz attenuation only %2 dB").arg(stopFreq).arg(attenDb)));
+        }
+
+        // Unity DC gain on downsampling.
+        const QVector<float> dc48(4800, 0.75f);
+        const QVector<float> dc24 = Speech::resample(dc48, 48000, 24000);
+        QCOMPARE(dc24.size(), qsizetype(2400));
+        for (qsizetype i = 0; i < dc24.size(); ++i)
+            QVERIFY2(std::abs(dc24[i] - 0.75f) < 1e-4f, qPrintable(QStringLiteral("DC drift at %1: %2").arg(i).arg(dc24[i])));
+
+        // 2. LocalWorker::run() 2 ms micro-fade-out eliminates DC-offset clicks at sentence boundaries.
+        class DcEngine : public TtsEngine {
+        public:
+            QString prepare(const VoicePacks::Model &) override { return {}; }
+            int sampleRate() const override { return 24000; }
+            QVector<float> speak(const QString &, int, const std::atomic_bool &stop) override {
+                if (stop)
+                    return {};
+                return QVector<float>(400, 0.8f);
+            }
+        };
+
+        QTemporaryDir dir;
+        VoicePacks packs(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                         packsManifest(QStringLiteral("http://x")));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("engine-arm"));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("kokoro-fp32"));
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<DcEngine>(); });
+
+        Ai::SpeechRequest req;
+        req.voice = QStringLiteral("builtin:kokoro:bm_george");
+        req.sentences = {QStringLiteral("Hello world.")};
+        std::unique_ptr<Ai::Reply> reply(local.synthesize(req));
+        QTRY_VERIFY_WITH_TIMEOUT(reply->isFinished(), 5000);
+        QVERIFY(!reply->error());
+
+        const QByteArray pcm = reply->audio();
+        const qsizetype totalSamples = pcm.size() / 2;
+        QCOMPARE(totalSamples, qsizetype(400 + qsizetype(0.32 * 24000)));
+        const auto *s = reinterpret_cast<const qint16 *>(pcm.constData());
+        const qint16 expectedDc = qint16(std::lround(0.8f * 32767.0f));
+        QVERIFY2(std::abs(s[100] - expectedDc) <= 2, qPrintable(QString::number(s[100])));
+        QVERIFY2(std::abs(s[351] - expectedDc) <= 2, qPrintable(QString::number(s[351])));
+        // Last 48 samples [352..399] fade monotonically down to 0 before silence padding [400..].
+        for (qsizetype i = 352; i < 400; ++i)
+            QVERIFY2(s[i] <= s[i - 1],
+                     qPrintable(QStringLiteral("Non-monotonic fade at %1: %2 > %3").arg(i).arg(s[i]).arg(s[i - 1])));
+        QCOMPARE(s[399], qint16(0));
+        QCOMPARE(s[400], qint16(0));
+        // Maximum sample-to-sample step across the fade and boundary into silence is smooth (no abrupt click).
+        int maxStep = 0;
+        for (qsizetype i = 352; i <= 405; ++i)
+            maxStep = qMax(maxStep, std::abs(int(s[i]) - int(s[i - 1])));
+        QVERIFY2(maxStep < 1000, qPrintable(QStringLiteral("Abrupt boundary click step: %1").arg(maxStep)));
+    }
+    // === end a-plus-arch tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS
