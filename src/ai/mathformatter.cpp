@@ -591,14 +591,17 @@ QString stripDangerousMarkup(const QString &text) {
     return out;
 }
 
-// CommonMark §4.5 backtick code fence matcher: prevents fence-length or
-// info-string desyncs (e.g. a 3-tick line or "``` info" inside a 4-tick fence).
-bool matchBacktickFence(const QString &text, qsizetype pos, qsizetype openFenceTicks, qsizetype &ticksOut) {
+// CommonMark §4.5 backtick (`) and tilde (~) code fence matcher: prevents
+// fence-char, fence-length, or info-string desyncs (e.g. a 3-tick line or
+// "``` info" inside a 4-tick or ~~~ fence).
+bool matchCodeFence(const QString &text, qsizetype pos, QChar openFenceChar, qsizetype openFenceLen,
+                    QChar &charOut, qsizetype &lenOut) {
     const qsizetype n = text.size();
-    if (pos + 2 >= n || text[pos] != QLatin1Char('`') || text[pos + 1] != QLatin1Char('`') ||
-        text[pos + 2] != QLatin1Char('`')) {
+    if (pos + 2 >= n)
         return false;
-    }
+    const QChar ch = text[pos];
+    if ((ch != QLatin1Char('`') && ch != QLatin1Char('~')) || text[pos + 1] != ch || text[pos + 2] != ch)
+        return false;
     qsizetype lineStart = pos;
     while (lineStart > 0 && text[lineStart - 1] != QLatin1Char('\n'))
         --lineStart;
@@ -609,28 +612,32 @@ bool matchBacktickFence(const QString &text, qsizetype pos, qsizetype openFenceT
             return false;
 
     qsizetype run = 0;
-    while (pos + run < n && text[pos + run] == QLatin1Char('`'))
+    while (pos + run < n && text[pos + run] == ch)
         ++run;
     qsizetype lineEnd = pos + run;
     while (lineEnd < n && text[lineEnd] != QLatin1Char('\n'))
         ++lineEnd;
 
-    if (openFenceTicks == 0) {
-        // Opening backtick fence info string cannot contain backticks.
-        for (qsizetype k = pos + run; k < lineEnd; ++k)
-            if (text[k] == QLatin1Char('`'))
-                return false;
-        ticksOut = run;
+    if (openFenceLen == 0) {
+        // CommonMark §4.5: opening backtick fence info string cannot contain backticks.
+        if (ch == QLatin1Char('`')) {
+            for (qsizetype k = pos + run; k < lineEnd; ++k)
+                if (text[k] == QLatin1Char('`'))
+                    return false;
+        }
+        charOut = ch;
+        lenOut = run;
         return true;
     }
-    // Closing backtick fence must have at least `openFenceTicks` ticks and
-    // only optional trailing spaces/tabs before newline/EOF.
-    if (run < openFenceTicks)
+    // Closing fence must match the opening fence character, have at least
+    // `openFenceLen` repetitions, and only optional trailing spaces/tabs before newline/EOF.
+    if (ch != openFenceChar || run < openFenceLen)
         return false;
     for (qsizetype k = pos + run; k < lineEnd; ++k)
         if (text[k] != QLatin1Char(' ') && text[k] != QLatin1Char('\t'))
             return false;
-    ticksOut = run;
+    charOut = ch;
+    lenOut = run;
     return true;
 }
 
@@ -663,26 +670,42 @@ QString escapeRawHtmlOutsideCode(const QString &text) {
     out.reserve(text.size() + 32);
     const qsizetype n = text.size();
     qsizetype i = 0;
-    qsizetype fenceTicks = 0;
+    QChar fenceChar;
+    qsizetype fenceLen = 0;
     int lineIndent = 0;
     bool inBlockquotePrefix = true;
 
     while (i < n) {
-        qsizetype matchedTicks = 0;
-        if (matchBacktickFence(text, i, fenceTicks, matchedTicks)) {
-            fenceTicks = (fenceTicks == 0) ? matchedTicks : 0;
-            out += text.mid(i, matchedTicks);
-            i += matchedTicks;
+        QChar matchedChar;
+        qsizetype matchedLen = 0;
+        if (matchCodeFence(text, i, fenceChar, fenceLen, matchedChar, matchedLen)) {
+            if (fenceLen == 0) {
+                fenceChar = matchedChar;
+                fenceLen = matchedLen;
+            } else {
+                fenceChar = QChar();
+                fenceLen = 0;
+            }
+            out += text.mid(i, matchedLen);
+            i += matchedLen;
             inBlockquotePrefix = false;
             continue;
         }
-        if (fenceTicks > 0) {
+        if (fenceLen > 0) {
             const QChar c = text[i++];
             out += c;
             if (c == QLatin1Char('\n')) {
                 lineIndent = 0;
                 inBlockquotePrefix = true;
             }
+            continue;
+        }
+        if (text[i] == QLatin1Char('\\') && i + 1 < n &&
+            (text[i + 1] == QLatin1Char('\\') || text[i + 1] == QLatin1Char('`'))) {
+            out += text[i];
+            out += text[i + 1];
+            i += 2;
+            inBlockquotePrefix = false;
             continue;
         }
         if (text[i] == QLatin1Char('`')) {
@@ -745,7 +768,8 @@ QString extractLatexWithNonces(const QString &text, const QString &nonce, QStrin
     out.reserve(text.size() + 64);
     const qsizetype n = text.size();
     qsizetype i = 0;
-    qsizetype fenceTicks = 0;
+    QChar fenceChar;
+    qsizetype fenceLen = 0;
 
     auto emitMath = [&](const QString &expr, bool display) -> bool {
         const QString inner = LatexParser(expr.trimmed(), display).parseAll().trimmed();
@@ -764,16 +788,31 @@ QString extractLatexWithNonces(const QString &text, const QString &nonce, QStrin
     };
 
     while (i < n) {
-        // Preserve fenced code blocks (``` ... ```) verbatim (e.g. copyable LaTeX output).
-        qsizetype matchedTicks = 0;
-        if (matchBacktickFence(text, i, fenceTicks, matchedTicks)) {
-            fenceTicks = (fenceTicks == 0) ? matchedTicks : 0;
-            out += text.mid(i, matchedTicks);
-            i += matchedTicks;
+        // Preserve fenced code blocks (``` or ~~~) verbatim (e.g. copyable LaTeX output).
+        QChar matchedChar;
+        qsizetype matchedLen = 0;
+        if (matchCodeFence(text, i, fenceChar, fenceLen, matchedChar, matchedLen)) {
+            if (fenceLen == 0) {
+                fenceChar = matchedChar;
+                fenceLen = matchedLen;
+            } else {
+                fenceChar = QChar();
+                fenceLen = 0;
+            }
+            out += text.mid(i, matchedLen);
+            i += matchedLen;
             continue;
         }
-        if (fenceTicks > 0) {
+        if (fenceLen > 0) {
             out += text[i++];
+            continue;
+        }
+        if (text[i] == QLatin1Char('\\') && i + 1 < n &&
+            (text[i + 1] == QLatin1Char('\\') || text[i + 1] == QLatin1Char('`') ||
+             text[i + 1] == QLatin1Char('$'))) {
+            out += text[i];
+            out += text[i + 1];
+            i += 2;
             continue;
         }
         // Preserve matched inline code spans (`...`) verbatim.
@@ -791,10 +830,9 @@ QString extractLatexWithNonces(const QString &text, const QString &nonce, QStrin
             i += ticks;
             continue;
         }
-        const bool escaped = (i > 0 && text[i - 1] == QLatin1Char('\\'));
 
         // Display math: $$...$$
-        if (!escaped && i + 1 < n && text[i] == QLatin1Char('$') && text[i + 1] == QLatin1Char('$')) {
+        if (i + 1 < n && text[i] == QLatin1Char('$') && text[i + 1] == QLatin1Char('$')) {
             const qsizetype close = text.indexOf(QStringLiteral("$$"), i + 2);
             if (close > i + 2 && emitMath(text.mid(i + 2, close - (i + 2)), true)) {
                 i = close + 2;
@@ -802,7 +840,7 @@ QString extractLatexWithNonces(const QString &text, const QString &nonce, QStrin
             }
         }
         // Display math: \[...\]
-        if (!escaped && i + 1 < n && text[i] == QLatin1Char('\\') && text[i + 1] == QLatin1Char('[')) {
+        if (i + 1 < n && text[i] == QLatin1Char('\\') && text[i + 1] == QLatin1Char('[')) {
             const qsizetype close = text.indexOf(QStringLiteral("\\]"), i + 2);
             if (close > i + 2 && emitMath(text.mid(i + 2, close - (i + 2)), true)) {
                 i = close + 2;
@@ -810,7 +848,7 @@ QString extractLatexWithNonces(const QString &text, const QString &nonce, QStrin
             }
         }
         // Inline math: \(...\)
-        if (!escaped && i + 1 < n && text[i] == QLatin1Char('\\') && text[i + 1] == QLatin1Char('(')) {
+        if (i + 1 < n && text[i] == QLatin1Char('\\') && text[i + 1] == QLatin1Char('(')) {
             const qsizetype close = text.indexOf(QStringLiteral("\\)"), i + 2);
             if (close > i + 2 && emitMath(text.mid(i + 2, close - (i + 2)), false)) {
                 i = close + 2;
@@ -818,7 +856,7 @@ QString extractLatexWithNonces(const QString &text, const QString &nonce, QStrin
             }
         }
         // Inline math: $...$ (with strict Pandoc/KaTeX currency guards)
-        if (!escaped && text[i] == QLatin1Char('$') && i + 1 < n && text[i + 1] != QLatin1Char('$') &&
+        if (text[i] == QLatin1Char('$') && i + 1 < n && text[i + 1] != QLatin1Char('$') &&
             !text[i + 1].isSpace()) {
             qsizetype j = i + 1;
             qsizetype close = -1;

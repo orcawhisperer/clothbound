@@ -1124,7 +1124,39 @@ void WebImporter::downloadArxivPdf(const QString &arxivId, const QVariantMap &me
     }
     if (stem.isEmpty())
         stem = QStringLiteral("arxiv-paper");
-    const QString plannedDestPath = QDir(downloadsDir()).filePath(stem + QStringLiteral(".pdf"));
+    const QString sourceUrl = QStringLiteral("https://arxiv.org/abs/") + arxivId;
+    auto isSameSource = [this, &sourceUrl, &arxivId](const QString &path) {
+        if (!m_library)
+            return false;
+        const int existingId = m_library->idForPath(path);
+        if (existingId <= 0)
+            return false;
+        return m_library->bookSetting(existingId, QStringLiteral("source_url")) == sourceUrl ||
+               m_library->bookSetting(existingId, QStringLiteral("arxiv_id")) == arxivId;
+    };
+
+    const QString dir = downloadsDir();
+    QString plannedDestPath = QDir(dir).filePath(stem + QStringLiteral(".pdf"));
+    if (QFileInfo::exists(plannedDestPath) && !isSameSource(plannedDestPath)) {
+        QString safeId = arxivId;
+        safeId.replace(QLatin1Char('/'), QLatin1Char('_'));
+        const QString disambigStem = stem + QLatin1Char('-') + sanitizeFileStem(safeId, 32);
+        plannedDestPath = QDir(dir).filePath(disambigStem + QStringLiteral(".pdf"));
+        if (QFileInfo::exists(plannedDestPath) && !isSameSource(plannedDestPath)) {
+            const QString hashedStem = stem + QLatin1Char('-') + shortHashHex(sourceUrl);
+            plannedDestPath = QDir(dir).filePath(hashedStem + QStringLiteral(".pdf"));
+            if (QFileInfo::exists(plannedDestPath) && !isSameSource(plannedDestPath)) {
+                for (int n = 2; n < 1000; ++n) {
+                    const QString candidate =
+                        QDir(dir).filePath(QStringLiteral("%1-%2.pdf").arg(hashedStem).arg(n));
+                    if (!QFileInfo::exists(candidate) || isSameSource(candidate)) {
+                        plannedDestPath = candidate;
+                        break;
+                    }
+                }
+            }
+        }
+    }
 
     const QUrl pdfUrl(m_arxivPdfBase + arxivId + QStringLiteral(".pdf"));
     fetchDirectOrStream(
@@ -1132,7 +1164,7 @@ void WebImporter::downloadArxivPdf(const QString &arxivId, const QVariantMap &me
         QByteArrayLiteral("application/pdf, */*;q=0.1"),
         QStringLiteral("pdf"),
         [plannedDestPath](const QString &, const QUrl &, const QString &) { return plannedDestPath; },
-        [this, arxivId, paperTitle, abstractText, targetCollectionId, generation](FetchResult pdfRes) {
+        [this, arxivId, sourceUrl, paperTitle, abstractText, targetCollectionId, generation](FetchResult pdfRes) {
             if (generation != m_generation)
                 return;
             if (!pdfRes.ok) {
@@ -1158,7 +1190,6 @@ void WebImporter::downloadArxivPdf(const QString &arxivId, const QVariantMap &me
             if (targetCollectionId > 0)
                 m_library->addToCollection(bookId, targetCollectionId);
 
-            const QString sourceUrl = QStringLiteral("https://arxiv.org/abs/") + arxivId;
             m_library->setBookSetting(bookId, QStringLiteral("source_url"), sourceUrl);
             m_library->setBookSetting(bookId, QStringLiteral("arxiv_id"), arxivId);
             if (!abstractText.isEmpty())
@@ -1425,13 +1456,20 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
     auto tryFinish = [batch] {
         if (!batch->finished && batch->completed >= batch->queue.size() && batch->inFlight == 0) {
             batch->finished = true;
-            batch->onDone(std::move(batch->assets), std::move(batch->pathMap));
+            auto onDone = std::move(batch->onDone);
+            batch->onDone = {};
+            if (onDone)
+                onDone(std::move(batch->assets), std::move(batch->pathMap));
         }
     };
 
     auto pump = std::make_shared<std::function<void()>>();
-    *pump = [this, batch, pump, tryFinish, generation] {
+    std::weak_ptr<std::function<void()>> weakPump = pump;
+    *pump = [this, batch, weakPump, tryFinish, generation] {
         if (generation != m_generation || batch->finished || batch->pumping)
+            return;
+        auto strongPump = weakPump.lock();
+        if (!strongPump)
             return;
         batch->pumping = true;
         while (!batch->finished && batch->inFlight < kMaxConcurrentImages && batch->nextIndex < batch->queue.size()) {
@@ -1447,9 +1485,13 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
             fetchToMemory(
                 img.sourceUrl, imgLimit, false, generation,
                 QByteArrayLiteral("image/webp, image/png, image/jpeg, image/gif, image/svg+xml;q=0.8, */*;q=0.1"),
-                [this, batch, pump, tryFinish, img, generation](FetchResult imgRes) {
-                    if (generation != m_generation || batch->finished)
+                [this, batch, strongPump, tryFinish, img, generation](FetchResult imgRes) {
+                    if (generation != m_generation || batch->finished) {
+                        batch->onDone = {};
+                        if (!batch->pumping)
+                            *strongPump = nullptr;
                         return;
+                    }
                     --batch->inFlight;
                     ++batch->completed;
 
@@ -1476,10 +1518,15 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
                                   .arg(batch->completed)
                                   .arg(batch->queue.size()));
 
-                    if (batch->completed >= batch->queue.size() && batch->inFlight == 0)
+                    if (batch->completed >= batch->queue.size() && batch->inFlight == 0) {
                         tryFinish();
-                    else if (!batch->pumping)
-                        (*pump)();
+                        if (!batch->pumping)
+                            *strongPump = nullptr;
+                    } else if (!batch->pumping) {
+                        (*strongPump)();
+                        if (batch->finished)
+                            *strongPump = nullptr;
+                    }
                 });
         }
         batch->pumping = false;
@@ -1487,4 +1534,8 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
     };
 
     (*pump)();
+    if (batch->finished || generation != m_generation) {
+        batch->onDone = {};
+        *pump = nullptr;
+    }
 }

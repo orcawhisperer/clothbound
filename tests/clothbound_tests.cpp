@@ -15161,6 +15161,112 @@ async function flushMicrotasks(n = 8) {
         QCOMPARE(proc.readAllStandardOutput().trimmed(), QByteArray("OK"));
     }
     // === end a-plus-craft tests ===
+
+    // === final-audit-polish tests ===
+    void finalAuditPolishRegressions() {
+        // 1. MathFormatter CommonMark tilde fences (~~~) & backslash-escaped backticks (\`)
+        //    must never desync raw HTML escaping or math extraction.
+        const QString tildePayload = QStringLiteral("~~~\n```\n~~~\nhello <a href=\"http://evil.invalid\">LINK</a>");
+        const QString tildeClean = MathFormatter::cleanMarkdown(tildePayload);
+        QVERIFY2(!tildeClean.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(tildeClean));
+        QVERIFY2(tildeClean.contains(QStringLiteral("&lt;a href=")), qPrintable(tildeClean));
+        const QString tildeHtml = MathFormatter::formatDisplayHtml(tildePayload, QStringLiteral("rgba(0,0,0,0.1)"));
+        QVERIFY2(!tildeHtml.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(tildeHtml));
+
+        const QString escapedTickPayload = QStringLiteral("\\`<a href=\"http://evil.invalid\">LINK</a>`");
+        const QString escapedTickClean = MathFormatter::cleanMarkdown(escapedTickPayload);
+        QVERIFY2(!escapedTickClean.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(escapedTickClean));
+        QVERIFY2(escapedTickClean.contains(QStringLiteral("&lt;a href=")), qPrintable(escapedTickClean));
+
+        const QString escapedBackslashCode = QStringLiteral("\\\\`<a href=\"http://evil.invalid\">CODE</a>` <a href=\"http://evil.invalid\">OUT</a>");
+        const QString escapedBsClean = MathFormatter::cleanMarkdown(escapedBackslashCode);
+        QVERIFY2(escapedBsClean.contains(QStringLiteral("&lt;a href=\"http://evil.invalid\"&gt;OUT")), qPrintable(escapedBsClean));
+        const QString escapedBsHtml = MathFormatter::formatDisplayHtml(escapedBackslashCode, QStringLiteral("rgba(0,0,0,0.1)"));
+        QVERIFY2(!escapedBsHtml.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(escapedBsHtml));
+
+        const QString tildeMath = QStringLiteral("~~~latex\n$x^2$\n~~~\nOutside $y^2$.");
+        const QString tildeMathOut = MathFormatter::formatLatexInMarkdown(tildeMath);
+        QVERIFY(tildeMathOut.contains(QStringLiteral("~~~latex\n$x^2$\n~~~")));
+        QVERIFY(tildeMathOut.contains(QStringLiteral("class=\"math-inline\"")));
+
+        // 2. McpServer::readPassageFromIndexReadOnly uses chapter_rows B-tree JOIN first
+        //    and falls back cleanly to chapter_text when chapter_rows is absent.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString epubPath = dir.filePath(QStringLiteral("mcp-rows.epub"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub({
+            {"OEBPS/content.opf",
+             "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+             "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">"
+             "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>MCP Rows</dc:title></metadata>"
+             "<manifest><item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>"
+             "<spine><itemref idref=\"c1\"/></spine></package>"},
+            {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>Original fallback passage text for verification.</p>")},
+        })));
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        const QString indexDb = dir.filePath(QStringLiteral("index.sqlite"));
+        const QString settingsIni = dir.filePath(QStringLiteral("mcp.ini"));
+        LibraryIndex idx(indexDb);
+        QVERIFY(idx.available());
+        QVERIFY(LibraryIndex::indexBook(indexDb, {bookId, epubPath, QStringLiteral("epub"), 1}));
+
+        // Point chapter_rows(bookId, 0) to a distinct FTS rowid whose chapter_text.chapter is 99
+        // to prove the fast chapter_rows JOIN runs before the unindexed chapter_text scan.
+        const QString conn = QStringLiteral("final-audit-mcp-rows");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+            db.setDatabaseName(indexDb);
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            QVERIFY(q.exec(QStringLiteral(
+                "INSERT INTO chapter_text (book, chapter, body) VALUES (%1, 99, 'Fast chapter_rows indexed passage hit.')")
+                               .arg(bookId)));
+            const qint64 fastRowId = q.lastInsertId().toLongLong();
+            QVERIFY(fastRowId > 0);
+            QVERIFY(q.exec(QStringLiteral("UPDATE chapter_rows SET fts_rowid = %1 WHERE book = %2 AND chapter = 0")
+                               .arg(fastRowId)
+                               .arg(bookId)));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(conn);
+
+        McpServer server(&library, nullptr, nullptr, {settingsIni, indexDb});
+        const QString fastHit = server.extractPassageText(bookId, 0, 0, 80);
+        QCOMPARE(fastHit, QStringLiteral("Fast chapter_rows indexed passage hit."));
+
+        // Drop chapter_rows (simulating pre-migration index.sqlite) and verify clean fallback.
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+            db.setDatabaseName(indexDb);
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            QVERIFY(q.exec(QStringLiteral("DROP TABLE chapter_rows")));
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(conn);
+
+        const QString fallbackHit = server.extractPassageText(bookId, 0, 0, 80);
+        QVERIFY2(fallbackHit.contains(QStringLiteral("Original fallback passage text")), qPrintable(fallbackHit));
+
+        // 3. Reader::openPdf rapid open+close stress exercising MainThreadRelease{std::move(book)}.
+        const QString pdfPath = dir.filePath(QStringLiteral("rapid.pdf"));
+        QVERIFY(TestBooks::write(pdfPath, TestBooks::pdf("Rapid Close", "Ada Marsh")));
+        const int pdfId = library.addBookFile(pdfPath);
+        QVERIFY(pdfId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        for (int iter = 0; iter < 8; ++iter) {
+            QVERIFY(reader.openBook(pdfId));
+            reader.close();
+            QCoreApplication::processEvents();
+        }
+        QVERIFY(QThreadPool::globalInstance()->waitForDone(5000));
+        QCoreApplication::processEvents();
+    }
+    // === end final-audit-polish tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

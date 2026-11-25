@@ -142,6 +142,7 @@ private slots:
     void svgSanitizationRejectsUnsafePayloads();
     void xmlDtdRejectedInArxivAtom();
     void articleExtractorDeepDomLinearMetrics();
+    void arxivCollisionDisambiguationAndImageBatchLifetime();
 };
 
 void TestOnlineIngest::urlGuardRejectsUnsafeSchemes() {
@@ -1214,6 +1215,98 @@ void TestOnlineIngest::articleExtractorDeepDomLinearMetrics() {
     QVERIFY(art.bodyXhtml.contains(QStringLiteral("Carefully memoized bottom-up metrics")));
     QVERIFY(!art.bodyXhtml.contains(QStringLiteral(">One<")));
     QVERIFY(art.wordCount >= 200);
+}
+
+void TestOnlineIngest::arxivCollisionDisambiguationAndImageBatchLifetime() {
+    LocalHttpServer server;
+    const QString origin = server.origin();
+    const QByteArray pdfBytes = TestBooks::pdf("Shared Title", "Alan Turing");
+    const QByteArray pngBytes = samplePng();
+
+    // 1. Hostile/colliding citation_arxiv_id landing page must NOT overwrite an existing PDF in downloads/.
+    const QByteArray landingHtml = R"HTML(<!doctype html><html><head>
+        <meta name="citation_arxiv_id" content="2501.00001">
+        <meta name="citation_title" content="Shared Title">
+        <meta name="citation_author" content="Alan Turing">
+        <meta name="citation_publication_date" content="2025">
+        <title>Paper Landing</title>
+    </head><body><p>Landing page</p></body></html>)HTML";
+    server.routes.insert("/landing", {200, "text/html; charset=utf-8", {}, landingHtml, false});
+    server.routes.insert("/pdf/2501.00001.pdf", {200, "application/pdf", {}, pdfBytes, false});
+
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    const QString storageDir = tempDir.filePath(QStringLiteral("storage"));
+    const QString downloadsDir = storageDir + QStringLiteral("/downloads");
+    QVERIFY(QDir().mkpath(downloadsDir));
+
+    const QString preexistingPath = downloadsDir + QStringLiteral("/Alan Turing - Shared Title (2025).pdf");
+    {
+        QFile f(preexistingPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QCOMPARE(f.write("PREEXISTING_USER_PDF"), qint64(20));
+    }
+
+    Library library(tempDir.filePath(QStringLiteral("data")), tempDir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+
+    WebImporter importer(&library, storageDir);
+    importer.setAllowLocalNetworkForTests(true);
+    importer.setArxivEndpointsForTests(origin + QStringLiteral("/api/query?id_list="),
+                                       origin + QStringLiteral("/pdf/"));
+
+    int bookId = 0;
+    QString kind, error;
+    QVERIFY2(importer.importUrlSync(origin + QStringLiteral("/landing"), &bookId, &kind, &error), qPrintable(error));
+    QVERIFY(bookId > 0);
+    QCOMPARE(kind, QStringLiteral("arxiv"));
+    const QString firstImportedPath = library.record(bookId).path;
+    QVERIFY(firstImportedPath != preexistingPath);
+    QCOMPARE(QFileInfo(firstImportedPath).fileName(), QStringLiteral("Alan Turing - Shared Title (2025)-2501.00001.pdf"));
+
+    // Preexisting file remains completely untouched.
+    {
+        QFile f(preexistingPath);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("PREEXISTING_USER_PDF"));
+    }
+
+    // Re-importing the same arXiv paper reuses the disambiguated path idempotently.
+    int secondId = 0;
+    QVERIFY2(importer.importUrlSync(origin + QStringLiteral("/landing"), &secondId, &kind, &error), qPrintable(error));
+    QCOMPARE(library.record(secondId).path, firstImportedPath);
+
+    // 2. Multi-image article batch (> kMaxConcurrentImages) exercises weak_ptr pump re-entry,
+    //    clean teardown on completion, and clean teardown on mid-flight cancel.
+    const QByteArray multiImgHtml =
+        "<!doctype html><html><head><title>Four Diagrams</title></head><body><article>"
+        "<h1>Four Diagrams</h1>"
+        "<p>This essay contains four embedded raster diagrams so the concurrent image downloader pumps multiple waves "
+        "and verifies clean batch teardown without retaining a self-referential function cycle.</p>"
+        "<img src=\"/img/1.png\" alt=\"one\"><img src=\"/img/2.png\" alt=\"two\">"
+        "<img src=\"/img/3.png\" alt=\"three\"><img src=\"/img/4.png\" alt=\"four\">"
+        "<p>Closing paragraph confirming full readability scoring and offline EPUB image bundling.</p>"
+        "</article></body></html>";
+    server.routes.insert("/four-imgs", {200, "text/html; charset=utf-8", {}, multiImgHtml, false});
+    for (int i = 1; i <= 4; ++i)
+        server.routes.insert(QByteArray("/img/") + QByteArray::number(i) + ".png", {200, "image/png", {}, pngBytes, false});
+
+    int artId = 0;
+    QVERIFY2(importer.importUrlSync(origin + QStringLiteral("/four-imgs"), &artId, &kind, &error), qPrintable(error));
+    QVERIFY(artId > 0);
+    QCOMPARE(kind, QStringLiteral("article"));
+    EpubBook packaged(library.record(artId).path);
+    QVERIFY(packaged.open());
+    for (int i = 1; i <= 4; ++i) {
+        QVERIFY2(!packaged.resource(QStringLiteral("OEBPS/images/img-00%1.png").arg(i)).isEmpty(),
+                 qPrintable(QStringLiteral("Missing bundled image %1").arg(i)));
+    }
+
+    // Mid-flight cancel while image batch is pumping must settle cleanly without crash/leak.
+    importer.importUrl(origin + QStringLiteral("/four-imgs"));
+    QCoreApplication::processEvents();
+    importer.cancel();
+    QTRY_VERIFY_WITH_TIMEOUT(!importer.busy(), 3000);
 }
 
 #ifndef CLOTHBOUND_UNIFIED_TESTS

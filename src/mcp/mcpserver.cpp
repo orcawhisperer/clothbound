@@ -588,14 +588,35 @@ QString readPassageFromIndexReadOnly(const QString &dbPath, int bookId, int chap
         if (db.open()) {
             QSqlQuery pragma(db);
             pragma.exec(QStringLiteral("PRAGMA busy_timeout=3000"));
-            QSqlQuery q(db);
-            q.prepare(QStringLiteral("SELECT substr(body, ?, ?) FROM chapter_text WHERE book = ? AND chapter = ?"));
-            q.addBindValue(start + 1);
-            q.addBindValue(end - start);
-            q.addBindValue(bookId);
-            q.addBindValue(chapter);
-            if (q.exec() && q.next())
-                out = q.value(0).toString().simplified();
+            bool found = false;
+            {
+                QSqlQuery fast(db);
+                if (fast.prepare(QStringLiteral(
+                        "SELECT substr(c.body, ?, ?) FROM chapter_rows r "
+                        "JOIN chapter_text c ON c.rowid = r.fts_rowid "
+                        "WHERE r.book = ? AND r.chapter = ? LIMIT 1"))) {
+                    fast.addBindValue(start + 1);
+                    fast.addBindValue(end - start);
+                    fast.addBindValue(bookId);
+                    fast.addBindValue(chapter);
+                    if (fast.exec() && fast.next()) {
+                        out = fast.value(0).toString().simplified();
+                        found = true;
+                    }
+                }
+            }
+            if (!found) {
+                QSqlQuery q(db);
+                if (q.prepare(QStringLiteral(
+                        "SELECT substr(body, ?, ?) FROM chapter_text WHERE book = ? AND chapter = ? LIMIT 1"))) {
+                    q.addBindValue(start + 1);
+                    q.addBindValue(end - start);
+                    q.addBindValue(bookId);
+                    q.addBindValue(chapter);
+                    if (q.exec() && q.next())
+                        out = q.value(0).toString().simplified();
+                }
+            }
             db.close();
         }
     }

@@ -306,7 +306,7 @@ with open(log_path, "w") as lf:
                 pass
             time.sleep(0.05)
         if first_seen:
-            warmup = 1.6 if extra_args else 0.6
+            warmup = 1.6 if extra_args else 1.0
             sample_dur = max(0.8, (settle_ms / 1000.0) - warmup - 0.25)
             time.sleep(warmup)
             p1 = app_pids(proc.pid)

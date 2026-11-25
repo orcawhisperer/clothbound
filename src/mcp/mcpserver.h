@@ -65,6 +65,8 @@ public:
     static int runStdio(const QStringList &arguments);
 
 private:
+    friend class ClothboundTests;
+
     QJsonObject handleInitialize(const QJsonValue &id, const QJsonObject &params);
     QJsonObject handleToolsList(const QJsonValue &id);
     QJsonObject handleToolsCall(const QJsonValue &id, const QJsonObject &params);

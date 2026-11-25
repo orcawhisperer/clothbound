@@ -1187,7 +1187,7 @@ bool Reader::openPdf(int bookId) {
         connect(watcher, &QFutureWatcher<PdfInitChunk>::finished, watcher, &QObject::deleteLater);
         auto activeSession = m_activeSession;
         watcher->setFuture(QtConcurrent::run(
-            [book, activeSession, session, needCrop, needLengths, pages](QPromise<PdfInitChunk> &promise) {
+            [book, activeSession, session, needCrop, needLengths, pages](QPromise<PdfInitChunk> &promise) mutable {
                 // Ensure the shared QPdfDocument is always destroyed on its affine UI thread.
                 struct MainThreadRelease {
                     std::shared_ptr<PdfBook> handle;
@@ -1201,7 +1201,7 @@ bool Reader::openPdf(int bookId) {
                                 app, [b = std::move(keep)]() mutable { b.reset(); }, Qt::QueuedConnection);
                         }
                     }
-                } releaseGuard{book};
+                } releaseGuard{std::move(book)};
 
                 auto cancelled = [&]() {
                     return promise.isCanceled() || activeSession->load(std::memory_order_relaxed) != session;
@@ -1209,7 +1209,7 @@ bool Reader::openPdf(int bookId) {
                 if (needCrop && !cancelled()) {
                     PdfInitChunk chunk;
                     chunk.kind = PdfInitChunk::Kind::Crop;
-                    chunk.crop = PdfPages::bookCrop(*book);
+                    chunk.crop = PdfPages::bookCrop(*releaseGuard.handle);
                     if (!cancelled())
                         promise.addResult(std::move(chunk));
                 }
@@ -1219,7 +1219,7 @@ bool Reader::openPdf(int bookId) {
                     for (int page = 0; page < pages; ++page) {
                         if (cancelled())
                             return;
-                        lengths.append(qMax(1, int(book->pageText(page).size())));
+                        lengths.append(qMax(1, int(releaseGuard.handle->pageText(page).size())));
                     }
                     if (!cancelled()) {
                         PdfInitChunk chunk;
