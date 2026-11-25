@@ -18,6 +18,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 import urllib.request
 from pathlib import Path
 
@@ -52,6 +53,79 @@ EXACT_NUMBER_FORMS = {
     "ro": {"one"},
     "ga": {"one", "two"},
 }
+
+SCRIPT_PREFIXES = (
+    "LATIN", "CYRILLIC", "GREEK", "ARABIC", "HEBREW", "DEVANAGARI", "BENGALI",
+    "TAMIL", "THAI", "SINHALA", "HANGUL", "HIRAGANA", "KATAKANA", "CJK",
+    "GEORGIAN", "ARMENIAN", "GUJARATI", "GURMUKHI", "KANNADA", "MALAYALAM",
+    "TELUGU", "ORIYA", "KHMER", "LAO", "MYANMAR", "TIBETAN", "ETHIOPIC",
+)
+
+# Writing systems legitimately used by each locale (Latin is always allowed for
+# brand names, URLs, and keyboard shortcuts). Prevents LLM cross-script token bleeds.
+ALLOWED_SCRIPTS = {
+    "ar": {"ARABIC", "LATIN"},
+    "fa": {"ARABIC", "LATIN"},
+    "ur": {"ARABIC", "LATIN"},
+    "he": {"HEBREW", "LATIN"},
+    "bg": {"CYRILLIC", "LATIN"},
+    "ru": {"CYRILLIC", "LATIN"},
+    "sr": {"CYRILLIC", "LATIN"},
+    "uk": {"CYRILLIC", "LATIN"},
+    "be": {"CYRILLIC", "LATIN"},
+    "mk": {"CYRILLIC", "LATIN"},
+    "kk": {"CYRILLIC", "LATIN"},
+    "ky": {"CYRILLIC", "LATIN"},
+    "mn": {"CYRILLIC", "LATIN"},
+    "uz": {"LATIN", "CYRILLIC"},
+    "el": {"GREEK", "LATIN"},
+    "hi": {"DEVANAGARI", "LATIN", "DANDA"},
+    "mr": {"DEVANAGARI", "LATIN", "DANDA"},
+    "ne": {"DEVANAGARI", "LATIN", "DANDA"},
+    "bn": {"BENGALI", "LATIN", "DANDA"},
+    "ta": {"TAMIL", "LATIN"},
+    "te": {"TELUGU", "LATIN"},
+    "kn": {"KANNADA", "LATIN"},
+    "ml": {"MALAYALAM", "LATIN"},
+    "gu": {"GUJARATI", "LATIN"},
+    "pa": {"GURMUKHI", "LATIN"},
+    "th": {"THAI", "LATIN"},
+    "lo": {"LAO", "LATIN"},
+    "km": {"KHMER", "LATIN"},
+    "my": {"MYANMAR", "LATIN"},
+    "si": {"SINHALA", "LATIN"},
+    "ka": {"GEORGIAN", "LATIN"},
+    "hy": {"ARMENIAN", "LATIN"},
+    "am": {"ETHIOPIC", "LATIN"},
+    "ko": {"HANGUL", "LATIN"},
+    "ja": {"HIRAGANA", "KATAKANA", "CJK", "LATIN"},
+    "zh-CN": {"CJK", "LATIN"},
+    "zh-TW": {"CJK", "LATIN"},
+    "zh": {"CJK", "LATIN"},
+}
+
+
+def script_of(ch):
+    cp = ord(ch)
+    if cp < 128:
+        return None
+    if cp in (0x0964, 0x0965):
+        return "DANDA"
+    name = unicodedata.name(ch, "")
+    for prefix in SCRIPT_PREFIXES:
+        if name.startswith(prefix):
+            return prefix
+    return None
+
+
+def has_foreign_script(code, source, translated):
+    allowed = ALLOWED_SCRIPTS.get(code, {"LATIN"})
+    src_scripts = {sc for ch in source if (sc := script_of(ch)) is not None}
+    for ch in translated:
+        sc = script_of(ch)
+        if sc is not None and sc not in allowed and sc not in src_scripts:
+            return True
+    return False
 
 
 def unescape(text):
@@ -89,6 +163,8 @@ def normalize_count_placeholders(ph_list):
 
 def valid_form(code, source, translated, form=None):
     if not isinstance(translated, str) or not translated.strip():
+        return False
+    if has_foreign_script(code, source, translated):
         return False
     if sorted(HTML_TAG.findall(source)) != sorted(HTML_TAG.findall(translated)):
         return False
@@ -208,6 +284,7 @@ def _build_batch_prompt(code, name, strings, forms, batch):
 
 Rules:
 - Natural, friendly, concise {name}, as a native speaker would write a well-made desktop app; keep the same tone (plain, warm, no jargon).
+- Use ONLY the native writing system of {name} (plus Latin only for brand/technical names, URLs, and keyboard shortcuts); NEVER mix characters from any other script.
 - Keep placeholders exactly: %1, %2, %n, %Ln, and keep HTML tags, URLs, and keyboard keys (P, ⇧, Ctrl, Esc, Super W) as they are.
 - Keep brand and product names as they are: Clothbound, Omarchy, Gemini, Google, Kokoro, Piper, Ollama, llama.cpp, LM Studio, MLX, vLLM, EPUB, PDF, M4B, MPRIS.
 - For an entry with "counted": true, give "forms": the plural forms {name} uses ({", ".join(forms)}), ALWAYS including "other", each containing %n (or %Ln) where the number goes. Otherwise give "translation".
@@ -215,6 +292,12 @@ Rules:
 Answer with a JSON array: for each entry, its "i" and its translation.
 
 {json.dumps(listed, ensure_ascii=False, indent=0)}"""
+
+
+def _clean_text(source, translated):
+    if isinstance(translated, str) and source == source.strip():
+        return translated.strip()
+    return translated
 
 
 def _translate_batch(code, name, strings, forms, batch, done):
@@ -227,9 +310,11 @@ def _translate_batch(code, name, strings, forms, batch, done):
         return
     for i, text in enumerate(batch):
         item = answer.get(i, {})
-        value, plural = item.get("translation"), item.get("forms")
+        value = _clean_text(text, item.get("translation"))
+        plural = item.get("forms")
         if strings[text]:
             if isinstance(plural, dict):
+                plural = {k: _clean_text(text, v) for k, v in plural.items()}
                 # Never fabricate "other" from exact-singular/dual forms ("one"/"two"/"zero").
                 fallback = plural.get("other") or plural.get("many")
                 if fallback and valid_form(code, text, fallback, form="other"):
@@ -255,12 +340,20 @@ def translate(code, name, strings, existing):
         return existing, 0
     forms = PLURALS.get(code, ["one", "other"])
     done = dict(existing)
-    for start in range(0, len(missing), 100):
-        batch = missing[start:start + 100]
-        _translate_batch(code, name, strings, forms, batch, done)
-        save(code, done)
-        print(f"  {code}: {min(start + 100, len(missing))} of {len(missing)}", flush=True)
-    return done, len(missing)
+    total_asked = len(missing)
+    for attempt in range(3):
+        batch_size = 100 if attempt == 0 else 25
+        for start in range(0, len(missing), batch_size):
+            batch = missing[start:start + batch_size]
+            _translate_batch(code, name, strings, forms, batch, done)
+            save(code, done)
+            print(f"  {code}: {min(start + batch_size, len(missing))} of {len(missing)}", flush=True)
+        missing = [text for text, counted in strings.items()
+                   if text not in done or not is_valid_entry(code, text, counted, done[text])]
+        if not missing or attempt == 2:
+            break
+        print(f"  {code}: retrying {len(missing)} rejected/missing string(s) (pass {attempt + 2}/3)", flush=True)
+    return done, total_asked
 
 
 def english(strings):
