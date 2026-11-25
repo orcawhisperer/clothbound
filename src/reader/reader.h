@@ -6,6 +6,7 @@
 #include <QTimer>
 #include <QVariantList>
 #include <QVariantMap>
+#include <atomic>
 #include <memory>
 
 class BookScheme;
@@ -252,6 +253,7 @@ private:
     int m_firstLinear = 0;
     int m_lastLinear = 0;
     qint64 m_session = 0;
+    std::shared_ptr<std::atomic<qint64>> m_activeSession = std::make_shared<std::atomic<qint64>>(0);
     int m_relocationSeq = 0;
 
     int m_chapter = 0;

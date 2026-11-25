@@ -93,6 +93,41 @@ FocusScope {
     function propBool(obj, key) {
         return !!(obj && obj[key])
     }
+    function isDescendantOf(item, ancestor) {
+        let cur = item
+        while (cur) {
+            if (cur === ancestor)
+                return true
+            cur = cur.parent
+        }
+        return false
+    }
+    readonly property Item focusedItem: Window.activeFocusItem
+    readonly property bool chromeFocused: focusedItem !== null && (
+        isDescendantOf(focusedItem, chrome) || isDescendantOf(focusedItem, bottomFooter)
+        || isDescendantOf(focusedItem, jumpPill) || isDescendantOf(focusedItem, followVoicePill)
+        || isDescendantOf(focusedItem, keysStrip)
+    )
+    readonly property bool readingViewportFocused: {
+        if (panelOpen || modalOpen || win.typing || lightbox.open || listenOffer.open
+            || (pdf && pdfSurface && (pdfSurface.snipMode || pdfSurface.peekOpen)))
+            return false
+        if (chromeFocused)
+            return false
+        if (focusedItem === null || focusedItem === view || focusedItem === readingStage)
+            return true
+        if (pdf)
+            return pdfSurface !== null && isDescendantOf(focusedItem, pdfSurface)
+        return web !== null && isDescendantOf(focusedItem, web)
+    }
+    onChromeShownChanged: {
+        if (!chromeShown && chromeFocused)
+            focusPage()
+    }
+    onChromeFocusedChanged: {
+        if (!chromeFocused && chromeShown)
+            chromeTimer.restart()
+    }
 
     onCompanionDockedChanged: styleTimer.restart()
 
@@ -179,28 +214,236 @@ FocusScope {
         }
     }
 
-    // The surface's calls (clothbound.next(), …): the web page's for an EPUB,
-    // the PDF surface's (which answers the same calls) for a PDF.
-    function js(code, callback) {
-        if (pdf) {
-            if (!pdfSurface)
-                return
-            // (QML keeps "escape" and "marks" for its own: the surface calls them
-            // dismiss and setMarks.)
-            const call = code.replace("clothbound.escape(", "clothbound.dismiss(").replace("clothbound.marks(", "clothbound.setMarks(")
-            // qmllint disable literal-constructor
-            const result = (new Function("clothbound", "return (" + call + ")"))(pdfSurface)
-            // qmllint enable literal-constructor
-            if (callback)
-                callback(result)
-            return
-        }
+    // Typed surface dispatch: directly invokes PdfSurface methods for PDFs
+    // (zero dynamic eval / string substitution) and runs JavaScript on the
+    // WebEngine surface for EPUBs.
+    function runWebJs(code, callback) {
         if (!web)
             return
         if (callback)
             web.runJavaScript(code, callback)
         else
             web.runJavaScript(code)
+    }
+    function surfaceOpen(manifest, position, styleObj) {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.open(manifest, position, styleObj)
+            return
+        }
+        runWebJs("clothbound.open(" + JSON.stringify(manifest) + "," + JSON.stringify(position) + ","
+                 + JSON.stringify(styleObj) + ")")
+    }
+    function surfaceSetStyle(styleObj) {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.setStyle(styleObj)
+            return
+        }
+        runWebJs("clothbound.setStyle(" + JSON.stringify(styleObj) + ")")
+    }
+    function surfaceNext() {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.next()
+            return
+        }
+        runWebJs("clothbound.next()")
+    }
+    function surfacePrev() {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.prev()
+            return
+        }
+        runWebJs("clothbound.prev()")
+    }
+    function surfaceNextChapter() {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.nextChapter()
+            return
+        }
+        runWebJs("clothbound.nextChapter()")
+    }
+    function surfacePrevChapter() {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.prevChapter()
+            return
+        }
+        runWebJs("clothbound.prevChapter()")
+    }
+    function surfaceBack() {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.back()
+            return
+        }
+        runWebJs("clothbound.back()")
+    }
+    function surfaceForward() {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.forward()
+            return
+        }
+        runWebJs("clothbound.forward()")
+    }
+    function surfaceGoTo(target) {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.goTo(target)
+            return
+        }
+        runWebJs("clothbound.goTo(" + JSON.stringify(target) + ")")
+    }
+    function surfaceClearSelection() {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.clearSelection()
+            return
+        }
+        runWebJs("clothbound.clearSelection()")
+    }
+    function surfaceEscape(callback) {
+        if (pdf) {
+            const closed = pdfSurface ? !!pdfSurface.dismiss() : false
+            if (callback)
+                callback(closed)
+            return
+        }
+        runWebJs("clothbound.escape()", callback)
+    }
+    function surfaceFound(hits, currentHit) {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.found(hits, currentHit)
+            return
+        }
+        runWebJs("clothbound.found(" + JSON.stringify(hits) + "," + JSON.stringify(currentHit) + ")")
+    }
+    function surfaceGoToAndFound(target, hits, currentHit) {
+        if (pdf) {
+            if (pdfSurface) {
+                pdfSurface.goTo(target)
+                pdfSurface.found(hits, currentHit)
+            }
+            return
+        }
+        runWebJs("clothbound.goTo(" + JSON.stringify(target) + ")"
+                 + ".then(() => clothbound.found(" + JSON.stringify(hits) + ","
+                 + JSON.stringify(currentHit) + "))")
+    }
+    function surfaceMarks(highlights) {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.setMarks()
+            return
+        }
+        runWebJs("clothbound.marks(" + JSON.stringify(highlights) + ")")
+    }
+    function surfaceSpeak(start, end, follow) {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.speak(start, end, !!follow)
+            return
+        }
+        runWebJs("clothbound.speak(" + Number(start) + "," + Number(end) + "," + (!!follow) + ")")
+    }
+    function surfaceGoToAndSpeak(target, start, end, follow) {
+        if (pdf) {
+            if (pdfSurface) {
+                pdfSurface.goTo(target)
+                pdfSurface.speak(start, end, !!follow)
+            }
+            return
+        }
+        runWebJs("clothbound.goTo(" + JSON.stringify(target) + ")"
+                 + ".then(() => clothbound.speak(" + Number(start) + "," + Number(end) + "," + (!!follow) + "))")
+    }
+    function surfaceHighlight(name, spans) {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.highlight(name, spans)
+            return
+        }
+        runWebJs("clothbound.highlight(" + JSON.stringify(name) + "," + JSON.stringify(spans) + ")")
+    }
+    function surfaceRequestSpeakable(chapter) {
+        if (pdf) {
+            if (pdfSurface)
+                pdfSurface.requestSpeakable(chapter)
+            return
+        }
+        runWebJs("clothbound.requestSpeakable(" + Number(chapter) + ")")
+    }
+    function surfaceListeningStart(callback) {
+        if (pdf) {
+            const place = pdfSurface ? pdfSurface.listeningStart() : null
+            if (callback)
+                callback(place)
+            return
+        }
+        runWebJs("JSON.stringify(clothbound.listeningStart())", function(result) {
+            if (callback)
+                callback(JSON.parse(result || "null"))
+        })
+    }
+    function surfaceSampleText(callback) {
+        if (pdf) {
+            const sample = pdfSurface ? pdfSurface.sampleText() : ""
+            if (callback)
+                callback(sample)
+            return
+        }
+        runWebJs("clothbound.sampleText()", callback)
+    }
+    // Compatibility entry point for external callers (e.g. Main.qml's citation
+    // highlight jump): dispatches safely to typed PDF methods without eval.
+    function js(code, callback) {
+        if (!pdf) {
+            runWebJs(code, callback)
+            return
+        }
+        if (!pdfSurface)
+            return
+        const m = /^clothbound\.([A-Za-z]+)\(([\s\S]*)\)$/.exec(String(code || "").trim())
+        if (!m)
+            return
+        let args = []
+        const rawArgs = m[2].trim()
+        if (rawArgs !== "") {
+            try {
+                args = JSON.parse("[" + rawArgs + "]")
+            } catch (e) {
+                return
+            }
+        }
+        let result
+        switch (m[1]) {
+        case "open": result = pdfSurface.open(args[0], args[1], args[2]); break
+        case "setStyle": result = pdfSurface.setStyle(args[0]); break
+        case "next": result = pdfSurface.next(); break
+        case "prev": result = pdfSurface.prev(); break
+        case "nextChapter": result = pdfSurface.nextChapter(); break
+        case "prevChapter": result = pdfSurface.prevChapter(); break
+        case "back": result = pdfSurface.back(); break
+        case "forward": result = pdfSurface.forward(); break
+        case "goTo": result = pdfSurface.goTo(args[0]); break
+        case "clearSelection": result = pdfSurface.clearSelection(); break
+        case "escape": result = pdfSurface.dismiss(); break
+        case "found": result = pdfSurface.found(args[0], args[1]); break
+        case "marks": result = pdfSurface.setMarks(); break
+        case "speak": result = pdfSurface.speak(args[0], args[1], args[2]); break
+        case "highlight": result = pdfSurface.highlight(args[0], args[1]); break
+        case "requestSpeakable": result = pdfSurface.requestSpeakable(args[0]); break
+        case "listeningStart": result = pdfSurface.listeningStart(); break
+        case "sampleText": result = pdfSurface.sampleText(); break
+        default: return
+        }
+        if (callback)
+            callback(result)
     }
     function style() {
         const margins = { narrow: [0.055, 36], normal: [0.1125, 30.5], wide: [0.155, 26] }[activeSettings.margins] || [0.1125, 30.5]
@@ -292,8 +535,7 @@ FocusScope {
                 return
             epubSurfaceOpen = true
         }
-        js("clothbound.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
-           + JSON.stringify(style()) + ")")
+        surfaceOpen(reader.manifest, reader.startPosition, style())
     }
     function closeBook() {
         clearSurfaceNudge()
@@ -350,26 +592,26 @@ FocusScope {
         if (narration.active)
             narration.following = false
     }
-    function next() { leaveVoice(); js("clothbound.next()") }
-    function prev() { leaveVoice(); js("clothbound.prev()") }
+    function next() { leaveVoice(); surfaceNext() }
+    function prev() { leaveVoice(); surfacePrev() }
     function pageStep(dir) {
         leaveVoice()
         if (pdf) {
             if (pdfSurface)
                 pdfSurface.pageStep(dir)
         } else {
-            js(dir > 0 ? "clothbound.next()" : "clothbound.prev()")
+            dir > 0 ? surfaceNext() : surfacePrev()
         }
     }
     function scrollVertical(dir) {
         if (pdf && pdfSurface)
             pdfSurface.scrollVertical(dir)
     }
-    function nextChapter() { leaveVoice(); js("clothbound.nextChapter()") }
-    function prevChapter() { leaveVoice(); js("clothbound.prevChapter()") }
-    function back() { leaveVoice(); jumpPillVisible = false; js("clothbound.back()") }
-    function forward() { leaveVoice(); jumpPillVisible = false; js("clothbound.forward()") }
-    function goTo(target) { leaveVoice(); js("clothbound.goTo(" + JSON.stringify(target) + ")") }
+    function nextChapter() { leaveVoice(); surfaceNextChapter() }
+    function prevChapter() { leaveVoice(); surfacePrevChapter() }
+    function back() { leaveVoice(); jumpPillVisible = false; surfaceBack() }
+    function forward() { leaveVoice(); jumpPillVisible = false; surfaceForward() }
+    function goTo(target) { leaveVoice(); surfaceGoTo(target) }
 
     // Cross-branch seam (ContinueShelf / VoicePanel): start reading aloud from
     // the current page, deferring cleanly if the EPUB surface is still loading.
@@ -384,8 +626,7 @@ FocusScope {
             return
         }
         pendingStartListening = false
-        js("JSON.stringify(clothbound.listeningStart())", function(result) {
-            const place = JSON.parse(result || "null")
+        surfaceListeningStart(function(place) {
             if (place)
                 narration.start(place.chapter, place.offset)
             else if (reader.open)
@@ -456,14 +697,19 @@ FocusScope {
         }
         if (selectionBar.visible) {
             selectionBar.visible = false
-            js("clothbound.clearSelection()")
+            surfaceClearSelection()
             return
         }
         if (searchBar.open) {
             searchBar.close()
             return
         }
-        js("clothbound.escape()", function(closed) {
+        if (chromeFocused) {
+            view.chromeShown = false
+            focusPage()
+            return
+        }
+        surfaceEscape(function(closed) {
             if (!closed)
                 view.closeRequested()
         })
@@ -533,13 +779,13 @@ FocusScope {
         const hit = bookSearch.current >= 0 ? bookSearch.results[bookSearch.current] : null
         const current = hit && (hit.chapter === reader.chapter || pdf)
                         ? { chapter: hit.chapter, start: hit.start, end: hit.end } : null
-        js("clothbound.found(" + JSON.stringify(bookSearch.inChapter(reader.chapter)) + "," + JSON.stringify(current) + ")")
+        surfaceFound(bookSearch.inChapter(reader.chapter), current)
     }
     function showFound(hit) {
         leaveVoice()
-        js("clothbound.goTo(" + JSON.stringify({ chapter: hit.chapter, offset: hit.start, instant: true }) + ")"
-           + ".then(() => clothbound.found(" + JSON.stringify(bookSearch.inChapter(hit.chapter)) + ","
-           + JSON.stringify({ chapter: hit.chapter, start: hit.start, end: hit.end }) + "))")
+        surfaceGoToAndFound({ chapter: hit.chapter, offset: hit.start, instant: true },
+                            bookSearch.inChapter(hit.chapter),
+                            { chapter: hit.chapter, start: hit.start, end: hit.end })
         foundChapter = hit.chapter
     }
     Connections {
@@ -550,7 +796,7 @@ FocusScope {
     property int decoratedChapter: -1
     function decorate() {
         if ((pdf || (surfaceReady && reader.relocationSeq > 0)) && reader.open)
-            js("clothbound.marks(" + JSON.stringify(marks.highlightsIn(reader.chapter)) + ")")
+            surfaceMarks(marks.highlightsIn(reader.chapter))
     }
     Connections {
         target: reader
@@ -571,7 +817,7 @@ FocusScope {
                     view.markFound()
                 // Back in the chapter being read aloud: its sentence at once.
                 if (narration.active && narration.chapter === reader.chapter && narration.sentenceStart >= 0)
-                    view.js("clothbound.speak(" + narration.sentenceStart + "," + narration.sentenceEnd + ",false)")
+                    view.surfaceSpeak(narration.sentenceStart, narration.sentenceEnd, false)
             }
         }
         function onBookChanged() { view.decoratedChapter = -1 }
@@ -683,7 +929,7 @@ FocusScope {
     Timer {
         id: styleTimer
         interval: 50
-        onTriggered: if ((view.surfaceReady || view.pdf) && reader.open) view.js("clothbound.setStyle(" + JSON.stringify(view.style()) + ")")
+        onTriggered: if ((view.surfaceReady || view.pdf) && reader.open) view.surfaceSetStyle(view.style())
     }
     onLookChanged: styleTimer.restart()
     Connections {
@@ -724,20 +970,20 @@ FocusScope {
 
     Connections {
         target: download
-        function onBlocksWanted(chapter) { view.js("clothbound.requestSpeakable(" + chapter + ")") }
+        function onBlocksWanted(chapter) { view.surfaceRequestSpeakable(chapter) }
         function onReady() { toast.show(qsTr("Ready to listen offline")) }
         function onChanged() { if (view.web) view.web.updateLifecycleState() }
     }
     Connections {
         target: narration
-        function onBlocksWanted(chapter) { view.js("clothbound.requestSpeakable(" + chapter + ")") }
+        function onBlocksWanted(chapter) { view.surfaceRequestSpeakable(chapter) }
         function onSpeaking(chapter, start, end) {
             // A PDF shows two pages at once and finds its own way to the page.
             if (chapter === reader.chapter || view.pdf)
-                view.js("clothbound.speak(" + start + "," + end + "," + narration.following + ")")
+                view.surfaceSpeak(start, end, narration.following)
             else if (narration.following)
-                view.js("clothbound.goTo({chapter:" + chapter + ",offset:" + start + ",instant:true,quiet:true,automated:true})"
-                        + ".then(() => clothbound.speak(" + start + "," + end + ",true))")
+                view.surfaceGoToAndSpeak({ chapter: chapter, offset: start, instant: true, quiet: true, automated: true },
+                                         start, end, true)
         }
         function onStateChanged() {
             if (narration.active) {
@@ -749,7 +995,7 @@ FocusScope {
                 styleTimer.restart()
             }
             if (!narration.active)
-                view.js("clothbound.highlight('cb-speaking', [])")
+                view.surfaceHighlight("cb-speaking", [])
             if (view.web)
                 view.web.updateLifecycleState()
         }
@@ -784,7 +1030,7 @@ FocusScope {
         if (surfaceNudge) {
             surfaceNudge = false
             if (!pdf && surfaceReady && web)
-                view.js("clothbound.endSurfaceNudge && clothbound.endSurfaceNudge()")
+                view.runWebJs("clothbound.endSurfaceNudge && clothbound.endSurfaceNudge()")
         }
     }
 
@@ -799,7 +1045,7 @@ FocusScope {
         if (!surfaceReady || !web)
             return
         surfaceWatcher.forceItemUpdate(web)
-        view.js("clothbound.refresh && clothbound.refresh()")
+        view.runWebJs("clothbound.refresh && clothbound.refresh()")
     }
 
     function refreshSoon(reason) {
@@ -814,7 +1060,7 @@ FocusScope {
             return
         surfaceWatcher.forceItemUpdate(web)
         if (!surfaceNudge && !epubLoading && surfaceWatcher.takeSurfaceNudge(reason)) {
-            view.js("clothbound.beginSurfaceNudge && clothbound.beginSurfaceNudge()")
+            view.runWebJs("clothbound.beginSurfaceNudge && clothbound.beginSurfaceNudge()")
             surfaceNudge = true
             nudgeRestoreTimer.restart()
         }
@@ -853,7 +1099,7 @@ FocusScope {
         onTriggered: {
             view.surfaceNudge = false
             if (!view.pdf && view.surfaceReady && reader.open && view.web) {
-                view.js("clothbound.endSurfaceNudge && clothbound.endSurfaceNudge()")
+                view.runWebJs("clothbound.endSurfaceNudge && clothbound.endSurfaceNudge()")
                 surfaceWatcher.forceItemUpdate(view.web)
             }
         }
@@ -956,7 +1202,7 @@ FocusScope {
         else if (key === "/") searchBar.show()
         else if (key === "n" && bookSearch.count > 0) searchBar.next()
         else if (key === "N" && bookSearch.count > 0) searchBar.previous()
-        else if (key === "Tab") view.chromeShown ? (view.chromeShown = false) : view.showChrome()
+        else if (key === "Tab") { if (view.readingViewportFocused) view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
         else if (key === "p" && !shift) narration.active ? narration.toggle() : listen()
         else if ((key === "P" || (key === "p" && shift)) && narration.active) narration.stop()
         else if (key === "," && narration.active) narration.previousParagraph()
@@ -1046,7 +1292,7 @@ FocusScope {
             property bool shown: false
             visible: opacity > 0.01
             opacity: shown && view.epubLoading ? 0.6 : 0
-            Behavior on opacity { NumberAnimation { duration: 180 } }
+            Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 180 } }
             Timer {
                 interval: 180
                 running: view.epubLoading
@@ -1169,13 +1415,15 @@ FocusScope {
                     height: 30
                     width: backRow.implicitWidth + 16
                     hoverEnabled: true
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: view.chromeShown ? Qt.TabFocus : Qt.NoFocus
                     Accessible.name: qsTr("Library")
                     onClicked: view.closeRequested()
                     background: Rectangle {
                         radius: Ui.radius(7, theme.radius)
                         color: backButton.pressed ? Ui.tint(view.look.fg, 0.12)
                              : backButton.hovered ? Ui.tint(view.look.fg, 0.07) : "transparent"
+                        border.width: backButton.visualFocus ? 2 : 0
+                        border.color: view.look.link
                     }
                     contentItem: Item {
                         Row {
@@ -1209,7 +1457,7 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     implicitWidth: 32
                     implicitHeight: 30
-                    tabFocusable: false
+                    tabFocusable: view.chromeShown
                     look: view.look
                     glyph: Icons.contents
                     active: contents.open
@@ -1225,15 +1473,16 @@ FocusScope {
                     implicitHeight: 26
                     implicitWidth: Math.min(180, citeBadgeRow.implicitWidth + 16)
                     hoverEnabled: true
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: view.chromeShown ? Qt.TabFocus : Qt.NoFocus
                     Accessible.name: qsTr("Copy citation")
                     onClicked: citeMenu.popup(citeBadge, 0, citeBadge.height + 6)
                     background: Rectangle {
                         radius: Ui.radius(13, theme.radius)
                         color: citeBadge.pressed || citeMenu.opened ? Ui.tint(view.look.link, 0.16)
                              : citeBadge.hovered ? Ui.tint(view.look.fg, 0.09) : Ui.tint(view.look.fg, 0.05)
-                        border.width: 1
-                        border.color: citeMenu.opened ? Ui.tint(view.look.link, 0.45) : view.look.line
+                        border.width: citeBadge.visualFocus ? 2 : 1
+                        border.color: citeBadge.visualFocus ? view.look.link
+                                    : citeMenu.opened ? Ui.tint(view.look.link, 0.45) : view.look.line
                     }
                     contentItem: Item {
                         Row {
@@ -1378,7 +1627,7 @@ FocusScope {
                 IconButton {
                     implicitWidth: 32
                     implicitHeight: 30
-                    tabFocusable: false
+                    tabFocusable: view.chromeShown
                     look: view.look
                     glyph: Icons.search
                     active: searchBar.open
@@ -1388,7 +1637,7 @@ FocusScope {
                 IconButton {
                     implicitWidth: 32
                     implicitHeight: 30
-                    tabFocusable: false
+                    tabFocusable: view.chromeShown
                     look: view.look
                     glyph: Icons.bookmark
                     active: marksPanel.open
@@ -1398,7 +1647,7 @@ FocusScope {
                 IconButton {
                     implicitWidth: 32
                     implicitHeight: 30
-                    tabFocusable: false
+                    tabFocusable: view.chromeShown
                     look: view.look
                     tip: qsTr("Appearance (A)")
                     active: appearance.open
@@ -1428,7 +1677,7 @@ FocusScope {
                     }
                     IconButton {
                         anchors.fill: parent
-                        tabFocusable: false
+                        tabFocusable: view.chromeShown
                         look: view.look
                         glyph: Icons.headphones
                         tone: view.firstBookTipsActive ? view.look.link : (view.look.inkSoft || view.look.fg)
@@ -1441,7 +1690,7 @@ FocusScope {
                     visible: reader.isPdf
                     implicitWidth: 32
                     implicitHeight: 30
-                    tabFocusable: false
+                    tabFocusable: view.chromeShown
                     look: view.look
                     glyph: "M4 8.5 V5.5 Q4 4 5.5 4 H8.5 M15.5 4 H18.5 Q20 4 20 5.5 V8.5 M20 15.5 V18.5 Q20 20 18.5 20 H15.5 M8.5 20 H5.5 Q4 20 4 18.5 V15.5 M12 9 V15 M9 12 H15"
                     active: !!pdfSurface && pdfSurface.snipMode
@@ -1451,7 +1700,7 @@ FocusScope {
                 IconButton {
                     implicitWidth: 32
                     implicitHeight: 30
-                    tabFocusable: false
+                    tabFocusable: view.chromeShown
                     look: view.look
                     glyph: Icons.sparkle
                     active: companionPanel.open
@@ -1489,16 +1738,18 @@ FocusScope {
             implicitHeight: 30
             implicitWidth: followPillRow.implicitWidth + 22
             hoverEnabled: true
-            focusPolicy: Qt.NoFocus
+            focusPolicy: enabled ? Qt.TabFocus : Qt.NoFocus
             enabled: shown && !narration.following
+            Accessible.name: narration.following ? qsTr("Pages follow the voice") : qsTr("Back to the voice")
             onClicked: if (!narration.following) narration.following = true
             background: Rectangle {
                 radius: Ui.radius(15, theme.radius)
                 color: !narration.following
                      ? (followVoicePill.hovered ? Ui.tint(view.look.link, 0.22) : Ui.tint(view.look.link, 0.14))
                      : Ui.tint(view.look.fg, 0.06)
-                border.width: 1
-                border.color: !narration.following ? Ui.tint(view.look.link, 0.35) : Ui.tint(view.look.fg, 0.10)
+                border.width: followVoicePill.visualFocus ? 2 : 1
+                border.color: followVoicePill.visualFocus ? view.look.link
+                            : !narration.following ? Ui.tint(view.look.link, 0.35) : Ui.tint(view.look.fg, 0.10)
             }
             contentItem: Item {
                 Row {
@@ -1571,13 +1822,16 @@ FocusScope {
                         anchors.verticalCenter: parent.verticalCenter
                         enabled: bottomFooter.shown
                         hoverEnabled: true
-                        focusPolicy: Qt.NoFocus
+                        focusPolicy: bottomFooter.shown ? Qt.TabFocus : Qt.NoFocus
+                        Accessible.name: folioLeftLabel.text
                         implicitWidth: folioLeftLabel.implicitWidth + 12
                         implicitHeight: 24
                         onClicked: folioSettings.folioMode = (folioSettings.folioMode + 1) % 3
                         background: Rectangle {
                             radius: Ui.radius(6, theme.radius)
                             color: folioLeftButton.hovered ? Ui.tint(view.look.fg, 0.06) : "transparent"
+                            border.width: folioLeftButton.visualFocus ? 2 : 0
+                            border.color: view.look.link
                         }
                         contentItem: Label {
                             id: folioLeftLabel
@@ -1608,13 +1862,16 @@ FocusScope {
                         anchors.verticalCenter: parent.verticalCenter
                         enabled: bottomFooter.shown
                         hoverEnabled: true
-                        focusPolicy: Qt.NoFocus
+                        focusPolicy: bottomFooter.shown ? Qt.TabFocus : Qt.NoFocus
+                        Accessible.name: folioRightLabel.text
                         implicitWidth: folioRightLabel.implicitWidth + 12
                         implicitHeight: 24
                         onClicked: goTo.show()
                         background: Rectangle {
                             radius: Ui.radius(6, theme.radius)
                             color: folioRightButton.hovered ? Ui.tint(view.look.fg, 0.06) : "transparent"
+                            border.width: folioRightButton.visualFocus ? 2 : 0
+                            border.color: view.look.link
                         }
                         contentItem: Label {
                             id: folioRightLabel
@@ -1652,7 +1909,7 @@ FocusScope {
                 NumberAnimation { duration: 280; easing.type: Easing.OutQuart }
             }
             opacity: wanted ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 180 } }
+            Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 180 } }
             visible: opacity > 0.01 && y < parent.height
             width: Math.min(parent.width - 48, 760)
             height: 62
@@ -1725,7 +1982,8 @@ FocusScope {
                     implicitHeight: 30
                     implicitWidth: gotItLabel.implicitWidth + 28
                     hoverEnabled: true
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: keysStrip.wanted ? Qt.TabFocus : Qt.NoFocus
+                    Accessible.name: qsTr("Got it")
                     onClicked: {
                         onboarding.tips = onboarding.tips.concat(["keys"])
                         chromeTimer.restart()
@@ -1734,6 +1992,8 @@ FocusScope {
                         radius: Ui.radius(7, theme.radius)
                         color: gotItBtn.pressed ? Qt.rgba(1, 1, 1, 0.20)
                              : gotItBtn.hovered ? Qt.rgba(1, 1, 1, 0.16) : Qt.rgba(1, 1, 1, 0.10)
+                        border.width: gotItBtn.visualFocus ? 2 : 0
+                        border.color: theme.accent
                     }
                     contentItem: Label {
                         id: gotItLabel
@@ -1771,7 +2031,7 @@ FocusScope {
                 NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
             }
             opacity: shown ? 1 : 0
-            Behavior on opacity { NumberAnimation { duration: 150 } }
+            Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 150 } }
             visible: opacity > 0.01
             width: jumpPillRow.implicitWidth + 16
             height: 36
@@ -1801,11 +2061,14 @@ FocusScope {
                     implicitHeight: 30
                     implicitWidth: jumpActionRow.implicitWidth + 12
                     hoverEnabled: true
-                    focusPolicy: Qt.NoFocus
+                    focusPolicy: jumpPill.shown ? Qt.TabFocus : Qt.NoFocus
+                    Accessible.name: qsTr("Return to %1").arg(view.jumpPillLabel)
                     onClicked: view.back()
                     background: Rectangle {
                         radius: Ui.radius(15, theme.radius)
                         color: jumpPillAction.hovered ? Ui.tint(view.look.link, 0.14) : "transparent"
+                        border.width: jumpPillAction.visualFocus ? 2 : 0
+                        border.color: view.look.link
                     }
                     contentItem: Row {
                         id: jumpActionRow
@@ -1838,7 +2101,7 @@ FocusScope {
                     anchors.verticalCenter: parent.verticalCenter
                     implicitWidth: 26
                     implicitHeight: 26
-                    tabFocusable: false
+                    tabFocusable: jumpPill.shown
                     glyph: Icons.close
                     look: view.look
                     tone: view.look.muted
@@ -1911,7 +2174,7 @@ FocusScope {
                 } else {
                     marks.addHighlight(target.chapter, target.start, target.end, target.text, color,
                                        reader.titleOfChapter(target.chapter))
-                    view.js("clothbound.clearSelection()")
+                    view.surfaceClearSelection()
                 }
                 visible = false
             }
@@ -1935,19 +2198,19 @@ FocusScope {
                     : marks.addHighlight(target.chapter, target.start, target.end, target.text, "yellow",
                                          reader.titleOfChapter(target.chapter))
                 if (!forMark)
-                    view.js("clothbound.clearSelection()")
+                    view.surfaceClearSelection()
                 visible = false
                 noteEditor.show(id)
             }
             onCopy: {
                 reader.copyText(target.text)
                 if (!forMark)
-                    view.js("clothbound.clearSelection()")
+                    view.surfaceClearSelection()
                 visible = false
                 toast.show(qsTr("Copied"))
             }
             onListen: {
-                view.js("clothbound.clearSelection()")
+                view.surfaceClearSelection()
                 visible = false
                 narration.start(target.chapter, target.start)
             }
@@ -1971,7 +2234,7 @@ FocusScope {
             }
             function close() {
                 if (loaded)
-                    loaded.open = false
+                    loaded.close()
             }
             sourceComponent: ListenOffer {
                 id: listenOfferInner
@@ -1983,6 +2246,7 @@ FocusScope {
                 anchors.right: readingStage.right
                 anchors.rightMargin: 22
                 onMoreVoices: view.showVoices()
+                onClosed: view.focusPage()
                 Binding {
                     target: listenOfferInner
                     property: "caretRightOffset"
@@ -2090,7 +2354,7 @@ FocusScope {
             onContextMenuRequested: (request) => {
                 request.accepted = true
                 const at = Qt.point(request.position.x, request.position.y)
-                view.js("JSON.stringify(clothbound.placeAt(" + at.x + "," + at.y + "))", function(result) {
+                view.runWebJs("JSON.stringify(clothbound.placeAt(" + at.x + "," + at.y + "))", function(result) {
                     const place = JSON.parse(result || "null")
                     if (!place)
                         return
@@ -2172,7 +2436,7 @@ FocusScope {
         id: chromeTimer
         interval: 2000
         onTriggered: {
-            if (!chromeHover.hovered && !scrubberHover.hovered && !progressScrubber.dragging
+            if (!chromeHover.hovered && !scrubberHover.hovered && !progressScrubber.dragging && !view.chromeFocused
                 && !view.propBool(listenBar, "menuOpen") && !listenOffer.open
                 && !readerMore.opened && !citeMenu.opened && !pageMenu.opened && !selectionBar.visible && !keysStrip.wanted)
                 view.chromeShown = false
@@ -2267,7 +2531,7 @@ FocusScope {
             height: view.height
             look: view.look
             onClosed: view.focusPage()
-            onSampleWanted: view.js("clothbound.sampleText()", function(text) {
+            onSampleWanted: view.surfaceSampleText(function(text) {
                 voicePanelInner.sample = text || ""
                 if (debugMode)
                     console.log("voice sample:", voicePanelInner.sample)
@@ -2347,7 +2611,7 @@ FocusScope {
             onTriggered: {
                 marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
                                    view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
-                view.js("clothbound.clearSelection()")
+                view.surfaceClearSelection()
                 selectionBar.visible = false
             }
         }
@@ -2358,7 +2622,7 @@ FocusScope {
             onTriggered: {
                 const id = marks.addHighlight(view.selection.chapter, view.selection.start, view.selection.end,
                                               view.selection.text, "yellow", reader.titleOfChapter(view.selection.chapter))
-                view.js("clothbound.clearSelection()")
+                view.surfaceClearSelection()
                 selectionBar.visible = false
                 noteEditor.show(id)
             }
@@ -2369,7 +2633,7 @@ FocusScope {
             text: qsTr("Copy")
             onTriggered: {
                 reader.copyText(view.selection.text)
-                view.js("clothbound.clearSelection()")
+                view.surfaceClearSelection()
                 selectionBar.visible = false
                 toast.show(qsTr("Copied"))
             }
@@ -2920,7 +3184,7 @@ FocusScope {
     Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0) }
     Shortcut { sequence: "W"; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.setPdfFit("width", true) }
     Shortcut { sequences: ["1", "Ctrl+1"]; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.setPdfFit("actual", true) }
-    Shortcut { sequence: "Tab"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
+    Shortcut { sequence: "Tab"; context: Qt.ApplicationShortcut; enabled: view.keys && view.readingViewportFocused; onActivated: view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
     Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen; onActivated: view.dismiss() }
     // Listening.
     // P listens from the page in view, then pauses and goes on; ⇧P stops.

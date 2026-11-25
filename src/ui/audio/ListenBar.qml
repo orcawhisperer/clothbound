@@ -311,7 +311,7 @@ Rectangle {
                             radius: 16
                             color: restPlayBtn.pressed ? Qt.darker(theme.accent, 1.1)
                                  : restPlayBtn.hovered ? Qt.lighter(theme.accent, 1.07) : theme.accent
-                            Behavior on color { ColorAnimation { duration: 100 } }
+                            Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
                             Rectangle {
                                 anchors.fill: parent
                                 anchors.margins: -2
@@ -372,7 +372,7 @@ Rectangle {
                             radius: Ui.radius(14, theme.radius)
                             color: restVoiceBtn.pressed ? bar.deckHover
                                  : restVoiceBtn.hovered ? bar.deckFill : "transparent"
-                            Behavior on color { ColorAnimation { duration: 100 } }
+                            Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
                             Rectangle {
                                 anchors.fill: parent
                                 anchors.margins: -2
@@ -642,6 +642,7 @@ Rectangle {
                             NumberAnimation { duration: 150; easing.type: Easing.OutCubic }
                         }
                         Behavior on color {
+                            enabled: !theme.reducedMotion
                             ColorAnimation { duration: 180 }
                         }
                     }
@@ -748,7 +749,7 @@ Rectangle {
                                     radius: Ui.radius(8, theme.radius)
                                     color: voiceButton.pressed ? bar.deckHover
                                          : voiceButton.hovered ? bar.deckFill : "transparent"
-                                    Behavior on color { ColorAnimation { duration: 100 } }
+                                    Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
                                     Rectangle {
                                         anchors.fill: parent
                                         anchors.margins: -2
@@ -978,7 +979,7 @@ Rectangle {
                                 radius: 18
                                 color: playBtn.pressed ? Qt.darker(theme.accent, 1.1)
                                      : playBtn.hovered ? Qt.lighter(theme.accent, 1.07) : theme.accent
-                                Behavior on color { ColorAnimation { duration: 100 } }
+                                Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
                                 Rectangle {
                                     anchors.fill: parent
                                     anchors.margins: -3
@@ -1219,7 +1220,7 @@ Rectangle {
                                     color: narration.sleepFading ? theme.cloudInk
                                          : sleepButton.timerActive ? theme.accent : bar.deckSoft
                                     SequentialAnimation on opacity {
-                                        running: narration.sleepFading && bar.visible && !theme.reducedMotion
+                                        running: narration.sleepFading && expandedCol.visible && !theme.reducedMotion
                                         loops: Animation.Infinite
                                         NumberAnimation { to: 0.45; duration: 600; easing.type: Easing.InOutSine }
                                         NumberAnimation { to: 1.0; duration: 600; easing.type: Easing.InOutSine }

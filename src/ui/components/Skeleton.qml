@@ -13,7 +13,7 @@ Rectangle {
     clip: true
 
     Rectangle {
-        visible: skeleton.shimmer
+        visible: skeleton.shimmer && !theme.reducedMotion
         width: skeleton.width * 0.6
         height: skeleton.height
         gradient: Gradient {
@@ -23,7 +23,7 @@ Rectangle {
             GradientStop { position: 1; color: "transparent" }
         }
         XAnimator on x {
-            running: skeleton.shimmer && skeleton.visible
+            running: skeleton.shimmer && skeleton.visible && !theme.reducedMotion
             from: -skeleton.width * 0.6
             to: skeleton.width
             duration: 1400

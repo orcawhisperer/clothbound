@@ -165,7 +165,10 @@ FocusScope {
                 font.weight: Font.Medium
                 elide: Text.ElideRight
                 opacity: flick.contentY > 280 ? 1 : 0
-                Behavior on opacity { NumberAnimation { duration: 150 } }
+                Behavior on opacity {
+                    enabled: !theme.reducedMotion
+                    NumberAnimation { duration: theme.reducedMotion ? 0 : 150 }
+                }
             }
 
             IconButton {
@@ -185,7 +188,10 @@ FocusScope {
                 height: 1
                 color: theme.hairline
                 opacity: flick.contentY > 4 ? 1 : 0
-                Behavior on opacity { NumberAnimation { duration: 140 } }
+                Behavior on opacity {
+                    enabled: !theme.reducedMotion
+                    NumberAnimation { duration: theme.reducedMotion ? 0 : 140 }
+                }
             }
         }
 

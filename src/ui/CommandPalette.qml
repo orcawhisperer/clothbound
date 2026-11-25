@@ -48,8 +48,35 @@ FocusScope {
     readonly property string refreshIcon: "M19 12 A7 7 0 1 1 16.95 7.05 M19 4.5 V8.5 H15"
     readonly property var swatches: Themes.swatches
 
+    function buildBookCache() {
+        const raw = library.allBooks() || []
+        const out = new Array(raw.length)
+        for (let i = 0; i < raw.length; ++i) {
+            const b = raw[i]
+            const normTitle = norm(b.title)
+            const metaParts = []
+            if (b.author)
+                metaParts.push(b.author)
+            if (b.series)
+                metaParts.push(b.series)
+            if (b.format)
+                metaParts.push(b.format)
+            if (b.editionLine)
+                metaParts.push(b.editionLine)
+            const normMeta = norm(metaParts.join(" "))
+            const normFull = normMeta !== "" ? (normTitle + " " + normMeta) : normTitle
+            out[i] = {
+                book: b,
+                normTitle: normTitle,
+                normMeta: normMeta,
+                normFull: normFull,
+            }
+        }
+        return out
+    }
+
     function show() {
-        cachedBooks = library.allBooks()
+        cachedBooks = buildBookCache()
         cachedMarks = marks.searchAll("", 30)
         scope = "all"
         meaningQuery = ""
@@ -102,14 +129,11 @@ FocusScope {
         return String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
     }
 
-    // Scores `query` against `primary` and `secondary`; returns -1 if no match.
-    function fuzzyScore(rawQuery, primary, secondary) {
-        const q = norm(rawQuery).trim()
+    // Scores already-normalized query `q` and pre-split `tokens` against
+    // already-normalized `p` (primary), `s` (secondary), and `full` (`p + " " + s`).
+    function fuzzyScoreNormalized(q, tokens, p, s, full) {
         if (q === "")
             return 1
-        const p = norm(primary)
-        const s = norm(secondary)
-        const full = s !== "" ? (p + " " + s) : p
 
         const pIdx = p.indexOf(q)
         if (pIdx === 0)
@@ -122,7 +146,6 @@ FocusScope {
         if (sIdx >= 0)
             return (sIdx === 0 ? 640 : 540) - sIdx * 0.5
 
-        const tokens = q.split(/\s+/).filter(t => t.length > 0)
         if (tokens.length > 1) {
             let tokenScore = 0
             let allHit = true
@@ -156,6 +179,18 @@ FocusScope {
             }
         }
         return qi === q.length ? score : -1
+    }
+
+    // Scores `query` against `primary` and `secondary`; returns -1 if no match.
+    function fuzzyScore(rawQuery, primary, secondary) {
+        const q = norm(rawQuery).trim()
+        if (q === "")
+            return 1
+        const p = norm(primary)
+        const s = norm(secondary)
+        const full = s !== "" ? (p + " " + s) : p
+        const tokens = q.split(/\s+/).filter(t => t.length > 0)
+        return fuzzyScoreNormalized(q, tokens, p, s, full)
     }
 
     function voiceSubtitle() {
@@ -215,12 +250,17 @@ FocusScope {
         return list
     }
 
-    function appendActions(out, mode, q) {
+    function appendActions(out, mode, q, normQ, qTokens) {
         const actions = buildActions()
         const matchedActions = []
         for (let i = 0; i < actions.length; ++i) {
             const a = actions[i]
-            const score = fuzzyScore(q, a.title, a.subtitle + " " + a.id)
+            let score = 1
+            if (normQ !== "") {
+                const p = norm(a.title)
+                const s = norm(a.subtitle + " " + a.id)
+                score = fuzzyScoreNormalized(normQ, qTokens, p, s, s !== "" ? (p + " " + s) : p)
+            }
             if (score >= 0)
                 matchedActions.push({ score: score, order: i, item: a })
         }
@@ -291,6 +331,8 @@ FocusScope {
         }
 
         const bookOnly = scope === "book" && scopedBookId > 0
+        const normQ = norm(q).trim()
+        const qTokens = normQ !== "" ? normQ.split(/\s+/).filter(t => t.length > 0) : []
         const out = []
 
         // Direct jump when reading and user types a percentage or printed page.
@@ -332,7 +374,7 @@ FocusScope {
         // Empty query or explicit `>` puts Do actions first; active queries
         // prioritize Books / Passages / Meaning ahead of Do (07_command_palette).
         if (mode === "actions" || (mode === "all" && q === ""))
-            appendActions(out, mode, q)
+            appendActions(out, mode, q, normQ, qTokens)
 
         // Current book TOC chapters when reading.
         if (reading && (mode === "all" || mode === "chapters")) {
@@ -342,11 +384,12 @@ FocusScope {
                 const entry = toc[i]
                 if (!entry || entry.chapter < 0)
                     continue
-                const score = fuzzyScore(q, entry.title, "")
+                const p = normQ !== "" ? norm(entry.title) : ""
+                const score = normQ !== "" ? fuzzyScoreNormalized(normQ, qTokens, p, "", p) : 1
                 if (score >= 0)
                     matchedChapters.push({ score: score, order: i, entry: entry })
             }
-            if (q !== "")
+            if (normQ !== "")
                 matchedChapters.sort((a, b) => b.score - a.score || a.order - b.order)
             const chapCap = mode === "chapters" ? 40 : (q === "" ? 5 : 6)
             for (let i = 0; i < Math.min(chapCap, matchedChapters.length); ++i) {
@@ -366,19 +409,24 @@ FocusScope {
             }
         }
 
-        // Books in library (skipped when scoped to "This book").
+        // Books in library (skipped when scoped to "This book"); scored against
+        // pre-normalized cached fields with zero per-keystroke NFD normalization.
         if (mode === "all" && !bookOnly) {
+            const bookCap = 6
             const matchedBooks = []
-            for (let i = 0; i < cachedBooks.length; ++i) {
-                const b = cachedBooks[i]
-                const meta = [b.author, b.series, b.format, b.editionLine].filter(x => !!x).join(" ")
-                const score = fuzzyScore(q, b.title, meta)
-                if (score >= 0)
-                    matchedBooks.push({ score: score, order: i, book: b })
-            }
-            if (q !== "")
+            if (normQ === "") {
+                const limit = Math.min(bookCap, cachedBooks.length)
+                for (let i = 0; i < limit; ++i)
+                    matchedBooks.push({ score: 1, order: i, book: cachedBooks[i].book })
+            } else {
+                for (let i = 0; i < cachedBooks.length; ++i) {
+                    const entry = cachedBooks[i]
+                    const score = fuzzyScoreNormalized(normQ, qTokens, entry.normTitle, entry.normMeta, entry.normFull)
+                    if (score >= 0)
+                        matchedBooks.push({ score: score, order: i, book: entry.book })
+                }
                 matchedBooks.sort((a, b) => b.score - a.score || a.order - b.order)
-            const bookCap = q === "" ? 6 : 6
+            }
             for (let i = 0; i < Math.min(bookCap, matchedBooks.length); ++i) {
                 const b = matchedBooks[i].book
                 const parts = []
@@ -495,7 +543,7 @@ FocusScope {
 
         // For non-empty general queries, place contextual Do actions at the foot.
         if (mode === "all" && q !== "")
-            appendActions(out, mode, q)
+            appendActions(out, mode, q, normQ, qTokens)
 
         results = out
         selectedIndex = out.length > 0 ? 0 : -1
@@ -558,7 +606,9 @@ FocusScope {
             results = []
     }
     opacity: open ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+    Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic } }
+    Accessible.role: Accessible.Dialog
+    Accessible.name: qsTr("Search everything")
 
     // Claim Escape / arrows / Return / Tab / Ctrl+K ahead of ApplicationShortcuts.
     Keys.onShortcutOverride: (event) => {
@@ -765,6 +815,7 @@ FocusScope {
                 boundsBehavior: Flickable.StopAtBounds
                 model: cmdPalette.results
                 currentIndex: cmdPalette.selectedIndex
+                Accessible.role: Accessible.List
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                 delegate: Column {
@@ -800,6 +851,18 @@ FocusScope {
                         radius: Ui.radius(8, theme.radius)
                         color: rowItem.selected ? Ui.tint(theme.accent, theme.light ? 0.14 : 0.16)
                              : rowHover.hovered ? Ui.tint(theme.ink1, 0.05) : "transparent"
+                        Accessible.role: Accessible.ListItem
+                        Accessible.selected: rowItem.selected
+                        Accessible.name: {
+                            const parts = []
+                            if (rowItem.modelData.section)
+                                parts.push(rowItem.modelData.section)
+                            if (rowItem.modelData.title)
+                                parts.push(rowItem.modelData.title)
+                            if (rowItem.modelData.subtitle)
+                                parts.push(rowItem.modelData.subtitle)
+                            return parts.join(", ")
+                        }
 
                         RowLayout {
                             anchors.fill: parent

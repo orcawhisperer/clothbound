@@ -56,6 +56,8 @@ Item {
     property int foundVersion: 0
     property var speaking: ({ chapter: -1, start: 0, end: 0 })
     property var selection: null   // {chapter, start, end, text}
+    property var selectionRects: []
+    property string selectionRectsKey: ""
     property int marksVersion: 0
     property bool snipMode: false
     readonly property bool peekOpen: peekCard.open
@@ -63,11 +65,29 @@ Item {
     signal contextMenuRequested(real x, real y)
     signal snipActionTriggered(string action, string base64Png, int pageIndex, string customPrompt)
 
+    function applySelection(chosen) {
+        const next = (chosen && chosen.text) ? chosen : null
+        if (!next) {
+            if (selection !== null)
+                selection = null
+            if (selectionRects.length)
+                selectionRects = []
+            selectionRectsKey = ""
+            return
+        }
+        const key = next.chapter + ":" + next.start + ":" + next.end
+        if (key === selectionRectsKey && selection && selection.text === next.text)
+            return
+        selection = next
+        selectionRectsKey = key
+        selectionRects = reader.pdfRects(next.chapter, next.start, next.end)
+    }
+
     onSnipModeChanged: {
         if (snipMode) {
             closePeek()
             if (selection) {
-                selection = null
+                applySelection(null)
                 reader.selectionChanged({})
             }
             snipOverlay.resetRect()
@@ -169,7 +189,7 @@ Item {
         foundHits = []
         foundCurrent = null
         foundVersion++
-        selection = null
+        applySelection(null)
         speaking = { chapter: -1, start: 0, end: 0 }
         cancelSnip()
         closePeek()
@@ -318,7 +338,7 @@ Item {
         return Promise.resolve()
     }
     function listeningStart() { return { chapter: current, offset: 0 } }
-    function clearSelection() { selection = null }
+    function clearSelection() { applySelection(null) }
     function cancelSnip() {
         snipOverlay.resetRect()
         if (snipMode)
@@ -350,7 +370,7 @@ Item {
             return true
         }
         if (selection) {
-            selection = null
+            applySelection(null)
             reader.selectionChanged({})
             return true
         }
@@ -395,10 +415,55 @@ Item {
         // left and right.
         return spread ? (page === 0 ? 0 : page - ((page - 1) % 2)) : page
     }
+    function scrollIndexAt(y) {
+        if (pageList.count <= 0)
+            return -1
+        const probeX = pageList.width * 0.5
+        let idx = pageList.indexAt(probeX, y)
+        if (idx < 0)
+            idx = pageList.indexAt(probeX, y + pageList.spacing + 2)
+        if (idx < 0)
+            idx = pageList.indexAt(probeX, Math.max(0, y - pageList.spacing - 2))
+        return idx
+    }
+    function visibleScrollRange() {
+        if (!scrolling || pageList.count <= 0)
+            return null
+        const topY = pageList.contentY
+        const botY = topY + Math.max(1, pageList.height) - 1
+        let first = scrollIndexAt(topY + 1)
+        let last = scrollIndexAt(botY)
+        if (first < 0 && last >= 0)
+            first = last
+        if (last < 0 && first >= 0)
+            last = first
+        if (first < 0) {
+            const fallback = Math.max(0, Math.min(pageList.count - 1, current))
+            return { first: fallback, last: fallback }
+        }
+        while (first > 0) {
+            const prevItem = pageList.itemAtIndex(first - 1)
+            if (prevItem && prevItem.y + prevItem.height > topY)
+                --first
+            else
+                break
+        }
+        while (last + 1 < pageList.count) {
+            const nextItem = pageList.itemAtIndex(last + 1)
+            if (nextItem && nextItem.y < botY + 1)
+                ++last
+            else
+                break
+        }
+        return { first: first, last: last }
+    }
     function visiblePages() {
         if (scrolling) {
+            const range = visibleScrollRange()
+            if (!range)
+                return [current]
             const out = []
-            for (let i = 0; i < pageList.count; ++i) {
+            for (let i = range.first; i <= range.last; ++i) {
                 const item = pageList.itemAtIndex(i)
                 if (item && item.y + item.height > pageList.contentY && item.y < pageList.contentY + pageList.height)
                     out.push(i)
@@ -417,7 +482,7 @@ Item {
             pageList.positionViewAtIndex(current, ListView.Beginning)
         else
             spreadRow.present(visiblePages(), dir || 0, animate !== false)
-        selection = null
+        applySelection(null)
         report(!!automated)
     }
     function report(automated) {
@@ -446,8 +511,11 @@ Item {
     // Active Page components currently shown on screen (in both spread and scroll modes).
     function visiblePageItems() {
         if (scrolling) {
+            const range = visibleScrollRange()
+            if (!range)
+                return []
             const out = []
-            for (let i = 0; i < pageList.count; ++i) {
+            for (let i = range.first; i <= range.last; ++i) {
                 const del = pageList.itemAtIndex(i)
                 if (del && del.pageItem && del.pageItem.visible && del.pageItem.page >= 0)
                     out.push(del.pageItem)
@@ -458,6 +526,21 @@ Item {
     }
     // The page under a point of the surface, and where on it (0 to 1).
     function pageAt(x, y) {
+        if (scrolling) {
+            const pt = pageList.mapFromItem(surface, x, y)
+            if (pt.x >= 0 && pt.y >= 0 && pt.x <= pageList.width && pt.y <= pageList.height) {
+                const idx = pageList.indexAt(pageList.width * 0.5, pageList.contentY + pt.y)
+                if (idx >= 0) {
+                    const del = pageList.itemAtIndex(idx)
+                    const item = del && del.pageItem
+                    if (item && item.visible && item.page >= 0) {
+                        const at = item.mapFromItem(surface, x, y)
+                        if (at.x >= 0 && at.y >= 0 && at.x <= item.width && at.y <= item.height)
+                            return { page: item.page, x: item.toPageX(at.x), y: item.toPageY(at.y), item: item }
+                    }
+                }
+            }
+        }
         for (const item of visiblePageItems()) {
             const at = item.mapFromItem(surface, x, y)
             if (at.x >= 0 && at.y >= 0 && at.x <= item.width && at.y <= item.height)
@@ -535,8 +618,8 @@ Item {
             return null
         }
         function reportSelection(chosen) {
-            surface.selection = chosen
-            const rects = reader.pdfRects(pageItem.page, chosen.start, chosen.end)
+            surface.applySelection(chosen)
+            const rects = surface.selectionRects
             if (!rects.length)
                 return
             let top = 1, left = 1, right = 0, bottom = 0
@@ -706,10 +789,10 @@ Item {
                         Component.onCompleted: entered = true
                     }
                 }
-                // The selection.
+                // The selection (rects precomputed and coalesced in surface.applySelection).
                 Repeater {
                     model: surface.selection && surface.selection.chapter === pageItem.page
-                           ? reader.pdfRects(pageItem.page, surface.selection.start, surface.selection.end) : []
+                           ? surface.selectionRects : []
                     delegate: Rectangle {
                         required property var modelData
                         x: modelData.x * whole.width
@@ -885,6 +968,23 @@ Item {
             property point panStart
             property real startContentX: 0
             property real startContentY: 0
+            property point pendingTo
+            property bool hasPendingSelect: false
+            Timer {
+                id: dragSelectTimer
+                interval: 16
+                repeat: false
+                onTriggered: mouse.flushPendingSelect()
+            }
+            function flushPendingSelect() {
+                if (!hasPendingSelect)
+                    return
+                hasPendingSelect = false
+                if (pageItem.page < 0)
+                    return
+                const chosen = reader.pdfSelect(pageItem.page, from.x, from.y, pendingTo.x, pendingTo.y)
+                surface.applySelection(chosen)
+            }
             ToolTip.visible: hoveredLink !== null && !pressed
             ToolTip.delay: 450
             ToolTip.text: {
@@ -899,8 +999,15 @@ Item {
                 return ""
             }
             onExited: hoveredLink = null
+            onCanceled: {
+                dragSelectTimer.stop()
+                hasPendingSelect = false
+                panning = false
+            }
             onPressed: (event) => {
                 surface.forceActiveFocus()
+                dragSelectTimer.stop()
+                hasPendingSelect = false
                 if (event.button === Qt.RightButton) {
                     const at = mouse.mapToItem(surface, event.x, event.y)
                     surface.contextMenuRequested(at.x, at.y)
@@ -916,12 +1023,14 @@ Item {
                     startContentX = surface.scrolling ? pageList.panX : zoomed.contentX
                     startContentY = surface.scrolling ? pageList.contentY : zoomed.contentY
                 } else {
-                    surface.selection = null
+                    surface.applySelection(null)
                 }
             }
             onDoubleClicked: (event) => {
                 if (event.button === Qt.RightButton)
                     return
+                dragSelectTimer.stop()
+                hasPendingSelect = false
                 const px = pageItem.toPageX(event.x), py = pageItem.toPageY(event.y)
                 const word = reader.pdfSelectWord(pageItem.page, px, py)
                 if (word && word.text) {
@@ -954,22 +1063,31 @@ Item {
                 if (Math.abs(to.x - from.x) + Math.abs(to.y - from.y) < 0.004)
                     return
                 dragged = true
-                const chosen = reader.pdfSelect(pageItem.page, from.x, from.y, to.x, to.y)
-                surface.selection = chosen.text ? chosen : null
+                pendingTo = to
+                hasPendingSelect = true
+                if (!dragSelectTimer.running)
+                    dragSelectTimer.start()
             }
             onReleased: (event) => {
                 if (event.button === Qt.RightButton)
                     return
+                dragSelectTimer.stop()
                 if (skipRelease) {
+                    hasPendingSelect = false
                     skipRelease = false
                     panning = false
                     return
                 }
                 if (panning && dragged) {
+                    hasPendingSelect = false
                     panning = false
                     return
                 }
                 panning = false
+                if (dragged)
+                    flushPendingSelect()
+                else
+                    hasPendingSelect = false
                 if (dragged && surface.selection) {
                     pageItem.reportSelection(surface.selection)
                     return
@@ -1275,7 +1393,7 @@ Item {
             border.color: surface.look ? surface.look.line : "transparent"
             opacity: spreadRow.showSlowJump ? 0.9 : 0
             visible: opacity > 0.01
-            Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
+            Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic } }
             BusyIndicator {
                 anchors.centerIn: parent
                 running: parent.visible
@@ -1429,7 +1547,7 @@ Item {
 
         Behavior on reveal {
             NumberAnimation {
-                duration: theme.reducedMotion ? 70 : 160
+                duration: theme.reducedMotion ? 0 : 160
                 easing.type: Easing.OutCubic
             }
         }
@@ -1898,7 +2016,7 @@ Item {
             border.color: Qt.rgba(1, 1, 1, 0.12)
             opacity: (snipBar.visible && snipBar.y < 66) ? 0.0 : 1.0
             visible: opacity > 0.01
-            Behavior on opacity { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+            Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 120; easing.type: Easing.OutCubic } }
 
             Row {
                 id: snipHintRow

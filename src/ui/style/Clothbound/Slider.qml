@@ -24,8 +24,11 @@ T.Slider {
         color: "#ffffff"
         border.width: control.visualFocus ? 2 : 1
         border.color: control.visualFocus ? control.palette.highlight : Qt.rgba(0, 0, 0, 0.18)
-        scale: control.pressed ? 1.1 : 1
-        Behavior on scale { NumberAnimation { duration: 100 } }
+        scale: control.pressed && !theme.reducedMotion ? 1.1 : 1
+        Behavior on scale {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: theme.reducedMotion ? 0 : 100 }
+        }
     }
 
     background: Rectangle {

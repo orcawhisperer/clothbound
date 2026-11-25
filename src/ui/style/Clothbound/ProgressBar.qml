@@ -20,17 +20,21 @@ T.ProgressBar {
             height: parent.height
             radius: 2
             color: control.palette.highlight
-            Behavior on width { NumberAnimation { duration: 160 } }
+            Behavior on width {
+                enabled: !theme.reducedMotion
+                NumberAnimation { duration: theme.reducedMotion ? 0 : 160 }
+            }
         }
         Rectangle {
             id: glide
             visible: control.indeterminate
+            x: theme.reducedMotion ? (parent.width - width) / 2 : 0
             width: parent.width * 0.3
             height: parent.height
             radius: 2
             color: control.palette.highlight
             XAnimator on x {
-                running: control.indeterminate && control.visible
+                running: control.indeterminate && control.visible && !theme.reducedMotion
                 from: -glide.width
                 to: glide.parent.width
                 duration: 1100

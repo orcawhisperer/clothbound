@@ -547,6 +547,8 @@ FocusScope {
        : (parent ? parent.width - width + slideTravel * (1 - slideProgress) : 0)
     opacity: theme.reducedMotion ? slideProgress : Math.min(1, slideProgress * 2.5)
     visible: theme.reducedMotion ? opacity > 0.01 : slideProgress > 0.005
+    Accessible.role: Accessible.Pane
+    Accessible.name: qsTr("Companion")
 
     // Soft shadow toward the page.
     Rectangle {
@@ -2686,6 +2688,8 @@ FocusScope {
                             selectionColor: theme.accentSoft
                             font.pixelSize: 13
                             selectByMouse: true
+                            Accessible.role: Accessible.EditableText
+                            Accessible.name: questionPlaceholder.text
                             onCursorRectangleChanged: {
                                 if (cursorRectangle.y < questionScroll.contentY)
                                     questionScroll.contentY = cursorRectangle.y
@@ -2712,6 +2716,7 @@ FocusScope {
                             }
 
                             Text {
+                                id: questionPlaceholder
                                 anchors.fill: parent
                                 visible: question.text === ""
                                 textFormat: Text.PlainText

@@ -14506,6 +14506,661 @@ private slots:
     void aPlusCoreTokenizerAndCoverProviderGc();
     void aPlusCoreParserFuzzStress();
     // === end a-plus-core tests ===
+
+    // === a-plus-craft tests ===
+    void aPlusCraftBridgeAccessibilityAndReducedMotion() {
+        const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+        QVERIFY(!srcRoot.isEmpty());
+        auto readSrc = [&](const QString &rel) -> QString {
+            QFile f(srcRoot + QLatin1Char('/') + rel);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+        };
+
+        // 1. EpubReader.qml: zero new Function / eval / brittle string replace; typed dispatch + keyboard reachability.
+        const QString erQml = readSrc(QStringLiteral("ui/reader/EpubReader.qml"));
+        QVERIFY(!erQml.isEmpty());
+        QVERIFY2(!erQml.contains(QStringLiteral("new Function")), "EpubReader.qml must not use new Function");
+        QVERIFY2(!erQml.contains(QStringLiteral("eval(")), "EpubReader.qml must not use eval()");
+        QVERIFY2(!erQml.contains(QStringLiteral("code.replace(\"clothbound.marks(\"")),
+                 "EpubReader.qml must not use brittle clothbound.marks string replace");
+        QVERIFY(erQml.contains(QStringLiteral("function surfaceOpen(")));
+        QVERIFY(erQml.contains(QStringLiteral("function surfaceFound(")));
+        QVERIFY(erQml.contains(QStringLiteral("function surfaceMarks(")));
+        QVERIFY(erQml.contains(QStringLiteral("function surfaceGoTo(")));
+        QVERIFY(erQml.contains(QStringLiteral("readonly property bool chromeFocused:")));
+        QVERIFY(erQml.contains(QStringLiteral("readonly property bool readingViewportFocused:")));
+        QVERIFY(erQml.contains(QStringLiteral("tabFocusable: view.chromeShown")));
+        QVERIFY(erQml.contains(QStringLiteral("enabled: view.keys && view.readingViewportFocused")));
+
+        // 2. Accessibility roles & descriptive names across primary interactive surfaces.
+        const QString bookCardQml = readSrc(QStringLiteral("ui/library/BookCard.qml"));
+        QVERIFY(bookCardQml.contains(QStringLiteral("Accessible.role: Accessible.ListItem")));
+        QVERIFY(bookCardQml.contains(QStringLiteral("Accessible.name:")));
+
+        const QString libraryViewQml = readSrc(QStringLiteral("ui/library/LibraryView.qml"));
+        QVERIFY(libraryViewQml.contains(QStringLiteral("Accessible.role: Accessible.ListItem")));
+        QVERIFY(libraryViewQml.contains(QStringLiteral("Accessible.name:")));
+
+        const QString continueShelfQml = readSrc(QStringLiteral("ui/library/ContinueShelf.qml"));
+        QVERIFY(continueShelfQml.contains(QStringLiteral("Accessible.role: Accessible.Button")));
+        QVERIFY(continueShelfQml.count(QStringLiteral("Accessible.name:")) >= 3);
+
+        const QString cmdPaletteQml = readSrc(QStringLiteral("ui/CommandPalette.qml"));
+        QVERIFY(cmdPaletteQml.contains(QStringLiteral("Accessible.role: Accessible.ListItem")));
+        QVERIFY(cmdPaletteQml.contains(QStringLiteral("Accessible.name:")));
+
+        const QString companionQml = readSrc(QStringLiteral("ui/companion/CompanionPanel.qml"));
+        QVERIFY(companionQml.contains(QStringLiteral("Accessible.role: Accessible.EditableText")));
+        QVERIFY(companionQml.contains(QStringLiteral("Accessible.name: questionPlaceholder.text")));
+
+        const QString listenOfferQml = readSrc(QStringLiteral("ui/audio/ListenOffer.qml"));
+        QVERIFY(listenOfferQml.contains(QStringLiteral("FocusScope {")));
+        QVERIFY(listenOfferQml.contains(QStringLiteral("Keys.onEscapePressed:")));
+        QVERIFY(listenOfferQml.contains(QStringLiteral("Accessible.role: Accessible.Dialog")));
+
+        // 3. Reduced motion across views, ListenBar sleepMoon gating, and Clothbound style controls.
+        const QString skeletonQml = readSrc(QStringLiteral("ui/components/Skeleton.qml"));
+        QVERIFY(skeletonQml.contains(QStringLiteral("!theme.reducedMotion")));
+
+        const QString welcomeQml = readSrc(QStringLiteral("ui/Welcome.qml"));
+        QVERIFY(welcomeQml.contains(QStringLiteral("theme.reducedMotion ? 0 : 150")));
+
+        QVERIFY(cmdPaletteQml.contains(QStringLiteral("theme.reducedMotion ? 0 : 140")));
+
+        const QString bookDetailsQml = readSrc(QStringLiteral("ui/library/BookDetails.qml"));
+        QVERIFY(bookDetailsQml.contains(QStringLiteral("theme.reducedMotion")));
+
+        const QString listenBarQml = readSrc(QStringLiteral("ui/audio/ListenBar.qml"));
+        QVERIFY(listenBarQml.contains(QStringLiteral("running: narration.sleepFading && expandedCol.visible && !theme.reducedMotion")));
+        QVERIFY(!listenBarQml.contains(QStringLiteral("bar.visible && !theme.reducedMotion")));
+        QVERIFY(listenBarQml.contains(QStringLiteral("enabled: !theme.reducedMotion")));
+
+        for (const QString &ctrl : {QStringLiteral("Button.qml"), QStringLiteral("Popup.qml"),
+                                    QStringLiteral("Menu.qml"), QStringLiteral("ToolTip.qml"),
+                                    QStringLiteral("Slider.qml"), QStringLiteral("ProgressBar.qml"),
+                                    QStringLiteral("ScrollBar.qml")}) {
+            const QString qml = readSrc(QStringLiteral("ui/style/Clothbound/") + ctrl);
+            QVERIFY2(qml.contains(QStringLiteral("theme.reducedMotion")), qPrintable(ctrl));
+        }
+
+        // 4. Live ListenOffer FocusScope instantiation + Esc dismissal (zero QML warnings).
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices ai(&gemini, &keys, library.database().connectionName());
+        AudioCache audioCache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        Narration narration(&ai, &audioCache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        VoicePacks voicePacks(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                              packsManifest(QStringLiteral("http://127.0.0.1/")));
+        LocalSpeech localSpeech(&voicePacks);
+        VoiceCatalog voices(&ai, &audioCache, &reader, library.database().connectionName(),
+                            dir.filePath(QStringLiteral("voices-cache.json")));
+        Theme theme(dir.filePath(QStringLiteral("no-omarchy")));
+        Translator translator;
+
+        QQmlEngine engine;
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("translator"), &translator);
+        engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+        engine.rootContext()->setContextProperty(QStringLiteral("ai"), &ai);
+        engine.rootContext()->setContextProperty(QStringLiteral("narration"), &narration);
+        engine.rootContext()->setContextProperty(QStringLiteral("voicePacks"), &voicePacks);
+        engine.rootContext()->setContextProperty(QStringLiteral("localSpeech"), &localSpeech);
+        engine.rootContext()->setContextProperty(QStringLiteral("voices"), &voices);
+        QList<QQmlError> warnings;
+        QObject::connect(&engine, &QQmlEngine::warnings, &engine,
+                         [&](const QList<QQmlError> &errs) { warnings.append(errs); });
+
+        QQmlComponent offerComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/audio/ListenOffer.qml")));
+        QVERIFY2(offerComp.status() == QQmlComponent::Ready, qPrintable(offerComp.errorString()));
+        QQuickWindow win;
+        win.resize(900, 640);
+        std::unique_ptr<QObject> offerObj(offerComp.create());
+        QVERIFY(offerObj != nullptr);
+        auto *offerItem = qobject_cast<QQuickItem *>(offerObj.get());
+        QVERIFY(offerItem != nullptr);
+        QVERIFY(offerItem->isFocusScope());
+        offerItem->setParentItem(win.contentItem());
+        QSignalSpy closedSpy(offerItem, SIGNAL(closed()));
+        QVERIFY(QMetaObject::invokeMethod(offerItem, "show"));
+        QCOMPARE(offerItem->property("open").toBool(), true);
+        QKeyEvent escEvent(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(offerItem, &escEvent);
+        QCOMPARE(offerItem->property("open").toBool(), false);
+        QCOMPARE(closedSpy.count(), 1);
+        QVERIFY2(warnings.isEmpty(),
+                 qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+    }
+
+    void aPlusCraftHotPathsCommandPaletteCatalogsPdfAndReader() {
+        const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+        QVERIFY(!srcRoot.isEmpty());
+        auto readSrc = [&](const QString &rel) -> QString {
+            QFile f(srcRoot + QLatin1Char('/') + rel);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+        };
+
+        // 1. CatalogsSheet scroll preservation + PdfSurface O(1) indexAt & drag-select coalescer + single-open Reader::openPdf.
+        const QString catalogsQml = readSrc(QStringLiteral("ui/library/CatalogsSheet.qml"));
+        QVERIFY(catalogsQml.contains(QStringLiteral("function syncFeed()")));
+        QVERIFY(catalogsQml.contains(QStringLiteral("model: sheet.feedEntries")));
+        QVERIFY(catalogsQml.contains(QStringLiteral("Qt.callLater(restoreScroll)")));
+
+        const QString pdfSurfaceQml = readSrc(QStringLiteral("ui/reader/PdfSurface.qml"));
+        QVERIFY(pdfSurfaceQml.contains(QStringLiteral("pageList.indexAt(")));
+        QVERIFY2(!pdfSurfaceQml.contains(QStringLiteral("for (let i = 0; i < pageList.count")),
+                 "PdfSurface.qml must not scan pageList linearly");
+        QVERIFY(pdfSurfaceQml.contains(QStringLiteral("id: dragSelectTimer")));
+        QVERIFY(pdfSurfaceQml.contains(QStringLiteral("function flushPendingSelect()")));
+        QVERIFY(pdfSurfaceQml.contains(QStringLiteral("function applySelection(")));
+
+        const QString readerCpp = readSrc(QStringLiteral("reader/reader.cpp"));
+        QVERIFY2(!readerCpp.contains(QStringLiteral("PdfBook own(path)")),
+                 "Reader::openPdf() must reuse m_pdf instead of opening redundant PdfBook instances");
+
+        // 2. Live CommandPalette pre-normalized search cache + diacritic-insensitive matching.
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString dataDir = dir.filePath(QStringLiteral("data"));
+        const QString cacheDir = dir.filePath(QStringLiteral("cache"));
+        auto makeSimpleEpub = [](const QByteArray &title, const QByteArray &author, const QByteArray &body) {
+            const QByteArray opf =
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                "<package version=\"3.0\" unique-identifier=\"uid\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+                "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                "    <dc:title>" + title + "</dc:title>\n"
+                "    <dc:creator>" + author + "</dc:creator>\n"
+                "    <dc:language>en</dc:language>\n"
+                "  </metadata>\n"
+                "  <manifest>\n"
+                "    <item id=\"ch1\" href=\"ch1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+                "  </manifest>\n"
+                "  <spine><itemref idref=\"ch1\"/></spine>\n"
+                "</package>";
+            return TestBooks::epub({
+                {QStringLiteral("OEBPS/content.opf"), opf},
+                {QStringLiteral("OEBPS/ch1.xhtml"), TestBooks::chapter(title, body)},
+            });
+        };
+        const QString epub1 = dir.filePath(QStringLiteral("miserables.epub"));
+        const QString epub2 = dir.filePath(QStringLiteral("uber.epub"));
+        QVERIFY(TestBooks::write(epub1, makeSimpleEpub("Les Misérables", "Victor Hugo",
+                                                       "<p>Jean Valjean walked on.</p>")));
+        QVERIFY(TestBooks::write(epub2, makeSimpleEpub("Über die Liebe", "Rainer Maria Rilke",
+                                                       "<p>Ein ruhiger Abend.</p>")));
+
+        // Build a minimal 2-page PDF embedding a DOI so we also test m_pdf citation reuse & unified init.
+        auto makeDoiPdf = []() {
+            QByteArray out = "%PDF-1.4\n";
+            QList<qsizetype> offsets;
+            auto object = [&](const QByteArray &body) {
+                offsets.append(out.size());
+                out += QByteArray::number(offsets.size()) + " 0 obj\n" + body + "\nendobj\n";
+            };
+            object("<< /Type /Catalog /Pages 2 0 R >>");
+            object("<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>");
+            object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 4 0 R "
+                   "/Resources << /Font << /F1 5 0 R >> >> >>");
+            const QByteArray s1 = "BT /F1 11 Tf 36 340 Td (Attention Is All You Need DOI: 10.1145/9876543.2109876) Tj ET";
+            object("<< /Length " + QByteArray::number(s1.size()) + " >>\nstream\n" + s1 + "\nendstream");
+            object("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+            object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400] /Contents 7 0 R "
+                   "/Resources << /Font << /F1 5 0 R >> >> >>");
+            const QByteArray s2 = "BT /F1 11 Tf 36 340 Td (Second page of the paper with body text.) Tj ET";
+            object("<< /Length " + QByteArray::number(s2.size()) + " >>\nstream\n" + s2 + "\nendstream");
+            const qsizetype xref = out.size();
+            out += "xref\n0 " + QByteArray::number(offsets.size() + 1) + "\n0000000000 65535 f \n";
+            for (const qsizetype off : offsets)
+                out += QByteArray::number(off).rightJustified(10, '0') + " 00000 n \n";
+            out += "trailer\n<< /Size " + QByteArray::number(offsets.size() + 1) + " /Root 1 0 R >>\nstartxref\n" +
+                   QByteArray::number(xref) + "\n%%EOF\n";
+            return out;
+        };
+        const QString pdfPath = dir.filePath(QStringLiteral("paper.pdf"));
+        QVERIFY(TestBooks::write(pdfPath, makeDoiPdf()));
+
+        Library library(dataDir, cacheDir);
+        QVERIFY(library.open());
+        QVERIFY(library.addBookFile(epub1) > 0);
+        QVERIFY(library.addBookFile(epub2) > 0);
+        const int pdfId = library.addBookFile(pdfPath);
+        QVERIFY(pdfId > 0);
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QSignalSpy lengthsSpy(&reader, &Reader::lengthsChanged);
+        QVERIFY(reader.openBook(pdfId));
+        QTRY_VERIFY_WITH_TIMEOUT(lengthsSpy.count() >= 1, 5000);
+        QCOMPARE(library.chapterLengths(pdfId).size(), 2);
+        QTRY_VERIFY_WITH_TIMEOUT(!library.bookSetting(pdfId, QStringLiteral("pdf_crop")).isEmpty(), 5000);
+
+        // Remove the PDF file on disk while it remains open in Reader: formatBookCitation()
+        // called with only `path` (and id=0) must still enrich the DOI from the already-open m_pdf.
+        QVERIFY(QFile::remove(pdfPath));
+        const QString bibtex = reader.formatBookCitation(
+            QVariantMap{
+                {QStringLiteral("id"), 0},
+                {QStringLiteral("title"), QStringLiteral("Attention Is All You Need")},
+                {QStringLiteral("author"), QStringLiteral("Ashish Vaswani")},
+                {QStringLiteral("format"), QStringLiteral("pdf")},
+                {QStringLiteral("path"), pdfPath},
+            },
+            QStringLiteral("bibtex"));
+        QVERIFY2(bibtex.contains(QStringLiteral("10.1145/9876543.2109876")), qPrintable(bibtex));
+
+        // CommandPalette live pre-normalized search test.
+        Marks marks(&library);
+        BookSearch bookSearch(&reader);
+        LibraryIndex libraryIndex(cacheDir + QStringLiteral("/index.sqlite"));
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices ai(&gemini, &keys, library.database().connectionName());
+        AudioCache audioCache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        Narration narration(&ai, &audioCache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        Companion companion(&ai, &reader, library.database().connectionName());
+        Illustrator illustrator(&ai, &reader, library.database().connectionName(), dir.filePath(QStringLiteral("pictures")));
+        LocalSetup localSetup(&ai);
+        Theme theme(dir.filePath(QStringLiteral("no-omarchy")));
+        Translator translator;
+
+        QQmlEngine engine;
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("translator"), &translator);
+        engine.rootContext()->setContextProperty(QStringLiteral("library"), &library);
+        engine.rootContext()->setContextProperty(QStringLiteral("libraryIndex"), &libraryIndex);
+        engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+        engine.rootContext()->setContextProperty(QStringLiteral("marks"), &marks);
+        engine.rootContext()->setContextProperty(QStringLiteral("bookSearch"), &bookSearch);
+        engine.rootContext()->setContextProperty(QStringLiteral("ai"), &ai);
+        engine.rootContext()->setContextProperty(QStringLiteral("narration"), &narration);
+        engine.rootContext()->setContextProperty(QStringLiteral("companion"), &companion);
+        engine.rootContext()->setContextProperty(QStringLiteral("illustrator"), &illustrator);
+        engine.rootContext()->setContextProperty(QStringLiteral("localSetup"), &localSetup);
+
+        QQmlComponent cpComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/CommandPalette.qml")));
+        QVERIFY2(cpComp.status() == QQmlComponent::Ready, qPrintable(cpComp.errorString()));
+        std::unique_ptr<QObject> cpObj(cpComp.createWithInitialProperties({
+            {QStringLiteral("width"), 1000.0},
+            {QStringLiteral("height"), 760.0},
+        }));
+        QVERIFY(cpObj != nullptr);
+        QMetaObject::invokeMethod(cpObj.get(), "show");
+        const QVariantList cached = cpObj->property("cachedBooks").toList();
+        QVERIFY(cached.size() >= 2);
+        bool sawMiserables = false;
+        bool sawUber = false;
+        for (const QVariant &v : cached) {
+            const QVariantMap entry = v.toMap();
+            const QString normTitle = entry.value(QStringLiteral("normTitle")).toString();
+            QVERIFY(!entry.value(QStringLiteral("book")).toMap().isEmpty());
+            QVERIFY(!entry.value(QStringLiteral("normFull")).toString().isEmpty());
+            if (normTitle == QStringLiteral("les miserables"))
+                sawMiserables = true;
+            if (normTitle == QStringLiteral("uber die liebe"))
+                sawUber = true;
+        }
+        QVERIFY(sawMiserables);
+        QVERIFY(sawUber);
+
+        QMetaObject::invokeMethod(cpObj.get(), "search", Q_ARG(QVariant, QStringLiteral("miserables")));
+        const QVariantList results = cpObj->property("results").toList();
+        bool matchedBook = false;
+        for (const QVariant &r : results) {
+            const QVariantMap row = r.toMap();
+            if (row.value(QStringLiteral("kind")).toString() == QStringLiteral("book") &&
+                row.value(QStringLiteral("title")).toString() == QStringLiteral("Les Misérables")) {
+                matchedBook = true;
+                break;
+            }
+        }
+        QVERIFY(matchedBook);
+        QMetaObject::invokeMethod(cpObj.get(), "close");
+        QVERIFY(cpObj->property("cachedBooks").toList().isEmpty());
+
+        const QString cpQml = readSrc(QStringLiteral("ui/CommandPalette.qml"));
+        QCOMPARE(cpQml.count(QStringLiteral(".normalize(\"NFD\")")), 1);
+        QVERIFY(cpQml.contains(QStringLiteral("function buildBookCache()")));
+        QVERIFY(cpQml.contains(QStringLiteral("function fuzzyScoreNormalized(")));
+    }
+
+    void aPlusCraftReaderJsSwipeQueueAndScrollQuiet() {
+        const QString nodeBin = QStandardPaths::findExecutable(QStringLiteral("node"));
+        QVERIFY2(!nodeBin.isEmpty(), "node executable required for reader.js verification");
+
+        const QString readerJsPath = QFINDTESTDATA("../src/reader/reader.js");
+        QVERIFY(QFileInfo::exists(readerJsPath));
+
+        const QString harness = QStringLiteral(R"JS(
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+let domReady = null;
+let wheelHandler = null;
+let fakeNow = 1000;
+let nextTimerId = 1;
+const timers = new Map();
+
+function fakeSetTimeout(fn, delay) {
+    const id = nextTimerId++;
+    timers.set(id, { fn, at: fakeNow + Math.max(0, Number(delay) || 0) });
+    return id;
+}
+function fakeClearTimeout(id) { timers.delete(id); }
+function advanceTimers(ms) {
+    fakeNow += ms;
+    while (true) {
+        let earliestId = null, earliest = null;
+        for (const [id, entry] of timers.entries()) {
+            if (entry.at <= fakeNow && (!earliest || entry.at < earliest.at)) {
+                earliestId = id;
+                earliest = entry;
+            }
+        }
+        if (!earliest) break;
+        timers.delete(earliestId);
+        earliest.fn();
+    }
+}
+
+let nextRafId = 1;
+const rafQueue = new Map();
+function fakeRaf(cb) {
+    const id = nextRafId++;
+    rafQueue.set(id, cb);
+    queueMicrotask(() => {
+        const fn = rafQueue.get(id);
+        if (!fn) return;
+        rafQueue.delete(id);
+        fakeNow += 120;
+        fn(fakeNow);
+    });
+    return id;
+}
+function fakeCancelRaf(id) { rafQueue.delete(id); }
+
+function makeStyle() {
+    const props = {};
+    return {
+        props, cssText: '', opacity: '', transform: '', backgroundColor: '',
+        willChange: '', colorScheme: '', left: '', top: '', width: '', height: '',
+        setProperty(k, v, prio) { this[k] = v; props[k] = { value: v, prio: prio || '' }; },
+    };
+}
+function makeClassList() {
+    const s = new Set();
+    return { add(c) { s.add(c); }, remove(c) { s.delete(c); }, contains(c) { return s.has(c); } };
+}
+
+function makeDoc(ownerFrame, url, pages) {
+    const headChildren = [];
+    const byId = new Map();
+    const textNode = { nodeType: 3, data: 'Chapter text for swipe serialization and scroll quiet tests.', parentElement: null };
+    const bodyEl = {
+        childNodes: [textNode],
+        lastElementChild: {
+            getClientRects() { return [{ left: 0, right: 200, top: 0, bottom: 24, width: 200, height: 24 }]; },
+            getBoundingClientRect() { return { left: 0, right: 200, top: 0, bottom: 24, width: 200, height: 24 }; },
+        },
+    };
+    textNode.parentElement = bodyEl;
+    const docEl = {
+        style: makeStyle(),
+        get scrollWidth() { return pages * (parseFloat(ownerFrame.style.width) || 680); },
+        scrollHeight: 600,
+        clientHeight: 600,
+        scrollLeft: 0,
+        scrollTop: 0,
+        scrollTo(opts) {
+            if (opts && typeof opts.left === 'number') this.scrollLeft = opts.left;
+            if (opts && typeof opts.top === 'number') this.scrollTop = opts.top;
+        },
+        appendChild() {},
+    };
+    return {
+        URL: url,
+        documentElement: docEl,
+        head: { appendChild(el) { headChildren.push(el); if (el.id) byId.set(el.id, el); } },
+        body: bodyEl,
+        scrollingElement: docEl,
+        fonts: { ready: Promise.resolve() },
+        images: [],
+        defaultView: {
+            getComputedStyle() { return { writingMode: 'horizontal-tb', direction: 'ltr', textAlign: 'start', whiteSpace: 'normal' }; },
+            CSS: { highlights: new Map() },
+            Highlight: class { constructor(...r) { this.ranges = r; this.priority = 0; } },
+        },
+        getElementById(id) { return byId.get(id) || null; },
+        createElementNS(_ns, tag) { return { localName: tag, id: '', textContent: '', style: makeStyle() }; },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        addEventListener() {},
+        removeEventListener() {},
+        createTreeWalker() {
+            let done = false;
+            return { nextNode() { if (done) return null; done = true; return textNode; } };
+        },
+        createRange() {
+            return {
+                selectNodeContents() {}, setStart() {}, setEnd() {},
+                getClientRects() { return [{ left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }]; },
+                getBoundingClientRect() { return { left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }; },
+            };
+        },
+        getSelection() { return { isCollapsed: true, removeAllRanges() {} }; },
+    };
+}
+
+let deferredResolve = null;
+const pageCounts = new Map([
+    ['clothbound://book/1/ch0.xhtml', 2],
+    ['clothbound://book/1/ch1.xhtml', 1],
+    ['clothbound://book/1/ch2.xhtml', 1],
+]);
+
+function makeFrame(id) {
+    const f = {
+        id, style: makeStyle(), classList: makeClassList(),
+        contentDocument: null, contentWindow: null, onload: null, onerror: null, _src: 'about:blank',
+        setAttribute() {}, removeAttribute() {},
+        getBoundingClientRect() { return { left: 160, top: 54, width: parseFloat(this.style.width) || 680, height: 692 }; },
+    };
+    Object.defineProperty(f, 'src', {
+        get() { return this._src; },
+        set(v) {
+            this._src = v;
+            if (!v || v === 'about:blank') { this.contentDocument = null; this.contentWindow = null; return; }
+            const finish = () => {
+                const doc = makeDoc(this, v, pageCounts.get(v) || 1);
+                this.contentDocument = doc;
+                this.contentWindow = doc.defaultView;
+                if (typeof this.onload === 'function') this.onload();
+            };
+            if (deferredResolve === 'armed') {
+                deferredResolve = finish;
+            } else {
+                queueMicrotask(finish);
+            }
+        },
+    });
+    return f;
+}
+
+const stageEl = {
+    clientWidth: 1200, clientHeight: 800,
+    addEventListener() {},
+    getBoundingClientRect() { return { left: 0, top: 0, width: 1200, height: 800 }; },
+};
+const viewportEl = { style: makeStyle(), classList: makeClassList() };
+const bookFrame = makeFrame('book');
+const backFrame = makeFrame('book-back');
+const overlayEl = { appendChild() {} };
+const docEl = { style: makeStyle() };
+const documentMock = {
+    documentElement: docEl,
+    body: { appendChild(el) { return el; } },
+    getElementById(id) {
+        if (id === 'stage') return stageEl;
+        if (id === 'viewport') return viewportEl;
+        if (id === 'book') return bookFrame;
+        if (id === 'book-back') return backFrame;
+        if (id === 'overlay') return overlayEl;
+        return null;
+    },
+    createElement() { return { style: makeStyle(), setAttribute() {}, remove() {}, addEventListener() {} }; },
+    addEventListener(type, fn) {
+        if (type === 'DOMContentLoaded') domReady = fn;
+        if (type === 'wheel') wheelHandler = fn;
+    },
+};
+
+const bridge = {
+    surfaceLoaded() {},
+    relocated() {},
+    tapped() {},
+    notifyPageTurn() {},
+    log(msg) { throw new Error('reader.js log error: ' + msg); },
+};
+
+const sandbox = {
+    console, URL, Map, Set, WeakMap, Promise, Math, Number, String, Array, Object, JSON, Error, RegExp,
+    document: documentMock,
+    window: { innerWidth: 1200, innerHeight: 800 },
+    performance: { now() { return fakeNow; } },
+    setTimeout: fakeSetTimeout,
+    clearTimeout: fakeClearTimeout,
+    requestAnimationFrame: fakeRaf,
+    cancelAnimationFrame: fakeCancelRaf,
+    matchMedia() { return { matches: false }; },
+    ResizeObserver: class { observe() {} },
+    QWebChannel: class { constructor(_t, cb) { cb({ objects: { bridge } }); } },
+    qt: { webChannelTransport: {} },
+    NodeFilter: { SHOW_TEXT: 4 },
+    Hyphenation: { load: async () => false },
+    fetch() { return Promise.resolve({ ok: true, text: async () => '' }); },
+    getComputedStyle() { return { fontSize: '18px' }; },
+};
+sandbox.globalThis = sandbox;
+sandbox.window.document = documentMock;
+vm.createContext(sandbox);
+vm.runInContext(source + '\nthis.__cb = clothbound;', sandbox);
+domReady();
+const cb = sandbox.__cb;
+
+const book = {
+    session: 1,
+    base: 'clothbound://book/1/',
+    language: 'en',
+    spine: [
+        { href: 'ch0.xhtml', linear: true },
+        { href: 'ch1.xhtml', linear: true },
+        { href: 'ch2.xhtml', linear: true },
+    ],
+};
+const pagedStyle = {
+    theme: { bg: '#fff', fg: '#111', link: '#00f', muted: '#666', popover: '#fff', border: '#ccc', dark: false },
+    font: 'Literata', fontScale: 1, lineHeight: 1.5, margin: 0.08, measure: 38, marginTop: 54, marginBottom: 54,
+    justify: false, hyphenate: false, layout: 'single', singleColumn: true, animate: true, reducedMotion: false,
+};
+
+async function flushMicrotasks(n = 8) {
+    for (let i = 0; i < n; ++i) await Promise.resolve();
+}
+
+(async () => {
+    await cb.open(book, { chapter: 0, offset: 0 }, pagedStyle);
+    let dbg = JSON.parse(cb.debug());
+    assert.strictEqual(dbg.chapter, 0);
+    assert.strictEqual(dbg.page, 0);
+    assert.strictEqual(dbg.pages, 2);
+
+    // 1. Mid-swipe goTo() cancels pending swipeEnd so stale swipe never snaps back to ch0.
+    wheelHandler({ deltaMode: 0, deltaX: 240, deltaY: 0, preventDefault() {} });
+    await cb.goTo({ chapter: 2, offset: 0, instant: true });
+    advanceTimers(150);
+    await flushMicrotasks();
+    dbg = JSON.parse(cb.debug());
+    assert.strictEqual(dbg.chapter, 2, 'stale swipe timer must not override goTo(2)');
+
+    // 2. Horizontal swipe past threshold settles via state.queue and serializes cleanly with queued next().
+    await cb.goTo({ chapter: 0, offset: 0, instant: true });
+    fakeNow += 500;
+    wheelHandler({ deltaMode: 0, deltaX: 260, deltaY: 0, preventDefault() {} });
+    advanceTimers(100);
+    const queuedNext = cb.next();
+    await flushMicrotasks(16);
+    await queuedNext;
+    dbg = JSON.parse(cb.debug());
+    assert.strictEqual(dbg.chapter, 1, 'swipe -> page 1 followed by queued next() must reach chapter 1');
+    assert.strictEqual(dbg.page, 0);
+
+    // 3. Swipe start is ignored while a queued chapter navigation is actively in flight (state.navBusy > 0).
+    await cb.goTo({ chapter: 0, offset: 0, instant: true });
+    fakeNow += 500;
+    deferredResolve = 'armed';
+    const pendingNav = cb.goTo({ chapter: 2, offset: 0, instant: true });
+    await flushMicrotasks(4);
+    assert.strictEqual(typeof deferredResolve, 'function');
+    wheelHandler({ deltaMode: 0, deltaX: 300, deltaY: 0, preventDefault() {} });
+    const resolveLoad = deferredResolve;
+    deferredResolve = null;
+    resolveLoad();
+    await pendingNav;
+    advanceTimers(150);
+    await flushMicrotasks();
+    dbg = JSON.parse(cb.debug());
+    assert.strictEqual(dbg.chapter, 2, 'wheel swipe during active navigation must be ignored');
+
+    // 4. Scroll-mode wheelQuietUntil >= 550ms blocks accidental momentum multi-chapter skip.
+    const scrollStyle = Object.assign({}, pagedStyle, { layout: 'scroll', animate: false });
+    await cb.setStyle(scrollStyle);
+    await cb.goTo({ chapter: 0, offset: 0, instant: true });
+    fakeNow += 700;
+    wheelHandler({ deltaMode: 0, deltaX: 0, deltaY: 80, preventDefault() {} });
+    await flushMicrotasks(12);
+    dbg = JSON.parse(cb.debug());
+    assert.strictEqual(dbg.chapter, 1, 'bottom-edge scroll should advance to chapter 1');
+
+    // Momentum wheel 400ms later is inside 550ms cooldown -> must stay on chapter 1.
+    fakeNow += 400;
+    wheelHandler({ deltaMode: 0, deltaX: 0, deltaY: 80, preventDefault() {} });
+    await flushMicrotasks(12);
+    dbg = JSON.parse(cb.debug());
+    assert.strictEqual(dbg.chapter, 1, 'scroll momentum within 550ms must not double-skip to chapter 2');
+
+    // Intentional wheel after 550ms cooldown -> advances to chapter 2.
+    fakeNow += 200;
+    wheelHandler({ deltaMode: 0, deltaX: 0, deltaY: 80, preventDefault() {} });
+    await flushMicrotasks(12);
+    dbg = JSON.parse(cb.debug());
+    assert.strictEqual(dbg.chapter, 2, 'scroll wheel after 550ms cooldown should advance to chapter 2');
+
+    process.stdout.write('OK\n');
+})().catch(err => {
+    console.error(err && err.stack || err);
+    process.exit(1);
+});
+)JS");
+
+        QProcess proc;
+        proc.start(nodeBin, {QStringLiteral("-e"), harness, readerJsPath});
+        QVERIFY2(proc.waitForFinished(10000), "node a-plus-craft reader.js harness timed out");
+        const QByteArray stderrOut = proc.readAllStandardError();
+        QVERIFY2(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
+                 stderrOut.isEmpty() ? "node a-plus-craft reader.js harness failed" : stderrOut.constData());
+        QCOMPARE(proc.readAllStandardOutput().trimmed(), QByteArray("OK"));
+    }
+    // === end a-plus-craft tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

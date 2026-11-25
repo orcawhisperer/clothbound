@@ -526,7 +526,7 @@ FocusScope {
     opacity: open ? 1 : 0
     Behavior on opacity {
         NumberAnimation {
-            duration: theme.reducedMotion ? 100 : (panel.open ? 180 : 130)
+            duration: theme.reducedMotion ? 0 : (panel.open ? 180 : 130)
             easing.type: Easing.OutCubic
         }
     }
@@ -563,7 +563,7 @@ FocusScope {
                  : listen.enabled && listen.hovered ? theme.fillHover : theme.fill
             border.width: listen.playing ? 1 : 0
             border.color: Ui.tint(theme.accent, 0.48)
-            Behavior on color { ColorAnimation { duration: 100 } }
+            Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
             Rectangle {
                 anchors.fill: parent
                 anchors.margins: -2
@@ -623,6 +623,7 @@ FocusScope {
         implicitHeight: Math.max(52, rowLayout.implicitHeight + 14)
         hoverEnabled: true
         focusPolicy: Qt.TabFocus
+        Accessible.role: Accessible.ListItem
         Accessible.name: (voice.title || voice.name || "") + (accentTag !== "" ? ", " + accentTag : "")
         Accessible.checked: chosen
         onClicked: panel.choose(voice)
@@ -637,7 +638,7 @@ FocusScope {
                  : row.hovered ? Ui.tint(theme.ink1, 0.04) : "transparent"
             border.width: row.previewingThis ? 1 : row.keyboardHighlighted ? 1.5 : 0
             border.color: row.previewingThis ? Ui.tint(theme.accent, 0.35) : Ui.tint(theme.accent, 0.65)
-            Behavior on color { ColorAnimation { duration: 100 } }
+            Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
             Rectangle {
                 anchors.fill: parent
                 anchors.margins: -2

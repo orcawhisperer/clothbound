@@ -21,7 +21,13 @@ T.ScrollBar {
         color: control.palette.mid
         opacity: control.policy === T.ScrollBar.AlwaysOn || (control.active && control.size < 1.0)
                  ? (control.pressed ? 0.75 : control.hovered ? 0.6 : 0.42) : 0
-        Behavior on opacity { NumberAnimation { duration: 180 } }
-        Behavior on implicitWidth { NumberAnimation { duration: 100 } }
+        Behavior on opacity {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: theme.reducedMotion ? 0 : 180 }
+        }
+        Behavior on implicitWidth {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: theme.reducedMotion ? 0 : 100 }
+        }
     }
 }

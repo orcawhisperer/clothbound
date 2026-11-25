@@ -45,6 +45,9 @@ T.Button {
                  : (control.down ? Qt.darker(control.palette.alternateBase, 1.0) : control.hovered ? control.palette.alternateBase : control.palette.button)
         border.width: control.visualFocus ? 2 : 0
         border.color: control.palette.highlight
-        Behavior on color { ColorAnimation { duration: 100 } }
+        Behavior on color {
+            enabled: !theme.reducedMotion
+            ColorAnimation { duration: theme.reducedMotion ? 0 : 100 }
+        }
     }
 }

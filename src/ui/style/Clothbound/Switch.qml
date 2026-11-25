@@ -26,7 +26,10 @@ T.Switch {
         color: control.checked
                ? control.palette.highlight
                : Qt.rgba(control.palette.windowText.r, control.palette.windowText.g, control.palette.windowText.b, 0.16)
-        Behavior on color { ColorAnimation { duration: 140 } }
+        Behavior on color {
+            enabled: !theme.reducedMotion
+            ColorAnimation { duration: theme.reducedMotion ? 0 : 140 }
+        }
 
         // 2 px offset focus ring when reached via keyboard Tab.
         Rectangle {

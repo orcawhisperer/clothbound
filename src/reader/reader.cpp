@@ -20,9 +20,11 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMediaDevices>
+#include <QPromise>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QThread>
 #include <QUrl>
 #include <QVector>
 #include <QtConcurrentRun>
@@ -404,6 +406,7 @@ bool Reader::openBook(int bookId) {
     m_token = m_scheme->add(book);
     m_bookId = bookId;
     ++m_session;
+    m_activeSession->store(m_session, std::memory_order_relaxed);
     m_format = record.format;
     m_title = record.title;
     m_author = record.author;
@@ -525,6 +528,7 @@ void Reader::close() {
     flushReadingTime();
     m_timeFlush.stop();
     ++m_session;
+    m_activeSession->store(m_session, std::memory_order_relaxed);
     m_scheme->remove(m_token);
     PdfPages::remove(m_token);
     m_book.reset();
@@ -1077,6 +1081,8 @@ bool Reader::openPdf(int bookId) {
     m_pdf = book;
     m_bookId = bookId;
     ++m_session;
+    m_activeSession->store(m_session, std::memory_order_relaxed);
+    const qint64 session = m_session;
     m_token = QStringLiteral("p%1-%2").arg(bookId).arg(QDateTime::currentMSecsSinceEpoch());
     PdfPages::add(m_token, book);
     m_format = record.format;
@@ -1116,30 +1122,10 @@ bool Reader::openPdf(int bookId) {
 
     // Progress by text: each page's length, measured once and kept.
     m_lengths = m_library->chapterLengths(bookId);
-    const QString path = record.path;
-    if (m_lengths.size() != pages) {
+    const bool needLengths = (m_lengths.size() != pages);
+    if (needLengths)
         m_lengths = QList<int>(pages, 1500);
-        auto *watcher = new QFutureWatcher<QList<int>>(this);
-        connect(watcher, &QFutureWatcher<QList<int>>::finished, this, [this, watcher, bookId] {
-            watcher->deleteLater();
-            const QList<int> lengths = watcher->result();
-            m_library->setChapterLengths(bookId, lengths);
-            if (bookId != m_bookId)
-                return;
-            m_lengths = lengths;
-            m_progress = fractionAt(m_chapter, m_offset);
-            emit lengthsChanged();
-            emit locationChanged();
-        });
-        watcher->setFuture(QtConcurrent::run([path] {
-            PdfBook own(path);
-            QList<int> lengths;
-            if (own.open())
-                for (int page = 0; page < own.pageCount(); ++page)
-                    lengths.append(qMax(1, int(own.pageText(page).size())));
-            return lengths;
-        }));
-    }
+
     // The margins to cut: restored from book_settings when the file hasn't
     // changed, or measured once in the background and saved.
     m_pdfCrop = QRectF(0, 0, 1, 1);
@@ -1162,28 +1148,87 @@ bool Reader::openPdf(int bookId) {
             }
         }
     }
-    if (!cropCached) {
-        auto *crop = new QFutureWatcher<QRectF>(this);
-        connect(crop, &QFutureWatcher<QRectF>::finished, this, [this, crop, bookId, mtime] {
-            crop->deleteLater();
-            const QRectF result = crop->result();
-            m_library->setBookSetting(
-                bookId, QStringLiteral("pdf_crop"),
-                QStringLiteral("%1:%2,%3,%4,%5")
-                    .arg(mtime)
-                    .arg(result.x(), 0, 'f', 4)
-                    .arg(result.y(), 0, 'f', 4)
-                    .arg(result.width(), 0, 'f', 4)
-                    .arg(result.height(), 0, 'f', 4));
-            if (bookId != m_bookId)
-                return;
-            m_pdfCrop = result;
-            emit pdfCropChanged();
+    const bool needCrop = !cropCached;
+    // Run margin detection and page-length measurement in ONE background task
+    // reusing the already-open `book` (`m_pdf`, mutex-guarded) instead of
+    // opening two redundant concurrent `PdfBook` handles on initial load.
+    if (needCrop || needLengths) {
+        struct PdfInitChunk {
+            enum class Kind { Crop, Lengths } kind = Kind::Crop;
+            QRectF crop{0, 0, 1, 1};
+            QList<int> lengths;
+        };
+        auto *watcher = new QFutureWatcher<PdfInitChunk>(this);
+        connect(watcher, &QFutureWatcher<PdfInitChunk>::resultReadyAt, this, [this, watcher, bookId, mtime, session](int index) {
+            const PdfInitChunk chunk = watcher->resultAt(index);
+            if (chunk.kind == PdfInitChunk::Kind::Crop) {
+                m_library->setBookSetting(
+                    bookId, QStringLiteral("pdf_crop"),
+                    QStringLiteral("%1:%2,%3,%4,%5")
+                        .arg(mtime)
+                        .arg(chunk.crop.x(), 0, 'f', 4)
+                        .arg(chunk.crop.y(), 0, 'f', 4)
+                        .arg(chunk.crop.width(), 0, 'f', 4)
+                        .arg(chunk.crop.height(), 0, 'f', 4));
+                if (bookId != m_bookId || session != m_session)
+                    return;
+                m_pdfCrop = chunk.crop;
+                emit pdfCropChanged();
+            } else {
+                m_library->setChapterLengths(bookId, chunk.lengths);
+                if (bookId != m_bookId || session != m_session)
+                    return;
+                m_lengths = chunk.lengths;
+                m_progress = fractionAt(m_chapter, m_offset);
+                emit lengthsChanged();
+                emit locationChanged();
+            }
         });
-        crop->setFuture(QtConcurrent::run([path] {
-            PdfBook own(path);
-            return own.open() ? PdfPages::bookCrop(own) : QRectF(0, 0, 1, 1);
-        }));
+        connect(watcher, &QFutureWatcher<PdfInitChunk>::finished, watcher, &QObject::deleteLater);
+        auto activeSession = m_activeSession;
+        watcher->setFuture(QtConcurrent::run(
+            [book, activeSession, session, needCrop, needLengths, pages](QPromise<PdfInitChunk> &promise) {
+                // Ensure the shared QPdfDocument is always destroyed on its affine UI thread.
+                struct MainThreadRelease {
+                    std::shared_ptr<PdfBook> handle;
+                    ~MainThreadRelease() {
+                        if (!handle)
+                            return;
+                        if (QCoreApplication *app = QCoreApplication::instance();
+                            app && QThread::currentThread() != app->thread()) {
+                            auto keep = std::move(handle);
+                            QMetaObject::invokeMethod(
+                                app, [b = std::move(keep)]() mutable { b.reset(); }, Qt::QueuedConnection);
+                        }
+                    }
+                } releaseGuard{book};
+
+                auto cancelled = [&]() {
+                    return promise.isCanceled() || activeSession->load(std::memory_order_relaxed) != session;
+                };
+                if (needCrop && !cancelled()) {
+                    PdfInitChunk chunk;
+                    chunk.kind = PdfInitChunk::Kind::Crop;
+                    chunk.crop = PdfPages::bookCrop(*book);
+                    if (!cancelled())
+                        promise.addResult(std::move(chunk));
+                }
+                if (needLengths && !cancelled()) {
+                    QList<int> lengths;
+                    lengths.reserve(pages);
+                    for (int page = 0; page < pages; ++page) {
+                        if (cancelled())
+                            return;
+                        lengths.append(qMax(1, int(book->pageText(page).size())));
+                    }
+                    if (!cancelled()) {
+                        PdfInitChunk chunk;
+                        chunk.kind = PdfInitChunk::Kind::Lengths;
+                        chunk.lengths = std::move(lengths);
+                        promise.addResult(std::move(chunk));
+                    }
+                }
+            }));
     }
 
     m_startPosition = QVariantMap{{"chapter", 0}, {"offset", 0}};
@@ -1601,16 +1646,33 @@ QString Reader::formatBookCitation(const QVariantMap &bookInfo, const QString &s
     QVariantMap enriched = bookInfo;
     const int id = enriched.value(QStringLiteral("id")).toInt();
     const QString fmt = enriched.value(QStringLiteral("format")).toString().trimmed().toLower();
-    if (id > 0 && id == m_bookId) {
-        if (enriched.value(QStringLiteral("doi")).toString().isEmpty() && !m_detectedDoi.isEmpty())
-            enriched.insert(QStringLiteral("doi"), m_detectedDoi);
-        if (enriched.value(QStringLiteral("arxiv")).toString().isEmpty() && !m_detectedArxiv.isEmpty())
-            enriched.insert(QStringLiteral("arxiv"), m_detectedArxiv);
+    const QString path = enriched.value(QStringLiteral("path")).toString();
+    bool matchesOpenPdf = false;
+    if (m_pdf && !path.isEmpty()) {
+        if (path == m_pdf->path()) {
+            matchesOpenPdf = true;
+        } else {
+            const QString openCanon = QFileInfo(m_pdf->path()).canonicalFilePath();
+            const QString infoCanon = QFileInfo(path).canonicalFilePath();
+            matchesOpenPdf = !openCanon.isEmpty() && openCanon == infoCanon;
+        }
+    }
+    if ((id > 0 && id == m_bookId) || matchesOpenPdf) {
+        if (enriched.value(QStringLiteral("doi")).toString().isEmpty()) {
+            const QString doi = !m_detectedDoi.isEmpty() ? m_detectedDoi : (m_pdf ? m_pdf->detectedDoi() : QString());
+            if (!doi.isEmpty())
+                enriched.insert(QStringLiteral("doi"), doi);
+        }
+        if (enriched.value(QStringLiteral("arxiv")).toString().isEmpty()) {
+            const QString arxiv =
+                !m_detectedArxiv.isEmpty() ? m_detectedArxiv : (m_pdf ? m_pdf->detectedArxiv() : QString());
+            if (!arxiv.isEmpty())
+                enriched.insert(QStringLiteral("arxiv"), arxiv);
+        }
         if (enriched.value(QStringLiteral("year")).toInt() <= 0 && m_pdf && m_pdf->created().isValid())
             enriched.insert(QStringLiteral("year"), m_pdf->created().date().year());
     } else if (fmt == QLatin1String("pdf") && enriched.value(QStringLiteral("doi")).toString().isEmpty() &&
                enriched.value(QStringLiteral("arxiv")).toString().isEmpty()) {
-        const QString path = enriched.value(QStringLiteral("path")).toString();
         if (!path.isEmpty() && QFileInfo::exists(path)) {
             PdfBook probe(path);
             if (probe.open()) {

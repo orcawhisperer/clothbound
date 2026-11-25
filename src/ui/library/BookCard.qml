@@ -37,6 +37,24 @@ Item {
     readonly property bool focused: current && GridView.view.activeFocus
     readonly property bool isNewArrival: !finished && progress <= 0 && addedAt > 0 && nowEpoch > 0 && (nowEpoch - addedAt) <= 172800
     readonly property real pad: 12
+    readonly property string statusText: {
+        const _lang = translator.language
+        if (card.problem !== "")
+            return card.problem
+        if (card.editions > 1)
+            return qsTr("%n editions", "", card.editions)
+        if (card.finished)
+            return qsTr("Finished")
+        if (card.progress > 0.005) {
+            const pct = Math.round(card.progress * 100).toLocaleString(Qt.locale(), "f", 0)
+            return card.listening ? qsTr("%1% · listening").arg(pct) : qsTr("%1%").arg(pct)
+        }
+        if (card.wantToRead)
+            return qsTr("Want to read")
+        if (card.format === "pdf" && card.pages > 0)
+            return qsTr("PDF · %n pages", "", card.pages)
+        return card.author !== "" ? card.author : qsTr("New")
+    }
 
     signal activated()
     signal detailsRequested()
@@ -46,6 +64,16 @@ Item {
 
     width: GridView.view.cellWidth
     height: GridView.view.cellHeight
+    Accessible.role: Accessible.ListItem
+    Accessible.selected: card.current
+    Accessible.name: {
+        const parts = [card.title]
+        if (card.author !== "" && card.statusText !== card.author)
+            parts.push(card.author)
+        if (card.statusText !== "")
+            parts.push(card.statusText)
+        return parts.join(", ")
+    }
 
     Item {
         id: coverArea
@@ -233,24 +261,7 @@ Item {
         }
         Label {
             width: parent.width
-            text: {
-                const _lang = translator.language
-                if (card.problem !== "")
-                    return card.problem
-                if (card.editions > 1)
-                    return qsTr("%n editions", "", card.editions)
-                if (card.finished)
-                    return qsTr("Finished")
-                if (card.progress > 0.005) {
-                    const pct = Math.round(card.progress * 100).toLocaleString(Qt.locale(), "f", 0)
-                    return card.listening ? qsTr("%1% · listening").arg(pct) : qsTr("%1%").arg(pct)
-                }
-                if (card.wantToRead)
-                    return qsTr("Want to read")
-                if (card.format === "pdf" && card.pages > 0)
-                    return qsTr("PDF · %n pages", "", card.pages)
-                return card.author !== "" ? card.author : qsTr("New")
-            }
+            text: card.statusText
             textFormat: Text.PlainText
             color: card.problem !== "" ? theme.danger
                  : card.editions > 1 ? theme.accentInk : theme.ink4

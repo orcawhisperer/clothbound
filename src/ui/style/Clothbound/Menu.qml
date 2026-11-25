@@ -16,10 +16,14 @@ T.Menu {
     delegate: MenuItem {}
 
     enter: Transition {
-        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 110; easing.type: Easing.OutCubic }
-        NumberAnimation { property: "scale"; from: 0.97; to: 1; duration: 130; easing.type: Easing.OutCubic }
+        enabled: !theme.reducedMotion
+        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: theme.reducedMotion ? 0 : 110; easing.type: Easing.OutCubic }
+        NumberAnimation { property: "scale"; from: theme.reducedMotion ? 1 : 0.97; to: 1; duration: theme.reducedMotion ? 0 : 130; easing.type: Easing.OutCubic }
     }
-    exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 80 } }
+    exit: Transition {
+        enabled: !theme.reducedMotion
+        NumberAnimation { property: "opacity"; from: 1; to: 0; duration: theme.reducedMotion ? 0 : 80 }
+    }
 
     contentItem: ListView {
         implicitHeight: contentHeight

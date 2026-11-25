@@ -86,7 +86,7 @@ FocusScope {
 
     visible: opacity > 0
     opacity: open ? 1 : 0
-    Behavior on opacity { NumberAnimation { duration: 150; easing.type: Easing.OutCubic } }
+    Behavior on opacity { NumberAnimation { duration: theme.reducedMotion ? 0 : 150; easing.type: Easing.OutCubic } }
 
     Keys.onEscapePressed: close()
     Keys.onReturnPressed: next()

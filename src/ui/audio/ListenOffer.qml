@@ -11,7 +11,7 @@ import "../components/Ui.js" as Ui
 // suited to the book's language with an avatar card, downloads in place with
 // a 6 px progress bar while you keep reading, and confirms "Ready. Next time
 // P just starts." when complete.
-Rectangle {
+FocusScope {
     id: offer
 
     property var look
@@ -19,6 +19,7 @@ Rectangle {
     // Distance from the right edge of this popover to the center of the
     // toolbar headphones button, for positioning the top caret arrow.
     property real caretRightOffset: 64
+    readonly property real radius: Ui.radius(14, theme.radius)
 
     // "idle", "busy", or "done".
     property string step: "idle"
@@ -36,6 +37,7 @@ Rectangle {
     }
 
     signal moreVoices()
+    signal closed()
 
     function show() {
         const pack = voicePacks.offer(reader.language)
@@ -48,13 +50,17 @@ Rectangle {
         }
         step = (voicePacks.busy && pendingVoice !== "") ? "busy" : "idle"
         open = true
+        forceActiveFocus()
     }
 
     // Closing the popover hides it cleanly without aborting an in-flight
     // download ("Keep reading; it starts by itself."). Only the explicit
     // Cancel button cancels the download.
     function close() {
+        if (!open)
+            return
         open = false
+        closed()
     }
 
     // Ensure cleanup runs whether closed via close() or external `open = false`
@@ -94,10 +100,6 @@ Rectangle {
 
     width: Math.min(400, (parent ? parent.width : 1280) - 44)
     height: contentCol.implicitHeight
-    radius: Ui.radius(14, theme.radius)
-    color: theme.raised
-    border.width: 1
-    border.color: theme.hairline
     visible: opacity > 0.01
     opacity: open ? 1 : 0
     transformOrigin: Item.TopRight
@@ -110,7 +112,7 @@ Rectangle {
         }
     }
     Behavior on opacity {
-        NumberAnimation { duration: theme.reducedMotion ? 100 : (offer.open ? 160 : 120); easing.type: Easing.OutCubic }
+        NumberAnimation { duration: theme.reducedMotion ? 0 : (offer.open ? 160 : 120); easing.type: Easing.OutCubic }
     }
     Behavior on scale {
         enabled: !theme.reducedMotion
@@ -118,6 +120,17 @@ Rectangle {
     }
     Accessible.role: Accessible.Dialog
     Accessible.name: qsTr("Read aloud")
+
+    Keys.onShortcutOverride: (event) => {
+        if (offer.open && event.key === Qt.Key_Escape)
+            event.accepted = true
+    }
+    Keys.onEscapePressed: (event) => {
+        if (offer.open) {
+            offer.close()
+            event.accepted = true
+        }
+    }
 
     // Soft layered popover shadow matching app-chrome modals.
     Repeater {
@@ -137,6 +150,15 @@ Rectangle {
             color: theme.shadow
             opacity: modelData.alpha
         }
+    }
+
+    // Card surface behind the content and callout caret mask.
+    Rectangle {
+        anchors.fill: parent
+        radius: offer.radius
+        color: theme.raised
+        border.width: 1
+        border.color: theme.hairline
     }
 
     // Top rotated-45° callout caret pointing to the headphones button.

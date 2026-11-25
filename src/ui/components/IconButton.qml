@@ -28,7 +28,7 @@ AbstractButton {
         color: button.active ? (button.look ? Ui.tint(button.look.link, 0.16) : button.palette.linkVisited)
              : button.enabled && button.pressed ? Ui.tint(button.tone, 0.14)
              : button.enabled && button.hovered ? Ui.tint(button.tone, 0.08) : "transparent"
-        Behavior on color { ColorAnimation { duration: 100 } }
+        Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
 
         Rectangle {
             anchors.fill: parent

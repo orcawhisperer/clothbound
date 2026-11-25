@@ -17,8 +17,14 @@ T.ToolTip {
     font.pixelSize: 12
     closePolicy: T.Popup.CloseOnEscape | T.Popup.CloseOnPressOutsideParent | T.Popup.CloseOnReleaseOutsideParent
 
-    enter: Transition { NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 90 } }
-    exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 90 } }
+    enter: Transition {
+        enabled: !theme.reducedMotion
+        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: theme.reducedMotion ? 0 : 90 }
+    }
+    exit: Transition {
+        enabled: !theme.reducedMotion
+        NumberAnimation { property: "opacity"; from: 1; to: 0; duration: theme.reducedMotion ? 0 : 90 }
+    }
 
     contentItem: Text {
         text: control.text

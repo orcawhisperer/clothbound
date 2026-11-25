@@ -665,7 +665,7 @@ FocusScope {
             height: 2
             width: parent.width * (library.scanTotal > 0 ? library.scanDone / library.scanTotal : 0)
             color: theme.accent
-            Behavior on width { NumberAnimation { duration: 200 } }
+            Behavior on width { enabled: !theme.reducedMotion; NumberAnimation { duration: 200 } }
         }
         // Persistent hairline separator (01_library.html).
         Rectangle {
@@ -756,6 +756,8 @@ FocusScope {
         cellHeight: Math.round((cellWidth - 24) * 1.5) + 12 + 56
 
         model: view.viewMode === "grid" ? library.works : null
+        Accessible.role: Accessible.List
+        Accessible.name: view.sectionTitle
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         SmoothWheel { stepSize: 165 }
@@ -886,6 +888,8 @@ FocusScope {
         spacing: 2
         currentIndex: -1
         model: view.viewMode === "list" ? library.works : null
+        Accessible.role: Accessible.List
+        Accessible.name: view.sectionTitle
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         SmoothWheel { stepSize: 115 }
@@ -961,6 +965,22 @@ FocusScope {
 
             width: listView.width
             height: 68
+            Accessible.role: Accessible.ListItem
+            Accessible.selected: listRow.selected
+            Accessible.name: {
+                const parts = [listRow.title]
+                if (listRow.author !== "")
+                    parts.push(listRow.author)
+                if (listRow.problem !== "")
+                    parts.push(listRow.problem)
+                else if (listRow.finished)
+                    parts.push(qsTr("Finished"))
+                else if (listRow.progress > 0.005)
+                    parts.push(qsTr("%1%").arg(Math.round(listRow.progress * 100).toLocaleString(Qt.locale(), "f", 0)))
+                else
+                    parts.push(qsTr("Unread"))
+                return parts.join(", ")
+            }
 
             Rectangle {
                 anchors.fill: parent

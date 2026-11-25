@@ -58,6 +58,8 @@ FocusScope {
 
     implicitHeight: 226
     activeFocusOnTab: true
+    Accessible.role: Accessible.Grouping
+    Accessible.name: qsTr("Continue reading")
     Keys.onReturnPressed: openCurrent()
     Keys.onEnterPressed: openCurrent()
     Keys.onRightPressed: if (wide && currentIndex === 0 && others.length > 0) currentIndex = 1
@@ -81,6 +83,20 @@ FocusScope {
         radius: Ui.radius(14, theme.radius)
         readonly property bool focused: shelf.activeFocus && shelf.currentIndex === 0
         readonly property bool hovered: heroHover.hovered
+        Accessible.role: Accessible.Button
+        Accessible.name: {
+            if (!shelf.lead)
+                return qsTr("Continue reading")
+            const parts = [qsTr("Continue reading")]
+            if (shelf.lead.title)
+                parts.push(shelf.lead.title)
+            if (shelf.lead.author)
+                parts.push(shelf.lead.author)
+            const prog = shelf.progressLine(shelf.lead)
+            if (prog !== "")
+                parts.push(prog)
+            return parts.join(", ")
+        }
 
         gradient: Gradient {
             GradientStop { position: 0.0; color: Ui.tint(theme.ink1, hero.hovered ? 0.07 : 0.05) }
@@ -268,7 +284,19 @@ FocusScope {
                 color: otherHover.hovered ? Ui.tint(theme.ink1, 0.06) : Ui.tint(theme.ink1, 0.03)
                 border.width: other.focused ? 2 : 1
                 border.color: other.focused ? theme.accent : Ui.tint(theme.ink1, 0.06)
-                Behavior on color { ColorAnimation { duration: 100 } }
+                Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 100 } }
+                Accessible.role: Accessible.Button
+                Accessible.name: {
+                    const parts = []
+                    if (other.modelData.title)
+                        parts.push(other.modelData.title)
+                    if (other.modelData.author)
+                        parts.push(other.modelData.author)
+                    const prog = shelf.progressLine(other.modelData)
+                    if (prog !== "")
+                        parts.push(prog)
+                    return parts.join(", ")
+                }
 
                 HoverHandler { id: otherHover; cursorShape: Qt.PointingHandCursor }
                 TapHandler {

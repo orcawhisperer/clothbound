@@ -12,10 +12,14 @@ T.Popup {
     padding: 8
 
     enter: Transition {
-        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: 120; easing.type: Easing.OutCubic }
-        NumberAnimation { property: "scale"; from: 0.97; to: 1; duration: 140; easing.type: Easing.OutCubic }
+        enabled: !theme.reducedMotion
+        NumberAnimation { property: "opacity"; from: 0; to: 1; duration: theme.reducedMotion ? 0 : 120; easing.type: Easing.OutCubic }
+        NumberAnimation { property: "scale"; from: theme.reducedMotion ? 1 : 0.97; to: 1; duration: theme.reducedMotion ? 0 : 140; easing.type: Easing.OutCubic }
     }
-    exit: Transition { NumberAnimation { property: "opacity"; from: 1; to: 0; duration: 90 } }
+    exit: Transition {
+        enabled: !theme.reducedMotion
+        NumberAnimation { property: "opacity"; from: 1; to: 0; duration: theme.reducedMotion ? 0 : 90 }
+    }
 
     background: Rectangle {
         radius: Math.min(10, theme.radius)

@@ -44,6 +44,7 @@ const clothbound = (() => {
         warmTimer: 0,
         loadGen: 0,
         lastTurnAt: 0,
+        navBusy: 0,
         queue: Promise.resolve(),
         hyphenation: false,
         note: null,
@@ -138,11 +139,17 @@ const clothbound = (() => {
     // Navigation runs one step at a time, so a burst of key presses never
     // loads two chapters over each other.
     function run(step) {
-        state.queue = state.queue.then(step).catch(error => {
-            if (error && error.cancelled)
-                return
-            log(error && error.stack || error)
-        })
+        ++state.navBusy
+        state.queue = state.queue
+            .then(step)
+            .catch(error => {
+                if (error && error.cancelled)
+                    return
+                log(error && error.stack || error)
+            })
+            .finally(() => {
+                state.navBusy = Math.max(0, state.navBusy - 1)
+            })
         return state.queue
     }
 
@@ -1136,6 +1143,7 @@ ${literaryIndent}
     // A turn under way lands at once (or hands off its live scroll offset for
     // smooth retargeting on rapid key repeats so turns never queue up).
     function cancelAnimation(keepCurrentScroll = false) {
+        clearSwipe()
         const chapterAnim = state.chapterAnim
         if (chapterAnim) {
             state.chapterAnim = null
@@ -2152,38 +2160,73 @@ ${literaryIndent}
     let wheelTotal = 0, wheelQuietUntil = 0, wheelReset = 0
     let swipe = null, swipeEnd = 0
 
+    function clearSwipe() {
+        clearTimeout(swipeEnd)
+        swipeEnd = 0
+        swipe = null
+    }
+
     // A sideways swipe on a touchpad moves the page with the fingers; when
     // they lift it settles on the next page, or back if it went only a little.
+    // Serialized through state.queue so swipe settlement never races with
+    // queued navigation, chapter swaps, or relayouts.
     function settleSwipe() {
+        swipeEnd = 0
         if (!swipe)
             return
-        const moved = scroller().scrollLeft - swipe.from
-        const rawDelta = swipe.delta
-        const page = swipe.page
+        const active = swipe
         swipe = null
-        // At page 0 or the final page, scrollLeft clamps to the edge; fall
-        // back to accumulated deltaX so swiping still crosses chapter bounds.
-        const sign = state.rtl ? -1 : 1
-        const effective = (Math.abs(moved) > 1 ? moved : rawDelta) * sign
-        const threshold = state.geometry.step * 0.12
-        const forward = effective > threshold, backward = effective < -threshold
-        if (forward || backward)
-            wheelQuietUntil = performance.now() + 320
-        if (forward && page + 1 >= state.pages) {
-            turnTo(page, true).then(() => { if (state.bridge) state.bridge.tapped('turn'); api.next() })
-            return
-        }
-        if (backward && page === 0) {
-            turnTo(page, true).then(() => { if (state.bridge) state.bridge.tapped('turn'); api.prev() })
-            return
-        }
-        const target = forward ? page + 1 : backward ? page - 1 : page
-        if (target !== page) {
-            if (state.bridge)
-                state.bridge.tapped('turn')
-            emitPageTurn(target > page ? 1 : -1)
-        }
-        turnTo(target, true).then(() => { report(); scheduleWarm(target > page ? 1 : -1) })
+        const moved = scroller().scrollLeft - active.from
+        const rawDelta = active.delta
+        const page = active.page
+        return run(async () => {
+            if (!state.index || !state.geometry || state.geometry.scroll
+                || state.chapter !== active.chapter || sessionId() !== active.session)
+                return
+            // At page 0 or the final page, scrollLeft clamps to the edge; fall
+            // back to accumulated deltaX so swiping still crosses chapter bounds.
+            const sign = state.rtl ? -1 : 1
+            const effective = (Math.abs(moved) > 1 ? moved : rawDelta) * sign
+            const threshold = state.geometry.step * 0.12
+            const forward = effective > threshold, backward = effective < -threshold
+            if (forward || backward)
+                wheelQuietUntil = performance.now() + 320
+            if (forward && page + 1 >= state.pages) {
+                await turnTo(page, true)
+                const chapter = linearAfter(state.chapter)
+                if (chapter >= 0) {
+                    if (state.bridge)
+                        state.bridge.tapped('turn')
+                    emitPageTurn(1)
+                    await show({ chapter, offset: 0 }, true, 1)
+                } else {
+                    report()
+                }
+                return
+            }
+            if (backward && page === 0) {
+                await turnTo(page, true)
+                const chapter = linearBefore(state.chapter)
+                if (chapter >= 0) {
+                    if (state.bridge)
+                        state.bridge.tapped('turn')
+                    emitPageTurn(-1)
+                    await show({ chapter, end: true }, true, -1)
+                }
+                return
+            }
+            const target = clamp(forward ? page + 1 : backward ? page - 1 : page, 0, state.pages - 1)
+            if (target !== page) {
+                if (state.bridge)
+                    state.bridge.tapped('turn')
+                emitPageTurn(target > page ? 1 : -1)
+            }
+            const settled = await turnTo(target, true)
+            if (settled) {
+                report()
+                scheduleWarm(target > page ? 1 : -1)
+            }
+        })
     }
 
     function onWheel(event) {
@@ -2191,12 +2234,12 @@ ${literaryIndent}
             return
         if (!state.geometry.scroll && event.deltaMode === 0 && Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
             event.preventDefault()
-            if (!swipe && performance.now() < wheelQuietUntil)
+            if (!swipe && (performance.now() < wheelQuietUntil || state.navBusy > 0 || state.chapterAnim))
                 return
             const el = scroller()
             if (!swipe) {
                 cancelAnimation()
-                swipe = { from: el.scrollLeft, page: state.page, delta: 0 }
+                swipe = { from: el.scrollLeft, page: state.page, chapter: state.chapter, session: sessionId(), delta: 0 }
             }
             swipe.delta += event.deltaX
             // Never more than a page either way.
@@ -2253,7 +2296,7 @@ ${literaryIndent}
                 state.bridge.tapped('turn')
             wheelTotal > 0 ? api.next() : api.prev()
             wheelTotal = 0
-            wheelQuietUntil = now + 300
+            wheelQuietUntil = now + (state.geometry.scroll ? 550 : 300)
         }
     }
 
@@ -2367,6 +2410,7 @@ ${literaryIndent}
             }
         }
         closeNote()
+        clearSwipe()
         invalidateWarm()
         const place = { chapter: state.chapter, offset: state.location.offset, snippet: state.location.snippet }
         applyLayout()
@@ -2520,6 +2564,7 @@ ${literaryIndent}
         },
 
         setStyle(style) {
+            clearSwipe()
             return run(async () => {
                 const prev = state.style
                 state.style = style

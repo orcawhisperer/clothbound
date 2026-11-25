@@ -20,7 +20,9 @@ FocusScope {
     property string addServerError: ""
     property bool showAddPassword: false
     property bool showAuthPassword: false
+    property var feedEntries: []
     property string _lastNavKey: ""
+    property int _lastEntryCount: 0
 
     // Local SVG paths (24x24 grid) for glyphs not present in Icons.js.
     readonly property string globeIcon: "M12 3 A9 9 0 1 1 12 21 A9 9 0 1 1 12 3 Z M3.5 12 H20.5 M12 3 C15 6 15 18 12 21 C9 18 9 6 12 3 Z"
@@ -122,6 +124,33 @@ FocusScope {
             opds.search(q)
     }
 
+    function syncFeed() {
+        const nextEntries = opds.entries || []
+        const crumbs = opds.breadcrumbs || []
+        const topUrl = crumbs.length > 0 ? (crumbs[crumbs.length - 1].url || "") : ""
+        const navKey = (opds.activeCatalogId || "") + "|" + crumbs.length + "|" + topUrl + "|" + (opds.feedTitle || "")
+        const sameView = navKey === sheet._lastNavKey && sheet._lastEntryCount > 0 && nextEntries.length >= sheet._lastEntryCount
+        const savedY = feedList.contentY
+        sheet._lastNavKey = navKey
+        sheet._lastEntryCount = nextEntries.length
+        sheet.feedEntries = nextEntries
+        if (sameView) {
+            const restoreScroll = () => {
+                const minY = feedList.originY - feedList.topMargin
+                const maxY = Math.max(minY, feedList.originY + feedList.contentHeight + feedList.bottomMargin - feedList.height)
+                feedList.contentY = Math.max(minY, Math.min(maxY, savedY))
+            }
+            if (feedList.visible)
+                feedList.forceLayout()
+            restoreScroll()
+            Qt.callLater(restoreScroll)
+        } else if (feedList.count > 0) {
+            feedList.positionViewAtBeginning()
+        }
+    }
+
+    Component.onCompleted: syncFeed()
+
     Connections {
         target: opds
         function onFeedChanged() {
@@ -136,14 +165,7 @@ FocusScope {
                         authPassField.forceActiveFocus()
                 }
             }
-            const crumbs = opds.breadcrumbs || []
-            const topUrl = crumbs.length > 0 ? (crumbs[crumbs.length - 1].url || "") : ""
-            const navKey = (opds.activeCatalogId || "") + "|" + crumbs.length + "|" + topUrl
-            if (navKey !== sheet._lastNavKey) {
-                sheet._lastNavKey = navKey
-                if (feedList.count > 0)
-                    feedList.positionViewAtBeginning()
-            }
+            sheet.syncFeed()
         }
     }
 
@@ -1257,7 +1279,7 @@ FocusScope {
                     // --- State 5: Empty feed -------------------------------
                     Item {
                         visible: !sheet.addingServer && !opds.loading && !opds.authRequired
-                                 && opds.error === "" && (!opds.entries || opds.entries.length === 0)
+                                 && opds.error === "" && (!sheet.feedEntries || sheet.feedEntries.length === 0)
                         anchors.fill: parent
 
                         ColumnLayout {
@@ -1295,7 +1317,7 @@ FocusScope {
                     ListView {
                         id: feedList
                         visible: !sheet.addingServer && !opds.loading && !opds.authRequired
-                                 && opds.error === "" && opds.entries && opds.entries.length > 0
+                                 && opds.error === "" && sheet.feedEntries && sheet.feedEntries.length > 0
                         anchors.fill: parent
                         topMargin: 12
                         bottomMargin: 20
@@ -1305,7 +1327,7 @@ FocusScope {
                         flickDeceleration: 2200
                         pixelAligned: true
                         clip: true
-                        model: opds.entries || []
+                        model: sheet.feedEntries
                         ScrollBar.vertical: ScrollBar {}
                         SmoothWheel { stepSize: 120 }
 
@@ -1320,7 +1342,7 @@ FocusScope {
                                     return false
                                 if (index === 0)
                                     return true
-                                const prev = opds.entries[index - 1]
+                                const prev = sheet.feedEntries[index - 1]
                                 return !prev || (prev.groupTitle || "") !== groupTitle
                             }
 
@@ -1714,7 +1736,7 @@ FocusScope {
                                             color: theme.ink3
                                             font.pixelSize: 12
                                             wrapMode: Text.Wrap
-                                            maximumLineCount: opds.entries && opds.entries.length === 1 ? 6 : 2
+                                            maximumLineCount: sheet.feedEntries && sheet.feedEntries.length === 1 ? 6 : 2
                                             elide: Text.ElideRight
                                             lineHeight: 1.38
                                         }
