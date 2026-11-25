@@ -3,7 +3,14 @@
 
 if(CLOTHBOUND_BUILD_TESTS)
     add_executable(clothbound_tests
-        clothbound_tests.cpp
+        clothbound_tests.h
+        tst_test_main.cpp
+        tst_core_formats.cpp
+        tst_library_marks.cpp
+        tst_reader_ui.cpp
+        tst_audio_narration.cpp
+        tst_ai_companion.cpp
+        tst_mcp_cli_waves.cpp
         tst_online_ingest.cpp
         tst_opds.cpp
         fakeserver.h
@@ -116,5 +123,93 @@ if(CLOTHBOUND_BUILD_BENCH)
             clothbound_headless
             Qt6::Qml
             Qt6::Quick
+    )
+endif()
+
+option(CLOTHBOUND_BUILD_FUZZERS "Build standalone libFuzzer parser harnesses" OFF)
+
+if(CLOTHBOUND_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "CLOTHBOUND_BUILD_FUZZERS=ON requires Clang with libFuzzer (pass -DCMAKE_CXX_COMPILER=clang++).")
+    endif()
+
+    function(clothbound_add_fuzzer target_name)
+        cmake_parse_arguments(FUZZ "" "" "SOURCES;LIBS" ${ARGN})
+        add_executable(${target_name} ${FUZZ_SOURCES})
+        set_target_properties(${target_name} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/fuzz"
+            AUTOMOC OFF
+            AUTORCC OFF
+        )
+        target_include_directories(${target_name} PRIVATE
+            "${CMAKE_SOURCE_DIR}/src"
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+        )
+        target_compile_options(${target_name} PRIVATE
+            -U_FORTIFY_SOURCE
+            -fsanitize=fuzzer,address,undefined
+            -fno-omit-frame-pointer
+            -g
+            -O1
+        )
+        target_link_options(${target_name} PRIVATE
+            -fsanitize=fuzzer,address,undefined
+        )
+        target_link_libraries(${target_name} PRIVATE ${FUZZ_LIBS})
+    endfunction()
+
+    clothbound_add_fuzzer(fuzz_ziparchive
+        SOURCES
+            fuzz/fuzz_ziparchive.cpp
+            "${CMAKE_SOURCE_DIR}/src/formats/ziparchive.cpp"
+        LIBS Qt6::Core ZLIB::ZLIB
+    )
+
+    clothbound_add_fuzzer(fuzz_htmltokenizer
+        SOURCES
+            fuzz/fuzz_htmltokenizer.cpp
+            "${CMAKE_SOURCE_DIR}/src/formats/htmltokenizer.cpp"
+        LIBS Qt6::Core
+    )
+
+    clothbound_add_fuzzer(fuzz_opdsparser
+        SOURCES
+            fuzz/fuzz_opdsparser.cpp
+            "${CMAKE_SOURCE_DIR}/src/online/opdsparser.cpp"
+        LIBS Qt6::Core
+    )
+
+    clothbound_add_fuzzer(fuzz_articleextractor
+        SOURCES
+            fuzz/fuzz_articleextractor.cpp
+            "${CMAKE_SOURCE_DIR}/src/online/articleextractor.cpp"
+            "${CMAKE_SOURCE_DIR}/src/formats/htmltokenizer.cpp"
+            "${CMAKE_SOURCE_DIR}/src/online/epubwriter.cpp"
+        LIBS Qt6::Core Qt6::Network ZLIB::ZLIB
+    )
+
+    clothbound_add_fuzzer(fuzz_mathformatter
+        SOURCES
+            fuzz/fuzz_mathformatter.cpp
+            "${CMAKE_SOURCE_DIR}/src/ai/mathformatter.cpp"
+        LIBS Qt6::Core Qt6::Gui
+    )
+
+    clothbound_add_fuzzer(fuzz_sseparser
+        SOURCES
+            fuzz/fuzz_sseparser.cpp
+            "${CMAKE_SOURCE_DIR}/src/ai/sseparser.cpp"
+        LIBS Qt6::Core
+    )
+
+    add_custom_target(clothbound_fuzzers
+        DEPENDS
+            fuzz_ziparchive
+            fuzz_htmltokenizer
+            fuzz_opdsparser
+            fuzz_articleextractor
+            fuzz_mathformatter
+            fuzz_sseparser
     )
 endif()
