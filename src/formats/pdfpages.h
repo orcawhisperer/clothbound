@@ -10,7 +10,6 @@
 #include <QRectF>
 #include <QSet>
 #include <QThreadPool>
-#include <array>
 #include <atomic>
 #include <memory>
 
@@ -64,9 +63,8 @@ private:
     static QImage cachedRaw(const QString &rawKey);
     static void storeRaw(const QString &token, const QString &rawKey, const QImage &image);
 
-    static constexpr int kWorkerSlots = 2;
-    std::array<QThreadPool, kWorkerSlots> m_pools;
-    std::array<std::shared_ptr<WorkerState>, kWorkerSlots> m_workers;
+    QThreadPool m_pool;
+    std::shared_ptr<WorkerState> m_worker;
 
     static QMutex s_mutex;
     static PdfPages *s_instance;

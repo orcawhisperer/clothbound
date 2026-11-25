@@ -12333,6 +12333,462 @@ Item {
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
     }
     // === end fix-reader-ui tests ===
+    // === fix-core tests ===
+    void fixCoreMigrationRewritesPathsAndSafeCopy() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString legacyCfg = dir.filePath(QStringLiteral("config/dogear"));
+        const QString newCfg = dir.filePath(QStringLiteral("config/clothbound"));
+        const QString legacyData = dir.filePath(QStringLiteral("data/dogear"));
+        const QString newData = dir.filePath(QStringLiteral("data/clothbound"));
+        const QString legacyCache = dir.filePath(QStringLiteral("cache/dogear"));
+        const QString newCache = dir.filePath(QStringLiteral("cache/clothbound"));
+
+        QVERIFY(QDir().mkpath(legacyCfg));
+        QVERIFY(QDir().mkpath(legacyData + QStringLiteral("/articles")));
+        QVERIFY(QDir().mkpath(legacyData + QStringLiteral("/downloads")));
+        QVERIFY(QDir().mkpath(legacyData + QStringLiteral("/watched")));
+        QVERIFY(QDir().mkpath(legacyCache));
+
+        write(legacyCfg + QStringLiteral("/settings.ini"), "[reading]\ntheme=paper\n");
+        const QString articleOld = legacyData + QStringLiteral("/articles/saved.epub");
+        const QString opdsOld = legacyData + QStringLiteral("/downloads/opds.epub");
+        const QString watchedOld = legacyData + QStringLiteral("/watched");
+        QVERIFY(TestBooks::write(articleOld, TestBooks::epub2({})));
+        QVERIFY(TestBooks::write(opdsOld, TestBooks::epub2({})));
+
+        int articleId = 0;
+        int opdsId = 0;
+        {
+            Library legacyLib(legacyData, legacyCache);
+            QVERIFY(legacyLib.open());
+            articleId = legacyLib.addBookFile(articleOld);
+            opdsId = legacyLib.addBookFile(opdsOld);
+            QVERIFY(articleId > 0 && opdsId > 0);
+            legacyLib.addFolder(watchedOld);
+            QTRY_VERIFY(!legacyLib.scanning());
+        }
+        const QString legacyIndexPath = legacyCache + QStringLiteral("/index.sqlite");
+        {
+            LibraryIndex legacyIdx(legacyIndexPath);
+            if (legacyIdx.available()) {
+                QVERIFY(LibraryIndex::indexBook(legacyIndexPath, {articleId, articleOld, QStringLiteral("epub"), 100}));
+                QVERIFY(LibraryIndex::indexBook(legacyIndexPath, {opdsId, opdsOld, QStringLiteral("epub"), 100}));
+            }
+        }
+
+        const Migration::Result res = Migration::run({legacyCfg, newCfg, legacyData, newData, legacyCache, newCache});
+        QVERIFY(res.configMigrated);
+        QVERIFY(res.dataMigrated);
+        QVERIFY(res.cacheMigrated);
+
+        const QString articleNew = newData + QStringLiteral("/articles/saved.epub");
+        const QString opdsNew = newData + QStringLiteral("/downloads/opds.epub");
+        const QString watchedNew = newData + QStringLiteral("/watched");
+        QVERIFY(QFileInfo::exists(articleNew));
+        QVERIFY(QFileInfo::exists(opdsNew));
+
+        {
+            Library migratedLib(newData, newCache);
+            QVERIFY(migratedLib.open());
+            QCOMPARE(migratedLib.record(articleId).path, articleNew);
+            QCOMPARE(migratedLib.record(opdsId).path, opdsNew);
+            QVERIFY(migratedLib.folders().contains(watchedNew));
+
+            // Rescan must NOT mark migrated articles/OPDS downloads as missing.
+            QSignalSpy scanDone(&migratedLib, &Library::scanFinished);
+            migratedLib.rescan();
+            QTRY_VERIFY_WITH_TIMEOUT(scanDone.count() >= 1, 5000);
+            QCOMPARE(migratedLib.record(articleId).missing, false);
+            QCOMPARE(migratedLib.record(opdsId).missing, false);
+            QCOMPARE(migratedLib.bookCount(), 2);
+        }
+
+        // Verify index.sqlite indexed.path rows were rewritten too.
+        const QString newIndexPath = newCache + QStringLiteral("/index.sqlite");
+        if (QFileInfo::exists(newIndexPath)) {
+            const QString conn = QStringLiteral("fix-core-mig-idx-check");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+                db.setDatabaseName(newIndexPath);
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.exec(QStringLiteral("SELECT book, path FROM indexed ORDER BY book")));
+                QHash<int, QString> paths;
+                while (q.next())
+                    paths.insert(q.value(0).toInt(), q.value(1).toString());
+                QCOMPARE(paths.value(articleId), articleNew);
+                QCOMPARE(paths.value(opdsId), opdsNew);
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(conn);
+        }
+
+        // Verify cross-FS safe copy: preserves relative symlinks, skips FIFOs,
+        // and copies WAL-mode SQLite databases cleanly without tearing.
+        const QString copySrc = dir.filePath(QStringLiteral("copy-src"));
+        const QString copyDst = dir.filePath(QStringLiteral("copy-dst"));
+        QVERIFY(QDir().mkpath(copySrc));
+        write(copySrc + QStringLiteral("/target.txt"), "hello-link");
+        QVERIFY(QFile::link(QStringLiteral("target.txt"), copySrc + QStringLiteral("/rel.link")));
+        QProcess::execute(QStringLiteral("mkfifo"), {copySrc + QStringLiteral("/pipe.fifo")});
+
+        const QString walDb = copySrc + QStringLiteral("/sample.sqlite");
+        {
+            const QString conn = QStringLiteral("fix-core-wal-src");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+                db.setDatabaseName(walDb);
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.exec(QStringLiteral("PRAGMA journal_mode = WAL")));
+                QVERIFY(q.exec(QStringLiteral("CREATE TABLE items (id INTEGER PRIMARY KEY, val TEXT)")));
+                QVERIFY(q.exec(QStringLiteral("INSERT INTO items VALUES (1, 'from-wal')")));
+                // Keep DB open during copy to exercise live WAL checkpoint/VACUUM INTO.
+                QVERIFY(Migration::copyDirectorySafely(copySrc, copyDst));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(conn);
+        }
+        // Delete source tree and confirm relative symlink in destination still resolves.
+        QVERIFY(QDir(copySrc).removeRecursively());
+        QFile copiedLink(copyDst + QStringLiteral("/rel.link"));
+        QVERIFY(copiedLink.open(QIODevice::ReadOnly));
+        QCOMPARE(copiedLink.readAll(), QByteArray("hello-link"));
+        QVERIFY(!QFileInfo::exists(copyDst + QStringLiteral("/pipe.fifo")));
+        QVERIFY(!QFileInfo::exists(copyDst + QStringLiteral("/sample.sqlite-wal")));
+        {
+            const QString conn = QStringLiteral("fix-core-wal-dst");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+                db.setDatabaseName(copyDst + QStringLiteral("/sample.sqlite"));
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.exec(QStringLiteral("SELECT val FROM items WHERE id = 1")));
+                QVERIFY(q.next());
+                QCOMPARE(q.value(0).toString(), QStringLiteral("from-wal"));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(conn);
+        }
+    }
+
+    void fixCoreZipArchiveHardeningLimitsAndOverlap() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+
+        // 1. Overlapping ZIP bomb: two central-directory entries aliasing the same local offset.
+        {
+            const QByteArray payload = TestBooks::rawDeflate("repeated payload");
+            const quint32 crc = quint32(crc32(0, reinterpret_cast<const Bytef *>("repeated payload"), 16));
+            const QByteArray nameA("a.txt"), nameB("b.txt");
+            QByteArray out, cd;
+            TestBooks::put32(out, 0x04034b50);
+            TestBooks::put16(out, 20);
+            TestBooks::put16(out, 0x0800);
+            TestBooks::put16(out, 8);
+            TestBooks::put32(out, 0);
+            TestBooks::put32(out, crc);
+            TestBooks::put32(out, quint32(payload.size()));
+            TestBooks::put32(out, 16);
+            TestBooks::put16(out, quint16(nameA.size()));
+            TestBooks::put16(out, 0);
+            out.append(nameA);
+            out.append(payload);
+
+            const quint32 cdOff = quint32(out.size());
+            auto addCd = [&](const QByteArray &name) {
+                TestBooks::put32(cd, 0x02014b50);
+                TestBooks::put16(cd, 20);
+                TestBooks::put16(cd, 20);
+                TestBooks::put16(cd, 0x0800);
+                TestBooks::put16(cd, 8);
+                TestBooks::put32(cd, 0);
+                TestBooks::put32(cd, crc);
+                TestBooks::put32(cd, quint32(payload.size()));
+                TestBooks::put32(cd, 16);
+                TestBooks::put16(cd, quint16(name.size()));
+                TestBooks::put16(cd, 0);
+                TestBooks::put16(cd, 0);
+                TestBooks::put16(cd, 0);
+                TestBooks::put16(cd, 0);
+                TestBooks::put32(cd, 0);
+                TestBooks::put32(cd, 0);  // Both alias offset 0!
+                cd.append(name);
+            };
+            addCd(nameA);
+            addCd(nameB);
+            out.append(cd);
+            TestBooks::put32(out, 0x06054b50);
+            TestBooks::put16(out, 0);
+            TestBooks::put16(out, 0);
+            TestBooks::put16(out, 2);
+            TestBooks::put16(out, 2);
+            TestBooks::put32(out, quint32(cd.size()));
+            TestBooks::put32(out, cdOff);
+            TestBooks::put16(out, 0);
+
+            const QString overlapPath = dir.filePath(QStringLiteral("overlap.zip"));
+            QVERIFY(TestBooks::write(overlapPath, out));
+            ZipArchive zip(overlapPath);
+            QVERIFY(!zip.open());
+            QVERIFY2(zip.errorString().contains(QStringLiteral("overlapping")), qPrintable(zip.errorString()));
+        }
+
+        // 2. Entry-count cap via ZIP64 EOCD declaring > kMaxEntryCount entries.
+        {
+            QByteArray z64 = TestBooks::zip({{"one.txt", "first", true}}, true);
+            const QByteArray sig("\x50\x4b\x06\x06", 4);
+            const qsizetype pos = z64.indexOf(sig);
+            QVERIFY(pos > 0 && pos + 56 <= z64.size());
+            const quint64 tooMany = ZipArchive::kMaxEntryCount + 1;
+            for (int b = 0; b < 8; ++b)
+                z64[pos + 32 + b] = char((tooMany >> (b * 8)) & 0xff);
+            const QString manyPath = dir.filePath(QStringLiteral("many.zip"));
+            QVERIFY(TestBooks::write(manyPath, z64));
+            ZipArchive zip(manyPath);
+            QVERIFY(!zip.open());
+            QVERIFY2(zip.errorString().contains(QStringLiteral("too many")), qPrintable(zip.errorString()));
+        }
+
+        // 3. Cumulative per-archive inflation budget.
+        {
+            const QByteArray chunk(64 * 1024, 'A');
+            const QString budgetPath = dir.filePath(QStringLiteral("budget.zip"));
+            QVERIFY(TestBooks::write(budgetPath, TestBooks::zip({{"one.txt", chunk, true}, {"two.txt", chunk, true}})));
+            ZipArchive zip(budgetPath);
+            zip.setMaxArchiveInflateBytes(96 * 1024);
+            QVERIFY(zip.open());
+            QCOMPARE(zip.read(QStringLiteral("one.txt")), chunk);
+            QString err;
+            QVERIFY(zip.read(QStringLiteral("two.txt"), &err).isEmpty());
+            QVERIFY2(err.contains(QStringLiteral("too large")), qPrintable(err));
+        }
+    }
+
+    void fixCoreLibraryFutureSchemaAndTargetedSavePosition() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString dataDir = dir.filePath(QStringLiteral("data"));
+        const QString cacheDir = dir.filePath(QStringLiteral("cache"));
+        auto makeNamedEpub = [](const QByteArray &title, const QByteArray &body) {
+            return TestBooks::epub({
+                {"OEBPS/content.opf",
+                 "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+                 "<package version=\"2.0\" xmlns=\"http://www.idpf.org/opf\">"
+                 "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>" + title + "</dc:title></metadata>"
+                 "<manifest><item id=\"c\" href=\"c.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>"
+                 "<spine><itemref idref=\"c\"/></spine></package>"},
+                {"OEBPS/c.xhtml", TestBooks::chapter(title, body)},
+            });
+        };
+        const QString bookA = dir.filePath(QStringLiteral("book-a.epub"));
+        const QString bookB = dir.filePath(QStringLiteral("book-b.epub"));
+        QVERIFY(TestBooks::write(bookA, makeNamedEpub("Alpha Book", "<p>First distinct story.</p>")));
+        QVERIFY(TestBooks::write(bookB, makeNamedEpub("Beta Book", "<p>Second distinct story.</p>")));
+
+        // 1. savePosition emits targeted bookUpdated/bookChanged and updates
+        //    WorksModel in place without booksChanged/readingStatsChanged/rebuild storms.
+        {
+            Library library(dataDir, cacheDir);
+            QVERIFY(library.open());
+            const int idA = library.addBookFile(bookA);
+            const int idB = library.addBookFile(bookB);
+            QVERIFY(idA > 0 && idB > 0);
+            library.markOpened(idA);
+            library.markOpened(idB);
+            QTest::qWait(100);
+
+            // Activate a status filter ("reading") that previously forced O(N log N)
+            // rebuild() on every single savePosition() call.
+            library.works()->setStatusFilter(QStringLiteral("reading"));
+            QCOMPARE(library.works()->count(), 2);
+
+            QSignalSpy booksSpy(&library, &Library::booksChanged);
+            QSignalSpy statsSpy(&library, &Library::readingStatsChanged);
+            QSignalSpy colsSpy(&library, &Library::collectionsChanged);
+            QSignalSpy updatedSpy(&library, &Library::bookUpdated);
+            QSignalSpy bookSpy(&library, &Library::bookChanged);
+            QSignalSpy resetSpy(library.works(), &QAbstractItemModel::modelReset);
+            QSignalSpy dataSpy(library.works(), &QAbstractItemModel::dataChanged);
+
+            library.savePosition(idA, QStringLiteral(R"({"chapter":1,"offset":42})"), 0.35);
+            QTest::qWait(100);
+
+            QCOMPARE(booksSpy.count(), 0);
+            QCOMPARE(statsSpy.count(), 0);
+            QCOMPARE(colsSpy.count(), 0);
+            QCOMPARE(updatedSpy.count(), 1);
+            QCOMPARE(updatedSpy.first().first().toInt(), idA);
+            QCOMPARE(bookSpy.count(), 1);
+            QCOMPARE(resetSpy.count(), 0);
+            QCOMPARE(dataSpy.count(), 1);
+            const QModelIndex topLeft = dataSpy.first().at(0).toModelIndex();
+            const QModelIndex bottomRight = dataSpy.first().at(1).toModelIndex();
+            QCOMPARE(topLeft.row(), bottomRight.row());
+            QCOMPARE(library.works()->data(topLeft, WorksModel::BookIdRole).toInt(), idA);
+
+            // Recording actual reading time DOES emit readingStatsChanged().
+            library.addReadingTime(idA, 60, 1200);
+            QCOMPARE(statsSpy.count(), 1);
+
+            // 2. flushPending() isolates failures per book via nested savepoints:
+            //    rejecting one book via a DB trigger must NOT discard its sibling.
+            const QString scanFolder = dir.filePath(QStringLiteral("scan-batch"));
+            QVERIFY(QDir().mkpath(scanFolder));
+            const QString goodBook = scanFolder + QStringLiteral("/good.epub");
+            const QString badBook = scanFolder + QStringLiteral("/poison.epub");
+            QVERIFY(TestBooks::write(goodBook, makeNamedEpub("Good Sibling", "<p>Good content.</p>")));
+            QVERIFY(TestBooks::write(badBook, makeNamedEpub("Poison Sibling", "<p>Blocked by trigger.</p>")));
+            {
+                QSqlQuery trig(library.database());
+                QVERIFY(trig.exec(QStringLiteral(
+                    "CREATE TRIGGER block_poison BEFORE INSERT ON books WHEN NEW.path LIKE '%poison.epub' "
+                    "BEGIN SELECT RAISE(ABORT, 'simulated failure'); END")));
+            }
+            QSignalSpy scanDone(&library, &Library::scanFinished);
+            library.addFolder(scanFolder);
+            QTRY_VERIFY_WITH_TIMEOUT(scanDone.count() >= 1, 5000);
+            QVERIFY(library.idForPath(goodBook) > 0);
+            QCOMPARE(library.idForPath(badBook), 0);
+            {
+                QSqlQuery dropTrig(library.database());
+                QVERIFY(dropTrig.exec(QStringLiteral("DROP TRIGGER block_poison")));
+            }
+        }
+
+        // 3. Future schema version (> kLatestVersion) must fail closed on open().
+        {
+            const QString conn = QStringLiteral("fix-core-future-schema");
+            {
+                QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+                db.setDatabaseName(dataDir + QStringLiteral("/library.sqlite"));
+                QVERIFY(db.open());
+                QSqlQuery q(db);
+                QVERIFY(q.exec(QStringLiteral("PRAGMA user_version = 999")));
+                db.close();
+            }
+            QSqlDatabase::removeDatabase(conn);
+
+            Library futureLib(dataDir, cacheDir);
+            QVERIFY(!futureLib.open());
+            QVERIFY2(futureLib.errorString().contains(QStringLiteral("999")), qPrintable(futureLib.errorString()));
+        }
+    }
+
+    void fixCoreLibraryIndexRebuildCancelAndIndexedPassage() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString idxPath = dir.filePath(QStringLiteral("index.sqlite"));
+        const QString epub1 = dir.filePath(QStringLiteral("one.epub"));
+        const QString epub2 = dir.filePath(QStringLiteral("two.epub"));
+        auto makeSearchEpub = [](const QByteArray &title, const QByteArray &body) {
+            return TestBooks::epub({
+                {"OEBPS/content.opf",
+                 "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
+                 "<package version=\"2.0\" xmlns=\"http://www.idpf.org/opf\">"
+                 "<metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\"><dc:title>" + title + "</dc:title></metadata>"
+                 "<manifest><item id=\"c\" href=\"c.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>"
+                 "<spine><itemref idref=\"c\"/></spine></package>"},
+                {"OEBPS/c.xhtml", TestBooks::chapter(title, body)},
+            });
+        };
+        QVERIFY(TestBooks::write(epub1, makeSearchEpub("One", "<p>The amber lantern glowed across the harbor.</p>")));
+        QVERIFY(TestBooks::write(epub2, makeSearchEpub("Two", "<p>A second amber lantern guided the ship home.</p>")));
+
+        // Pre-cancelled indexBook returns false immediately without writing rows.
+        std::atomic<bool> preCancel{true};
+        QVERIFY(!LibraryIndex::indexBook(idxPath, {1, epub1, QStringLiteral("epub"), 10}, &preCancel));
+
+        LibraryIndex index(idxPath);
+        if (!index.available())
+            QSKIP("SQLite without FTS5");
+        QCOMPARE(index.bookCount(), 0);
+
+        const QList<LibraryIndex::Source> sources{
+            {1, epub1, QStringLiteral("epub"), 10},
+            {2, epub2, QStringLiteral("epub"), 20},
+        };
+        index.update(sources);
+        // Trigger back-to-back rebuilds while indexing is active; per-run cancel
+        // tokens + 1-thread pool must prevent dual chains or stale rows.
+        index.rebuild();
+        index.rebuild();
+        QTRY_VERIFY_WITH_TIMEOUT(!index.indexing(), 10000);
+        QCOMPARE(index.bookCount(), 2);
+        QCOMPARE(index.search(QStringLiteral("lantern")).size(), 2);
+        QVERIFY(index.passage(1, 0, 0, 30).contains(QStringLiteral("lantern"), Qt::CaseInsensitive));
+
+        // Confirm chapter_rows mapping exists for O(log N) lookups and deletes.
+        const QString conn = QStringLiteral("fix-core-chapter-rows-check");
+        {
+            QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), conn);
+            db.setDatabaseName(idxPath);
+            QVERIFY(db.open());
+            QSqlQuery q(db);
+            QVERIFY(q.exec(QStringLiteral("SELECT count(*) FROM chapter_rows")));
+            QVERIFY(q.next());
+            QCOMPARE(q.value(0).toInt(), 2);
+            db.close();
+        }
+        QSqlDatabase::removeDatabase(conn);
+
+        // Removing all books via batched update() clears both indexed and chapter_rows.
+        index.update({});
+        QCOMPARE(index.bookCount(), 0);
+        QVERIFY(index.passage(1, 0, 0, 30).isEmpty());
+    }
+
+    void fixCorePdfPagesReleaseAndSystemCheckNullGuard() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString pdfPath = dir.filePath(QStringLiteral("release.pdf"));
+        QVERIFY(TestBooks::write(pdfPath, TestBooks::pdf("Release Test", "Author")));
+        auto book = std::make_shared<PdfBook>(pdfPath);
+        QVERIFY(book->open());
+
+        const QString tok = QStringLiteral("fix-core-pdf-release");
+        PdfPages::add(tok, book);
+        {
+            PdfPages pages;
+            QCOMPARE(pages.m_pool.maxThreadCount(), 1);
+            QCOMPARE(pages.m_pool.expiryTimeout(), -1);
+
+            std::unique_ptr<QQuickImageResponse> resp(
+                pages.requestImageResponse(tok + QStringLiteral("/0?bg=%23ffffff&fg=%23000000"), QSize(180, 240)));
+            QSignalSpy finishedSpy(resp.get(), &QQuickImageResponse::finished);
+            QTRY_COMPARE_WITH_TIMEOUT(finishedSpy.count(), 1, 8000);
+            QVERIFY(pages.m_worker->book != nullptr);
+            QCOMPARE(pages.m_worker->token, tok);
+
+            // remove() must asynchronously release worker's QPdfDocument on its affine thread.
+            PdfPages::remove(tok);
+            QVERIFY(pages.m_pool.waitForDone(5000));
+            QVERIFY(pages.m_worker->book == nullptr);
+            QVERIFY(pages.m_worker->token.isEmpty());
+        }
+
+        // SystemCheck must handle null m_ai cleanly without dereferencing.
+        SystemCheck nullAiCheck(nullptr, nullptr);
+        const QVariantList verdicts = nullAiCheck.judge(0.0, 0.0, 0.0);
+        QVERIFY(!verdicts.isEmpty());
+        nullAiCheck.run();
+        QTRY_VERIFY_WITH_TIMEOUT(!nullAiCheck.running(), 5000);
+        QVERIFY(!nullAiCheck.recommendation().isEmpty());
+
+        // Instance lock file enforces single-instance exclusion and releases on destruction.
+        {
+            Instance first;
+            QVERIFY(first.claim());
+            Instance second;
+            QVERIFY(!second.claim());
+        }
+        {
+            Instance afterRelease;
+            QVERIFY(afterRelease.claim());
+        }
+    }
+    // === end fix-core tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

@@ -1,7 +1,6 @@
 #include "library/libraryfinder.h"
 
 #include <QDir>
-#include <QDirIterator>
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QPointer>
@@ -34,20 +33,42 @@ QStringList LibraryFinder::candidates(const QString &home, const QString &docume
 
 LibraryFinder::FormatCounts LibraryFinder::countByFormat(const QString &folder, int depth, int cap) {
     FormatCounts counts;
+    if (depth <= 0 || cap <= 0)
+        return counts;
     const QDir root(folder);
     if (!root.exists())
         return counts;
-    const int rootDepth = QDir::cleanPath(root.absolutePath()).count('/');
-    QDirIterator it(root.absolutePath(), {"*.epub", "*.EPUB", "*.pdf", "*.PDF"}, QDir::Files | QDir::Readable,
-                    QDirIterator::Subdirectories);
-    while (it.hasNext() && counts.total() < cap) {
-        const QString path = it.next();
-        if (QDir::cleanPath(QFileInfo(path).absolutePath()).count('/') - rootDepth >= depth)
-            continue;
-        if (path.endsWith(QLatin1String(".pdf"), Qt::CaseInsensitive))
-            ++counts.pdf;
-        else
-            ++counts.epub;
+
+    // Iterative depth-bounded traversal so deep trees (node_modules, .git,
+    // deeply nested archives) are never descended past `depth`.
+    struct Frame {
+        QString dirPath;
+        int level;
+    };
+    QList<Frame> stack;
+    stack.append({QDir::cleanPath(root.absolutePath()), 0});
+    while (!stack.isEmpty() && counts.total() < cap) {
+        const Frame frame = stack.takeLast();
+        const QDir dir(frame.dirPath);
+        const QFileInfoList entries =
+            dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable);
+        for (const QFileInfo &entry : entries) {
+            if (counts.total() >= cap)
+                break;
+            if (entry.isDir()) {
+                if (entry.isSymLink() || frame.level + 1 >= depth)
+                    continue;
+                if (entry.fileName() == QLatin1String("node_modules"))
+                    continue;
+                stack.append({entry.absoluteFilePath(), frame.level + 1});
+            } else if (entry.isFile()) {
+                const QString name = entry.fileName();
+                if (name.endsWith(QLatin1String(".pdf"), Qt::CaseInsensitive))
+                    ++counts.pdf;
+                else if (name.endsWith(QLatin1String(".epub"), Qt::CaseInsensitive))
+                    ++counts.epub;
+            }
+        }
     }
     return counts;
 }

@@ -41,7 +41,10 @@ QVariant WorksModel::data(const QModelIndex &index, int role) const {
     if (!index.isValid() || index.row() >= m_works.size())
         return {};
     const Work &work = m_works[index.row()];
-    const BookRecord book = m_books.value(work.representative);
+    const auto it = m_books.constFind(work.representative);
+    if (it == m_books.cend())
+        return {};
+    const BookRecord &book = *it;
     switch (role) {
     case KeyRole:
         return work.key;
@@ -239,18 +242,61 @@ void WorksModel::setArticleSet(const QSet<int> &articles) {
 
 void WorksModel::updateBook(const BookRecord &book) {
     const auto oldIt = m_books.constFind(book.id);
-    const bool existed = oldIt != m_books.cend();
-    const QString searchKey = searchableFor(book);
-    const bool seriesChanged = !existed || oldIt->series != book.series || oldIt->seriesIndex != book.seriesIndex;
-    const bool shapeChanged = !existed || oldIt->visible() != book.visible() || oldIt->workKey != book.workKey ||
-                              oldIt->openedAt != book.openedAt || oldIt->addedAt != book.addedAt ||
-                              oldIt->finishedAt != book.finishedAt || m_sort == QLatin1String("progress") ||
-                              (m_sort == QLatin1String("series") && seriesChanged) ||
-                              !m_statusFilter.isEmpty() || !m_seriesFilter.isEmpty() ||
-                              m_searchable.value(book.id) != searchKey;
+    if (oldIt == m_books.cend()) {
+        m_books.insert(book.id, book);
+        m_searchable.insert(book.id, searchableFor(book));
+        if (book.visible() && !book.series.trimmed().isEmpty())
+            rebuildSeriesList();
+        rebuild();
+        return;
+    }
+    const BookRecord old = *oldIt;
+    const bool oldShown = old.visible() && passesFilters(old);
+    const bool newShown = book.visible() && passesFilters(book);
+    const bool membershipChanged = (oldShown != newShown);
+    const bool seriesChanged = old.series != book.series || old.seriesIndex != book.seriesIndex;
+
+    const bool searchFieldsChanged =
+        old.title != book.title || old.author != book.author || old.editor != book.editor ||
+        old.publisher != book.publisher || old.year != book.year || old.series != book.series ||
+        old.format != book.format || old.subjects != book.subjects;
+    bool searchMatchChanged = false;
+    if (searchFieldsChanged) {
+        const QString searchKey = searchableFor(book);
+        if (m_searchable.value(book.id) != searchKey) {
+            m_searchable.insert(book.id, searchKey);
+            searchMatchChanged = !m_search.isEmpty();
+        }
+    }
+
+    const bool repScoreChanged =
+        old.openedAt != book.openedAt || old.problem.isEmpty() != book.problem.isEmpty() ||
+        (old.format == QLatin1String("epub")) != (book.format == QLatin1String("epub")) ||
+        old.cover.isEmpty() != book.cover.isEmpty() || old.year != book.year;
+
+    bool sortKeyChanged = false;
+    if (m_statusFilter == QLatin1String("recent")) {
+        sortKeyChanged = old.addedAt != book.addedAt || old.sortTitle != book.sortTitle;
+    } else if (m_sort == QLatin1String("title")) {
+        sortKeyChanged = old.sortTitle != book.sortTitle;
+    } else if (m_sort == QLatin1String("author")) {
+        sortKeyChanged = old.sortAuthor != book.sortAuthor || old.sortTitle != book.sortTitle;
+    } else if (m_sort == QLatin1String("series")) {
+        sortKeyChanged = seriesChanged || old.sortAuthor != book.sortAuthor || old.sortTitle != book.sortTitle;
+    } else if (m_sort == QLatin1String("added")) {
+        sortKeyChanged = old.addedAt != book.addedAt || old.sortTitle != book.sortTitle;
+    } else if (m_sort == QLatin1String("progress")) {
+        sortKeyChanged = old.progress != book.progress || old.finishedAt != book.finishedAt ||
+                         old.sortTitle != book.sortTitle;
+    } else {
+        sortKeyChanged = old.openedAt != book.openedAt || old.addedAt != book.addedAt ||
+                         old.sortTitle != book.sortTitle;
+    }
+
+    const bool shapeChanged =
+        membershipChanged || old.workKey != book.workKey || repScoreChanged || sortKeyChanged || searchMatchChanged;
     m_books.insert(book.id, book);
-    m_searchable.insert(book.id, searchKey);
-    if (seriesChanged)
+    if (seriesChanged || old.visible() != book.visible())
         rebuildSeriesList();
     if (!shapeChanged) {
         const int row = m_bookRow.value(book.id, -1);

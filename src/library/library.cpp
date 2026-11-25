@@ -109,7 +109,7 @@ Library::Library(const QString &dataDirectory, const QString &cacheDirectory, QO
     m_flush.setSingleShot(true);
     m_flush.setInterval(200);
     connect(&m_flush, &QTimer::timeout, this, &Library::flushPending);
-    // Many changes in a burst (a scan, a page turn) become one refresh.
+    // Many changes in a burst (a scan, a shelf toggle) become one refresh.
     m_notify.setSingleShot(true);
     m_notify.setInterval(60);
     connect(&m_notify, &QTimer::timeout, this, [this] {
@@ -117,9 +117,22 @@ Library::Library(const QString &dataDirectory, const QString &cacheDirectory, QO
             m_worksDirty = false;
             m_works->setBooks(m_books);
         }
-        emit booksChanged();
-        emit collectionsChanged();
-        emit readingStatsChanged();
+        const bool emitBooks = m_booksNotifyDirty;
+        const bool emitContinue = m_continueNotifyDirty || emitBooks;
+        const bool emitCollections = m_collectionsNotifyDirty;
+        const bool emitStats = m_statsNotifyDirty;
+        m_booksNotifyDirty = false;
+        m_continueNotifyDirty = false;
+        m_collectionsNotifyDirty = false;
+        m_statsNotifyDirty = false;
+        if (emitBooks)
+            emit booksChanged();
+        if (emitContinue)
+            emit continueReadingChanged();
+        if (emitCollections)
+            emit collectionsChanged();
+        if (emitStats)
+            emit readingStatsChanged();
     });
 
     connect(m_scanner, &Scanner::listed, this, &Library::markListed);
@@ -173,6 +186,7 @@ bool Library::open() {
         m_error = tr("Can't create %1.").arg(m_dataDirectory);
         return false;
     }
+    m_canonicalDataDirectory = canonical(m_dataDirectory);
     QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connection);
     db.setDatabaseName(m_dataDirectory + QStringLiteral("/library.sqlite"));
     if (!db.open()) {
@@ -230,7 +244,13 @@ bool Library::migrate() {
         }
         version = vq.value(0).toInt();
     }
-    if (version >= kLatestVersion)
+    if (version > kLatestVersion) {
+        m_error = tr("This library was created by a newer version of Clothbound (schema %1; supported up to %2).")
+                      .arg(version)
+                      .arg(kLatestVersion);
+        return false;
+    }
+    if (version == kLatestVersion)
         return true;
 
     auto execList = [&](const QStringList &statements) -> bool {
@@ -421,19 +441,29 @@ void Library::syncWorksCollections() {
 }
 
 void Library::flushNotificationsNow() {
-    const bool hadNotify = m_notify.isActive();
-    if (hadNotify)
+    if (m_notify.isActive())
         m_notify.stop();
     if (m_worksDirty) {
         m_worksDirty = false;
         m_works->setCollections(m_collectionBooks, false);
         m_works->setBooks(m_books);
     }
-    if (hadNotify) {
+    const bool emitBooks = m_booksNotifyDirty;
+    const bool emitContinue = m_continueNotifyDirty || emitBooks;
+    const bool emitCollections = m_collectionsNotifyDirty;
+    const bool emitStats = m_statsNotifyDirty;
+    m_booksNotifyDirty = false;
+    m_continueNotifyDirty = false;
+    m_collectionsNotifyDirty = false;
+    m_statsNotifyDirty = false;
+    if (emitBooks)
         emit booksChanged();
+    if (emitContinue)
+        emit continueReadingChanged();
+    if (emitCollections)
         emit collectionsChanged();
+    if (emitStats)
         emit readingStatsChanged();
-    }
 }
 
 void Library::loadAudioBadges() {
@@ -515,8 +545,9 @@ bool Library::isArticleRecord(const BookRecord &record) const {
     const QString articlesDir = m_dataDirectory + QStringLiteral("/articles");
     if (isUnder(record.path, articlesDir))
         return true;
-    const QString canonicalData = canonical(m_dataDirectory);
-    if (canonicalData != m_dataDirectory && isUnder(record.path, canonicalData + QStringLiteral("/articles")))
+    const QString &canonicalData = m_canonicalDataDirectory;
+    if (!canonicalData.isEmpty() && canonicalData != m_dataDirectory &&
+        isUnder(record.path, canonicalData + QStringLiteral("/articles")))
         return true;
     return false;
 }
@@ -584,6 +615,7 @@ void Library::loadBooks() {
     m_books.clear();
     m_pathToId.clear();
     m_fingerprints.clear();
+    m_fingerprintToIds.clear();
     QSqlQuery query(database());
     query.exec(QStringLiteral("SELECT %1, fingerprint FROM books").arg(bookColumns));
     while (query.next()) {
@@ -592,13 +624,20 @@ void Library::loadBooks() {
         m_pathToId.insert(record.path, record.id);
         // The fingerprint comes after every column readRecord() reads.
         const QString fp = query.value(query.record().count() - 1).toString();
-        if (!fp.isEmpty())
+        if (!fp.isEmpty()) {
             m_fingerprints.insert(record.id, fp);
+            m_fingerprintToIds.insert(fp, record.id);
+        }
     }
 }
 
-void Library::changed() {
+void Library::changed(bool statsDirty, bool collectionsDirty) {
     m_worksDirty = true;
+    m_booksNotifyDirty = true;
+    if (statsDirty)
+        m_statsNotifyDirty = true;
+    if (collectionsDirty)
+        m_collectionsNotifyDirty = true;
     if (!m_notify.isActive())
         m_notify.start();
 }
@@ -825,14 +864,18 @@ void Library::openFolder(const QString &path) const {
 void Library::rescan() {
     QDir().mkpath(m_coverDirectory);
     QStringList loose = m_queuedFiles;
+    QSet<QString> looseSet(loose.cbegin(), loose.cend());
     QHash<QString, QPair<qint64, qint64>> known;
+    known.reserve(m_books.size());
     for (const auto &record : std::as_const(m_books)) {
         const bool coverMissing =
             !record.cover.isEmpty() && !QFileInfo::exists(m_coverDirectory + QLatin1Char('/') + record.cover);
         if (!coverMissing && (!m_fingerprints.value(record.id).isEmpty() || record.missing || !record.problem.isEmpty()))
             known.insert(record.path, {record.size, record.mtime});
-        if (record.loose && !loose.contains(record.path))
+        if (record.loose && !looseSet.contains(record.path)) {
+            looseSet.insert(record.path);
             loose.append(record.path);
+        }
     }
     m_added = m_updated = 0;
     m_scanDone = m_scanTotal = 0;
@@ -905,10 +948,9 @@ bool Library::storeInDb(const ScannedBook &book, QList<StagedBook> &staged) {
     bool relinked = false;
     QString oldPath;
     if (!existing && !book.fingerprint.isEmpty()) {
-        for (auto it = m_fingerprints.cbegin(); it != m_fingerprints.cend(); ++it) {
-            if (it.value() != book.fingerprint)
-                continue;
-            const BookRecord candidate = m_books.value(it.key());
+        for (auto it = m_fingerprintToIds.constFind(book.fingerprint);
+             it != m_fingerprintToIds.cend() && it.key() == book.fingerprint; ++it) {
+            const BookRecord candidate = m_books.value(it.value());
             if (candidate.id > 0 && (candidate.missing || !QFileInfo::exists(candidate.path))) {
                 bool claimed = false;
                 for (const StagedBook &entry : std::as_const(staged))
@@ -1016,8 +1058,14 @@ void Library::applyStaged(const QList<StagedBook> &staged) {
             m_pathToId.remove(entry.oldPath);
         m_books.insert(entry.record.id, entry.record);
         m_pathToId.insert(entry.record.path, entry.record.id);
-        if (!entry.fingerprint.isEmpty())
+        if (!entry.fingerprint.isEmpty()) {
+            const QString prevFp = m_fingerprints.value(entry.record.id);
+            if (!prevFp.isEmpty() && prevFp != entry.fingerprint)
+                m_fingerprintToIds.remove(prevFp, entry.record.id);
             m_fingerprints.insert(entry.record.id, entry.fingerprint);
+            if (!m_fingerprintToIds.contains(entry.fingerprint, entry.record.id))
+                m_fingerprintToIds.insert(entry.fingerprint, entry.record.id);
+        }
         const bool isArt = isArticleRecord(entry.record);
         if (isArt && !m_articles.contains(entry.record.id)) {
             m_articles.insert(entry.record.id);
@@ -1041,18 +1089,29 @@ void Library::flushPending() {
         return;
     QList<StagedBook> staged;
     staged.reserve(m_pending.size());
-    bool ok = true;
-    for (const ScannedBook &book : std::as_const(m_pending))
-        if (!storeInDb(book, staged)) {
-            ok = false;
-            break;
-        }
-    if (!ok || !sp.commit()) {
-        m_pending.clear();
+    int failedCount = 0;
+    // Isolate each book in a nested savepoint so a single failing insert/update
+    // cannot roll back or silently discard the rest of the batch.
+    for (const ScannedBook &book : std::as_const(m_pending)) {
+        Savepoint bookSp(db, "flush_book");
+        const qsizetype before = staged.size();
+        if (bookSp.active && storeInDb(book, staged) && bookSp.commit())
+            continue;
+        staged.resize(before);
+        bookSp.rollback();
+        ++failedCount;
+    }
+    if (!sp.commit()) {
+        // Outer transaction failed (e.g., transient lock/I/O): preserve m_pending
+        // rather than silently losing the batch.
         return;
     }
-    applyStaged(staged);
+    if (failedCount > 0)
+        qWarning("Library: %d book(s) failed to store during batch flush", failedCount);
     m_pending.clear();
+    if (staged.isEmpty())
+        return;
+    applyStaged(staged);
     changed();
     for (const StagedBook &entry : std::as_const(staged)) {
         int colId = m_pendingFileCollections.take(entry.record.path);
@@ -1200,7 +1259,7 @@ void Library::setWantToRead(int id, bool want) {
         return;
     m_books[id].wantAt = when;
     emit bookChanged(id);
-    changed();
+    changed(false, false);
 }
 
 void Library::markListened(int id) {
@@ -1215,7 +1274,7 @@ void Library::markListened(int id) {
         return;
     m_books[id].listenedAt = when;
     emit bookChanged(id);
-    changed();
+    changed(false, false);
 }
 
 // How many books each shelf of the sidebar holds: visible books only, a
@@ -1594,12 +1653,14 @@ QVariantList Library::continueReading() const {
     for (const auto &record : m_books)
         if (record.visible() && record.openedAt > 0 && record.finishedAt == 0 && record.progress < 0.995)
             found.append(record);
-    std::sort(found.begin(), found.end(),
-              [](const BookRecord &a, const BookRecord &b) { return a.openedAt > b.openedAt; });
+    const qsizetype take = qMin<qsizetype>(8, found.size());
+    std::partial_sort(found.begin(), found.begin() + take, found.end(),
+                      [](const BookRecord &a, const BookRecord &b) { return a.openedAt > b.openedAt; });
     QVariantList list;
-    for (const auto &record : found.mid(0, 8)) {
-        QVariantMap map = toMap(record);
-        enrichBookMap(map, record.id);
+    list.reserve(take);
+    for (qsizetype i = 0; i < take; ++i) {
+        QVariantMap map = toMap(found[i]);
+        enrichBookMap(map, found[i].id);
         list.append(map);
     }
     return list;
@@ -1691,8 +1752,9 @@ void Library::markOpened(int id) {
     query.addBindValue(id);
     if (!exec(query))
         return;
+    const bool firstOpen = m_books[id].openedAt == 0;
     m_books[id].openedAt = when;
-    changed();
+    changed(firstOpen, false);
 }
 
 void Library::savePosition(int id, const QString &position, double progress) {
@@ -1706,14 +1768,21 @@ void Library::savePosition(int id, const QString &position, double progress) {
     query.addBindValue(id);
     if (!exec(query))
         return;
-    m_books[id].position = position;
-    m_books[id].progress = progress;
-    // Update the single work row in place instead of rebuilding the whole grid
-    // on every page turn.
-    m_works->updateBook(m_books[id]);
+    BookRecord &rec = m_books[id];
+    const double prevProgress = rec.progress;
+    rec.position = position;
+    rec.progress = progress;
+    // Update only the changed book in WorksModel and emit targeted signals
+    // instead of firing booksChanged()/collectionsChanged()/readingStatsChanged()
+    // storms on every page turn.
+    m_works->updateBook(rec);
+    emit bookUpdated(id);
     emit bookChanged(id);
-    if (!m_notify.isActive())
-        m_notify.start();
+    if (rec.visible() && rec.openedAt > 0 && rec.finishedAt == 0 && (prevProgress < 0.995 || progress < 0.995)) {
+        m_continueNotifyDirty = true;
+        if (!m_notify.isActive())
+            m_notify.start();
+    }
 }
 
 void Library::addReadingTime(int id, int seconds, qint64 charsRead) {
@@ -1806,7 +1875,7 @@ void Library::setBookSetting(int id, const QString &key, const QString &value) {
                 m_downloadedBooks.remove(id);
             m_works->setAudioSets(m_downloadedBooks, m_audiobookBooks);
             emit bookChanged(id);
-            changed();
+            changed(false, false);
         }
     } else if (key == QLatin1String("audiobook_saved")) {
         const bool had = m_audiobookBooks.contains(id);
@@ -1817,7 +1886,7 @@ void Library::setBookSetting(int id, const QString &key, const QString &value) {
                 m_audiobookBooks.remove(id);
             m_works->setAudioSets(m_downloadedBooks, m_audiobookBooks);
             emit bookChanged(id);
-            changed();
+            changed(false, false);
         }
     } else if (key == QLatin1String("content_kind")) {
         const bool wantArticle = (norm == QLatin1String("article"));
@@ -1834,7 +1903,7 @@ void Library::setBookSetting(int id, const QString &key, const QString &value) {
                 m_articles.remove(id);
             m_works->setArticleSet(m_articles);
             emit bookChanged(id);
-            changed();
+            changed(false, false);
         }
     } else if (key == QLatin1String("source_url")) {
         const QString trimmed = value.trimmed();
@@ -1852,7 +1921,7 @@ void Library::setBookSetting(int id, const QString &key, const QString &value) {
         else
             m_voiceNames.insert(id, value);
         emit bookChanged(id);
-        changed();
+        changed(false, false);
     }
 }
 

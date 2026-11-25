@@ -6,12 +6,18 @@
 #include <QMutex>
 #include <QString>
 #include <QStringList>
+#include <atomic>
 
 // Reads entries of a ZIP archive (an EPUB is one) by name, in any order and
 // from any thread. It covers what books use: stored and deflated entries,
 // with zip64 for very large archives. Nothing is ever written.
 class ZipArchive {
 public:
+    static constexpr quint64 kMaxEntrySize = 128ull * 1024 * 1024;
+    static constexpr quint64 kMaxDirectorySize = 16ull * 1024 * 1024;
+    static constexpr quint64 kMaxEntryCount = 65536ull;
+    static constexpr quint64 kDefaultMaxArchiveInflateBytes = 512ull * 1024 * 1024;
+
     explicit ZipArchive(const QString &path);
 
     bool open();
@@ -30,6 +36,10 @@ public:
     bool encrypted(const QString &name) const;
     QByteArray read(const QString &name, QString *error = nullptr) const;
 
+    // Cumulative inflation budget for this archive instance (defaults to 512 MiB).
+    quint64 inflatedBytes() const { return m_inflatedBytes.load(std::memory_order_relaxed); }
+    void setMaxArchiveInflateBytes(quint64 bytes) { m_maxArchiveInflateBytes = bytes; }
+
 private:
     struct Entry {
         quint64 offset = 0;
@@ -41,13 +51,16 @@ private:
     };
 
     bool fail(const QString &message);
-    bool readCentralDirectory(const QByteArray &directory, quint64 count);
+    bool readCentralDirectory(const QByteArray &directory, quint64 count, quint64 fileSize, quint64 directoryOffset,
+                              quint64 directorySize);
 
     QString m_path;
     QString m_error;
     bool m_open = false;
     mutable QFile m_file;
     mutable QMutex m_mutex;
+    mutable std::atomic<quint64> m_inflatedBytes{0};
+    quint64 m_maxArchiveInflateBytes = kDefaultMaxArchiveInflateBytes;
     QHash<QString, Entry> m_entries;
     QHash<QString, QString> m_folded;
     QStringList m_names;

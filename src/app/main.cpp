@@ -68,6 +68,7 @@
 #include <QSGRendererInterface>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <QWebEngineUrlScheme>
@@ -99,8 +100,11 @@ static bool passBooksToRunning(const QStringList &books) {
     if (books.isEmpty())
         return Instance::passToRunning({});
     bool handed = false;
-    for (const QString &book : books)
-        handed = Instance::passToRunning(book) || handed;
+    for (const QString &book : books) {
+        if (!Instance::passToRunning(book))
+            return handed;
+        handed = true;
+    }
     return handed;
 }
 
@@ -343,8 +347,20 @@ int main(int argc, char *argv[]) {
     for (const QString &arg : args.positionalArguments())
         bookFiles.append(normalizeBookArg(arg));
     Instance instance;
-    if (!scripted && !instance.claim() && passBooksToRunning(bookFiles))
-        return 0;
+    if (!scripted && !instance.claim()) {
+        if (passBooksToRunning(bookFiles))
+            return 0;
+        // Another instance holds the lock (possibly still starting up before
+        // registering on D-Bus). Retry handoff briefly, then exit rather than
+        // starting a second GUI against the same SQLite/audio stores.
+        for (int attempt = 0; attempt < 10; ++attempt) {
+            QThread::msleep(100);
+            if (passBooksToRunning(bookFiles))
+                return 0;
+        }
+        fprintf(stderr, "Another Clothbound instance is already running for this library.\n");
+        return 1;
+    }
 
     // Installed before anything is translated, and every qsTr() binding is
     // re-evaluated when the Omarchy language changes.
@@ -438,21 +454,6 @@ int main(int argc, char *argv[]) {
     OpdsClient opds(&library, &keys, onlineStorageDir);
     QObject::connect(&reader, &Reader::bookChanged, &marks, [&marks, &reader] { marks.setBook(reader.bookId()); });
 
-    // Books named on the command line join the library (they may live
-    // anywhere), and the first valid one opens.
-    int bookToOpen = 0;
-    QStringList startupErrors;
-    for (const QString &file : std::as_const(bookFiles)) {
-        const int id = library.addBookFile(file);
-        if (id) {
-            if (!bookToOpen)
-                bookToOpen = id;
-        } else {
-            fprintf(stderr, "%s\n", qPrintable(library.errorString()));
-            startupErrors.append(library.errorString());
-        }
-    }
-
     LibraryFinder libraryFinder;
     // Every book's words, searchable from the palette, read in gently after
     // start-up and after each scan.
@@ -466,7 +467,39 @@ int main(int argc, char *argv[]) {
     };
     QObject::connect(&library, &Library::scanFinished, &libraryIndex, [indexLibrary] { indexLibrary(); });
     QTimer::singleShot(8000, &libraryIndex, indexLibrary);
+
+    // Declared BEFORE QQmlApplicationEngine so every context object and the
+    // raw QQmlNetworkAccessManagerFactory outlive engine teardown in reverse
+    // stack destruction order.
+    Notifier notifier;
+    TrayIcon trayIcon;
+    SurfaceWatcher surfaceWatcher;
+    // Use HTTP/1.1 for QML remote cover thumbnails (e.g. covers.openlibrary.org)
+    // to prevent Qt 6 HTTP/2 "Data on closed stream" / half-closed stream errors.
+    class Http1NetworkAccessManager : public QNetworkAccessManager {
+    public:
+        using QNetworkAccessManager::QNetworkAccessManager;
+    protected:
+        QNetworkReply *createRequest(Operation op, const QNetworkRequest &originalReq,
+                                     QIODevice *outgoingData = nullptr) override {
+            QNetworkRequest req(originalReq);
+            if (req.url().scheme().startsWith(QLatin1String("http"), Qt::CaseInsensitive))
+                req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
+            return QNetworkAccessManager::createRequest(op, req, outgoingData);
+        }
+    };
+    class Http1NamFactory : public QQmlNetworkAccessManagerFactory {
+    public:
+        QNetworkAccessManager *create(QObject *parent) override { return new Http1NetworkAccessManager(parent); }
+    };
+    Http1NamFactory qmlNetFactory;
+
     QQmlApplicationEngine engine;
+    engine.setNetworkAccessManagerFactory(&qmlNetFactory);
+    struct NamFactoryGuard {
+        QQmlApplicationEngine &engine;
+        ~NamFactoryGuard() { engine.setNetworkAccessManagerFactory(nullptr); }
+    } namFactoryGuard{engine};
     engine.addImportPath(QStringLiteral("qrc:/ui/style"));
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);
     QObject::connect(&engine, &QQmlEngine::warnings, [](const QList<QQmlError> &errors) {
@@ -493,9 +526,6 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("voicePacks", &voicePacks);
     engine.rootContext()->setContextProperty("webImporter", &webImporter);
     engine.rootContext()->setContextProperty("opds", &opds);
-    Notifier notifier;
-    TrayIcon trayIcon;
-    SurfaceWatcher surfaceWatcher;
     engine.rootContext()->setContextProperty("desktop", &notifier);
     engine.rootContext()->setContextProperty("trayIcon", &trayIcon);
     engine.rootContext()->setContextProperty("instance", &instance);
@@ -510,26 +540,6 @@ int main(int argc, char *argv[]) {
         "settingsUrl", QUrl::fromLocalFile(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
                                            QStringLiteral("/settings.ini")));
     engine.rootContext()->setContextProperty("executablePath", QCoreApplication::applicationFilePath());
-    // Use HTTP/1.1 for QML remote cover thumbnails (e.g. covers.openlibrary.org)
-    // to prevent Qt 6 HTTP/2 "Data on closed stream" / half-closed stream errors.
-    class Http1NetworkAccessManager : public QNetworkAccessManager {
-    public:
-        using QNetworkAccessManager::QNetworkAccessManager;
-    protected:
-        QNetworkReply *createRequest(Operation op, const QNetworkRequest &originalReq,
-                                     QIODevice *outgoingData = nullptr) override {
-            QNetworkRequest req(originalReq);
-            if (req.url().scheme().startsWith(QLatin1String("http"), Qt::CaseInsensitive))
-                req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
-            return QNetworkAccessManager::createRequest(op, req, outgoingData);
-        }
-    };
-    class Http1NamFactory : public QQmlNetworkAccessManagerFactory {
-    public:
-        QNetworkAccessManager *create(QObject *parent) override { return new Http1NetworkAccessManager(parent); }
-    };
-    Http1NamFactory qmlNetFactory;
-    engine.setNetworkAccessManagerFactory(&qmlNetFactory);
     engine.rootContext()->setContextProperty("hasCoverProvider", true);
     engine.addImageProvider(QStringLiteral("cover"), new CoverProvider);
     engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
@@ -537,10 +547,29 @@ int main(int argc, char *argv[]) {
     prof.mark("qml_engine_load");
     if (engine.rootObjects().isEmpty())
         return 1;
-    if (bookToOpen)
-        QMetaObject::invokeMethod(engine.rootObjects().first(), "openBook", Q_ARG(QVariant, bookToOpen));
-    if (!startupErrors.isEmpty())
-        notifier.notify(QObject::tr("Clothbound can't open this book"), startupErrors.first());
+    // Defer CLI book imports until the event loop is running so incoming D-Bus
+    // single-instance handoffs are serviced immediately instead of timing out.
+    if (!bookFiles.isEmpty()) {
+        QObject *root = engine.rootObjects().first();
+        QTimer::singleShot(0, root, [&library, &notifier, root, bookFiles] {
+            int bookToOpen = 0;
+            QStringList startupErrors;
+            for (const QString &file : bookFiles) {
+                const int id = library.addBookFile(file);
+                if (id) {
+                    if (!bookToOpen)
+                        bookToOpen = id;
+                } else {
+                    fprintf(stderr, "%s\n", qPrintable(library.errorString()));
+                    startupErrors.append(library.errorString());
+                }
+            }
+            if (bookToOpen)
+                QMetaObject::invokeMethod(root, "openBook", Q_ARG(QVariant, bookToOpen));
+            if (!startupErrors.isEmpty())
+                notifier.notify(QObject::tr("Clothbound can't open this book"), startupErrors.first());
+        });
+    }
     // Opened again: the window comes back (Instance), and a book named then
     // joins the library and opens.
     if (QObject *root = engine.rootObjects().first()) {

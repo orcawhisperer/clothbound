@@ -2,14 +2,14 @@
 
 #include <QMutexLocker>
 #include <QStringDecoder>
+#include <algorithm>
 #include <limits>
 #include <zlib.h>
 
 namespace {
-// The largest entry we inflate. Books are far smaller; this stops a damaged
-// or hostile archive from exhausting memory.
-constexpr quint64 maxEntrySize = 128ull * 1024 * 1024;
-constexpr quint64 maxDirectorySize = 256ull * 1024 * 1024;
+constexpr quint64 maxEntrySize = ZipArchive::kMaxEntrySize;
+constexpr quint64 maxDirectorySize = ZipArchive::kMaxDirectorySize;
+constexpr quint64 maxEntryCount = ZipArchive::kMaxEntryCount;
 constexpr quint64 initialInflateCap = 64ull * 1024;
 constexpr quint64 maxFileOffset = quint64(std::numeric_limits<qint64>::max());
 
@@ -24,13 +24,16 @@ QString decodeName(const QByteArray &raw) {
     const QString name = utf8(raw);
     return utf8.hasError() ? QString::fromLatin1(raw) : name;
 }
-}
+}  // namespace
 
 ZipArchive::ZipArchive(const QString &path) : m_path(path), m_file(path) {}
 
 bool ZipArchive::fail(const QString &message) {
     m_error = message;
     m_open = false;
+    m_entries.clear();
+    m_folded.clear();
+    m_names.clear();
     if (m_file.isOpen())
         m_file.close();
     return false;
@@ -39,6 +42,10 @@ bool ZipArchive::fail(const QString &message) {
 bool ZipArchive::open() {
     if (m_open)
         return true;
+    m_entries.clear();
+    m_folded.clear();
+    m_names.clear();
+    m_inflatedBytes.store(0, std::memory_order_relaxed);
     if (!m_file.open(QIODevice::ReadOnly))
         return fail(m_file.errorString());
 
@@ -90,6 +97,8 @@ bool ZipArchive::open() {
         directorySize = u64(zip64.constData() + 40);
         directoryOffset = u64(zip64.constData() + 48);
     }
+    if (count > maxEntryCount)
+        return fail(QStringLiteral("ZIP archive has too many entries"));
     if (directorySize > maxDirectorySize || directoryOffset > uFileSize || directorySize > uFileSize - directoryOffset ||
         directoryOffset > maxFileOffset)
         return fail(QStringLiteral("damaged ZIP directory"));
@@ -99,17 +108,29 @@ bool ZipArchive::open() {
     const QByteArray directory = m_file.read(qint64(directorySize));
     if (quint64(directory.size()) != directorySize)
         return fail(QStringLiteral("truncated ZIP archive"));
-    if (!readCentralDirectory(directory, count))
+    if (!readCentralDirectory(directory, count, uFileSize, directoryOffset, directorySize))
         return false;
     m_open = true;
     return true;
 }
 
-bool ZipArchive::readCentralDirectory(const QByteArray &directory, quint64 count) {
+bool ZipArchive::readCentralDirectory(const QByteArray &directory, quint64 count, quint64 fileSize,
+                                      quint64 directoryOffset, quint64 directorySize) {
     const char *data = directory.constData();
     const qint64 size = directory.size();
     qint64 pos = 0;
+
+    struct Span {
+        quint64 start = 0;
+        quint64 end = 0;
+    };
+    QList<Span> spans;
+    spans.reserve(qsizetype(qMin<quint64>(count, maxEntryCount)));
+    const quint64 dirEnd = directoryOffset + directorySize;
+
     for (quint64 i = 0; i < count && pos + 46 <= size; ++i) {
+        if (i >= maxEntryCount)
+            return fail(QStringLiteral("ZIP archive has too many entries"));
         const char *header = data + pos;
         if (u32(header) != 0x02014b50)
             return fail(QStringLiteral("damaged ZIP directory"));
@@ -149,10 +170,31 @@ bool ZipArchive::readCentralDirectory(const QByteArray &directory, quint64 count
         pos += 46 + nameLength + extraLength + commentLength;
         if (name.isEmpty() || name.endsWith('/'))
             continue;
+
+        // Validate entry bounds and collect compressed byte span (local header
+        // is at least 30 bytes followed by entry.compressed bytes) to reject
+        // overlapping ZIP bombs that alias one compressed stream across entries.
+        if (entry.offset > fileSize || 30ull > fileSize - entry.offset ||
+            entry.compressed > fileSize - entry.offset - 30ull)
+            return fail(QStringLiteral("damaged ZIP directory"));
+        const quint64 spanStart = entry.offset;
+        const quint64 spanEnd = entry.offset + 30ull + entry.compressed;
+        if (spanStart < dirEnd && spanEnd > directoryOffset)
+            return fail(QStringLiteral("overlapping ZIP entries"));
+        spans.append({spanStart, spanEnd});
+
         if (!m_entries.contains(name))
             m_names.append(name);
         m_entries.insert(name, entry);
         m_folded.insert(name.toLower(), name);
+    }
+
+    std::sort(spans.begin(), spans.end(), [](const Span &a, const Span &b) {
+        return a.start != b.start ? a.start < b.start : a.end < b.end;
+    });
+    for (qsizetype i = 1; i < spans.size(); ++i) {
+        if (spans[i].start < spans[i - 1].end)
+            return fail(QStringLiteral("overlapping ZIP entries"));
     }
     return true;
 }
@@ -196,6 +238,14 @@ QByteArray ZipArchive::read(const QString &name, QString *error) const {
     if (entry.uncompressed > maxEntrySize || entry.compressed > maxEntrySize)
         return setError(QStringLiteral("%1 is too large").arg(name));
 
+    const quint64 already = m_inflatedBytes.load(std::memory_order_relaxed);
+    if (already >= m_maxArchiveInflateBytes)
+        return setError(QStringLiteral("%1 is too large (archive budget exceeded)").arg(name));
+    const quint64 remainingBudget = m_maxArchiveInflateBytes - already;
+    if (entry.uncompressed > remainingBudget)
+        return setError(QStringLiteral("%1 is too large (archive budget exceeded)").arg(name));
+    const quint64 entryBudget = qMin<quint64>(maxEntrySize, remainingBudget);
+
     QByteArray compressed;
     {
         // The local header repeats the name and has its own extra field, so
@@ -219,14 +269,20 @@ QByteArray ZipArchive::read(const QString &name, QString *error) const {
         return actual == entry.crc;
     };
     if (entry.method == 0) {
+        if (quint64(compressed.size()) > entryBudget)
+            return setError(QStringLiteral("%1 is too large (archive budget exceeded)").arg(name));
         if (!validCrc(compressed))
             return setError(QStringLiteral("%1 is damaged").arg(name));
+        const quint64 prev = m_inflatedBytes.fetch_add(quint64(compressed.size()), std::memory_order_relaxed);
+        if (prev > m_maxArchiveInflateBytes || quint64(compressed.size()) > m_maxArchiveInflateBytes - prev)
+            return setError(QStringLiteral("%1 is too large (archive budget exceeded)").arg(name));
         return compressed;
     }
 
     // Start with a small buffer rather than trusting entry.uncompressed, and
-    // grow strictly up to maxEntrySize.
-    const quint64 initial = qMin<quint64>(qMax<quint64>(entry.uncompressed, 4096), initialInflateCap);
+    // grow strictly up to entryBudget (min of maxEntrySize and remaining archive budget).
+    const quint64 initial =
+        qMax<quint64>(1, qMin<quint64>(qMax<quint64>(entry.uncompressed, 4096), qMin<quint64>(initialInflateCap, entryBudget)));
     QByteArray output;
     output.resize(qsizetype(initial));
     z_stream stream{};
@@ -239,11 +295,12 @@ QByteArray ZipArchive::read(const QString &name, QString *error) const {
     int result = inflate(&stream, Z_NO_FLUSH);
     while (result == Z_OK && stream.avail_out == 0) {
         const quint64 used = quint64(output.size());
-        if (used >= maxEntrySize) {
+        if (used >= entryBudget) {
+            m_inflatedBytes.fetch_add(quint64(stream.total_out), std::memory_order_relaxed);
             inflateEnd(&stream);
             return setError(QStringLiteral("%1 is too large").arg(name));
         }
-        const quint64 nextSize = qMin<quint64>(qMax<quint64>(used * 2, 4096), maxEntrySize);
+        const quint64 nextSize = qMin<quint64>(qMax<quint64>(used * 2, 4096), entryBudget);
         output.resize(qsizetype(nextSize));
         stream.next_out = reinterpret_cast<Bytef *>(output.data() + used);
         stream.avail_out = uInt(nextSize - used);
@@ -251,8 +308,14 @@ QByteArray ZipArchive::read(const QString &name, QString *error) const {
     }
     const qsizetype produced = qsizetype(stream.total_out);
     inflateEnd(&stream);
-    if (result != Z_STREAM_END)
+    const quint64 prev = m_inflatedBytes.fetch_add(quint64(produced), std::memory_order_relaxed);
+    if (result != Z_STREAM_END) {
+        if (quint64(produced) >= entryBudget)
+            return setError(QStringLiteral("%1 is too large").arg(name));
         return setError(QStringLiteral("%1 is damaged").arg(name));
+    }
+    if (prev > m_maxArchiveInflateBytes || quint64(produced) > m_maxArchiveInflateBytes - prev)
+        return setError(QStringLiteral("%1 is too large (archive budget exceeded)").arg(name));
     output.truncate(produced);
     if (!validCrc(output))
         return setError(QStringLiteral("%1 is damaged").arg(name));

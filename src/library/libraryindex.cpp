@@ -5,7 +5,8 @@
 
 #include <QDir>
 #include <QFileInfo>
-#include <QFutureWatcher>
+#include <QMetaObject>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSqlDatabase>
@@ -14,12 +15,22 @@
 #include <QStandardPaths>
 #include <QThread>
 #include <QUuid>
-#include <QtConcurrentRun>
-#include <algorithm>
 
 namespace {
 QString defaultPath() {
     return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/index.sqlite");
+}
+
+void applyPragmas(QSqlDatabase &db) {
+    QSqlQuery pragma(db);
+    // Set busy_timeout first so WAL configuration and concurrent writes wait
+    // instead of failing immediately with SQLITE_BUSY.
+    pragma.exec(QStringLiteral("PRAGMA busy_timeout = 4000"));
+    pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
+    pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+    pragma.exec(QStringLiteral("PRAGMA temp_store = MEMORY"));
+    pragma.exec(QStringLiteral("PRAGMA cache_size = -16000"));
+    pragma.exec(QStringLiteral("PRAGMA mmap_size = 67108864"));
 }
 
 // One connection per thread and purpose, closed when done.
@@ -30,13 +41,8 @@ struct Connection {
         QDir().mkpath(QFileInfo(path).absolutePath());
         db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
         db.setDatabaseName(path);
-        db.open();
-        QSqlQuery(db).exec(QStringLiteral("PRAGMA journal_mode = WAL"));
-        QSqlQuery(db).exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
-        QSqlQuery(db).exec(QStringLiteral("PRAGMA temp_store = MEMORY"));
-        QSqlQuery(db).exec(QStringLiteral("PRAGMA cache_size = -16000"));
-        QSqlQuery(db).exec(QStringLiteral("PRAGMA mmap_size = 67108864"));
-        QSqlQuery(db).exec(QStringLiteral("PRAGMA busy_timeout = 4000"));
+        if (db.open())
+            applyPragmas(db);
     }
     ~Connection() {
         db.close();
@@ -47,35 +53,79 @@ struct Connection {
 
 bool createSchema(QSqlDatabase &db) {
     QSqlQuery q(db);
-    return q.exec(QStringLiteral("CREATE VIRTUAL TABLE IF NOT EXISTS chapter_text USING fts5("
-                                 "body, book UNINDEXED, chapter UNINDEXED, tokenize = 'unicode61 remove_diacritics 2')")) &&
-           q.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS indexed (book INTEGER PRIMARY KEY, mtime INTEGER NOT NULL, "
-                                 "path TEXT NOT NULL)"));
+    if (!q.exec(QStringLiteral("CREATE VIRTUAL TABLE IF NOT EXISTS chapter_text USING fts5("
+                               "body, book UNINDEXED, chapter UNINDEXED, tokenize = 'unicode61 remove_diacritics 2')")) ||
+        !q.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS indexed (book INTEGER PRIMARY KEY, mtime INTEGER NOT NULL, "
+                               "path TEXT NOT NULL)")) ||
+        !q.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS chapter_rows (book INTEGER NOT NULL, chapter INTEGER NOT NULL, "
+                               "fts_rowid INTEGER NOT NULL, PRIMARY KEY (book, chapter))"))) {
+        return false;
+    }
+    // One-time backfill for pre-existing index.sqlite databases created before
+    // chapter_rows existed, giving O(log N) indexed deletes and passage lookups.
+    QSqlQuery hasRows(db);
+    QSqlQuery hasIndexed(db);
+    if (hasRows.exec(QStringLiteral("SELECT 1 FROM chapter_rows LIMIT 1")) && !hasRows.next() &&
+        hasIndexed.exec(QStringLiteral("SELECT 1 FROM indexed LIMIT 1")) && hasIndexed.next()) {
+        if (db.transaction()) {
+            QSqlQuery backfill(db);
+            if (backfill.exec(QStringLiteral("INSERT OR REPLACE INTO chapter_rows (book, chapter, fts_rowid) "
+                                             "SELECT book, chapter, rowid FROM chapter_text"))) {
+                db.commit();
+            } else {
+                db.rollback();
+            }
+        }
+    }
+    return true;
+}
+
+bool deleteBookChapters(QSqlDatabase &db, int bookId) {
+    QSqlQuery check(db);
+    check.prepare(QStringLiteral("SELECT 1 FROM chapter_rows WHERE book = ? LIMIT 1"));
+    check.addBindValue(bookId);
+    if (!check.exec())
+        return false;
+    if (check.next()) {
+        QSqlQuery delFts(db);
+        delFts.prepare(QStringLiteral(
+            "DELETE FROM chapter_text WHERE rowid IN (SELECT fts_rowid FROM chapter_rows WHERE book = ?)"));
+        delFts.addBindValue(bookId);
+        if (!delFts.exec())
+            return false;
+        QSqlQuery delMap(db);
+        delMap.prepare(QStringLiteral("DELETE FROM chapter_rows WHERE book = ?"));
+        delMap.addBindValue(bookId);
+        return delMap.exec();
+    }
+    // Fallback for legacy or manually inserted rows without chapter_rows entries.
+    QSqlQuery delFts(db);
+    delFts.prepare(QStringLiteral("DELETE FROM chapter_text WHERE book = ?"));
+    delFts.addBindValue(bookId);
+    return delFts.exec();
 }
 }  // namespace
 
 LibraryIndex::LibraryIndex(const QString &path, QObject *parent)
-    : QObject(parent), m_path(path.isEmpty() ? defaultPath() : path),
-      m_cancel(std::make_shared<QAtomicInteger<bool>>(false)) {
+    : QObject(parent),
+      m_path(path.isEmpty() ? defaultPath() : path),
+      m_cancel(std::make_shared<std::atomic<bool>>(false)) {
+    m_pool.setMaxThreadCount(1);
     QDir().mkpath(QFileInfo(m_path).absolutePath());
     m_connection = QStringLiteral("libraryindex-") + QUuid::createUuid().toString();
     QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connection);
     db.setDatabaseName(m_path);
     // Without FTS5 in SQLite, search across books says it isn't available
     // rather than quietly finding nothing.
-    m_available = db.open() && createSchema(db);
-    if (m_available) {
-        QSqlQuery pragma(db);
-        pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
-        pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
-        pragma.exec(QStringLiteral("PRAGMA temp_store = MEMORY"));
-        pragma.exec(QStringLiteral("PRAGMA cache_size = -16000"));
-        pragma.exec(QStringLiteral("PRAGMA mmap_size = 67108864"));
+    if (db.open()) {
+        applyPragmas(db);
+        m_available = createSchema(db);
     }
 }
 
 LibraryIndex::~LibraryIndex() {
     cancel();
+    m_pool.waitForDone();
     {
         QSqlDatabase db = QSqlDatabase::database(m_connection, false);
         db.close();
@@ -97,14 +147,10 @@ bool LibraryIndex::ensureDatabase() const {
     if (!db.isValid())
         db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), m_connection);
     db.setDatabaseName(m_path);
-    m_available = db.open() && createSchema(db);
-    if (m_available) {
-        QSqlQuery pragma(db);
-        pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
-        pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
-        pragma.exec(QStringLiteral("PRAGMA temp_store = MEMORY"));
-        pragma.exec(QStringLiteral("PRAGMA cache_size = -16000"));
-        pragma.exec(QStringLiteral("PRAGMA mmap_size = 67108864"));
+    m_available = false;
+    if (db.open()) {
+        applyPragmas(db);
+        m_available = createSchema(db);
     }
     return m_available;
 }
@@ -137,45 +183,69 @@ QString LibraryIndex::matchExpression(const QString &query) {
     return quoted.join(QLatin1Char(' '));
 }
 
-bool LibraryIndex::indexBook(const QString &databasePath, const Source &book, const QAtomicInteger<bool> *cancel) {
+bool LibraryIndex::indexBook(const QString &databasePath, const Source &book, const std::atomic<bool> *cancel) {
+    const auto cancelled = [cancel] { return cancel && cancel->load(std::memory_order_relaxed); };
+    if (cancelled())
+        return false;
     QStringList chapters;
     if (book.format.compare(QLatin1String("pdf"), Qt::CaseInsensitive) == 0) {
         PdfBook pdf(book.path);
         if (!pdf.open())
             return false;
-        for (int page = 0; page < pdf.pageCount() && !(cancel && cancel->loadRelaxed()); ++page)
+        for (int page = 0; page < pdf.pageCount() && !cancelled(); ++page)
             chapters.append(pdf.pageText(page));
     } else {
         EpubBook epub(book.path);
         if (!epub.open())
             return false;
-        for (int chapter = 0; chapter < int(epub.spine().size()) && !(cancel && cancel->loadRelaxed()); ++chapter)
+        for (int chapter = 0; chapter < int(epub.spine().size()) && !cancelled(); ++chapter)
             chapters.append(epub.chapterText(chapter));
     }
-    if (cancel && cancel->loadRelaxed())
+    if (cancelled())
         return false;
     Connection c(databasePath);
-    if (!c.db.isOpen() || !createSchema(c.db))
+    if (!c.db.isOpen() || !createSchema(c.db) || !c.db.transaction())
         return false;
-    c.db.transaction();
-    QSqlQuery q(c.db);
-    q.prepare(QStringLiteral("DELETE FROM chapter_text WHERE book = ?"));
-    q.addBindValue(book.id);
-    q.exec();
-    q.prepare(QStringLiteral("INSERT INTO chapter_text (body, book, chapter) VALUES (?, ?, ?)"));
+    if (!deleteBookChapters(c.db, book.id)) {
+        c.db.rollback();
+        return false;
+    }
+    QSqlQuery insFts(c.db);
+    insFts.prepare(QStringLiteral("INSERT INTO chapter_text (body, book, chapter) VALUES (?, ?, ?)"));
+    QSqlQuery insMap(c.db);
+    insMap.prepare(QStringLiteral("INSERT OR REPLACE INTO chapter_rows (book, chapter, fts_rowid) VALUES (?, ?, ?)"));
     for (int i = 0; i < chapters.size(); ++i) {
+        if (cancelled()) {
+            c.db.rollback();
+            return false;
+        }
         if (chapters[i].trimmed().isEmpty())
             continue;
-        q.addBindValue(chapters[i]);
-        q.addBindValue(book.id);
-        q.addBindValue(i);
-        q.exec();
+        insFts.addBindValue(chapters[i]);
+        insFts.addBindValue(book.id);
+        insFts.addBindValue(i);
+        if (!insFts.exec()) {
+            c.db.rollback();
+            return false;
+        }
+        const qint64 rowId = insFts.lastInsertId().toLongLong();
+        insMap.addBindValue(book.id);
+        insMap.addBindValue(i);
+        insMap.addBindValue(rowId);
+        if (!insMap.exec()) {
+            c.db.rollback();
+            return false;
+        }
     }
-    q.prepare(QStringLiteral("INSERT OR REPLACE INTO indexed (book, mtime, path) VALUES (?, ?, ?)"));
-    q.addBindValue(book.id);
-    q.addBindValue(book.mtime);
-    q.addBindValue(book.path);
-    q.exec();
+    QSqlQuery insIdx(c.db);
+    insIdx.prepare(QStringLiteral("INSERT OR REPLACE INTO indexed (book, mtime, path) VALUES (?, ?, ?)"));
+    insIdx.addBindValue(book.id);
+    insIdx.addBindValue(book.mtime);
+    insIdx.addBindValue(book.path);
+    if (cancelled() || !insIdx.exec()) {
+        c.db.rollback();
+        return false;
+    }
     return c.db.commit();
 }
 
@@ -187,42 +257,63 @@ void LibraryIndex::update(const QList<Source> &books) {
     QHash<int, QPair<qint64, QString>> have;
     {
         QSqlQuery q(db);
-        q.exec(QStringLiteral("SELECT book, mtime, path FROM indexed"));
+        if (!q.exec(QStringLiteral("SELECT book, mtime, path FROM indexed")))
+            return;
         while (q.next())
             have.insert(q.value(0).toInt(), {q.value(1).toLongLong(), q.value(2).toString()});
     }
-    // Books gone from the library leave the index.
+    // Books gone from the library leave the index in a single batched transaction.
     QSet<int> listed;
+    listed.reserve(books.size());
     for (const Source &book : books)
         listed.insert(book.id);
+    QList<int> removedIds;
     for (auto it = have.cbegin(); it != have.cend(); ++it) {
-        if (listed.contains(it.key()))
-            continue;
-        QSqlQuery q(db);
-        q.prepare(QStringLiteral("DELETE FROM chapter_text WHERE book = ?"));
-        q.addBindValue(it.key());
-        q.exec();
-        q.prepare(QStringLiteral("DELETE FROM indexed WHERE book = ?"));
-        q.addBindValue(it.key());
-        q.exec();
+        if (!listed.contains(it.key()))
+            removedIds.append(it.key());
     }
-    // New or changed books join the queue.
+    if (!removedIds.isEmpty() && db.transaction()) {
+        bool ok = true;
+        QSqlQuery delIndexed(db);
+        delIndexed.prepare(QStringLiteral("DELETE FROM indexed WHERE book = ?"));
+        for (const int removedId : std::as_const(removedIds)) {
+            if (!deleteBookChapters(db, removedId)) {
+                ok = false;
+                break;
+            }
+            delIndexed.addBindValue(removedId);
+            if (!delIndexed.exec()) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok)
+            db.commit();
+        else
+            db.rollback();
+    }
+    // New or changed books join the queue in O(1) per book.
     for (const Source &book : books) {
         const auto found = have.constFind(book.id);
         const bool fresh = found != have.cend() && found->first == book.mtime && found->second == book.path;
-        const bool queued = std::any_of(m_queue.cbegin(), m_queue.cend(), [&](const Source &s) { return s.id == book.id; });
-        if (!fresh && !queued)
+        const bool inFlight =
+            m_indexing && m_activeBookId == book.id && m_activeMtime == book.mtime && m_activePath == book.path;
+        if (!fresh && !m_queuedIds.contains(book.id) && !inFlight) {
             m_queue.append(book);
+            m_queuedIds.insert(book.id);
+        }
     }
-    if (!m_indexing && !m_queue.isEmpty()) {
+    const int remaining = int(m_queue.size() - m_queueHead);
+    if (!m_indexing && remaining > 0) {
         m_done = 0;
-        m_total = int(m_queue.size());
+        m_total = remaining;
         m_indexing = true;
-        m_cancel->storeRelaxed(false);
+        ++m_generation;
+        m_cancel = std::make_shared<std::atomic<bool>>(false);
         emit progressChanged();
         next();
     } else if (m_indexing) {
-        m_total = m_done + int(m_queue.size()) + 1;
+        m_total = m_done + remaining + 1;
         emit progressChanged();
     } else {
         emit progressChanged();
@@ -230,43 +321,87 @@ void LibraryIndex::update(const QList<Source> &books) {
 }
 
 void LibraryIndex::next() {
-    if (m_queue.isEmpty() || m_cancel->loadRelaxed()) {
+    if (m_queueHead >= m_queue.size() || !m_cancel || m_cancel->load(std::memory_order_relaxed)) {
         m_queue.clear();
+        m_queuedIds.clear();
+        m_queueHead = 0;
+        m_activeBookId = 0;
+        m_activeMtime = 0;
+        m_activePath.clear();
         m_indexing = false;
         emit progressChanged();
         return;
     }
-    const Source book = m_queue.takeFirst();
-    auto *watcher = new QFutureWatcher<bool>(this);
-    connect(watcher, &QFutureWatcher<bool>::finished, this, [this, watcher] {
-        watcher->deleteLater();
-        ++m_done;
-        emit progressChanged();
-        next();
-    });
+    const Source book = m_queue[m_queueHead++];
+    m_queuedIds.remove(book.id);
+    if (m_queueHead >= m_queue.size()) {
+        m_queue.clear();
+        m_queueHead = 0;
+    }
+    m_activeBookId = book.id;
+    m_activeMtime = book.mtime;
+    m_activePath = book.path;
+
     const QString path = m_path;
-    const auto cancel = m_cancel;
-    watcher->setFuture(QtConcurrent::run([path, book, cancel] {
+    const auto cancelToken = m_cancel;
+    const quint64 gen = m_generation;
+    const QPointer<LibraryIndex> self(this);
+    m_pool.start([self, path, book, cancelToken, gen] {
         // Gently: one book at a time, at low priority, never in the reader's way.
         QThread::currentThread()->setPriority(QThread::LowPriority);
-        return indexBook(path, book, cancel.get());
-    }));
+        if (!cancelToken->load(std::memory_order_relaxed))
+            indexBook(path, book, cancelToken.get());
+        QMetaObject::invokeMethod(
+            self,
+            [self, gen, cancelToken] {
+                if (!self || gen != self->m_generation || cancelToken->load(std::memory_order_relaxed))
+                    return;
+                self->m_activeBookId = 0;
+                self->m_activeMtime = 0;
+                self->m_activePath.clear();
+                ++self->m_done;
+                emit self->progressChanged();
+                self->next();
+            },
+            Qt::QueuedConnection);
+    });
 }
 
 void LibraryIndex::cancel() {
-    m_cancel->storeRelaxed(true);
+    ++m_generation;
+    if (m_cancel)
+        m_cancel->store(true, std::memory_order_relaxed);
+    m_cancel = std::make_shared<std::atomic<bool>>(false);
     m_queue.clear();
+    m_queuedIds.clear();
+    m_queueHead = 0;
+    m_activeBookId = 0;
+    m_activeMtime = 0;
+    m_activePath.clear();
+    if (m_indexing) {
+        m_indexing = false;
+        emit progressChanged();
+    }
 }
 
 void LibraryIndex::rebuild() {
     if (!ensureDatabase())
         return;
     cancel();
+    // Wait for any cancelled in-flight worker on the dedicated 1-thread pool so
+    // it cannot commit stale rows after we wipe the tables or spawn a dual chain.
+    m_pool.waitForDone();
     QSqlDatabase db = QSqlDatabase::database(m_connection);
-    QSqlQuery q(db);
-    q.exec(QStringLiteral("DELETE FROM chapter_text"));
-    q.exec(QStringLiteral("DELETE FROM indexed"));
-    m_indexing = false;
+    if (db.transaction()) {
+        QSqlQuery q(db);
+        const bool ok = q.exec(QStringLiteral("DELETE FROM chapter_text")) &&
+                        q.exec(QStringLiteral("DELETE FROM chapter_rows")) &&
+                        q.exec(QStringLiteral("DELETE FROM indexed"));
+        if (ok)
+            db.commit();
+        else
+            db.rollback();
+    }
     update(m_last);
 }
 
@@ -313,7 +448,25 @@ QVariantList LibraryIndex::search(const QString &query, int limit, int bookId) c
 QString LibraryIndex::passage(int bookId, int chapter, qint64 start, qint64 end) const {
     if (!ensureDatabase() || end <= start)
         return {};
-    QSqlQuery q(QSqlDatabase::database(m_connection));
+    QSqlDatabase db = QSqlDatabase::database(m_connection);
+    // Indexed O(log N) lookup via chapter_rows -> FTS5 rowid B-tree lookup.
+    {
+        QSqlQuery rowQ(db);
+        rowQ.prepare(QStringLiteral("SELECT fts_rowid FROM chapter_rows WHERE book = ? AND chapter = ?"));
+        rowQ.addBindValue(bookId);
+        rowQ.addBindValue(chapter);
+        if (rowQ.exec() && rowQ.next()) {
+            const qint64 rowId = rowQ.value(0).toLongLong();
+            QSqlQuery textQ(db);
+            textQ.prepare(QStringLiteral("SELECT substr(body, ?, ?) FROM chapter_text WHERE rowid = ?"));
+            textQ.addBindValue(start + 1);
+            textQ.addBindValue(end - start);
+            textQ.addBindValue(rowId);
+            return textQ.exec() && textQ.next() ? textQ.value(0).toString().simplified() : QString();
+        }
+    }
+    // Fallback for rows inserted directly into chapter_text without chapter_rows.
+    QSqlQuery q(db);
     q.prepare(QStringLiteral("SELECT substr(body, ?, ?) FROM chapter_text WHERE book = ? AND chapter = ?"));
     q.addBindValue(start + 1);
     q.addBindValue(end - start);

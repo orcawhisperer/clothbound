@@ -429,9 +429,15 @@ void TrayIcon::registerItem() {
         new StatusNotifierItemAdaptor(this, m_itemObject);
         m_menuObject = new QObject(this);
         new DBusMenuAdaptor(this, m_menuObject);
-        if (!bus.registerService(m_serviceName) ||
-            !bus.registerObject(QString::fromLatin1(kItemPath), m_itemObject) ||
-            !bus.registerObject(QString::fromLatin1(kMenuPath), m_menuObject)) {
+        const bool serviceOk = bus.registerService(m_serviceName);
+        const bool itemOk = serviceOk && bus.registerObject(QString::fromLatin1(kItemPath), m_itemObject);
+        const bool menuOk = itemOk && bus.registerObject(QString::fromLatin1(kMenuPath), m_menuObject);
+        if (!menuOk) {
+            if (itemOk)
+                bus.unregisterObject(QString::fromLatin1(kItemPath));
+            if (serviceOk)
+                bus.unregisterService(m_serviceName);
+            m_serviceName.clear();
             unregisterItem();
             return;
         }
@@ -446,11 +452,19 @@ void TrayIcon::registerItem() {
 
 void TrayIcon::unregisterItem() {
     QDBusConnection bus = QDBusConnection::sessionBus();
-    if (m_registered && bus.isConnected()) {
-        bus.unregisterObject(QString::fromLatin1(kMenuPath));
-        bus.unregisterObject(QString::fromLatin1(kItemPath));
-        if (!m_serviceName.isEmpty())
+    if (bus.isConnected()) {
+        if (m_registered) {
+            bus.unregisterObject(QString::fromLatin1(kMenuPath));
+            bus.unregisterObject(QString::fromLatin1(kItemPath));
+            if (!m_serviceName.isEmpty())
+                bus.unregisterService(m_serviceName);
+        } else if (!m_serviceName.isEmpty()) {
+            if (m_menuObject && bus.objectRegisteredAt(QString::fromLatin1(kMenuPath)) == m_menuObject)
+                bus.unregisterObject(QString::fromLatin1(kMenuPath));
+            if (m_itemObject && bus.objectRegisteredAt(QString::fromLatin1(kItemPath)) == m_itemObject)
+                bus.unregisterObject(QString::fromLatin1(kItemPath));
             bus.unregisterService(m_serviceName);
+        }
     }
     m_registered = false;
     m_serviceName.clear();

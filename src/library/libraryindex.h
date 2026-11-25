@@ -1,17 +1,19 @@
 #pragma once
 
-#include <QAtomicInteger>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
+#include <QThreadPool>
 #include <QVariantList>
+#include <atomic>
 #include <memory>
 
 // The words of every book, searchable at once: an SQLite FTS5 index of each
 // chapter's text (as the reader sees it, so offsets jump to the right place),
 // kept in the cache where it can always be rebuilt. Books are read into it
-// one at a time on a background thread; a changed file is read again, and a
-// removed one dropped.
+// one at a time on a dedicated background thread; a changed file is read again,
+// and a removed one dropped.
 class LibraryIndex : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
@@ -55,8 +57,9 @@ public:
     // as a prefix, quotes and operators taken literally.
     static QString matchExpression(const QString &query);
     // Reads one book's chapters into the index at `databasePath`; false when
-    // the book can't be opened.
-    static bool indexBook(const QString &databasePath, const Source &book, const QAtomicInteger<bool> *cancel = nullptr);
+    // the book can't be opened or indexing was cancelled.
+    static bool indexBook(const QString &databasePath, const Source &book,
+                          const std::atomic<bool> *cancel = nullptr);
 
 signals:
     void progressChanged();
@@ -71,7 +74,14 @@ private:
     bool m_indexing = false;
     int m_done = 0;
     int m_total = 0;
+    QThreadPool m_pool;
     QList<Source> m_queue;
+    qsizetype m_queueHead = 0;
+    QSet<int> m_queuedIds;
+    int m_activeBookId = 0;
+    qint64 m_activeMtime = 0;
+    QString m_activePath;
     QList<Source> m_last;
-    std::shared_ptr<QAtomicInteger<bool>> m_cancel;
+    std::shared_ptr<std::atomic<bool>> m_cancel;
+    quint64 m_generation = 0;
 };

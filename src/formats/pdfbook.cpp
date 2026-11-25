@@ -13,6 +13,7 @@
 #include <QRegularExpression>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 PdfBook::PdfBook(const QString &path) : m_path(path), m_document(std::make_unique<QPdfDocument>()) {}
 
@@ -108,8 +109,13 @@ QList<PdfOutlineEntry> PdfBook::outline() const {
     QList<PdfOutlineEntry> entries;
     QPdfBookmarkModel model;
     model.setDocument(m_document.get());
+    constexpr int kMaxOutlineDepth = 128;
+    constexpr int kMaxOutlineEntries = 100000;
     std::function<void(const QModelIndex &, int)> walk = [&](const QModelIndex &parent, int depth) {
-        for (int row = 0; row < model.rowCount(parent); ++row) {
+        if (depth >= kMaxOutlineDepth || entries.size() >= kMaxOutlineEntries)
+            return;
+        const int rows = model.rowCount(parent);
+        for (int row = 0; row < rows && entries.size() < kMaxOutlineEntries; ++row) {
             const QModelIndex index = model.index(row, 0, parent);
             PdfOutlineEntry entry;
             entry.title = model.data(index, int(QPdfBookmarkModel::Role::Title)).toString().simplified();

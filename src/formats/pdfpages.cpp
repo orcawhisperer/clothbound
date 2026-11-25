@@ -224,13 +224,13 @@ private:
 };
 
 PdfPages::PdfPages() {
-    // Two dedicated single-thread pools (even/odd page parity) so 2-page
-    // spreads render left & right in parallel while each QPdfDocument stays
-    // strictly affine to its own thread and never touches the GUI thread.
-    for (int i = 0; i < kWorkerSlots; ++i) {
-        m_workers[i] = std::make_shared<WorkerState>();
-        m_pools[i].setMaxThreadCount(1);
-    }
+    // One dedicated non-expiring worker thread: QtPdf serializes PDFium behind
+    // one global QRecursiveMutex, so a single pool halves PDF memory usage with
+    // zero loss of PDFium parallelism while keeping QPdfDocument strictly affine
+    // to a live thread for its entire lifetime.
+    m_worker = std::make_shared<WorkerState>();
+    m_pool.setMaxThreadCount(1);
+    m_pool.setExpiryTimeout(-1);
     QMutexLocker lock(&s_mutex);
     s_instance = this;
 }
@@ -242,16 +242,13 @@ PdfPages::~PdfPages() {
             s_instance = nullptr;
     }
     s_prefetchGen.fetch_add(1, std::memory_order_relaxed);
-    for (int i = 0; i < kWorkerSlots; ++i) {
-        auto worker = m_workers[i];
-        m_pools[i].start([worker] {
-            worker->book.reset();
-            worker->token.clear();
-            worker->path.clear();
-        });
-    }
-    for (int i = 0; i < kWorkerSlots; ++i)
-        m_pools[i].waitForDone();
+    auto worker = m_worker;
+    m_pool.start([worker] {
+        worker->book.reset();
+        worker->token.clear();
+        worker->path.clear();
+    });
+    m_pool.waitForDone();
 }
 
 void PdfPages::add(const QString &token, std::shared_ptr<PdfBook> book) {
@@ -273,6 +270,20 @@ void PdfPages::remove(const QString &token) {
     const QSet<QString> ids = s_tokenIds.take(token);
     for (const QString &id : ids)
         s_idWidths.remove(id);
+    if (s_instance) {
+        auto worker = s_instance->m_worker;
+        // Release the closed QPdfDocument and its file descriptor on its affine
+        // worker thread instead of pinning hundreds of MB until another PDF opens.
+        s_instance->m_pool.start(
+            [worker, token] {
+                if (worker && worker->token == token && PdfPages::pathFor(token).isEmpty()) {
+                    worker->book.reset();
+                    worker->token.clear();
+                    worker->path.clear();
+                }
+            },
+            2);
+    }
 }
 
 void PdfPages::cancelPrefetch() { s_prefetchGen.fetch_add(1, std::memory_order_relaxed); }
@@ -335,9 +346,8 @@ void PdfPages::prefetch(const QString &token, const QList<int> &pages, const QSi
         const QString cacheKey = makeCacheKey(id, requestedSize);
         if (s_cache.contains(cacheKey))
             continue;
-        const int slot = page & (kWorkerSlots - 1);
-        instance->m_pools[slot].start(
-            new PrefetchTask(instance->m_workers[slot], gen, token, id, cacheKey, page, requestedSize, bg, fg), -1);
+        instance->m_pool.start(
+            new PrefetchTask(instance->m_worker, gen, token, id, cacheKey, page, requestedSize, bg, fg), -1);
     }
 }
 
@@ -389,15 +399,25 @@ void PdfPages::storeCached(const QString &token, const QString &id, int width, c
     if (bytes <= 0 || bytes > s_cache.maxCost())
         return;
     if (s_cache.insert(key, new QImage(image), int(bytes))) {
-        s_tokenKeys[token].insert(key);
+        auto &tokenKeys = s_tokenKeys[token];
+        tokenKeys.insert(key);
+        if (tokenKeys.size() > s_cache.count() + 64) {
+            for (auto it = tokenKeys.begin(); it != tokenKeys.end();) {
+                if (!s_cache.contains(*it))
+                    it = tokenKeys.erase(it);
+                else
+                    ++it;
+            }
+        }
         if (width > 0 && !id.isEmpty()) {
             auto &list = s_idWidths[id];
             bool present = false;
-            for (const auto &pair : std::as_const(list))
-                if (pair.second == key) {
+            for (int i = int(list.size()) - 1; i >= 0; --i) {
+                if (list[i].second == key)
                     present = true;
-                    break;
-                }
+                else if (!s_cache.contains(list[i].second))
+                    list.removeAt(i);
+            }
             if (!present)
                 list.append({width, key});
             s_tokenIds[token].insert(id);
@@ -420,8 +440,18 @@ void PdfPages::storeRaw(const QString &token, const QString &rawKey, const QImag
     const qsizetype bytes = image.sizeInBytes();
     if (bytes <= 0 || bytes > s_rawCache.maxCost())
         return;
-    if (s_rawCache.insert(rawKey, new QImage(image), int(bytes)))
-        s_tokenRawKeys[token].insert(rawKey);
+    if (s_rawCache.insert(rawKey, new QImage(image), int(bytes))) {
+        auto &rawKeys = s_tokenRawKeys[token];
+        rawKeys.insert(rawKey);
+        if (rawKeys.size() > s_rawCache.count() + 64) {
+            for (auto it = rawKeys.begin(); it != rawKeys.end();) {
+                if (!s_rawCache.contains(*it))
+                    it = rawKeys.erase(it);
+                else
+                    ++it;
+            }
+        }
+    }
 }
 
 QQuickImageResponse *PdfPages::requestImageResponse(const QString &id, const QSize &requestedSize) {
@@ -441,9 +471,8 @@ QQuickImageResponse *PdfPages::requestImageResponse(const QString &id, const QSi
     const QUrlQuery query(id.section(QLatin1Char('?'), 1));
     const QColor bg(query.queryItemValue(QStringLiteral("bg"), QUrl::FullyDecoded));
     const QColor fg(query.queryItemValue(QStringLiteral("fg"), QUrl::FullyDecoded));
-    const int slot = qMax(0, page) & (kWorkerSlots - 1);
-    auto *response = new PageResponse(m_workers[slot], token, id, cacheKey, page, requestedSize, bg, fg);
-    m_pools[slot].start(response, 1);
+    auto *response = new PageResponse(m_worker, token, id, cacheKey, page, requestedSize, bg, fg);
+    m_pool.start(response, 1);
     return response;
 }
 

@@ -4,6 +4,7 @@
 #include "library/librarymodel.h"
 
 #include <QHash>
+#include <QMultiHash>
 #include <QObject>
 #include <QSet>
 #include <QSqlDatabase>
@@ -21,7 +22,7 @@ struct ScannedBook;
 class Library : public QObject {
     Q_OBJECT
     Q_PROPERTY(WorksModel *works READ works CONSTANT)
-    Q_PROPERTY(QVariantList continueReading READ continueReading NOTIFY booksChanged)
+    Q_PROPERTY(QVariantList continueReading READ continueReading NOTIFY continueReadingChanged)
     Q_PROPERTY(int bookCount READ bookCount NOTIFY booksChanged)
     Q_PROPERTY(QStringList folders READ folders NOTIFY foldersChanged)
     Q_PROPERTY(QVariantList collections READ collections NOTIFY collectionsChanged)
@@ -129,6 +130,8 @@ public:
 signals:
     void booksChanged();
     void bookChanged(int id);
+    void bookUpdated(int id);
+    void continueReadingChanged();
     void foldersChanged();
     void collectionsChanged();
     void readingStatsChanged();
@@ -206,17 +209,19 @@ private:
     bool writeChapterLengths(QSqlDatabase &db, int id, const QList<int> &lengths, qint64 *totalOut = nullptr);
     void flushPending();
     void markListed(const QStringList &paths, const QStringList &folders);
-    void changed();
+    void changed(bool statsDirty = true, bool collectionsDirty = true);
     BookRecord readRecord(const class QSqlQuery &query) const;
     bool exec(class QSqlQuery &query);
 
     QString m_dataDirectory;
+    QString m_canonicalDataDirectory;
     QString m_coverDirectory;
     QString m_connection;
     QString m_error;
     QHash<int, BookRecord> m_books;
     QHash<QString, int> m_pathToId;
     QHash<int, QString> m_fingerprints;
+    QMultiHash<QString, int> m_fingerprintToIds;
     QHash<int, CollectionRecord> m_collections;
     QHash<int, QSet<int>> m_collectionBooks;
     QHash<int, QSet<int>> m_bookCollections;
@@ -238,6 +243,10 @@ private:
     QTimer m_flush;
     QTimer m_notify;
     bool m_worksDirty = false;
+    bool m_booksNotifyDirty = false;
+    bool m_continueNotifyDirty = false;
+    bool m_collectionsNotifyDirty = false;
+    bool m_statsNotifyDirty = false;
     bool m_scanning = false;
     int m_scanDone = 0;
     int m_scanTotal = 0;

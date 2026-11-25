@@ -374,7 +374,7 @@ void SystemCheck::startBenchmark(int generation) {
 void SystemCheck::measureModel(int generation) {
     if (generation != m_generation)
         return;
-    Ai::TextModel *model = m_ai->hasLocal() ? m_ai->localModels()->text() : nullptr;
+    Ai::TextModel *model = (m_ai && m_ai->hasLocal() && m_ai->localModels()) ? m_ai->localModels()->text() : nullptr;
     if (!model) {
         finish(generation);
         return;
@@ -427,11 +427,12 @@ QVariantList SystemCheck::judge(double voiceSpeed, double promptRate, double ans
                                                      : tr("Not installed yet; may be slow with this little memory"),
                            m_machine.memoryGb >= 7.5 ? QStringLiteral("good") : QStringLiteral("slow"),
                            tr("Install one in the Narrator panel (V).")));
-    out.append(verdict(tr("Gemini voices and styles"), m_ai->hasKey() ? tr("Ready, with your key") : tr("Needs a Gemini key"),
-                       m_ai->hasKey() ? QStringLiteral("good") : QStringLiteral("no")));
+    const bool hasKey = m_ai && m_ai->hasKey();
+    out.append(verdict(tr("Gemini voices and styles"), hasKey ? tr("Ready, with your key") : tr("Needs a Gemini key"),
+                       hasKey ? QStringLiteral("good") : QStringLiteral("no")));
 
     // Text work on the local model.
-    const QString model = m_ai->localTextModel();
+    const QString model = m_ai ? m_ai->localTextModel() : QString();
     const double size = billionsIn(model);
     const auto seconds = [&](double input, double output) {
         return promptRate > 0 && answerRate > 0 ? input / promptRate + output / answerRate : 0.0;
@@ -440,10 +441,10 @@ QVariantList SystemCheck::judge(double voiceSpeed, double promptRate, double ans
                                    .arg(suggestedModel(m_machine));
     if (model.isEmpty()) {
         out.append(verdict(tr("Styles, Define, Translate, Who's who"),
-                           m_ai->hasKey() ? tr("With Gemini") : tr("Needs Gemini or a local model"),
-                           m_ai->hasKey() ? QStringLiteral("good") : QStringLiteral("no"), suggestion));
-        out.append(verdict(tr("Explain, recaps"), m_ai->hasKey() ? tr("With Gemini") : tr("Needs Gemini or a local model"),
-                           m_ai->hasKey() ? QStringLiteral("good") : QStringLiteral("no")));
+                           hasKey ? tr("With Gemini") : tr("Needs Gemini or a local model"),
+                           hasKey ? QStringLiteral("good") : QStringLiteral("no"), suggestion));
+        out.append(verdict(tr("Explain, recaps"), hasKey ? tr("With Gemini") : tr("Needs Gemini or a local model"),
+                           hasKey ? QStringLiteral("good") : QStringLiteral("no")));
     } else {
         const double quick = seconds(1700, 200);
         out.append(verdict(tr("Styles, Define, Translate, Who's who"),
@@ -459,17 +460,20 @@ QVariantList SystemCheck::judge(double voiceSpeed, double promptRate, double ans
     }
     // Ask: the whole book needs a long context.
     out.append(verdict(tr("Ask about the book"),
-                       m_ai->hasKey() ? tr("With Gemini, about the whole book so far")
+                       hasKey ? tr("With Gemini, about the whole book so far")
                        : !model.isEmpty() ? tr("With %1, from the passages that match").arg(model)
                                           : tr("Needs Gemini or a local model"),
-                       m_ai->hasKey() || !model.isEmpty() ? QStringLiteral("good") : QStringLiteral("no"),
-                       m_ai->hasKey() ? QString() : tr("A whole book is too long for a model on this computer: %1 reads the passages that match.").arg(model)));
-    const bool embeds = !m_ai->localEmbeddingModel().isEmpty() || m_ai->hasKey();
+                       hasKey || !model.isEmpty() ? QStringLiteral("good") : QStringLiteral("no"),
+                       hasKey || model.isEmpty()
+                           ? QString()
+                           : tr("A whole book is too long for a model on this computer: %1 reads the passages that match.")
+                                 .arg(model)));
+    const bool embeds = (m_ai && !m_ai->localEmbeddingModel().isEmpty()) || hasKey;
     out.append(verdict(tr("Search by meaning"), embeds ? tr("Ready") : tr("Needs Gemini or a local embedding model"),
                        embeds ? QStringLiteral("good") : QStringLiteral("no"),
                        embeds ? QString() : tr("Qwen3-Embedding 0.6B or EmbeddingGemma are small and fast.")));
-    out.append(verdict(tr("Illustrate"), m_ai->hasKey() ? tr("With Gemini") : tr("Needs a Gemini key"),
-                       m_ai->hasKey() ? QStringLiteral("good") : QStringLiteral("no"),
+    out.append(verdict(tr("Illustrate"), hasKey ? tr("With Gemini") : tr("Needs a Gemini key"),
+                       hasKey ? QStringLiteral("good") : QStringLiteral("no"),
                        tr("Pictures need a large graphics card to make on a computer; Clothbound makes them with Gemini.")));
     return out;
 }
@@ -480,9 +484,11 @@ void SystemCheck::finish(int generation) {
     m_verdicts = judge(m_voiceSpeed, m_promptRate, m_answerRate);
     rebuildSummary();
     const QString tierName = tierFor(m_machine);
-    if (m_ai->hasLocal() && m_ai->hasKey())
+    const bool hasLocal = m_ai && m_ai->hasLocal();
+    const bool hasKey = m_ai && m_ai->hasKey();
+    if (hasLocal && hasKey)
         m_recommendation = tr("Hybrid: quick work on this computer, careful work with Gemini.");
-    else if (m_ai->hasLocal())
+    else if (hasLocal)
         m_recommendation = tr("On this computer: everything that can run here does, and nothing leaves it.");
     else if (m_machine.memoryGb >= 15 || m_machine.graphicsMemoryGb >= 6)
         m_recommendation = tr("This computer (%1) can run a local model such as %2 for quick work.").arg(tierName, suggestedModel(m_machine));

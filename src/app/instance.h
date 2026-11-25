@@ -4,12 +4,14 @@
 #include <QCryptographicHash>
 #include <QDBusConnection>
 #include <QDBusMessage>
+#include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLocalSocket>
+#include <QLockFile>
 #include <QObject>
 #include <QPointer>
 #include <QRegularExpression>
@@ -31,12 +33,39 @@ class Instance : public QObject {
 public:
     explicit Instance(QObject *parent = nullptr) : QObject(parent) {}
 
+    ~Instance() override {
+        if (m_dbusRegistered) {
+            QDBusConnection bus = QDBusConnection::sessionBus();
+            if (bus.isConnected()) {
+                bus.unregisterObject(path());
+                bus.unregisterService(m_registeredService);
+            }
+            m_dbusRegistered = false;
+            m_registeredService.clear();
+        }
+        if (m_lock) {
+            m_lock->unlock();
+            m_lock.reset();
+        }
+    }
+
     // The bus name for this library, so Clothbound instances with different data folders
     // (a test profile, say) stay apart.
     static QString serviceName() {
         const QByteArray folder = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation).toUtf8();
         return QStringLiteral("app.clothbound.Reader.p") +
                QString::fromLatin1(QCryptographicHash::hash(folder, QCryptographicHash::Sha1).toHex().left(12));
+    }
+
+    // Filesystem lock path for this library, providing single-instance mutual
+    // exclusion even when session D-Bus is unavailable or the primary is busy.
+    static QString lockFilePath() {
+        const QString dataDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+        if (!dataDir.isEmpty())
+            return dataDir + QStringLiteral("/.instance.lock");
+        const QByteArray digest = QCryptographicHash::hash(serviceName().toUtf8(), QCryptographicHash::Sha1).toHex().left(12);
+        return QDir::tempPath() + QStringLiteral("/clothbound-instance-") + QString::fromLatin1(digest) +
+               QStringLiteral(".lock");
     }
 
     // Hands `book` (a file, or "") to the Clothbound already running for this
@@ -52,32 +81,59 @@ public:
         return bus.call(call, QDBus::Block, 5000).type() == QDBusMessage::ReplyMessage;
     }
 
-    // Makes this the Clothbound to bring back; false when another has the name.
+    // Makes this the Clothbound to bring back; false when another GUI instance
+    // already holds the library lock or D-Bus name.
     bool claim() {
-        QDBusConnection bus = QDBusConnection::sessionBus();
-        if (!bus.isConnected() || !bus.registerObject(path(), this, QDBusConnection::ExportScriptableSlots))
-            return false;
-        if (bus.registerService(serviceName()))
+        if (m_lock && m_lock->isLocked())
             return true;
-        bus.unregisterObject(path());
-        return false;
+
+        const QString lockPath = lockFilePath();
+        QDir().mkpath(QFileInfo(lockPath).absolutePath());
+        auto lock = std::make_unique<QLockFile>(lockPath);
+        // Never time out a live GUI session; QLockFile still cleans up stale
+        // locks left behind by a crashed process via PID liveness check.
+        lock->setStaleLockTime(0);
+        if (!lock->tryLock(0))
+            return false;
+
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        if (bus.isConnected()) {
+            const QString service = serviceName();
+            if (!bus.registerObject(path(), this, QDBusConnection::ExportScriptableSlots)) {
+                lock->unlock();
+                return false;
+            }
+            if (!bus.registerService(service)) {
+                bus.unregisterObject(path());
+                lock->unlock();
+                return false;
+            }
+            m_dbusRegistered = true;
+            m_registeredService = service;
+        }
+        m_lock = std::move(lock);
+        return true;
     }
 
     void setWindow(QWindow *window) { m_window = window; }
     void setHyprSocketForTesting(const QString &socketPath) { m_hyprSocketOverride = socketPath; }
 
     // Shows the window to the user: a hidden one comes back where they are,
-    // and one open elsewhere (another workspace) is gone to. Never mutates
-    // process environment (setenv after threads start is POSIX UB).
+    // and one open elsewhere (another workspace) is gone to.
     Q_INVOKABLE void bringBack(const QString &token = {}) {
-        Q_UNUSED(token);
         if (!m_window)
             return;
         const bool wasShown = m_window->isVisible();
+        const bool applyWaylandToken = !token.isEmpty() && token.size() <= 4096 && !token.contains(QChar(0)) &&
+                                       QGuiApplication::platformName() == QLatin1String("wayland");
+        if (applyWaylandToken)
+            qputenv("XDG_ACTIVATION_TOKEN", token.toUtf8());
         m_window->setWindowStates(m_window->windowStates() & ~Qt::WindowMinimized);
         m_window->show();
         m_window->raise();
         m_window->requestActivate();
+        if (applyWaylandToken)
+            qunsetenv("XDG_ACTIVATION_TOKEN");
         // Shown again, the window is new to the compositor, which focuses it;
         // one already open needs Hyprland asked asynchronously over its IPC socket.
         if (wasShown)
@@ -188,4 +244,7 @@ private:
 
     QPointer<QWindow> m_window;
     QString m_hyprSocketOverride;
+    std::unique_ptr<QLockFile> m_lock;
+    bool m_dbusRegistered = false;
+    QString m_registeredService;
 };

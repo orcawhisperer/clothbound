@@ -35,4 +35,10 @@ bool isLegacyCacheDir(const QString &cacheDir);
 Result runIfNeeded();
 Result run(const Paths &paths);
 
+// Copies `srcDir` into `dstDir` safely (skipping FIFOs/sockets/devices,
+// preserving relative symlinks, and cleanly backing up SQLite databases).
+// `finalDstDir` defaults to `dstDir` and is used when rewriting internal
+// absolute symlinks during staged cross-filesystem moves.
+bool copyDirectorySafely(const QString &srcDir, const QString &dstDir, const QString &finalDstDir = {});
+
 }  // namespace Migration
