@@ -368,12 +368,16 @@ Item {
             pageList.contentY = Math.min(Math.max(0, pageList.contentHeight - pageList.height), pageList.contentY + pageList.height * 0.9)
             return
         }
+        if (count <= 0)
+            return
         const from = firstOfSpread(current)
         const advance = (spread && from === 0) ? 1 : step
-        const target = Math.min(count - 1, from + advance)
-        if (target !== from && typeof reader.notifyPageTurn === "function")
+        const target = firstOfSpread(Math.min(count - 1, from + advance))
+        if (target === from)
+            return
+        if (typeof reader.notifyPageTurn === "function")
             reader.notifyPageTurn(1)
-        show(target, false, target !== from ? 1 : 0, true)
+        show(target, false, 1, true)
         reader.tapped("turn")
     }
     function prev() {
@@ -381,30 +385,40 @@ Item {
             pageList.contentY = Math.max(0, pageList.contentY - pageList.height * 0.9)
             return
         }
+        if (count <= 0)
+            return
         const from = firstOfSpread(current)
-        const target = Math.max(0, from - step)
-        if (target !== from && typeof reader.notifyPageTurn === "function")
+        const target = firstOfSpread(Math.max(0, from - step))
+        if (target === from)
+            return
+        if (typeof reader.notifyPageTurn === "function")
             reader.notifyPageTurn(-1)
-        show(target, false, target !== from ? -1 : 0, true)
+        show(target, false, -1, true)
         reader.tapped("turn")
     }
     function nextChapter() {
+        const from = firstOfSpread(current)
         for (const entry of reader.contents)
             if (entry.chapter > current + step - 1) {
-                if (typeof reader.notifyPageTurn === "function")
+                const target = firstOfSpread(entry.chapter)
+                if (target !== from && typeof reader.notifyPageTurn === "function")
                     reader.notifyPageTurn(1)
-                goTo({ chapter: entry.chapter, dir: 1 })
+                goTo({ chapter: entry.chapter, dir: target !== from ? 1 : 0 })
                 return
             }
     }
     function prevChapter() {
+        const from = firstOfSpread(current)
         let target = 0
         for (const entry of reader.contents)
             if (entry.chapter < current)
                 target = entry.chapter
-        if (target !== current && typeof reader.notifyPageTurn === "function")
+        const targetSpread = firstOfSpread(target)
+        if (targetSpread === from)
+            return
+        if (typeof reader.notifyPageTurn === "function")
             reader.notifyPageTurn(-1)
-        goTo({ chapter: target, dir: target !== current ? -1 : 0 })
+        goTo({ chapter: target, dir: -1 })
     }
     function recordHistoryEntry(page) {
         const entry = { chapter: page, pageLabel: reader.pdfPageLabel(page) }

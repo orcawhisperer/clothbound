@@ -97,6 +97,26 @@ const clothbound = (() => {
             state.bridge.notifyPageTurn(direction >= 0 ? 1 : -1)
     }
 
+    function canScrollToPage(page) {
+        const g = state.geometry
+        const el = scroller()
+        if (!g || !el)
+            return false
+        const horizontal = !g.scroll || g.vertical
+        const target = horizontal && state.rtl ? -(page * g.step) : page * g.step
+        const now = horizontal ? el.scrollLeft : el.scrollTop
+        const span = horizontal ? (el.scrollWidth || 0) : (el.scrollHeight || 0)
+        const view = horizontal ? (el.clientWidth || 0) : (el.clientHeight || 0)
+        if (span > 0 && view > 0) {
+            const maxAbs = Math.max(0, span - view)
+            const clamped = horizontal && state.rtl
+                ? -Math.min(Math.abs(target), maxAbs)
+                : Math.min(target, maxAbs)
+            return Math.abs(clamped - now) >= 1
+        }
+        return Math.abs(target - now) >= 1
+    }
+
     function setTurningMask(on) {
         const vp = viewport()
         if (!vp || !vp.classList)
@@ -2676,7 +2696,7 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
             return run(async () => {
                 if (!state.index)
                     return
-                if (state.page < state.pages - 1) {
+                if (state.page < state.pages - 1 && canScrollToPage(state.page + 1)) {
                     emitPageTurn(1)
                     const settled = await turnTo(state.page + 1, true)
                     if (settled) {
@@ -2700,7 +2720,7 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
             return run(async () => {
                 if (!state.index)
                     return
-                if (state.page > 0) {
+                if (state.page > 0 && canScrollToPage(state.page - 1)) {
                     emitPageTurn(-1)
                     const settled = await turnTo(state.page - 1, true)
                     if (settled) {

@@ -3528,9 +3528,12 @@ void ClothboundTests::uxPolishSleepIconSmoothDockTopEdgeAndLibraryMiniPlayer() {
         QVERIFY(pdfQml.contains(QStringLiteral("property int committedPixelWidth: 64")));
         QVERIFY(pdfQml.contains(QStringLiteral("restoreMode: Binding.RestoreNone")));
         QVERIFY(pdfQml.contains(QStringLiteral("if (surface.liveResizing)")));
-        // Plain clicks near left/right edges never turn pages accidentally.
+        // Plain clicks near left/right edges never turn pages accidentally, and
+        // spread-mode next/prev normalize through firstOfSpread so boundary presses stay silent.
         QVERIFY(!pdfQml.contains(QStringLiteral("across <= 0.3")));
         QVERIFY(!pdfQml.contains(QStringLiteral("across < 0.7")));
+        QVERIFY(pdfQml.contains(QStringLiteral("const target = firstOfSpread(Math.min(count - 1, from + advance))")));
+        QVERIFY(pdfQml.contains(QStringLiteral("const target = firstOfSpread(Math.max(0, from - step))")));
 
         const QString chromeQml = readSrc(QStringLiteral("ui/reader/ReaderChrome.qml"));
         QVERIFY(chromeQml.contains(QStringLiteral("signal prevPageRequested()")));
@@ -3546,6 +3549,7 @@ void ClothboundTests::uxPolishSleepIconSmoothDockTopEdgeAndLibraryMiniPlayer() {
         // Top-edge hover reveal works in all modes (including while listening or zoomed PDF).
         QVERIFY(erQml.contains(QStringLiteral("const nearTopEdge = py <= 56")));
         QVERIFY(erQml.contains(QStringLiteral("onHoveredChanged:")));
+        QVERIFY(erQml.contains(QStringLiteral("if ((direction > 0 && reader.atEnd) || (direction < 0 && reader.atStart))")));
     }
 
     // 3. Continuous background audio mini-player in the Library.

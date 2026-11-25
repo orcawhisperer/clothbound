@@ -909,6 +909,9 @@ domReady();
     assert.strictEqual(backFrame.classList.contains('shown'), false, 'pre-warmed standby stays hidden');
 
     // Cross chapter 0 -> chapter 1: reuses warm #book-back with ZERO extra src load.
+    // First verify pressing prev() at the very start of the book emits ZERO page-turn sounds.
+    await clothbound.prev();
+    assert.deepStrictEqual(turnDirs, [], 'prev() at start of book must not emit page-turn sound');
     const loadsBeforeSwap = srcLoads.length;
     await clothbound.next();
     assert.strictEqual(srcLoads.length, loadsBeforeSwap, 'warm chapter swap must not re-navigate src');
@@ -952,6 +955,20 @@ domReady();
     const loadsBeforeCh2 = srcLoads.length;
     await clothbound.next();
     assert.strictEqual(srcLoads.length, loadsBeforeCh2, 'ch2 should also reuse warm standby');
+    assert.strictEqual(lastLoc.chapter, 2);
+    assert.strictEqual(lastLoc.page, 0);
+
+    // Advance to the final page of ch2 (page 1 of 2), then verify pressing next()
+    // past the end of the book emits ZERO page-turn sounds, before returning to page 0.
+    await clothbound.next();
+    assert.strictEqual(lastLoc.chapter, 2);
+    assert.strictEqual(lastLoc.page, 1);
+    const turnsAtEnd = turnDirs.length;
+    await clothbound.next();
+    assert.strictEqual(turnDirs.length, turnsAtEnd, 'next() at end of book must not emit page-turn sound');
+    assert.strictEqual(lastLoc.chapter, 2);
+    assert.strictEqual(lastLoc.page, 1);
+    await clothbound.prev();
     assert.strictEqual(lastLoc.chapter, 2);
     assert.strictEqual(lastLoc.page, 0);
 

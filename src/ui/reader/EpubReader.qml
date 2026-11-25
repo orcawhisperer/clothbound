@@ -937,6 +937,8 @@ FocusScope {
         chromeTimer.restart()
     }
     function triggerPageTurnSound(direction) {
+        if ((direction > 0 && reader.atEnd) || (direction < 0 && reader.atStart))
+            return
         if (view.settings && view.settings.pageTurnSound && !narration.playing
             && typeof reader.playPageTurn === "function")
             reader.playPageTurn(direction)
