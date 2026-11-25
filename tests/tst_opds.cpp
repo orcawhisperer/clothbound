@@ -832,6 +832,7 @@ void OpdsTests::catalogsSheetQmlSmokeTest() {
         const QString repoSrc = QFileInfo(QFileInfo(QString::fromUtf8(__FILE__)).absoluteDir()
                                               .filePath(QStringLiteral("../src"))).canonicalFilePath();
         engine.addImportPath(repoSrc + QStringLiteral("/ui/style"));
+        engine.addImageProvider(QStringLiteral("opdscover"), new OpdsCoverProvider(&opds));
         engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
         engine.rootContext()->setContextProperty(QStringLiteral("translator"), &translator);
         engine.rootContext()->setContextProperty(QStringLiteral("library"), &lib);

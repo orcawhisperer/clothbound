@@ -1416,7 +1416,7 @@ FocusScope {
                                             id: navCoverImg
                                             anchors.fill: parent
                                             visible: navRow.isBookNav
-                                            source: navRow.isBookNav ? (entryWrap.modelData.thumbnailUrl || entryWrap.modelData.coverUrl || "") : ""
+                                            source: navRow.isBookNav ? opds.coverImageUrl(entryWrap.modelData.thumbnailUrl || entryWrap.modelData.coverUrl || "", opds.activeCatalogId) : ""
                                             asynchronous: true
                                             cache: true
                                             fillMode: Image.PreserveAspectCrop
@@ -1530,7 +1530,7 @@ FocusScope {
                                         Image {
                                             id: coverImg
                                             anchors.fill: parent
-                                            source: entryWrap.modelData.thumbnailUrl || entryWrap.modelData.coverUrl || ""
+                                            source: opds.coverImageUrl(entryWrap.modelData.thumbnailUrl || entryWrap.modelData.coverUrl || "", opds.activeCatalogId)
                                             asynchronous: true
                                             cache: true
                                             fillMode: Image.PreserveAspectCrop

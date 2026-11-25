@@ -14016,6 +14016,31 @@ private slots:
             QCOMPARE(s1, qint16(-300));
         }
     }
+
+    // === wave-2 integration tests ===
+    void opdsCoverProviderWiring() {
+        const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+        QVERIFY(!srcRoot.isEmpty());
+
+        QFile mainFile(srcRoot + QStringLiteral("/app/main.cpp"));
+        QVERIFY(mainFile.open(QIODevice::ReadOnly));
+        const QString mainCpp = QString::fromUtf8(mainFile.readAll());
+        const qsizetype opdsPos = mainCpp.indexOf(QStringLiteral("OpdsClient opds("));
+        const qsizetype enginePos = mainCpp.indexOf(QStringLiteral("QQmlApplicationEngine engine;"));
+        const qsizetype providerPos = mainCpp.indexOf(
+            QStringLiteral("engine.addImageProvider(QStringLiteral(\"opdscover\"), new OpdsCoverProvider(&opds));"));
+        QVERIFY(opdsPos > 0);
+        QVERIFY(enginePos > opdsPos);
+        QVERIFY(providerPos > enginePos);
+
+        QFile catalogsFile(srcRoot + QStringLiteral("/ui/library/CatalogsSheet.qml"));
+        QVERIFY(catalogsFile.open(QIODevice::ReadOnly));
+        const QString catalogsQml = QString::fromUtf8(catalogsFile.readAll());
+        QVERIFY(catalogsQml.count(QStringLiteral("opds.coverImageUrl(")) >= 2);
+        QVERIFY(!catalogsQml.contains(QStringLiteral("source: entryWrap.modelData.thumbnailUrl")));
+        QVERIFY(!catalogsQml.contains(QStringLiteral("source: navRow.isBookNav ? (entryWrap.modelData.thumbnailUrl")));
+    }
+    // === end wave-2 integration tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

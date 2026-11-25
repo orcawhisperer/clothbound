@@ -543,6 +543,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("hasCoverProvider", true);
     engine.addImageProvider(QStringLiteral("cover"), new CoverProvider);
     engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
+    engine.addImageProvider(QStringLiteral("opdscover"), new OpdsCoverProvider(&opds));
     engine.load(QUrl("qrc:/ui/Main.qml"));
     prof.mark("qml_engine_load");
     if (engine.rootObjects().isEmpty())
