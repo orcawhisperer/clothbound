@@ -15,7 +15,7 @@ optdepends=('ffmpeg: keep listened narration small (Opus), and save downloads as
 makedepends=('cmake' 'gcc' 'make' 'pkgconf')
 options=('!debug' '!lto')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/orcawhisperer/clothbound/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('2069f0bbc326a01e892802dc3c391d673671f88e6a3928a63b14092a6c55b80d')
+sha256sums=('0b5bb5bc11683ce377c4f98ce9f0b2a778777817bc15d837f7e7e28d692a5ef7')
 
 build() {
   local generator="Unix Makefiles"
