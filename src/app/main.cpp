@@ -33,6 +33,7 @@
 #include "app/instance.h"
 #include "app/portalfilepicker.h"
 #include "reader/reader.h"
+#include "reader/readerimageprovider.h"
 #include "app/surfacewatcher.h"
 #include "app/theme.h"
 #include "app/translator.h"
@@ -543,6 +544,7 @@ int main(int argc, char *argv[]) {
     engine.rootContext()->setContextProperty("hasCoverProvider", true);
     engine.addImageProvider(QStringLiteral("cover"), new CoverProvider);
     engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
+    engine.addImageProvider(QStringLiteral("bookimg"), new ReaderImageProvider);
     engine.addImageProvider(QStringLiteral("opdscover"), new OpdsCoverProvider(&opds));
     engine.load(QUrl("qrc:/ui/Main.qml"));
     prof.mark("qml_engine_load");

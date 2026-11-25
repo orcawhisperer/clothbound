@@ -22,6 +22,7 @@ HEADERS += \
     ../src/audio/sherpaonnx.h \
     ../src/audio/speech.h \
     ../src/audio/voicepacks.h \
+    ../src/formats/audiopcm.h \
     ../src/formats/bookinfo.h \
     ../src/formats/bookname.h \
     ../src/formats/bookrecord.h \
@@ -33,7 +34,9 @@ HEADERS += \
     ../src/library/library.h \
     ../src/library/libraryindex.h \
     ../src/library/librarymodel.h \
+    ../src/library/libraryschema.h \
     ../src/library/marks.h \
+    ../src/library/readingtelemetry.h \
     ../src/library/scanner.h
 
 SOURCES += \
@@ -47,6 +50,7 @@ SOURCES += \
     ../src/ai/sseparser.cpp \
     ../src/audio/speech.cpp \
     ../src/audio/voicepacks.cpp \
+    ../src/formats/audiopcm.cpp \
     ../src/formats/bookinfo.cpp \
     ../src/formats/bookname.cpp \
     ../src/formats/epubbook.cpp \
@@ -57,5 +61,7 @@ SOURCES += \
     ../src/library/library.cpp \
     ../src/library/libraryindex.cpp \
     ../src/library/librarymodel.cpp \
+    ../src/library/libraryschema.cpp \
     ../src/library/marks.cpp \
+    ../src/library/readingtelemetry.cpp \
     ../src/library/scanner.cpp

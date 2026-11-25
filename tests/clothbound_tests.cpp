@@ -15955,7 +15955,7 @@ QtObject {
     signal bookChanged()
 }
 )QML"),
-                       QUrl(QStringLiteral("inline:/DecoupledBookSource.qml")));
+                       QUrl::fromLocalFile(dir.filePath(QStringLiteral("DecoupledBookSource.qml"))));
     QVERIFY2(sourceComp.status() == QQmlComponent::Ready, qPrintable(sourceComp.errorString()));
     std::unique_ptr<QObject> source(sourceComp.create());
     QVERIFY(source != nullptr);
