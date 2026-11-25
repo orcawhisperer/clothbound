@@ -9,10 +9,15 @@
 #include <QObject>
 #include <QSet>
 #include <QSqlDatabase>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <vector>
 
 class Scanner;
 struct ScannedBook;
@@ -106,6 +111,23 @@ public:
     Q_INVOKABLE QVariantMap readingStats() const;
     Q_INVOKABLE QVariantMap bookReadingStats(int id) const;
 
+    // Off-GUI-thread CommandPalette search: executes normalized fuzzy book
+    // scoring + read-only FTS5 index.sqlite passage search + read-only
+    // annotations mark search on a dedicated background pool with atomic
+    // generation cancellation. Emits paletteSearchReady(requestId, results).
+    Q_INVOKABLE int searchPaletteAsync(const QString &query, int currentBookId = 0, int maxBooks = 12,
+                                       int maxPassages = 8, int maxMarks = 8, int scopeBookId = 0,
+                                       const QString &mode = QStringLiteral("all"),
+                                       const QString &indexPath = {});
+    Q_INVOKABLE void cancelPaletteSearch();
+
+    // Canonical zero-copy BookRecord store accessors (shared with WorksModel).
+    const QHash<int, BookRecord> &bookRecords() const { return m_books; }
+    const BookRecord *bookRecord(int id) const {
+        const auto it = m_books.constFind(id);
+        return it != m_books.cend() ? &(*it) : nullptr;
+    }
+
     BookRecord record(int id) const { return m_books.value(id); }
     // Every book shown in the library (not missing, not removed).
     QList<BookRecord> visibleRecords() const {
@@ -150,6 +172,7 @@ signals:
     void readingSpeedChanged();
     void scanFinished(int added, int updated);
     void booksAdded(int firstBookId, int count, const QString &firstTitle, int targetCollectionId);
+    void paletteSearchReady(int requestId, QVariantMap results);
     void problem(const QString &message);
 
 private:
@@ -196,6 +219,37 @@ private:
         }
     };
 
+    struct PaletteBookEntry {
+        int id = 0;
+        QString title;
+        QString sortTitle;
+        QString author;
+        QString series;
+        double seriesIndex = 0.0;
+        QString format;
+        QString cover;
+        QString editionLine;
+        double progress = 0.0;
+        bool finished = false;
+        qint64 openedAt = 0;
+        qint64 addedAt = 0;
+    };
+    struct PaletteNormalizedEntry {
+        QString normTitle;
+        QString normMeta;
+        QString normFull;
+    };
+    struct PaletteSnapshot {
+        QList<PaletteBookEntry> books;
+        QHash<int, int> indexById;
+        mutable std::once_flag normOnce;
+        mutable QList<PaletteNormalizedEntry> normalized;
+    };
+    struct PendingPaletteDelivery {
+        int requestId = 0;
+        QVariantMap payload;
+    };
+
     bool openDatabase(const QString &dbPath, bool readOnly);
     bool rejectIfReadOnly();
     void refreshArticles();
@@ -209,10 +263,15 @@ private:
     void flushPending();
     void markListed(const QStringList &paths, const QStringList &folders);
     void changed(bool statsDirty = true, bool collectionsDirty = true);
+    std::shared_ptr<const PaletteSnapshot> paletteSnapshot();
+    void invalidatePaletteSnapshot();
+    void drainPaletteDeliveries();
 
     QString m_dataDirectory;
     QString m_canonicalDataDirectory;
+    QString m_cacheDirectory;
     QString m_coverDirectory;
+    QString m_dbPath;
     QString m_connection;
     QString m_error;
     bool m_readOnly = false;
@@ -251,4 +310,10 @@ private:
     int m_added = 0;
     int m_updated = 0;
     double m_charsPerMinute = 1300;
+    std::shared_ptr<const PaletteSnapshot> m_paletteSnapshot;
+    QThreadPool m_palettePool;
+    std::atomic<int> m_paletteGeneration{0};
+    std::atomic_bool m_paletteShuttingDown{false};
+    std::mutex m_paletteDeliveryMutex;
+    std::vector<PendingPaletteDelivery> m_paletteDeliveries;
 };

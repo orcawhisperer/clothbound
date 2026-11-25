@@ -17,6 +17,7 @@
 class LibraryIndex : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool available READ available CONSTANT)
+    Q_PROPERTY(QString path READ path CONSTANT)
     Q_PROPERTY(bool indexing READ indexing NOTIFY progressChanged)
     Q_PROPERTY(int done READ done NOTIFY progressChanged)
     Q_PROPERTY(int total READ total NOTIFY progressChanged)
@@ -36,6 +37,7 @@ public:
     ~LibraryIndex() override;
 
     bool available() const { return m_available; }
+    QString path() const { return m_path; }
     bool indexing() const { return m_indexing; }
     int done() const { return m_done; }
     int total() const { return m_total; }

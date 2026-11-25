@@ -52,7 +52,7 @@ public:
         ArticleRole,
     };
 
-    explicit WorksModel(Library *library);
+    explicit WorksModel(Library *library = nullptr, QObject *parent = nullptr);
 
     // Books added within the last 14 days appear in the "Recently added" smart shelf.
     static constexpr qint64 recentWindowSecs = 14LL * 24 * 3600;
@@ -81,13 +81,25 @@ public:
 
     Q_INVOKABLE void clearFilters();
 
+    // Synchronizes lightweight work-group indices and search cache directly
+    // against the owning Library's canonical BookRecord hash with zero record
+    // duplication.
+    void syncFromLibrary();
+    // Standalone / compatibility entrypoints: when passed the owning Library's
+    // own map, delegates to syncFromLibrary() with zero copy; otherwise copies
+    // into standalone storage for Library-less unit tests.
     void setBooks(const QHash<int, BookRecord> &books);
+    void setBooks(const QList<BookRecord> &books);
     void setCollections(const QHash<int, QSet<int>> &collectionBooks, bool rebuildNow = true);
     void setAudioSets(const QSet<int> &downloaded, const QSet<int> &audiobooks);
     void setArticleSet(const QSet<int> &articles);
     // Fast in-place update for progress/position changes without rebuilding the
-    // whole grid unless sort order or visibility is affected.
-    void updateBook(const BookRecord &book);
+    // whole grid unless sort order or visibility is affected. When backed by a
+    // Library store, pass `previous` (the pre-mutation record) so shape/sort
+    // diffs remain exact without keeping a duplicate BookRecord store.
+    void updateBook(const BookRecord &book, const BookRecord *previous = nullptr);
+    bool usesLibraryStore() const { return m_usesLibraryStore; }
+    qsizetype ownedBookCount() const { return m_standaloneBooks.size(); }
     Q_INVOKABLE QVariantMap get(int row) const;
     Q_INVOKABLE int rowOfBook(int bookId) const;
 
@@ -115,14 +127,18 @@ private:
         qint64 addedAt = 0;
     };
 
+    const QHash<int, BookRecord> &booksMap() const;
+    const BookRecord *findBook(int id) const;
+    void rebuildSearchCache();
     void rebuild();
     void rebuildSeriesList();
     bool passesFilters(const BookRecord &book) const;
     bool matches(int id, const QStringList &tokens) const;
     static QString searchableFor(const BookRecord &book);
 
-    Library *m_library;
-    QHash<int, BookRecord> m_books;
+    Library *m_library = nullptr;
+    bool m_usesLibraryStore = false;
+    QHash<int, BookRecord> m_standaloneBooks;
     QHash<int, QSet<int>> m_collectionBooks;
     QSet<int> m_downloaded;
     QSet<int> m_audiobooks;

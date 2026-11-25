@@ -1,5 +1,7 @@
 #include "library/library.h"
 
+#include "formats/tsanhandoff.h"
+#include "library/libraryindex.h"
 #include "library/librarymodel.h"
 #include "library/libraryschema.h"
 #include "library/readingtelemetry.h"
@@ -17,8 +19,12 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMetaObject>
 #include <QMutex>
 #include <QMutexLocker>
+#include <QRegularExpression>
+#include <QSqlError>
+#include <QSqlQuery>
 #include <QStandardPaths>
 #include <QThread>
 #include <QUuid>
@@ -46,6 +52,132 @@ QList<Library *> &liveLibraries() {
     static QList<Library *> instances;
     return instances;
 }
+
+// Matches CommandPalette.qml's norm(): NFD decomposition, strip combining
+// diacritic marks, lowercase. Pure & thread-safe.
+QString normalizePaletteText(const QString &text) {
+    if (text.isEmpty())
+        return {};
+    const QString decomposed = text.normalized(QString::NormalizationForm_D);
+    QString out;
+    out.reserve(decomposed.size());
+    for (const QChar c : decomposed) {
+        if (c.category() != QChar::Mark_NonSpacing)
+            out.append(c);
+    }
+    return out.toLower();
+}
+
+// Matches CommandPalette.qml's fuzzyScoreNormalized() scoring contract.
+double fuzzyScorePalette(const QString &q, const QStringList &tokens, const QString &p, const QString &s,
+                         const QString &full) {
+    if (q.isEmpty())
+        return 1.0;
+
+    const qsizetype pIdx = p.indexOf(q);
+    if (pIdx == 0)
+        return 1000.0 - double(p.size()) * 0.2;
+    if (pIdx > 0) {
+        const QChar prev = p.at(pIdx - 1);
+        const bool boundary = prev == QLatin1Char(' ') || prev == QLatin1Char(':') || prev == QLatin1Char('-');
+        return (boundary ? 860.0 : 720.0) - double(pIdx);
+    }
+    const qsizetype sIdx = s.indexOf(q);
+    if (sIdx >= 0)
+        return (sIdx == 0 ? 640.0 : 540.0) - double(sIdx) * 0.5;
+
+    if (tokens.size() > 1) {
+        double tokenScore = 0.0;
+        bool allHit = true;
+        for (const QString &tok : tokens) {
+            const qsizetype tp = p.indexOf(tok);
+            const qsizetype ts = s.indexOf(tok);
+            if (tp >= 0)
+                tokenScore += (tp == 0 ? 180.0 : 120.0);
+            else if (ts >= 0)
+                tokenScore += 70.0;
+            else {
+                allHit = false;
+                break;
+            }
+        }
+        if (allHit)
+            return 320.0 + tokenScore;
+    }
+
+    qsizetype qi = 0;
+    double score = 0.0;
+    int consecutive = 0;
+    for (qsizetype i = 0; i < full.size() && qi < q.size(); ++i) {
+        if (full.at(i) == q.at(qi)) {
+            const bool isStart = i == 0 || full.at(i - 1) == QLatin1Char(' ') || full.at(i - 1) == QLatin1Char(':');
+            consecutive += 1;
+            score += (i < p.size() ? 16.0 : 8.0) + double(consecutive) * 6.0 + (isStart ? 24.0 : 0.0);
+            qi += 1;
+        } else {
+            consecutive = 0;
+        }
+    }
+    return qi == q.size() ? score : -1.0;
+}
+
+// Per-worker-call strictly read-only SQLite connection closed & removed via RAII.
+struct ReadOnlySqlConnection {
+    QString name;
+    QSqlDatabase db;
+    bool open = false;
+
+    explicit ReadOnlySqlConnection(const QString &dbPath)
+        : name(QStringLiteral("palette-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces)) {
+        if (dbPath.isEmpty() || !QFileInfo::exists(dbPath))
+            return;
+        db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+        db.setDatabaseName(dbPath);
+        db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
+        bool ready = db.open() && configureReadOnly(db);
+        bool readable = false;
+        if (ready) {
+            QSqlQuery probe(db);
+            readable = probe.exec(QStringLiteral("PRAGMA user_version")) && probe.next();
+        }
+        const QFileInfo walInfo(dbPath + QStringLiteral("-wal"));
+        if ((!ready || !readable) && (!walInfo.exists() || walInfo.size() == 0)) {
+            close();
+            const QString absPath = QFileInfo(dbPath).absoluteFilePath();
+            const QString uri = QStringLiteral("file:") + QString::fromUtf8(QUrl::toPercentEncoding(absPath, "/:")) +
+                                QStringLiteral("?mode=ro&immutable=1");
+            db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+            db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_URI;QSQLITE_OPEN_READONLY"));
+            db.setDatabaseName(uri);
+            ready = db.open() && configureReadOnly(db);
+            readable = ready;
+        }
+        open = ready && readable;
+        if (!open)
+            close();
+    }
+
+    ~ReadOnlySqlConnection() { close(); }
+    ReadOnlySqlConnection(const ReadOnlySqlConnection &) = delete;
+    ReadOnlySqlConnection &operator=(const ReadOnlySqlConnection &) = delete;
+
+private:
+    static bool configureReadOnly(QSqlDatabase &database) {
+        QSqlQuery pragma(database);
+        pragma.exec(QStringLiteral("PRAGMA busy_timeout=1500"));
+        pragma.exec(QStringLiteral("PRAGMA query_only=ON"));
+        pragma.exec(QStringLiteral("PRAGMA temp_store=MEMORY"));
+        return true;
+    }
+
+    void close() {
+        if (db.isOpen())
+            db.close();
+        db = QSqlDatabase();
+        if (QSqlDatabase::contains(name))
+            QSqlDatabase::removeDatabase(name);
+    }
+};
 }  // namespace
 
 QString BookRecord::editionLine() const {
@@ -63,10 +195,11 @@ Library::Library(const QString &dataDirectory, const QString &cacheDirectory, QO
     : QObject(parent),
       m_dataDirectory(dataDirectory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
                                               : dataDirectory),
-      m_coverDirectory((cacheDirectory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
-                                                 : cacheDirectory) +
-                       QStringLiteral("/covers")),
+      m_cacheDirectory(cacheDirectory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+                                                : cacheDirectory),
+      m_coverDirectory(m_cacheDirectory + QStringLiteral("/covers")),
       m_connection(QStringLiteral("library-") + QUuid::createUuid().toString(QUuid::WithoutBraces)) {
+    m_palettePool.setMaxThreadCount(qBound(1, QThread::idealThreadCount() / 2, 2));
     {
         QMutexLocker lock(&liveLibrariesMutex());
         liveLibraries().append(this);
@@ -111,6 +244,10 @@ Library::Library(const QString &dataDirectory, const QString &cacheDirectory, QO
 }
 
 Library::~Library() {
+    m_paletteShuttingDown.store(true, std::memory_order_release);
+    m_paletteGeneration.fetch_add(1, std::memory_order_acq_rel);
+    m_palettePool.clear();
+    m_palettePool.waitForDone();
     {
         QMutexLocker lock(&liveLibrariesMutex());
         liveLibraries().removeOne(this);
@@ -148,6 +285,7 @@ bool Library::openDatabase(const QString &dbPath, bool readOnly) {
     m_canonicalDataDirectory = canonical(readOnly ? QFileInfo(dbPath).absolutePath() : m_dataDirectory);
     if (!LibrarySchema::openConnection(m_connection, dbPath, readOnly, &m_error))
         return false;
+    m_dbPath = dbPath;
 
     QSqlDatabase db = database();
     LibrarySnapshot snap;
@@ -166,13 +304,14 @@ bool Library::openDatabase(const QString &dbPath, bool readOnly) {
     m_sourceUrls = std::move(snap.sourceUrls);
     m_voiceNames = std::move(snap.voiceNames);
     m_highlightCounts = std::move(snap.highlightCounts);
+    invalidatePaletteSnapshot();
 
     refreshArticles();
     m_charsPerMinute = ReadingTelemetry::loadCharsPerMinute(db, ReadingTelemetry::kDefaultCharsPerMinute);
     m_works->setCollections(m_collectionBooks, false);
     m_works->setAudioSets(m_downloadedBooks, m_audiobookBooks);
     m_works->setArticleSet(m_articles);
-    m_works->setBooks(m_books);
+    m_works->syncFromLibrary();
     return true;
 }
 
@@ -222,7 +361,7 @@ void Library::syncWorksCollections() {
     if (m_worksDirty) {
         m_worksDirty = false;
         m_works->setCollections(m_collectionBooks, false);
-        m_works->setBooks(m_books);
+        m_works->syncFromLibrary();
     } else {
         m_works->setCollections(m_collectionBooks);
     }
@@ -235,7 +374,7 @@ void Library::flushNotificationsNow() {
     if (m_worksDirty) {
         m_worksDirty = false;
         m_works->setCollections(m_collectionBooks, false);
-        m_works->setBooks(m_books);
+        m_works->syncFromLibrary();
     }
     const bool emitBooks = m_booksNotifyDirty;
     const bool emitContinue = m_continueNotifyDirty || emitBooks;
@@ -292,6 +431,7 @@ void Library::refreshArticles() {
 
 void Library::changed(bool statsDirty, bool collectionsDirty) {
     Q_ASSERT(QThread::currentThread() == thread());
+    invalidatePaletteSnapshot();
     m_worksDirty = true;
     m_booksNotifyDirty = true;
     if (statsDirty)
@@ -1216,13 +1356,15 @@ void Library::savePosition(int id, const QString &position, double progress) {
     if (!LibrarySchema::updateBookPosition(db, id, position, progress, &m_error))
         return;
     BookRecord &rec = m_books[id];
+    const BookRecord previous = rec;
     const double prevProgress = rec.progress;
     rec.position = position;
     rec.progress = progress;
+    invalidatePaletteSnapshot();
     // Update only the changed book in WorksModel and emit targeted signals
     // instead of firing booksChanged()/collectionsChanged()/readingStatsChanged()
     // storms on every page turn.
-    m_works->updateBook(rec);
+    m_works->updateBook(rec, &previous);
     emit bookUpdated(id);
     emit bookChanged(id);
     if (rec.visible() && rec.openedAt > 0 && rec.finishedAt == 0 && (prevProgress < 0.995 || progress < 0.995)) {
@@ -1335,6 +1477,390 @@ void Library::setChapterLengths(int id, const QList<int> &lengths) {
     qint64 total = 0;
     if (!LibrarySchema::writeChapterLengths(db, id, lengths, &total, &m_error) || !sp.commit())
         return;
-    if (m_books.contains(id) && total > 0 && m_books[id].length != total)
+    if (m_books.contains(id) && total > 0 && m_books[id].length != total) {
         m_books[id].length = total;
+        invalidatePaletteSnapshot();
+    }
+}
+
+void Library::invalidatePaletteSnapshot() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_paletteSnapshot.reset();
+}
+
+std::shared_ptr<const Library::PaletteSnapshot> Library::paletteSnapshot() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (m_paletteSnapshot)
+        return m_paletteSnapshot;
+
+    auto snap = std::make_shared<PaletteSnapshot>();
+    snap->books.reserve(m_books.size());
+    for (const BookRecord &r : std::as_const(m_books)) {
+        if (!r.visible())
+            continue;
+        PaletteBookEntry entry;
+        entry.id = r.id;
+        entry.title = r.title;
+        entry.sortTitle = r.sortTitle;
+        entry.author = r.author;
+        entry.series = r.series;
+        entry.seriesIndex = r.seriesIndex;
+        entry.format = r.format;
+        entry.cover = coverUrl(r.id);
+        entry.editionLine = r.editionLine();
+        entry.progress = r.progress;
+        entry.finished = r.finishedAt > 0;
+        entry.openedAt = r.openedAt;
+        entry.addedAt = r.addedAt;
+        snap->books.append(std::move(entry));
+    }
+    std::sort(snap->books.begin(), snap->books.end(),
+              [](const PaletteBookEntry &a, const PaletteBookEntry &b) {
+                  if (a.openedAt != b.openedAt)
+                      return a.openedAt > b.openedAt;
+                  if (a.addedAt != b.addedAt)
+                      return a.addedAt > b.addedAt;
+                  return a.sortTitle.localeAwareCompare(b.sortTitle) < 0;
+              });
+    snap->indexById.reserve(snap->books.size());
+    for (int i = 0; i < snap->books.size(); ++i)
+        snap->indexById.insert(snap->books[i].id, i);
+
+    m_paletteSnapshot = snap;
+    return snap;
+}
+
+void Library::cancelPaletteSearch() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_paletteGeneration.fetch_add(1, std::memory_order_acq_rel);
+}
+
+int Library::searchPaletteAsync(const QString &query, int currentBookId, int maxBooks, int maxPassages, int maxMarks,
+                                int scopeBookId, const QString &mode, const QString &indexPath) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    const int requestId = m_paletteGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+    const QString trimmedQuery = query.trimmed();
+    const QString effectiveMode = mode.isEmpty() ? QStringLiteral("all") : mode;
+    const QString dbPath = m_dbPath;
+    const QString resolvedIndexPath =
+        indexPath.isEmpty() ? (m_cacheDirectory + QStringLiteral("/index.sqlite")) : indexPath;
+    const auto snap = paletteSnapshot();
+
+    Clothbound::startPoolTask(
+        &m_palettePool,
+        [this, requestId, snap, trimmedQuery, currentBookId, maxBooks, maxPassages, maxMarks, scopeBookId,
+         effectiveMode, dbPath, resolvedIndexPath]() mutable {
+            auto stale = [&] {
+                return m_paletteShuttingDown.load(std::memory_order_acquire) ||
+                       m_paletteGeneration.load(std::memory_order_acquire) != requestId;
+            };
+            if (stale())
+                return;
+
+            // 1. Normalized fuzzy book scoring completely off the GUI thread.
+            QVariantList bookResults;
+            if (effectiveMode == QLatin1String("all") && scopeBookId <= 0 && maxBooks > 0 && snap &&
+                !snap->books.isEmpty()) {
+                const QString normQ = normalizePaletteText(trimmedQuery).trimmed();
+                auto toBookVariant = [](const PaletteBookEntry &b, double score) {
+                    return QVariantMap{
+                        {QStringLiteral("id"), b.id},
+                        {QStringLiteral("title"), b.title},
+                        {QStringLiteral("author"), b.author},
+                        {QStringLiteral("series"), b.series},
+                        {QStringLiteral("seriesIndex"), b.seriesIndex},
+                        {QStringLiteral("format"), b.format},
+                        {QStringLiteral("cover"), b.cover},
+                        {QStringLiteral("editionLine"), b.editionLine},
+                        {QStringLiteral("progress"), b.progress},
+                        {QStringLiteral("finished"), b.finished},
+                        {QStringLiteral("score"), score},
+                    };
+                };
+
+                if (normQ.isEmpty()) {
+                    const int take = qMin(maxBooks, int(snap->books.size()));
+                    bookResults.reserve(take);
+                    for (int i = 0; i < take; ++i)
+                        bookResults.append(toBookVariant(snap->books[i], 1.0));
+                } else {
+                    // Normalize each snapshot's book fields at most once across worker threads.
+                    std::call_once(snap->normOnce, [&snap] {
+                        snap->normalized.reserve(snap->books.size());
+                        for (const PaletteBookEntry &b : snap->books) {
+                            QStringList metaParts;
+                            if (!b.author.isEmpty())
+                                metaParts.append(b.author);
+                            if (!b.series.isEmpty())
+                                metaParts.append(b.series);
+                            if (!b.format.isEmpty())
+                                metaParts.append(b.format);
+                            if (!b.editionLine.isEmpty())
+                                metaParts.append(b.editionLine);
+                            PaletteNormalizedEntry norm;
+                            norm.normTitle = normalizePaletteText(b.title);
+                            norm.normMeta = normalizePaletteText(metaParts.join(QLatin1Char(' ')));
+                            norm.normFull = norm.normMeta.isEmpty()
+                                                ? norm.normTitle
+                                                : (norm.normTitle + QLatin1Char(' ') + norm.normMeta);
+                            snap->normalized.append(std::move(norm));
+                        }
+                    });
+                    if (stale())
+                        return;
+
+                    static const QRegularExpression wsRe(QStringLiteral("\\s+"));
+                    const QStringList qTokens = normQ.split(wsRe, Qt::SkipEmptyParts);
+                    struct ScoredBook {
+                        double score = 0.0;
+                        int order = 0;
+                    };
+                    QList<ScoredBook> matched;
+                    for (int i = 0; i < snap->books.size(); ++i) {
+                        if ((i & 255) == 0 && stale())
+                            return;
+                        const PaletteNormalizedEntry &norm = snap->normalized[i];
+                        const double sc = fuzzyScorePalette(normQ, qTokens, norm.normTitle, norm.normMeta, norm.normFull);
+                        if (sc >= 0.0)
+                            matched.append({sc, i});
+                    }
+                    const int take = qMin(maxBooks, int(matched.size()));
+                    if (take > 0) {
+                        std::partial_sort(matched.begin(), matched.begin() + take, matched.end(),
+                                          [](const ScoredBook &a, const ScoredBook &b) {
+                                              return a.score != b.score ? a.score > b.score : a.order < b.order;
+                                          });
+                        bookResults.reserve(take);
+                        for (int i = 0; i < take; ++i)
+                            bookResults.append(toBookVariant(snap->books[matched[i].order], matched[i].score));
+                    }
+                }
+            }
+
+            if (stale())
+                return;
+
+            // 2. Read-only FTS5 index.sqlite passage search off the GUI thread.
+            QVariantList passageResults;
+            if (effectiveMode == QLatin1String("all") && trimmedQuery.size() >= 3 && maxPassages > 0 &&
+                !resolvedIndexPath.isEmpty()) {
+                const QString matchExpr = LibraryIndex::matchExpression(trimmedQuery);
+                if (!matchExpr.isEmpty()) {
+                    ReadOnlySqlConnection idxConn(resolvedIndexPath);
+                    if (idxConn.open && !stale()) {
+                        QSqlQuery q(idxConn.db);
+                        const int sqlLimit = qMin(64, qMax(maxPassages * 2, maxPassages));
+                        if (scopeBookId > 0) {
+                            q.prepare(QStringLiteral(
+                                "SELECT book, chapter, snippet(chapter_text, 0, '‹', '›', '…', 14), body "
+                                "FROM chapter_text WHERE chapter_text MATCH ? AND book = ? ORDER BY rank LIMIT ?"));
+                            q.addBindValue(matchExpr);
+                            q.addBindValue(scopeBookId);
+                            q.addBindValue(sqlLimit);
+                        } else {
+                            q.prepare(QStringLiteral(
+                                "SELECT book, chapter, snippet(chapter_text, 0, '‹', '›', '…', 14), body "
+                                "FROM chapter_text WHERE chapter_text MATCH ? ORDER BY rank LIMIT ?"));
+                            q.addBindValue(matchExpr);
+                            q.addBindValue(sqlLimit);
+                        }
+                        if (q.exec()) {
+                            static const QRegularExpression firstWord(QStringLiteral("[\\p{L}\\p{N}]+"));
+                            const QString first = firstWord.match(trimmedQuery).captured(0);
+                            while (q.next() && passageResults.size() < maxPassages) {
+                                if (stale())
+                                    return;
+                                const int hitBookId = q.value(0).toInt();
+                                const auto idxIt = snap ? snap->indexById.constFind(hitBookId) : QHash<int, int>::const_iterator{};
+                                if (!snap || idxIt == snap->indexById.cend())
+                                    continue;
+                                const PaletteBookEntry &book = snap->books[*idxIt];
+                                const int chapter = q.value(1).toInt();
+                                const QString rawSnippet = q.value(2).toString();
+                                const QString body = q.value(3).toString();
+                                qint64 offset = first.isEmpty() ? 0 : body.indexOf(first, 0, Qt::CaseInsensitive);
+                                if (offset < 0) {
+                                    const qsizetype a = rawSnippet.indexOf(QStringLiteral("‹"));
+                                    const qsizetype b = rawSnippet.indexOf(QStringLiteral("›"));
+                                    offset = a >= 0 && b > a
+                                                 ? qMax<qint64>(0, body.indexOf(rawSnippet.mid(a + 1, b - a - 1), 0,
+                                                                                Qt::CaseInsensitive))
+                                                 : 0;
+                                }
+                                passageResults.append(QVariantMap{
+                                    {QStringLiteral("bookId"), hitBookId},
+                                    {QStringLiteral("chapter"), chapter},
+                                    {QStringLiteral("offset"), double(offset)},
+                                    {QStringLiteral("snippet"), rawSnippet.simplified()},
+                                    {QStringLiteral("bookTitle"), book.title},
+                                    {QStringLiteral("author"), book.author},
+                                    {QStringLiteral("cover"), book.cover},
+                                    {QStringLiteral("format"), book.format},
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (stale())
+                return;
+
+            // 3. Read-only annotations mark search off the GUI thread.
+            QVariantList markResults;
+            if ((effectiveMode == QLatin1String("all") || effectiveMode == QLatin1String("marks")) && maxMarks > 0 &&
+                !dbPath.isEmpty()) {
+                ReadOnlySqlConnection libConn(dbPath);
+                if (libConn.open && !stale()) {
+                    const QStringList tokens =
+                        WorksModel::searchable(trimmedQuery).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+                    struct ScoredMark {
+                        int score = 0;
+                        qint64 updatedAt = 0;
+                        QVariantMap map;
+                    };
+                    QList<ScoredMark> hits;
+                    {
+                        QSqlQuery sql(libConn.db);
+                        if (scopeBookId > 0) {
+                            sql.prepare(QStringLiteral(
+                                "SELECT a.id, a.book_id, a.kind, a.chapter, a.start, a.finish, a.text, a.note, "
+                                "a.color, a.label, a.created_at, a.updated_at, b.title, b.author "
+                                "FROM annotations a "
+                                "JOIN books b ON b.id = a.book_id "
+                                "WHERE b.hidden = 0 AND b.missing = 0 AND a.book_id = ? "
+                                "ORDER BY a.updated_at DESC, a.id DESC"));
+                            sql.addBindValue(scopeBookId);
+                        } else {
+                            sql.prepare(QStringLiteral(
+                                "SELECT a.id, a.book_id, a.kind, a.chapter, a.start, a.finish, a.text, a.note, "
+                                "a.color, a.label, a.created_at, a.updated_at, b.title, b.author "
+                                "FROM annotations a "
+                                "JOIN books b ON b.id = a.book_id "
+                                "WHERE b.hidden = 0 AND b.missing = 0 "
+                                "ORDER BY a.updated_at DESC, a.id DESC"));
+                        }
+                        if (sql.exec()) {
+                            int rowNum = 0;
+                            while (sql.next()) {
+                                if ((++rowNum & 63) == 0 && stale())
+                                    return;
+                                const int id = sql.value(0).toInt();
+                                const int bookId = sql.value(1).toInt();
+                                const QString kind = sql.value(2).toString();
+                                const int chapter = sql.value(3).toInt();
+                                const qint64 start = sql.value(4).toLongLong();
+                                const qint64 end = sql.value(5).toLongLong();
+                                const QString quote = sql.value(6).toString();
+                                const QString note = sql.value(7).toString();
+                                const QString color = sql.value(8).toString();
+                                const QString label = sql.value(9).toString();
+                                const qint64 createdAt = sql.value(10).toLongLong();
+                                const qint64 updatedAt = sql.value(11).toLongLong();
+                                const QString bookTitle = sql.value(12).toString();
+                                const QString bookAuthor = sql.value(13).toString();
+
+                                int score = (bookId == currentBookId && currentBookId > 0) ? 20 : 0;
+                                if (!tokens.isEmpty()) {
+                                    const QString hayNote = note.isEmpty() ? QString() : WorksModel::searchable(note);
+                                    const QString hayText = quote.isEmpty() ? QString() : WorksModel::searchable(quote);
+                                    const QString hayMeta = WorksModel::searchable(
+                                        label + QLatin1Char(' ') + bookTitle + QLatin1Char(' ') + bookAuthor);
+                                    bool ok = true;
+                                    for (const QString &tok : tokens) {
+                                        const bool inNote = !hayNote.isEmpty() && hayNote.contains(tok);
+                                        const bool inText = !hayText.isEmpty() && hayText.contains(tok);
+                                        const bool inMeta = !hayMeta.isEmpty() && hayMeta.contains(tok);
+                                        if (!inNote && !inText && !inMeta) {
+                                            ok = false;
+                                            break;
+                                        }
+                                        if (inNote)
+                                            score += 30;
+                                        if (inText)
+                                            score += 20;
+                                        if (inMeta)
+                                            score += 10;
+                                    }
+                                    if (!ok)
+                                        continue;
+                                    if (!trimmedQuery.isEmpty()) {
+                                        if (note.contains(trimmedQuery, Qt::CaseInsensitive))
+                                            score += 40;
+                                        if (quote.contains(trimmedQuery, Qt::CaseInsensitive))
+                                            score += 30;
+                                    }
+                                }
+                                hits.append(
+                                    {score, updatedAt,
+                                     QVariantMap{
+                                         {QStringLiteral("id"), id},
+                                         {QStringLiteral("bookId"), bookId},
+                                         {QStringLiteral("bookTitle"), bookTitle},
+                                         {QStringLiteral("bookAuthor"), bookAuthor},
+                                         {QStringLiteral("kind"), kind},
+                                         {QStringLiteral("chapter"), chapter},
+                                         {QStringLiteral("start"), start},
+                                         {QStringLiteral("end"), end},
+                                         {QStringLiteral("text"), quote},
+                                         {QStringLiteral("note"), note},
+                                         {QStringLiteral("color"), color},
+                                         {QStringLiteral("label"), label},
+                                         {QStringLiteral("created"), QDateTime::fromSecsSinceEpoch(createdAt)},
+                                         {QStringLiteral("updated"), QDateTime::fromSecsSinceEpoch(updatedAt)},
+                                     }});
+                                if (tokens.isEmpty() && hits.size() >= maxMarks)
+                                    break;
+                            }
+                        }
+                    }
+                    if (!tokens.isEmpty()) {
+                        std::sort(hits.begin(), hits.end(), [](const ScoredMark &a, const ScoredMark &b) {
+                            return a.score != b.score ? a.score > b.score : a.updatedAt > b.updatedAt;
+                        });
+                    }
+                    const int take = qMin(maxMarks, int(hits.size()));
+                    markResults.reserve(take);
+                    for (int i = 0; i < take; ++i)
+                        markResults.append(std::move(hits[i].map));
+                }
+            }
+
+            if (stale())
+                return;
+
+            QVariantMap payload{
+                {QStringLiteral("requestId"), requestId},
+                {QStringLiteral("query"), trimmedQuery},
+                {QStringLiteral("mode"), effectiveMode},
+                {QStringLiteral("scopeBookId"), scopeBookId},
+                {QStringLiteral("books"), std::move(bookResults)},
+                {QStringLiteral("passages"), std::move(passageResults)},
+                {QStringLiteral("marks"), std::move(markResults)},
+            };
+            {
+                std::lock_guard<std::mutex> lock(m_paletteDeliveryMutex);
+                m_paletteDeliveries.push_back({requestId, std::move(payload)});
+            }
+            QMetaObject::invokeMethod(this, &Library::drainPaletteDeliveries, Qt::QueuedConnection);
+        });
+
+    return requestId;
+}
+
+void Library::drainPaletteDeliveries() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    std::vector<PendingPaletteDelivery> batch;
+    {
+        std::lock_guard<std::mutex> lock(m_paletteDeliveryMutex);
+        batch.swap(m_paletteDeliveries);
+    }
+    if (m_paletteShuttingDown.load(std::memory_order_acquire))
+        return;
+    const int latest = m_paletteGeneration.load(std::memory_order_acquire);
+    for (PendingPaletteDelivery &item : batch) {
+        if (item.requestId != latest)
+            continue;
+        emit paletteSearchReady(item.requestId, item.payload);
+    }
 }

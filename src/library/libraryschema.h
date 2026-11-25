@@ -58,11 +58,11 @@ struct LibrarySnapshot {
     QHash<int, int> highlightCounts;
 };
 
-// SQLite schema management, migrations (v1..v4), connection pragmas, and
+// SQLite schema management, migrations (v1..v5), connection pragmas, and
 // row-level persistence helpers for library.sqlite.
 namespace LibrarySchema {
 // Raise with every new migration in migrate(), or existing libraries skip it.
-inline constexpr int kLatestVersion = 4;
+inline constexpr int kLatestVersion = 5;
 
 // Configures SQLite connection pragmas. When `readOnly` is true, skips WAL and
 // any write-capable pragmas and enables PRAGMA query_only=ON.
@@ -82,7 +82,7 @@ bool hasColumn(const QSqlDatabase &db, const QString &table, const QString &colu
 // Fails closed if PRAGMA user_version > kLatestVersion or the core `books` table is absent.
 bool validateReadOnly(QSqlDatabase &db, QString *errorOut = nullptr);
 
-// Applies schema creation and incremental migrations v1..v4 inside a savepoint.
+// Applies schema creation and incremental migrations v1..v5 inside a savepoint.
 // Fails closed if PRAGMA user_version > kLatestVersion.
 bool migrate(QSqlDatabase &db, QString *errorOut = nullptr);
 

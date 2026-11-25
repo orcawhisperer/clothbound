@@ -7,8 +7,20 @@
 #include <algorithm>
 #include <tuple>
 
-WorksModel::WorksModel(Library *library) : QAbstractListModel(library), m_library(library) {
-    Q_ASSERT(m_library != nullptr);
+WorksModel::WorksModel(Library *library, QObject *parent)
+    : QAbstractListModel(parent ? parent : library),
+      m_library(library),
+      m_usesLibraryStore(library != nullptr) {}
+
+const QHash<int, BookRecord> &WorksModel::booksMap() const {
+    return (m_usesLibraryStore && m_library) ? m_library->bookRecords() : m_standaloneBooks;
+}
+
+const BookRecord *WorksModel::findBook(int id) const {
+    if (m_usesLibraryStore && m_library)
+        return m_library->bookRecord(id);
+    const auto it = m_standaloneBooks.constFind(id);
+    return it != m_standaloneBooks.cend() ? &(*it) : nullptr;
 }
 
 int WorksModel::rowCount(const QModelIndex &parent) const {
@@ -50,10 +62,10 @@ QVariant WorksModel::data(const QModelIndex &index, int role) const {
     Q_ASSERT(index.row() >= 0 && index.row() < m_works.size());
     const Work &work = m_works[index.row()];
     Q_ASSERT(work.representative > 0);
-    const auto it = m_books.constFind(work.representative);
-    if (it == m_books.cend())
+    const BookRecord *bookPtr = findBook(work.representative);
+    if (!bookPtr)
         return {};
-    const BookRecord &book = *it;
+    const BookRecord &book = *bookPtr;
     switch (role) {
     case KeyRole:
         return work.key;
@@ -68,7 +80,7 @@ QVariant WorksModel::data(const QModelIndex &index, int role) const {
     case EditionsRole:
         return int(work.books.size());
     case CoverRole:
-        return m_library->coverUrl(book.id);
+        return m_library ? m_library->coverUrl(book.id) : book.cover;
     case ProgressRole:
         return book.progress;
     case FinishedRole:
@@ -86,7 +98,7 @@ QVariant WorksModel::data(const QModelIndex &index, int role) const {
     case SeriesIndexRole:
         return book.seriesIndex;
     case MinutesLeftRole:
-        return m_library->minutesLeft(book.id);
+        return m_library ? m_library->minutesLeft(book.id) : 0;
     case SecondsReadRole:
         return double(book.secondsRead);
     case AddedAtRole:
@@ -222,13 +234,46 @@ void WorksModel::clearFilters() {
     rebuild();
 }
 
+void WorksModel::rebuildSearchCache() {
+    const QHash<int, BookRecord> &books = booksMap();
+    m_searchable.clear();
+    m_searchable.reserve(books.size());
+    for (auto it = books.cbegin(); it != books.cend(); ++it)
+        m_searchable.insert(it.key(), searchableFor(*it));
+}
+
+void WorksModel::syncFromLibrary() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    Q_ASSERT(m_library != nullptr);
+    m_usesLibraryStore = true;
+    if (!m_standaloneBooks.isEmpty())
+        m_standaloneBooks.clear();
+    rebuildSearchCache();
+    rebuildSeriesList();
+    rebuild();
+}
+
 void WorksModel::setBooks(const QHash<int, BookRecord> &books) {
     Q_ASSERT(QThread::currentThread() == thread());
-    m_books = books;
-    m_searchable.clear();
-    m_searchable.reserve(m_books.size());
-    for (auto it = m_books.cbegin(); it != m_books.cend(); ++it)
-        m_searchable.insert(it.key(), searchableFor(*it));
+    if (m_library && &books == &m_library->bookRecords()) {
+        syncFromLibrary();
+        return;
+    }
+    m_usesLibraryStore = false;
+    m_standaloneBooks = books;
+    rebuildSearchCache();
+    rebuildSeriesList();
+    rebuild();
+}
+
+void WorksModel::setBooks(const QList<BookRecord> &books) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_usesLibraryStore = false;
+    m_standaloneBooks.clear();
+    m_standaloneBooks.reserve(books.size());
+    for (const BookRecord &book : books)
+        m_standaloneBooks.insert(book.id, book);
+    rebuildSearchCache();
     rebuildSeriesList();
     rebuild();
 }
@@ -263,18 +308,31 @@ void WorksModel::setArticleSet(const QSet<int> &articles) {
         emit dataChanged(index(0), index(int(m_works.size()) - 1), {ArticleRole});
 }
 
-void WorksModel::updateBook(const BookRecord &book) {
+void WorksModel::updateBook(const BookRecord &book, const BookRecord *previous) {
     Q_ASSERT(QThread::currentThread() == thread());
-    const auto oldIt = m_books.constFind(book.id);
-    if (oldIt == m_books.cend()) {
-        m_books.insert(book.id, book);
-        m_searchable.insert(book.id, searchableFor(book));
-        if (book.visible() && !book.series.trimmed().isEmpty())
+    const bool sharedStore = (m_usesLibraryStore && m_library != nullptr);
+    BookRecord old;
+    if (sharedStore) {
+        if (!m_searchable.contains(book.id) || previous == nullptr) {
+            m_searchable.insert(book.id, searchableFor(book));
             rebuildSeriesList();
-        rebuild();
-        return;
+            rebuild();
+            return;
+        }
+        old = *previous;
+    } else {
+        const auto oldIt = m_standaloneBooks.constFind(book.id);
+        if (oldIt == m_standaloneBooks.cend()) {
+            m_standaloneBooks.insert(book.id, book);
+            m_searchable.insert(book.id, searchableFor(book));
+            if (book.visible() && !book.series.trimmed().isEmpty())
+                rebuildSeriesList();
+            rebuild();
+            return;
+        }
+        old = previous ? *previous : *oldIt;
     }
-    const BookRecord old = *oldIt;
+
     const bool oldShown = old.visible() && passesFilters(old);
     const bool newShown = book.visible() && passesFilters(book);
     const bool membershipChanged = (oldShown != newShown);
@@ -319,7 +377,8 @@ void WorksModel::updateBook(const BookRecord &book) {
 
     const bool shapeChanged =
         membershipChanged || old.workKey != book.workKey || repScoreChanged || sortKeyChanged || searchMatchChanged;
-    m_books.insert(book.id, book);
+    if (!sharedStore)
+        m_standaloneBooks.insert(book.id, book);
     if (seriesChanged || old.visible() != book.visible())
         rebuildSeriesList();
     if (!shapeChanged) {
@@ -332,8 +391,9 @@ void WorksModel::updateBook(const BookRecord &book) {
 }
 
 void WorksModel::rebuildSeriesList() {
+    const QHash<int, BookRecord> &books = booksMap();
     QSet<QString> unique;
-    for (const auto &book : std::as_const(m_books))
+    for (const auto &book : books)
         if (book.visible() && !book.series.trimmed().isEmpty())
             unique.insert(book.series.trimmed());
     QStringList list(unique.cbegin(), unique.cend());
@@ -426,10 +486,16 @@ bool WorksModel::matches(int id, const QStringList &tokens) const {
 
 void WorksModel::rebuild() {
     Q_ASSERT(QThread::currentThread() == thread());
+    const QHash<int, BookRecord> &books = booksMap();
+    auto recordOf = [&books](int id) -> const BookRecord & {
+        const auto it = books.constFind(id);
+        Q_ASSERT(it != books.cend());
+        return *it;
+    };
     const QStringList tokens = searchable(m_search).split(' ', Qt::SkipEmptyParts);
     QHash<QString, Work> groups;
     QStringList order;
-    for (const auto &book : std::as_const(m_books)) {
+    for (const auto &book : books) {
         if (!book.visible() || !passesFilters(book))
             continue;
         const QString key = m_grouped && !book.workKey.isEmpty() ? book.workKey
@@ -451,20 +517,21 @@ void WorksModel::rebuild() {
             continue;
         // The edition shown is the one being read; otherwise a readable
         // EPUB with a cover, the newest first.
-        auto score = [this](int id) {
-            const BookRecord &b = m_books[id];
+        auto score = [&recordOf](int id) {
+            const BookRecord &b = recordOf(id);
             return std::make_tuple(b.openedAt, b.problem.isEmpty(), b.format == "epub", !b.cover.isEmpty(), b.year, -id);
         };
         work.representative = *std::max_element(work.books.cbegin(), work.books.cend(),
                                                 [&](int a, int b) { return score(a) < score(b); });
         for (const int id : std::as_const(work.books)) {
-            work.openedAt = qMax(work.openedAt, m_books[id].openedAt);
-            work.addedAt = qMax(work.addedAt, m_books[id].addedAt);
+            const BookRecord &b = recordOf(id);
+            work.openedAt = qMax(work.openedAt, b.openedAt);
+            work.addedAt = qMax(work.addedAt, b.addedAt);
         }
         works.append(work);
     }
 
-    auto title = [this](const Work &w) -> const QString & { return m_books[w.representative].sortTitle; };
+    auto title = [&recordOf](const Work &w) -> const QString & { return recordOf(w.representative).sortTitle; };
     auto byTitle = [&](const Work &a, const Work &b) {
         const int c = title(a).localeAwareCompare(title(b));
         return c != 0 ? c < 0 : a.key < b.key;
@@ -479,13 +546,13 @@ void WorksModel::rebuild() {
         std::sort(works.begin(), works.end(), byTitle);
     } else if (m_sort == "author") {
         std::sort(works.begin(), works.end(), [&](const Work &a, const Work &b) {
-            const int c = m_books[a.representative].sortAuthor.localeAwareCompare(m_books[b.representative].sortAuthor);
+            const int c = recordOf(a.representative).sortAuthor.localeAwareCompare(recordOf(b.representative).sortAuthor);
             return c != 0 ? c < 0 : byTitle(a, b);
         });
     } else if (m_sort == "series") {
         std::sort(works.begin(), works.end(), [&](const Work &a, const Work &b) {
-            const BookRecord &ba = m_books[a.representative];
-            const BookRecord &bb = m_books[b.representative];
+            const BookRecord &ba = recordOf(a.representative);
+            const BookRecord &bb = recordOf(b.representative);
             const QString sa = ba.series.trimmed();
             const QString sb = bb.series.trimmed();
             const bool hasA = !sa.isEmpty();
@@ -514,15 +581,15 @@ void WorksModel::rebuild() {
     } else if (m_sort == "progress") {
         // Books under way first, the furthest along leading; then unread;
         // finished last.
-        auto rank = [this](const Work &w) {
-            const BookRecord &b = m_books[w.representative];
+        auto rank = [&recordOf](const Work &w) {
+            const BookRecord &b = recordOf(w.representative);
             return b.finishedAt > 0 ? 2 : b.progress > 0 ? 0 : 1;
         };
         std::sort(works.begin(), works.end(), [&](const Work &a, const Work &b) {
             const int ra = rank(a), rb = rank(b);
             if (ra != rb)
                 return ra < rb;
-            const double pa = m_books[a.representative].progress, pb = m_books[b.representative].progress;
+            const double pa = recordOf(a.representative).progress, pb = recordOf(b.representative).progress;
             return pa != pb ? pa > pb : byTitle(a, b);
         });
     } else {
@@ -538,11 +605,11 @@ void WorksModel::rebuild() {
     bool sameShape = works.size() == m_works.size();
     for (int i = 0; sameShape && i < works.size(); ++i)
         sameShape = works[i].key == m_works[i].key && works[i].books == m_works[i].books;
-    auto rebuildRowIndex = [this] {
+    auto rebuildRowIndex = [this, &books] {
         m_bookRow.clear();
         for (int row = 0; row < m_works.size(); ++row) {
             Q_ASSERT(!m_works[row].books.isEmpty());
-            Q_ASSERT(m_books.contains(m_works[row].representative));
+            Q_ASSERT(books.contains(m_works[row].representative));
             for (const int id : std::as_const(m_works[row].books))
                 m_bookRow.insert(id, row);
             Q_ASSERT(m_bookRow.value(m_works[row].representative, -1) == row);

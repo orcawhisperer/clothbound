@@ -33,6 +33,14 @@ FocusScope {
     property var cachedBooks: []
     property var cachedMarks: []
     property int selectedIndex: 0
+    property int activeSearchRequestId: 0
+    property var asyncBooks: []
+    property var asyncPassages: []
+    property var asyncMarks: []
+    property string asyncQuery: ""
+    property string asyncMode: "all"
+    property int asyncScopeBookId: 0
+    property bool hasAsyncResults: false
 
     readonly property int scopedBookId: reading ? reader.bookId : library.lastOpenedBook()
     readonly property bool canScopeBook: scopedBookId > 0
@@ -75,12 +83,70 @@ FocusScope {
         return out
     }
 
+    function resetAsyncSearch() {
+        activeSearchRequestId = 0
+        asyncBooks = []
+        asyncPassages = []
+        asyncMarks = []
+        asyncQuery = ""
+        asyncMode = "all"
+        asyncScopeBookId = 0
+        hasAsyncResults = false
+    }
+
+    function parsePaletteQuery() {
+        const raw = input.text.trim()
+        let mode = "all"
+        let q = raw
+        if (raw.startsWith(">")) {
+            mode = "actions"
+            q = raw.slice(1).trim()
+        } else if (raw.startsWith("#")) {
+            mode = "chapters"
+            q = raw.slice(1).trim()
+        } else if (raw.startsWith("@") || raw.startsWith("\"")) {
+            mode = "marks"
+            q = raw.slice(1).trim()
+        }
+        const bookOnly = scope === "book" && scopedBookId > 0
+        return {
+            mode: mode,
+            q: q,
+            bookOnly: bookOnly,
+            scopeBookId: bookOnly ? scopedBookId : 0,
+        }
+    }
+
+    function requestAsyncSearch(parsed) {
+        if (parsed.mode === "actions" || parsed.mode === "chapters") {
+            library.cancelPaletteSearch()
+            activeSearchRequestId = 0
+            return
+        }
+        if (parsed.mode === "all" && parsed.q === "") {
+            if (cachedMarks.length === 0) {
+                activeSearchRequestId = library.searchPaletteAsync("", scopedBookId, 0, 0, 30, 0, "all", "")
+            } else {
+                library.cancelPaletteSearch()
+                activeSearchRequestId = 0
+            }
+            return
+        }
+        const maxBooks = (parsed.mode === "all" && !parsed.bookOnly) ? 6 : 0
+        const maxPassages = (parsed.mode === "all" && parsed.q.length >= 3 && libraryIndex.available) ? 6 : 0
+        const maxMarks = parsed.mode === "marks" ? 30 : 6
+        const idxPath = libraryIndex.available ? libraryIndex.path : ""
+        activeSearchRequestId = library.searchPaletteAsync(
+            parsed.q, scopedBookId, maxBooks, maxPassages, maxMarks, parsed.scopeBookId, parsed.mode, idxPath)
+    }
+
     function show() {
         cachedBooks = buildBookCache()
-        cachedMarks = marks.searchAll("", 30)
+        cachedMarks = []
         scope = "all"
         meaningQuery = ""
         input.text = ""
+        resetAsyncSearch()
         open = true
         rebuild()
         input.forceActiveFocus()
@@ -90,7 +156,9 @@ FocusScope {
         show()
         input.text = text
         input.cursorPosition = text.length
-        rebuild()
+        const parsed = parsePaletteQuery()
+        composeResults(parsed, true)
+        requestAsyncSearch(parsed)
         meaningDebounce.restart()
     }
 
@@ -100,6 +168,8 @@ FocusScope {
         open = false
         searchDebounce.stop()
         meaningDebounce.stop()
+        library.cancelPaletteSearch()
+        resetAsyncSearch()
         cachedBooks = []
         cachedMarks = []
         closed()
@@ -315,22 +385,36 @@ FocusScope {
         }
     }
 
-    function rebuild() {
-        const raw = input.text.trim()
-        let mode = "all"
-        let q = raw
-        if (raw.startsWith(">")) {
-            mode = "actions"
-            q = raw.slice(1).trim()
-        } else if (raw.startsWith("#")) {
-            mode = "chapters"
-            q = raw.slice(1).trim()
-        } else if (raw.startsWith("@") || raw.startsWith("\"")) {
-            mode = "marks"
-            q = raw.slice(1).trim()
-        }
+    function appendBookRow(out, b) {
+        const parts = []
+        if (b.author)
+            parts.push(b.author)
+        if (b.series)
+            parts.push(b.seriesIndex > 0 ? b.series + " #" + b.seriesIndex : b.series)
+        if (b.finished)
+            parts.push(qsTr("Finished"))
+        else if (b.progress > 0.005)
+            parts.push(qsTr("%1%").arg(Math.round(b.progress * 100).toLocaleString(Qt.locale(), "f", 0)))
+        out.push({
+            kind: "book",
+            section: qsTr("Books"),
+            bookId: b.id,
+            title: b.title,
+            subtitle: parts.join(" · "),
+            hint: (b.format || "").toUpperCase(),
+            glyph: Icons.book,
+            cover: b.cover || "",
+            author: b.author || "",
+            bookTitle: b.title || "",
+            quote: false,
+        })
+    }
 
-        const bookOnly = scope === "book" && scopedBookId > 0
+    function composeResults(parsed, syncFallbackBooks) {
+        const mode = parsed.mode
+        const q = parsed.q
+        const bookOnly = parsed.bookOnly
+        const scopeBookId = parsed.scopeBookId
         const normQ = norm(q).trim()
         const qTokens = normQ !== "" ? normQ.split(/\s+/).filter(t => t.length > 0) : []
         const out = []
@@ -409,16 +493,22 @@ FocusScope {
             }
         }
 
-        // Books in library (skipped when scoped to "This book"); scored against
-        // pre-normalized cached fields with zero per-keystroke NFD normalization.
+        // Books in library (skipped when scoped to "This book"): empty queries
+        // render instantly from cachedBooks; active queries use off-GUI-thread
+        // library.searchPaletteAsync() results (with optional instant fallback
+        // for programmatic search(text) before the background worker delivers).
         if (mode === "all" && !bookOnly) {
             const bookCap = 6
-            const matchedBooks = []
             if (normQ === "") {
                 const limit = Math.min(bookCap, cachedBooks.length)
                 for (let i = 0; i < limit; ++i)
-                    matchedBooks.push({ score: 1, order: i, book: cachedBooks[i].book })
-            } else {
+                    appendBookRow(out, cachedBooks[i].book)
+            } else if (hasAsyncResults && asyncMode === "all" && asyncScopeBookId === 0) {
+                const limit = Math.min(bookCap, asyncBooks.length)
+                for (let i = 0; i < limit; ++i)
+                    appendBookRow(out, asyncBooks[i])
+            } else if (syncFallbackBooks) {
+                const matchedBooks = []
                 for (let i = 0; i < cachedBooks.length; ++i) {
                     const entry = cachedBooks[i]
                     const score = fuzzyScoreNormalized(normQ, qTokens, entry.normTitle, entry.normMeta, entry.normFull)
@@ -426,55 +516,35 @@ FocusScope {
                         matchedBooks.push({ score: score, order: i, book: entry.book })
                 }
                 matchedBooks.sort((a, b) => b.score - a.score || a.order - b.order)
-            }
-            for (let i = 0; i < Math.min(bookCap, matchedBooks.length); ++i) {
-                const b = matchedBooks[i].book
-                const parts = []
-                if (b.author)
-                    parts.push(b.author)
-                if (b.series)
-                    parts.push(b.seriesIndex > 0 ? b.series + " #" + b.seriesIndex : b.series)
-                if (b.finished)
-                    parts.push(qsTr("Finished"))
-                else if (b.progress > 0.005)
-                    parts.push(qsTr("%1%").arg(Math.round(b.progress * 100).toLocaleString(Qt.locale(), "f", 0)))
-                out.push({
-                    kind: "book",
-                    section: qsTr("Books"),
-                    bookId: b.id,
-                    title: b.title,
-                    subtitle: parts.join(" · "),
-                    hint: (b.format || "").toUpperCase(),
-                    glyph: Icons.book,
-                    cover: b.cover || "",
-                    author: b.author || "",
-                    bookTitle: b.title || "",
-                    quote: false,
-                })
+                for (let i = 0; i < Math.min(bookCap, matchedBooks.length); ++i)
+                    appendBookRow(out, matchedBooks[i].book)
             }
         }
 
-        // Full-text passages from the library index ("In your books" / "In this book").
-        if (mode === "all" && q.length >= 3 && libraryIndex.available) {
-            const found = libraryIndex.search(q, 6, bookOnly ? scopedBookId : 0)
-            for (const hit of found) {
-                const book = library.book(hit.bookId)
-                if (!book.id)
+        // Full-text passages from the library index ("In your books" / "In this book"),
+        // computed strictly off the GUI thread via library.searchPaletteAsync().
+        if (mode === "all" && q.length >= 3 && hasAsyncResults && asyncMode === "all" &&
+            asyncScopeBookId === scopeBookId) {
+            for (let i = 0; i < asyncPassages.length; ++i) {
+                const hit = asyncPassages[i]
+                const bookTitle = hit.bookTitle || ""
+                if (bookTitle === "")
                     continue
                 const snip = (hit.snippet || "").replace(/[‹›]/g, "")
+                const bookMeta = { id: hit.bookId, title: bookTitle, format: hit.format || "" }
                 out.push({
                     kind: "text",
                     section: bookOnly ? qsTr("In this book") : qsTr("In your books"),
                     bookId: hit.bookId,
                     chapter: hit.chapter,
                     offset: hit.offset,
-                    title: book.title + " · " + chapterLabel(book, hit.chapter),
+                    title: bookTitle + " · " + chapterLabel(bookMeta, hit.chapter),
                     subtitle: snip !== "" ? qsTr("“%1”").arg(snip) : "",
                     hint: "",
                     glyph: Icons.search,
-                    cover: book.cover || "",
-                    author: book.author || "",
-                    bookTitle: book.title || "",
+                    cover: hit.cover || "",
+                    author: hit.author || "",
+                    bookTitle: bookTitle,
                     quote: true,
                 })
             }
@@ -510,10 +580,14 @@ FocusScope {
             }
         }
 
-        // Cross-book or single-book highlights and notes.
+        // Cross-book or single-book highlights and notes, fetched off the GUI thread.
         if (mode === "all" || mode === "marks") {
-            const rawHits = q === "" ? cachedMarks : marks.searchAll(q, mode === "marks" ? 30 : 12)
-            const hits = bookOnly ? rawHits.filter(m => m.bookId === scopedBookId) : rawHits
+            let hits = []
+            if (mode === "all" && q === "") {
+                hits = bookOnly ? cachedMarks.filter(m => m.bookId === scopedBookId) : cachedMarks
+            } else if (hasAsyncResults && asyncMode === mode && asyncScopeBookId === scopeBookId) {
+                hits = asyncMarks
+            }
             const markCap = mode === "marks" ? 30 : (q === "" ? 4 : 6)
             for (let i = 0; i < Math.min(markCap, hits.length); ++i) {
                 const m = hits[i]
@@ -548,6 +622,18 @@ FocusScope {
         results = out
         selectedIndex = out.length > 0 ? 0 : -1
         list.currentIndex = selectedIndex
+    }
+
+    function rebuild() {
+        const parsed = parsePaletteQuery()
+        if (hasAsyncResults && (asyncMode !== parsed.mode || asyncScopeBookId !== parsed.scopeBookId)) {
+            asyncBooks = []
+            asyncPassages = []
+            asyncMarks = []
+            hasAsyncResults = false
+        }
+        composeResults(parsed, false)
+        requestAsyncSearch(parsed)
     }
 
     function activate(idx) {
@@ -596,8 +682,33 @@ FocusScope {
         }
     }
     Connections {
+        target: library
+        function onPaletteSearchReady(requestId, payload) {
+            if (!cmdPalette.open || requestId !== cmdPalette.activeSearchRequestId)
+                return
+            const q = payload.query || ""
+            const m = payload.mode || "all"
+            const sc = payload.scopeBookId || 0
+            if (q === "" && m === "all" && sc === 0) {
+                cmdPalette.cachedMarks = payload.marks || []
+            } else {
+                cmdPalette.asyncBooks = payload.books || []
+                cmdPalette.asyncPassages = payload.passages || []
+                cmdPalette.asyncMarks = payload.marks || []
+                cmdPalette.asyncQuery = q
+                cmdPalette.asyncMode = m
+                cmdPalette.asyncScopeBookId = sc
+                cmdPalette.hasAsyncResults = true
+            }
+            cmdPalette.composeResults(cmdPalette.parsePaletteQuery(), false)
+        }
+    }
+    Connections {
         target: bookSearch
-        function onLibraryResultsChanged() { if (cmdPalette.open) cmdPalette.rebuild() }
+        function onLibraryResultsChanged() {
+            if (cmdPalette.open)
+                cmdPalette.composeResults(cmdPalette.parsePaletteQuery(), false)
+        }
     }
 
     visible: opacity > 0

@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QScopeGuard>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QSqlRecord>
@@ -302,120 +303,236 @@ bool migrate(QSqlDatabase &db, QString *errorOut) {
         return true;
     };
 
-    LibrarySavepoint sp(db, "migrate");
-    if (!sp.isActive()) {
-        setError(errorOut, db.lastError().text());
-        return false;
+    // SQLite ignores PRAGMA foreign_keys inside an active transaction/savepoint,
+    // so toggle it outside the migration savepoint when rebuilding child tables
+    // for v5 ON DELETE CASCADE and unconditionally restore foreign_keys = ON
+    // after the savepoint finishes (committed or rolled back).
+    const bool toggleForeignKeys = (version < 5 && LibrarySavepoint::activeDepth() == 0);
+    bool fkNeedsRestore = false;
+    if (toggleForeignKeys) {
+        QSqlQuery fkOff(db);
+        if (!fkOff.exec(QStringLiteral("PRAGMA foreign_keys = OFF"))) {
+            setError(errorOut, fkOff.lastError().text());
+            return false;
+        }
+        fkNeedsRestore = true;
     }
+    auto restoreFk = qScopeGuard([&] {
+        if (fkNeedsRestore) {
+            QSqlQuery fkOn(db);
+            fkOn.exec(QStringLiteral("PRAGMA foreign_keys = ON"));
+        }
+    });
 
-    // Migration 1: base schema + content fingerprint column/index.
-    if (version < 1) {
-        const QStringList v1 = {
-            QStringLiteral("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"),
-            QStringLiteral(
-                "CREATE TABLE IF NOT EXISTS folders (id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, added_at INTEGER NOT NULL)"),
-            QStringLiteral(
-                "CREATE TABLE IF NOT EXISTS books ("
-                " id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, format TEXT NOT NULL,"
-                " size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,"
-                " title TEXT NOT NULL DEFAULT '', sort_title TEXT NOT NULL DEFAULT '',"
-                " author TEXT NOT NULL DEFAULT '', sort_author TEXT NOT NULL DEFAULT '',"
-                " editor TEXT NOT NULL DEFAULT '', publisher TEXT NOT NULL DEFAULT '', year INTEGER NOT NULL DEFAULT 0,"
-                " language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', subjects TEXT NOT NULL DEFAULT '',"
-                " isbn TEXT NOT NULL DEFAULT '', series TEXT NOT NULL DEFAULT '', series_index REAL NOT NULL DEFAULT 0,"
-                " work_key TEXT NOT NULL DEFAULT '', chapters INTEGER NOT NULL DEFAULT 0, pages INTEGER NOT NULL DEFAULT 0,"
-                " length INTEGER NOT NULL DEFAULT 0, cover TEXT NOT NULL DEFAULT '', problem TEXT NOT NULL DEFAULT '',"
-                " added_at INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL DEFAULT 0,"
-                " finished_at INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, position TEXT NOT NULL DEFAULT '',"
-                " seconds_read INTEGER NOT NULL DEFAULT 0, missing INTEGER NOT NULL DEFAULT 0,"
-                " hidden INTEGER NOT NULL DEFAULT 0, loose INTEGER NOT NULL DEFAULT 0,"
-                " fingerprint TEXT NOT NULL DEFAULT '')"),
-            QStringLiteral("CREATE INDEX IF NOT EXISTS books_work ON books (work_key)"),
-            QStringLiteral(
-                "CREATE TABLE IF NOT EXISTS chapter_lengths (book_id INTEGER NOT NULL, chapter INTEGER NOT NULL,"
-                " length INTEGER NOT NULL, PRIMARY KEY (book_id, chapter))"),
-            QStringLiteral(
-                "CREATE TABLE IF NOT EXISTS annotations ("
-                " id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, kind TEXT NOT NULL,"
-                " chapter INTEGER NOT NULL DEFAULT 0, start INTEGER NOT NULL DEFAULT 0, finish INTEGER NOT NULL DEFAULT 0,"
-                " text TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '',"
-                " label TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"),
-            QStringLiteral("CREATE INDEX IF NOT EXISTS annotations_book ON annotations (book_id)"),
-            QStringLiteral(
-                "CREATE TABLE IF NOT EXISTS reading_days (book_id INTEGER NOT NULL, day TEXT NOT NULL,"
-                " seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (book_id, day))"),
-            QStringLiteral(
-                "CREATE TABLE IF NOT EXISTS book_settings (book_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,"
-                " PRIMARY KEY (book_id, key))"),
-        };
-        if (!execList(v1))
+    {
+        LibrarySavepoint sp(db, "migrate");
+        if (!sp.isActive()) {
+            setError(errorOut, db.lastError().text());
             return false;
-        bool hasFingerprint = false;
-        if (!hasColumn(db, QStringLiteral("books"), QStringLiteral("fingerprint"), &hasFingerprint, errorOut))
-            return false;
-        if (!hasFingerprint &&
-            !execList({QStringLiteral("ALTER TABLE books ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''")}))
-            return false;
-        if (!execList({QStringLiteral("CREATE INDEX IF NOT EXISTS books_fingerprint ON books (fingerprint)")}))
-            return false;
-        if (!setVersion(1))
-            return false;
-    }
+        }
 
-    // Migration 2: user collections / shelves.
-    if (version < 2) {
-        const QStringList v2 = {
-            QStringLiteral(
-                "CREATE TABLE IF NOT EXISTS collections ("
-                " id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL COLLATE NOCASE, created_at INTEGER NOT NULL)"),
-            QStringLiteral(
-                "CREATE TABLE IF NOT EXISTS book_collections ("
-                " book_id INTEGER NOT NULL, collection_id INTEGER NOT NULL, added_at INTEGER NOT NULL,"
-                " PRIMARY KEY (book_id, collection_id),"
-                " FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,"
-                " FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE)"),
-            QStringLiteral("CREATE INDEX IF NOT EXISTS book_collections_col ON book_collections (collection_id)"),
-            QStringLiteral("CREATE INDEX IF NOT EXISTS book_collections_book ON book_collections (book_id)"),
-        };
-        if (!execList(v2) || !setVersion(2))
-            return false;
-    }
-
-    // Migration 3: resilient W3C Web Annotation context columns + cross-book recency index.
-    if (version < 3) {
-        bool hasPrefix = false, hasSuffix = false;
-        if (!hasColumn(db, QStringLiteral("annotations"), QStringLiteral("prefix"), &hasPrefix, errorOut) ||
-            !hasColumn(db, QStringLiteral("annotations"), QStringLiteral("suffix"), &hasSuffix, errorOut))
-            return false;
-        if (!hasPrefix &&
-            !execList({QStringLiteral("ALTER TABLE annotations ADD COLUMN prefix TEXT NOT NULL DEFAULT ''")}))
-            return false;
-        if (!hasSuffix &&
-            !execList({QStringLiteral("ALTER TABLE annotations ADD COLUMN suffix TEXT NOT NULL DEFAULT ''")}))
-            return false;
-        if (!execList({QStringLiteral("CREATE INDEX IF NOT EXISTS annotations_updated ON annotations (updated_at DESC)")}))
-            return false;
-        if (!setVersion(3))
-            return false;
-    }
-
-    // Migration 4: the Want to read shelf, and books that have been listened to.
-    if (version < 4) {
-        for (const char *column : {"want_at", "listened_at"}) {
-            bool has = false;
-            if (!hasColumn(db, QStringLiteral("books"), QString::fromLatin1(column), &has, errorOut))
+        // Migration 1: base schema + content fingerprint column/index.
+        if (version < 1) {
+            const QStringList v1 = {
+                QStringLiteral("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)"),
+                QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS folders (id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, added_at INTEGER NOT NULL)"),
+                QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS books ("
+                    " id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, format TEXT NOT NULL,"
+                    " size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,"
+                    " title TEXT NOT NULL DEFAULT '', sort_title TEXT NOT NULL DEFAULT '',"
+                    " author TEXT NOT NULL DEFAULT '', sort_author TEXT NOT NULL DEFAULT '',"
+                    " editor TEXT NOT NULL DEFAULT '', publisher TEXT NOT NULL DEFAULT '', year INTEGER NOT NULL DEFAULT 0,"
+                    " language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '', subjects TEXT NOT NULL DEFAULT '',"
+                    " isbn TEXT NOT NULL DEFAULT '', series TEXT NOT NULL DEFAULT '', series_index REAL NOT NULL DEFAULT 0,"
+                    " work_key TEXT NOT NULL DEFAULT '', chapters INTEGER NOT NULL DEFAULT 0, pages INTEGER NOT NULL DEFAULT 0,"
+                    " length INTEGER NOT NULL DEFAULT 0, cover TEXT NOT NULL DEFAULT '', problem TEXT NOT NULL DEFAULT '',"
+                    " added_at INTEGER NOT NULL DEFAULT 0, opened_at INTEGER NOT NULL DEFAULT 0,"
+                    " finished_at INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0, position TEXT NOT NULL DEFAULT '',"
+                    " seconds_read INTEGER NOT NULL DEFAULT 0, missing INTEGER NOT NULL DEFAULT 0,"
+                    " hidden INTEGER NOT NULL DEFAULT 0, loose INTEGER NOT NULL DEFAULT 0,"
+                    " fingerprint TEXT NOT NULL DEFAULT '')"),
+                QStringLiteral("CREATE INDEX IF NOT EXISTS books_work ON books (work_key)"),
+                QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS chapter_lengths (book_id INTEGER NOT NULL, chapter INTEGER NOT NULL,"
+                    " length INTEGER NOT NULL, PRIMARY KEY (book_id, chapter))"),
+                QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS annotations ("
+                    " id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, kind TEXT NOT NULL,"
+                    " chapter INTEGER NOT NULL DEFAULT 0, start INTEGER NOT NULL DEFAULT 0, finish INTEGER NOT NULL DEFAULT 0,"
+                    " text TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '',"
+                    " label TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"),
+                QStringLiteral("CREATE INDEX IF NOT EXISTS annotations_book ON annotations (book_id)"),
+                QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS reading_days (book_id INTEGER NOT NULL, day TEXT NOT NULL,"
+                    " seconds INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (book_id, day))"),
+                QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS book_settings (book_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,"
+                    " PRIMARY KEY (book_id, key))"),
+            };
+            if (!execList(v1))
                 return false;
-            if (!has && !execList({QStringLiteral("ALTER TABLE books ADD COLUMN %1 INTEGER NOT NULL DEFAULT 0")
-                                       .arg(QString::fromLatin1(column))}))
+            bool hasFingerprint = false;
+            if (!hasColumn(db, QStringLiteral("books"), QStringLiteral("fingerprint"), &hasFingerprint, errorOut))
+                return false;
+            if (!hasFingerprint &&
+                !execList({QStringLiteral("ALTER TABLE books ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''")}))
+                return false;
+            if (!execList({QStringLiteral("CREATE INDEX IF NOT EXISTS books_fingerprint ON books (fingerprint)")}))
+                return false;
+            if (!setVersion(1))
                 return false;
         }
-        if (!setVersion(4))
+
+        // Migration 2: user collections / shelves.
+        if (version < 2) {
+            const QStringList v2 = {
+                QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS collections ("
+                    " id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL COLLATE NOCASE, created_at INTEGER NOT NULL)"),
+                QStringLiteral(
+                    "CREATE TABLE IF NOT EXISTS book_collections ("
+                    " book_id INTEGER NOT NULL, collection_id INTEGER NOT NULL, added_at INTEGER NOT NULL,"
+                    " PRIMARY KEY (book_id, collection_id),"
+                    " FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,"
+                    " FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE)"),
+                QStringLiteral("CREATE INDEX IF NOT EXISTS book_collections_col ON book_collections (collection_id)"),
+                QStringLiteral("CREATE INDEX IF NOT EXISTS book_collections_book ON book_collections (book_id)"),
+            };
+            if (!execList(v2) || !setVersion(2))
+                return false;
+        }
+
+        // Migration 3: resilient W3C Web Annotation context columns + cross-book recency index.
+        if (version < 3) {
+            bool hasPrefix = false, hasSuffix = false;
+            if (!hasColumn(db, QStringLiteral("annotations"), QStringLiteral("prefix"), &hasPrefix, errorOut) ||
+                !hasColumn(db, QStringLiteral("annotations"), QStringLiteral("suffix"), &hasSuffix, errorOut))
+                return false;
+            if (!hasPrefix &&
+                !execList({QStringLiteral("ALTER TABLE annotations ADD COLUMN prefix TEXT NOT NULL DEFAULT ''")}))
+                return false;
+            if (!hasSuffix &&
+                !execList({QStringLiteral("ALTER TABLE annotations ADD COLUMN suffix TEXT NOT NULL DEFAULT ''")}))
+                return false;
+            if (!execList({QStringLiteral("CREATE INDEX IF NOT EXISTS annotations_updated ON annotations (updated_at DESC)")}))
+                return false;
+            if (!setVersion(3))
+                return false;
+        }
+
+        // Migration 4: the Want to read shelf, and books that have been listened to.
+        if (version < 4) {
+            for (const char *column : {"want_at", "listened_at"}) {
+                bool has = false;
+                if (!hasColumn(db, QStringLiteral("books"), QString::fromLatin1(column), &has, errorOut))
+                    return false;
+                if (!has && !execList({QStringLiteral("ALTER TABLE books ADD COLUMN %1 INTEGER NOT NULL DEFAULT 0")
+                                           .arg(QString::fromLatin1(column))}))
+                    return false;
+            }
+            if (!setVersion(4))
+                return false;
+        }
+
+        // Migration 5: enforce FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE
+        // on chapter_lengths, annotations, reading_days, and book_settings (matching
+        // book_collections), pruning any pre-existing orphaned child rows first.
+        if (version < 5) {
+            const QStringList v5 = {
+                QStringLiteral("DELETE FROM chapter_lengths WHERE book_id NOT IN (SELECT id FROM books)"),
+                QStringLiteral("DELETE FROM annotations WHERE book_id NOT IN (SELECT id FROM books)"),
+                QStringLiteral("DELETE FROM reading_days WHERE book_id NOT IN (SELECT id FROM books)"),
+                QStringLiteral("DELETE FROM book_settings WHERE book_id NOT IN (SELECT id FROM books)"),
+                QStringLiteral("DELETE FROM book_collections WHERE book_id NOT IN (SELECT id FROM books) "
+                               "OR collection_id NOT IN (SELECT id FROM collections)"),
+
+                QStringLiteral("DROP TABLE IF EXISTS chapter_lengths_v5"),
+                QStringLiteral(
+                    "CREATE TABLE chapter_lengths_v5 ("
+                    " book_id INTEGER NOT NULL, chapter INTEGER NOT NULL, length INTEGER NOT NULL,"
+                    " PRIMARY KEY (book_id, chapter),"
+                    " FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE)"),
+                QStringLiteral(
+                    "INSERT INTO chapter_lengths_v5 (book_id, chapter, length) "
+                    "SELECT book_id, chapter, length FROM chapter_lengths"),
+                QStringLiteral("DROP TABLE chapter_lengths"),
+                QStringLiteral("ALTER TABLE chapter_lengths_v5 RENAME TO chapter_lengths"),
+
+                QStringLiteral("DROP TABLE IF EXISTS annotations_v5"),
+                QStringLiteral(
+                    "CREATE TABLE annotations_v5 ("
+                    " id INTEGER PRIMARY KEY, book_id INTEGER NOT NULL, kind TEXT NOT NULL,"
+                    " chapter INTEGER NOT NULL DEFAULT 0, start INTEGER NOT NULL DEFAULT 0, finish INTEGER NOT NULL DEFAULT 0,"
+                    " text TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', color TEXT NOT NULL DEFAULT '',"
+                    " label TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,"
+                    " prefix TEXT NOT NULL DEFAULT '', suffix TEXT NOT NULL DEFAULT '',"
+                    " FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE)"),
+                QStringLiteral(
+                    "INSERT INTO annotations_v5 ("
+                    " id, book_id, kind, chapter, start, finish, text, note, color, label,"
+                    " created_at, updated_at, prefix, suffix) "
+                    "SELECT id, book_id, kind, chapter, start, finish, text, note, color, label,"
+                    " created_at, updated_at, prefix, suffix FROM annotations"),
+                QStringLiteral("DROP TABLE annotations"),
+                QStringLiteral("ALTER TABLE annotations_v5 RENAME TO annotations"),
+                QStringLiteral("CREATE INDEX IF NOT EXISTS annotations_book ON annotations (book_id)"),
+                QStringLiteral("CREATE INDEX IF NOT EXISTS annotations_updated ON annotations (updated_at DESC)"),
+
+                QStringLiteral("DROP TABLE IF EXISTS reading_days_v5"),
+                QStringLiteral(
+                    "CREATE TABLE reading_days_v5 ("
+                    " book_id INTEGER NOT NULL, day TEXT NOT NULL, seconds INTEGER NOT NULL DEFAULT 0,"
+                    " PRIMARY KEY (book_id, day),"
+                    " FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE)"),
+                QStringLiteral(
+                    "INSERT INTO reading_days_v5 (book_id, day, seconds) "
+                    "SELECT book_id, day, seconds FROM reading_days"),
+                QStringLiteral("DROP TABLE reading_days"),
+                QStringLiteral("ALTER TABLE reading_days_v5 RENAME TO reading_days"),
+
+                QStringLiteral("DROP TABLE IF EXISTS book_settings_v5"),
+                QStringLiteral(
+                    "CREATE TABLE book_settings_v5 ("
+                    " book_id INTEGER NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,"
+                    " PRIMARY KEY (book_id, key),"
+                    " FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE)"),
+                QStringLiteral(
+                    "INSERT INTO book_settings_v5 (book_id, key, value) "
+                    "SELECT book_id, key, value FROM book_settings"),
+                QStringLiteral("DROP TABLE book_settings"),
+                QStringLiteral("ALTER TABLE book_settings_v5 RENAME TO book_settings"),
+            };
+            if (!execList(v5))
+                return false;
+            QSqlQuery fkCheck(db);
+            if (!fkCheck.exec(QStringLiteral("PRAGMA foreign_key_check"))) {
+                setError(errorOut, fkCheck.lastError().text());
+                return false;
+            }
+            if (fkCheck.next()) {
+                setError(errorOut, QStringLiteral("Foreign key check failed on table %1 (rowid %2)")
+                                       .arg(fkCheck.value(0).toString(), fkCheck.value(1).toString()));
+                return false;
+            }
+            if (!setVersion(5))
+                return false;
+        }
+
+        if (!sp.commit()) {
+            setError(errorOut, db.lastError().text());
             return false;
+        }
     }
 
-    if (!sp.commit()) {
-        setError(errorOut, db.lastError().text());
-        return false;
+    if (fkNeedsRestore) {
+        fkNeedsRestore = false;
+        QSqlQuery fkOn(db);
+        if (!fkOn.exec(QStringLiteral("PRAGMA foreign_keys = ON"))) {
+            setError(errorOut, fkOn.lastError().text());
+            return false;
+        }
     }
     Q_ASSERT(version == kLatestVersion);
     return true;
