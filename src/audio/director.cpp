@@ -249,3 +249,31 @@ void Director::askPdfBatch(int page, const QString &performance, QObject *contex
             done(splitMoodsByPage(combined, ranges, first, last));
         });
 }
+
+QPair<int, int> Director::chapterRange(int chapter) const {
+    if (m_reader && m_reader->format() == QLatin1String("pdf"))
+        return pdfBatchRange(m_reader, chapter);
+    return {chapter, chapter};
+}
+
+std::optional<QHash<int, QMap<int, QString>>> Director::keptChapterOrBatch(int chapter,
+                                                                           const QList<SpeechBlock> &blocks,
+                                                                           const QString &performance) const {
+    if (m_reader && m_reader->format() == QLatin1String("pdf"))
+        return keptPdfBatch(chapter, performance);
+    if (const auto single = kept(chapter, blocks, performance))
+        return QHash<int, QMap<int, QString>>{{chapter, *single}};
+    return std::nullopt;
+}
+
+void Director::askChapterOrBatch(int chapter, const QList<SpeechBlock> &blocks, const QString &performance,
+                                 QObject *context,
+                                 std::function<void(const QHash<int, QMap<int, QString>> &byChapter)> done) {
+    if (m_reader && m_reader->format() == QLatin1String("pdf")) {
+        askPdfBatch(chapter, performance, context, std::move(done));
+        return;
+    }
+    ask(chapter, blocks, performance, context, [chapter, done = std::move(done)](const QMap<int, QString> &moods) {
+        done(QHash<int, QMap<int, QString>>{{chapter, moods}});
+    });
+}

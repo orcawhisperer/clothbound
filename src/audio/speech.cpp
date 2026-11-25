@@ -1,5 +1,6 @@
 #include "audio/speech.h"
 
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -9,6 +10,7 @@
 #include <QtEndian>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 
 namespace {
 bool closing(QChar c) {
@@ -746,4 +748,190 @@ QString Speech::speakable(const QString &text) {
     out.remove(QChar(0x200B));
     out.remove(QChar(0xFFFE));
     return out;
+}
+
+bool Speech::atomicReplace(const QString &source, const QString &target) {
+    const QByteArray src = QFile::encodeName(source);
+    const QByteArray dst = QFile::encodeName(target);
+    if (std::rename(src.constData(), dst.constData()) == 0)
+        return true;
+    QFile::remove(target);
+    return QFile::rename(source, target);
+}
+
+QString Speech::classicGeminiTrait(const QString &voiceId) {
+    static const QHash<QString, QString> traits{
+        {QStringLiteral("sulafat"), QStringLiteral("Warm")},
+        {QStringLiteral("charon"), QStringLiteral("Informative")},
+        {QStringLiteral("kore"), QStringLiteral("Firm")},
+        {QStringLiteral("puck"), QStringLiteral("Upbeat")},
+        {QStringLiteral("aoede"), QStringLiteral("Breezy")},
+        {QStringLiteral("fenrir"), QStringLiteral("Excitable")},
+        {QStringLiteral("zephyr"), QStringLiteral("Bright")},
+        {QStringLiteral("orus"), QStringLiteral("Firm")},
+        {QStringLiteral("leda"), QStringLiteral("Youthful")},
+        {QStringLiteral("autonoe"), QStringLiteral("Bright")},
+        {QStringLiteral("enceladus"), QStringLiteral("Breathy")},
+        {QStringLiteral("iapetus"), QStringLiteral("Clear")},
+        {QStringLiteral("umbriel"), QStringLiteral("Easy-going")},
+        {QStringLiteral("algieba"), QStringLiteral("Smooth")},
+        {QStringLiteral("despina"), QStringLiteral("Smooth")},
+        {QStringLiteral("erinome"), QStringLiteral("Clear")},
+        {QStringLiteral("algenib"), QStringLiteral("Gravelly")},
+        {QStringLiteral("rasalgethi"), QStringLiteral("Informative")},
+        {QStringLiteral("laomedeia"), QStringLiteral("Upbeat")},
+        {QStringLiteral("achernar"), QStringLiteral("Soft")},
+        {QStringLiteral("alnilam"), QStringLiteral("Firm")},
+        {QStringLiteral("schedar"), QStringLiteral("Even")},
+        {QStringLiteral("gacrux"), QStringLiteral("Mature")},
+        {QStringLiteral("pulcherrima"), QStringLiteral("Forward")},
+        {QStringLiteral("achird"), QStringLiteral("Friendly")},
+        {QStringLiteral("zubenelgenubi"), QStringLiteral("Casual")},
+        {QStringLiteral("vindemiatrix"), QStringLiteral("Gentle")},
+        {QStringLiteral("sadachbia"), QStringLiteral("Lively")},
+        {QStringLiteral("sadaltager"), QStringLiteral("Knowledgeable")},
+        {QStringLiteral("callirrhoe"), QStringLiteral("Easy-going")},
+    };
+    return traits.value(voiceId.toLower());
+}
+
+qint64 Speech::usToSamples(qint64 us, int sampleRate) {
+    // Split into whole seconds + sub-second remainder after clamping so
+    // extreme D-Bus Seek/SetPosition values can never overflow int64.
+    constexpr qint64 maxUs = 100LL * 365 * 24 * 3600 * 1000000LL;
+    const qint64 clamped = std::clamp(us, -maxUs, maxUs);
+    const qint64 sec = clamped / 1000000LL;
+    const qint64 rem = clamped % 1000000LL;
+    return sec * sampleRate + (rem * sampleRate) / 1000000LL;
+}
+
+int Speech::sentenceForSample(const SpeechClip &clip, const QList<QPair<double, double>> &spans,
+                              const QList<qint64> &boundaries, qint64 expectedSamples, qint64 sample) {
+    if (clip.sentences.isEmpty())
+        return -1;
+    if (!boundaries.isEmpty() && boundaries.size() <= clip.sentences.size()) {
+        int at = 0;
+        while (at < boundaries.size() && sample >= boundaries[at])
+            ++at;
+        return qMin(at, int(clip.sentences.size()) - 1);
+    }
+    const double fraction = expectedSamples > 0 ? double(sample) / double(expectedSamples) : 0.0;
+    int at = int(spans.size()) - 1;
+    for (int i = 0; i < spans.size(); ++i)
+        if (fraction < spans[i].second) {
+            at = i;
+            break;
+        }
+    return at;
+}
+
+qint64 Speech::sampleOfSentence(const SpeechClip &clip, const QList<QPair<double, double>> &spans,
+                                const QList<qint64> &boundaries, qint64 expectedSamples, int sentence) {
+    if (sentence <= 0 || clip.sentences.isEmpty())
+        return 0;
+    if (!boundaries.isEmpty() && sentence - 1 < boundaries.size())
+        return qMax<qint64>(0, boundaries[sentence - 1]);
+    if (sentence < spans.size() && expectedSamples > 0)
+        return qBound<qint64>(0, qint64(std::ceil(spans[sentence].first * double(expectedSamples))),
+                              expectedSamples - 1);
+    return 0;
+}
+
+Speech::SeekTarget Speech::seekBySamples(const QList<TimelineEntry> &entries, int currentIndex, qint64 currentSample,
+                                         qint64 deltaSamples, int sampleRate) {
+    if (entries.isEmpty() || currentIndex < 0 || currentIndex >= entries.size())
+        return {};
+    int idx = currentIndex;
+    qint64 pos = currentSample + deltaSamples;
+    bool wantNext = false;
+
+    if (deltaSamples > 0) {
+        while (idx < entries.size()) {
+            const qint64 len = qMax<qint64>(1, entries[idx].samples);
+            if (pos < len)
+                break;
+            if (idx + 1 >= entries.size()) {
+                wantNext = true;
+                pos = qMax<qint64>(0, len - sampleRate);
+                break;
+            }
+            pos -= len;
+            ++idx;
+        }
+        while (idx + 1 < entries.size() && entries[idx].pauseMs > 0) {
+            ++idx;
+            pos = 0;
+        }
+    } else {
+        while (pos < 0 && idx > 0) {
+            --idx;
+            pos += qMax<qint64>(1, entries[idx].samples);
+        }
+        if (pos < 0)
+            pos = 0;
+        if (entries[idx].pauseMs > 0) {
+            if (idx > 0) {
+                --idx;
+                pos = qMax<qint64>(0, entries[idx].samples - sampleRate);
+            } else if (idx + 1 < entries.size()) {
+                ++idx;
+                pos = 0;
+            }
+        }
+    }
+    return {idx, pos, wantNext};
+}
+
+Speech::SeekTarget Speech::seekToChapterUs(const QList<TimelineEntry> &entries, int currentIndex, qint64 targetUs,
+                                           int sampleRate) {
+    if (entries.isEmpty() || currentIndex < 0 || currentIndex >= entries.size())
+        return {};
+    const int at = entries[currentIndex].chapter;
+    int firstInChapter = -1;
+    int lastInChapter = -1;
+    for (int i = 0; i < entries.size(); ++i) {
+        if (entries[i].chapter == at) {
+            if (firstInChapter < 0)
+                firstInChapter = i;
+            lastInChapter = i;
+        }
+    }
+    if (firstInChapter < 0)
+        return {};
+    int idx = firstInChapter;
+    qint64 pos = qMax<qint64>(0, usToSamples(targetUs, sampleRate));
+    while (idx < lastInChapter) {
+        const qint64 len = qMax<qint64>(1, entries[idx].samples);
+        if (pos < len)
+            break;
+        pos -= len;
+        ++idx;
+    }
+    const qint64 lastLen = qMax<qint64>(1, entries[idx].samples);
+    pos = qBound<qint64>(0, pos, qMax<qint64>(0, lastLen - 1));
+    if (entries[idx].pauseMs > 0 && idx + 1 <= lastInChapter) {
+        ++idx;
+        pos = 0;
+    }
+    return {idx, pos, false};
+}
+
+QPair<qint64, qint64> Speech::chapterTimingUs(const QList<TimelineEntry> &entries, int currentIndex,
+                                              qint64 currentSample, int sampleRate) {
+    if (entries.isEmpty() || currentIndex < 0 || currentIndex >= entries.size() || sampleRate <= 0)
+        return {0, 0};
+    const int at = entries[currentIndex].chapter;
+    qint64 posSamples = 0;
+    qint64 durSamples = 0;
+    for (int i = 0; i < entries.size(); ++i) {
+        if (entries[i].chapter != at)
+            continue;
+        const qint64 len = entries[i].samples;
+        durSamples += len;
+        if (i < currentIndex)
+            posSamples += len;
+        else if (i == currentIndex)
+            posSamples += qMin(currentSample, len);
+    }
+    return {posSamples * 1000000LL / sampleRate, durSamples * 1000000LL / sampleRate};
 }

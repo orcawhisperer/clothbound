@@ -92,6 +92,7 @@ signals:
     void studioChanged();
 
 private:
+    friend class ClothboundTests;
     void load();
     void save() const;
     void remember(const Ai::Voice &voice, const Ai::VoiceDesign &design);

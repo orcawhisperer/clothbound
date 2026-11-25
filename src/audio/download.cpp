@@ -8,6 +8,7 @@
 #include "audio/narration.h"
 #include "reader/reader.h"
 
+#include <QThread>
 #include <cmath>
 
 namespace {
@@ -64,9 +65,13 @@ Download::~Download() {
             reply->abort();
 }
 
-void Download::setCast(Cast *cast) { m_cast = cast; }
+void Download::setCast(Cast *cast) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_cast = cast;
+}
 
 int Download::secondsLeft() const {
+    Q_ASSERT(QThread::currentThread() == thread());
     const qint64 ms = m_activeMs + (running() && m_clock.isValid() ? m_clock.elapsed() : 0);
     if (m_audioSeconds < 30 || ms < 5000)
         return -1;
@@ -87,6 +92,7 @@ QList<int> Download::chaptersBetween(int first, int last) const {
 double Download::estimatedMinutes(int chapter) const { return m_reader->charactersIn(chapter) / charsPerMinute; }
 
 QVariantMap Download::estimate(int first, int last) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     double minutes = 0;
     const QList<int> chapters = chaptersBetween(first, last);
     for (int chapter : chapters)
@@ -106,6 +112,7 @@ void Download::setProblem(const QString &problem) {
 }
 
 void Download::start(int first, int last) {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_plannedKeys.clear();
     cancel();
     const QString voice = m_narration->voice();
@@ -159,6 +166,7 @@ void Download::planAhead() {
 }
 
 void Download::addBlocks(int chapter, const QString &json) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!running() || !m_waiting.contains(chapter))
         return;
     const QList<SpeechBlock> blocks = Speech::parseBlocks(json);
@@ -461,6 +469,7 @@ void Download::checkFinished() {
 }
 
 void Download::pause() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_active || m_paused)
         return;
     ++m_session;
@@ -494,6 +503,7 @@ void Download::pause() {
 }
 
 void Download::resume() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_active || !m_paused)
         return;
     m_paused = false;
@@ -505,6 +515,7 @@ void Download::resume() {
 }
 
 void Download::cancel() {
+    Q_ASSERT(QThread::currentThread() == thread());
     ++m_session;
     const bool was = m_active;
     m_active = false;

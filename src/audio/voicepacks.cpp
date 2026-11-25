@@ -20,6 +20,7 @@
 #include <QSet>
 #include <QSysInfo>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QtConcurrent>
 #include <algorithm>
 #include <memory>
@@ -210,6 +211,7 @@ void VoicePacks::pumpTrash() {
 QString VoicePacks::engineVersion() const { return QString::fromLatin1(SherpaOnnx::version); }
 
 int VoicePacks::installedVoiceCount() const {
+    Q_ASSERT(QThread::currentThread() == thread());
     syncInstalledIfDirChanged();
     if (!isInstalledCached(m_engine.id))
         return 0;
@@ -390,6 +392,7 @@ void VoicePacks::load(const QByteArray &manifest) {
 }
 
 std::optional<VoicePacks::Pack> VoicePacks::pack(const QString &packId) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (packId == m_engine.id && !m_engine.url.isEmpty())
         return m_engine;
     const auto it = m_packs.constFind(packId);
@@ -399,6 +402,7 @@ std::optional<VoicePacks::Pack> VoicePacks::pack(const QString &packId) const {
 }
 
 bool VoicePacks::isInstalled(const QString &packId) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (packId.isEmpty())
         return false;
     syncInstalledIfDirChanged();
@@ -406,6 +410,7 @@ bool VoicePacks::isInstalled(const QString &packId) const {
 }
 
 QString VoicePacks::engineLibrary() const {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!engineInstalled())
         return {};
     return QDir(m_directory).filePath(m_engine.dir + QStringLiteral("/lib/libsherpa-onnx-c-api.so"));
@@ -419,6 +424,7 @@ const VoicePacks::Voice *VoicePacks::findVoice(const QString &id) const {
 }
 
 std::optional<VoicePacks::Model> VoicePacks::model(const QString &voiceId) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     const Voice *voice = findVoice(voiceId);
     if (!voice)
         return std::nullopt;
@@ -498,6 +504,7 @@ QVariantMap VoicePacks::toMap(const Voice &voice) const {
 }
 
 QVariantList VoicePacks::voices(const QString &language) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     syncInstalledIfDirChanged();
     const QString base = baseOf(language);
     const QString region = regionOf(language);
@@ -528,6 +535,7 @@ QVariantList VoicePacks::voices(const QString &language) const {
 }
 
 QVariantMap VoicePacks::voice(const QString &id) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     const Voice *found = findVoice(id);
     if (!found)
         return {};
@@ -536,6 +544,7 @@ QVariantMap VoicePacks::voice(const QString &id) const {
 }
 
 QVariantList VoicePacks::searchVoices(const QString &query, const QString &language, bool installedOnly) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QStringList words = query.toLower().split(QLatin1Char(' '), Qt::SkipEmptyParts);
     const QVariantList baseList = voices(language);
     if (words.isEmpty() && !installedOnly)
@@ -569,6 +578,7 @@ QVariantList VoicePacks::searchVoices(const QString &query, const QString &langu
 }
 
 QVariantList VoicePacks::languages() const {
+    Q_ASSERT(QThread::currentThread() == thread());
     syncInstalledIfDirChanged();
     const bool engineHere = isInstalledCached(m_engine.id);
     struct LangInfo {
@@ -609,6 +619,7 @@ QVariantList VoicePacks::languages() const {
 }
 
 QVariantMap VoicePacks::offer(const QString &language) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QVariantList candidates = voices(language);
     if (candidates.isEmpty())
         return {};
@@ -623,6 +634,7 @@ QVariantMap VoicePacks::offer(const QString &language) const {
 }
 
 void VoicePacks::installVoice(const QString &voiceId) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const Voice *voice = findVoice(voiceId);
     if (!voice || busy())
         return;
@@ -648,6 +660,7 @@ void VoicePacks::installVoice(const QString &voiceId) {
 }
 
 void VoicePacks::installPack(const QString &packId) {
+    Q_ASSERT(QThread::currentThread() == thread());
     const auto found = pack(packId);
     if (!found || busy())
         return;
@@ -948,6 +961,7 @@ void VoicePacks::fail(const QString &message) {
 }
 
 void VoicePacks::cancel() {
+    Q_ASSERT(QThread::currentThread() == thread());
     ++m_generation;
     m_queue.clear();
     m_waitingVoice.clear();
@@ -970,6 +984,7 @@ void VoicePacks::cancel() {
 }
 
 void VoicePacks::remove(const QString &packId) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (busy())
         return;
     const auto found = pack(packId);
@@ -1001,6 +1016,7 @@ void VoicePacks::remove(const QString &packId) {
 }
 
 QVariantList VoicePacks::installedPacks() const {
+    Q_ASSERT(QThread::currentThread() == thread());
     syncInstalledIfDirChanged();
     QVariantList result;
     QList<Pack> all;
@@ -1028,6 +1044,7 @@ QVariantList VoicePacks::installedPacks() const {
 }
 
 QVariantList VoicePacks::catalogPacks() const {
+    Q_ASSERT(QThread::currentThread() == thread());
     syncInstalledIfDirChanged();
     QVariantList result;
     const bool engineHere = isInstalledCached(m_engine.id);

@@ -553,3 +553,29 @@ void Cast::askPdfBatch(int page, QObject *context,
         done(byPage);
     });
 }
+
+QPair<int, int> Cast::chapterRange(int chapter) const {
+    if (m_reader && m_reader->format() == QLatin1String("pdf"))
+        return Director::pdfBatchRange(m_reader, chapter);
+    return {chapter, chapter};
+}
+
+std::optional<QHash<int, QMap<int, Cast::Line>>> Cast::keptChapterOrBatch(int chapter,
+                                                                          const QList<SpeechBlock> &blocks) const {
+    if (m_reader && m_reader->format() == QLatin1String("pdf"))
+        return keptPdfBatch(chapter);
+    if (const auto single = kept(chapter, blocks))
+        return QHash<int, QMap<int, Line>>{{chapter, *single}};
+    return std::nullopt;
+}
+
+void Cast::askChapterOrBatch(int chapter, const QList<SpeechBlock> &blocks, QObject *context,
+                             std::function<void(const QHash<int, QMap<int, Line>> &byChapter)> done) {
+    if (m_reader && m_reader->format() == QLatin1String("pdf")) {
+        askPdfBatch(chapter, context, std::move(done));
+        return;
+    }
+    ask(chapter, blocks, context, [chapter, done = std::move(done)](const QMap<int, Line> &lines) {
+        done(QHash<int, QMap<int, Line>>{{chapter, lines}});
+    });
+}

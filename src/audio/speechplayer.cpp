@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <utility>
 
 namespace {
 bool audioProfileEnabled() {
@@ -152,28 +153,30 @@ QByteArray convertForSink(const QByteArray &monoInt16, int srcRate, const QAudio
         return {};
     }
 }
+}  // namespace
 
-void copySampleRange(const QVector<QByteArray> &chunks, const QVector<qint64> &offsets, qint64 startSample,
-                     qint64 count, qint16 *dst) {
+void SpeechPlayer::copySampleRange(const std::vector<PcmBlock> &blocks, qint64 startSample, qint64 count, qint16 *dst) {
     if (count <= 0)
         return;
-    if (chunks.isEmpty()) {
+    if (blocks.empty()) {
         std::memset(dst, 0, size_t(count) * sizeof(qint16));
         return;
     }
-    auto it = std::upper_bound(offsets.cbegin(), offsets.cend(), startSample);
-    qsizetype idx = (it == offsets.cbegin()) ? 0 : qsizetype(it - offsets.cbegin()) - 1;
+    auto it = std::upper_bound(blocks.cbegin(), blocks.cend(), startSample,
+                               [](qint64 s, const PcmBlock &b) { return s < b.offset; });
+    size_t idx = (it == blocks.cbegin()) ? 0 : size_t(it - blocks.cbegin()) - 1;
     qint64 copied = 0;
     qint64 cursor = startSample;
-    while (copied < count && idx < chunks.size()) {
-        const qint64 chunkStart = offsets[idx];
-        const qint64 chunkSamples = chunks[idx].size() / 2;
+    while (copied < count && idx < blocks.size()) {
+        const auto &block = blocks[idx];
+        const qint64 chunkStart = block.offset;
+        const qint64 chunkSamples = block.samples ? qint64(block.samples->size()) : 0;
         if (chunkStart + chunkSamples > cursor) {
             const qint64 localStart = qMax<qint64>(0, cursor - chunkStart);
             const qint64 availInChunk = chunkSamples - localStart;
             const qint64 take = std::min(count - copied, availInChunk);
             if (take > 0) {
-                std::memcpy(dst + copied, chunks[idx].constData() + localStart * 2, size_t(take) * sizeof(qint16));
+                std::memcpy(dst + copied, block.samples->data() + localStart, size_t(take) * sizeof(qint16));
                 copied += take;
                 cursor += take;
             }
@@ -183,7 +186,6 @@ void copySampleRange(const QVector<QByteArray> &chunks, const QVector<qint64> &o
     if (copied < count)
         std::memset(dst + copied, 0, size_t(count - copied) * sizeof(qint16));
 }
-}  // namespace
 
 // Dedicated high-priority audio output driver living on SpeechPlayer::m_audioThread.
 // Owns QAudioSink, QMediaDevices, and the 15 ms feed/report timer so GUI-thread
@@ -203,6 +205,7 @@ public:
 
 public slots:
     void startPlayback(quint64 clearGen) {
+        Q_ASSERT(QThread::currentThread() == thread());
         if (m_clearGen != clearGen) {
             m_clearGen = clearGen;
             m_consumedIndex = 0;
@@ -226,6 +229,7 @@ public slots:
     }
 
     void pausePlayback() {
+        Q_ASSERT(QThread::currentThread() == thread());
         m_timer.stop();
         if (m_sink)
             m_sink->suspend();
@@ -233,6 +237,7 @@ public slots:
     }
 
     void resetPlayback(quint64 clearGen, bool playingNow) {
+        Q_ASSERT(QThread::currentThread() == thread());
         m_clearGen = clearGen;
         m_consumedIndex = 0;
         m_marks.clear();
@@ -256,24 +261,29 @@ public slots:
     }
 
     void setVolume(double volume) {
+        Q_ASSERT(QThread::currentThread() == thread());
+        Q_ASSERT(volume >= 0.0 && volume <= 1.0);
         m_volume = volume;
         if (m_sink && !m_muted)
             m_sink->setVolume(m_volume);
     }
 
     void setMuted(bool muted) {
+        Q_ASSERT(QThread::currentThread() == thread());
         m_muted = muted;
         if (m_sink)
             m_sink->setVolume(m_muted ? 0.0 : m_volume);
     }
 
     void onWorkerReady() {
-        m_owner->m_notifyPending.store(false, std::memory_order_relaxed);
+        Q_ASSERT(QThread::currentThread() == thread());
+        m_owner->m_notifyPending.store(false, std::memory_order_release);
         if (m_owner->isPlaying())
             fill();
     }
 
     void shutdown() {
+        Q_ASSERT(QThread::currentThread() == thread());
         m_timer.stop();
         releaseSink();
         m_devices.reset();
@@ -413,6 +423,8 @@ private:
     }
 
     void fill() {
+        Q_ASSERT(QThread::currentThread() == thread());
+        Q_ASSERT(m_sampleRate > 0 && m_bytesPerFrame > 0 && m_writtenBytes >= 0 && m_consumedIndex >= 0);
         if (!m_out || !m_sink)
             return;
         {
@@ -434,7 +446,9 @@ private:
                 if (room <= 0 && !m_owner->m_ready.first().bytes.isEmpty())
                     break;
                 chunk = m_owner->m_ready.takeFirst();
+                Q_ASSERT((chunk.bytes.size() & 1) == 0);
                 m_owner->m_readySamples = qMax<qint64>(0, m_owner->m_readySamples - chunk.bytes.size() / 2);
+                Q_ASSERT(m_owner->m_readySamples >= 0);
             }
             poppedAny = true;
             m_drained = false;
@@ -457,9 +471,8 @@ private:
             if (chunk.trackDone) {
                 QMutexLocker lock(&m_owner->m_mutex);
                 if (m_owner->m_clearGeneration == m_clearGen) {
-                    if (SpeechPlayer::Track *t = m_owner->trackLocked(chunk.trackId)) {
-                        t->chunks.clear();
-                        t->chunkOffsets.clear();
+                    if (SpeechPlayer::Track *t = m_owner->trackLocked(chunk.trackId, lock)) {
+                        t->blocks.clear();
                         t->totalSamples = 0;
                         t->hasTrailingByte = false;
                     }
@@ -479,6 +492,7 @@ private:
     }
 
     void report() {
+        Q_ASSERT(QThread::currentThread() == thread());
         if (!m_sink)
             return;
         bool allConsumed = false;
@@ -720,12 +734,20 @@ SpeechPlayer::~SpeechPlayer() {
 }
 
 void SpeechPlayer::ensureAudioThread() {
-    if (m_pump)
-        return;
-    m_pump = new AudioOutputPump(this, m_sampleRate, m_volume, m_muted);
-    m_pump->moveToThread(&m_audioThread);
+    Q_ASSERT(QThread::currentThread() == thread());
+    double initialVolume = 1.0;
+    bool initialMuted = false;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (m_pump)
+            return;
+        initialVolume = m_volume;
+        initialMuted = m_muted;
+    }
+    auto *pump = new AudioOutputPump(this, m_sampleRate, initialVolume, initialMuted);
+    pump->moveToThread(&m_audioThread);
     connect(
-        m_pump, &AudioOutputPump::positionReported, this,
+        pump, &AudioOutputPump::positionReported, this,
         [this](quint64 clearGen, int track, qint64 sample) {
             quint64 currentGen = 0;
             {
@@ -737,7 +759,7 @@ void SpeechPlayer::ensureAudioThread() {
         },
         Qt::QueuedConnection);
     connect(
-        m_pump, &AudioOutputPump::starvedReported, this,
+        pump, &AudioOutputPump::starvedReported, this,
         [this](quint64 clearGen, bool starved) {
             quint64 currentGen = 0;
             {
@@ -749,21 +771,22 @@ void SpeechPlayer::ensureAudioThread() {
         },
         Qt::QueuedConnection);
     connect(
-        m_pump, &AudioOutputPump::drainedReported, this,
+        pump, &AudioOutputPump::drainedReported, this,
         [this](quint64 clearGen) {
-            quint64 currentGen = 0;
+            bool shouldEmit = false;
             {
                 QMutexLocker lock(&m_mutex);
-                currentGen = m_clearGeneration;
+                if (clearGen == m_clearGeneration && !m_drained) {
+                    m_drained = true;
+                    shouldEmit = true;
+                }
             }
-            if (clearGen == currentGen && !m_drained) {
-                m_drained = true;
+            if (shouldEmit)
                 emit drained();
-            }
         },
         Qt::QueuedConnection);
     connect(
-        m_pump, &AudioOutputPump::sinkErrorReported, this,
+        pump, &AudioOutputPump::sinkErrorReported, this,
         [this](const QString &message) {
             pause();
             emit sinkError(message);
@@ -771,21 +794,36 @@ void SpeechPlayer::ensureAudioThread() {
         Qt::QueuedConnection);
     m_audioThread.setObjectName(QStringLiteral("ClothboundAudio"));
     m_audioThread.start(QThread::HighPriority);
+    {
+        QMutexLocker lock(&m_mutex);
+        Q_ASSERT(!m_pump);
+        m_pump = pump;
+    }
 }
 
 void SpeechPlayer::stopAudioThread() {
-    if (!m_pump)
+    Q_ASSERT(QThread::currentThread() == thread());
+    AudioOutputPump *pump = nullptr;
+    {
+        QMutexLocker lock(&m_mutex);
+        pump = std::exchange(m_pump, nullptr);
+    }
+    if (!pump)
         return;
     if (m_audioThread.isRunning()) {
-        QMetaObject::invokeMethod(m_pump, &AudioOutputPump::shutdown, Qt::BlockingQueuedConnection);
+        QMetaObject::invokeMethod(pump, &AudioOutputPump::shutdown, Qt::BlockingQueuedConnection);
         m_audioThread.quit();
         m_audioThread.wait();
     }
-    delete m_pump;
-    m_pump = nullptr;
+    delete pump;
 }
 
 void SpeechPlayer::startWorker() {
+    // Caller must hold m_mutex (non-recursive QMutex::tryLock fails immediately when held).
+    const bool wasUnlocked = m_mutex.tryLock();
+    if (wasUnlocked)
+        m_mutex.unlock();
+    Q_ASSERT(!wasUnlocked);
     if (m_worker.joinable())
         return;
     m_stopWorker = false;
@@ -793,14 +831,16 @@ void SpeechPlayer::startWorker() {
 }
 
 void SpeechPlayer::stopWorker() {
+    std::thread worker;
     {
         QMutexLocker lock(&m_mutex);
         m_stopWorker = true;
         ++m_generation;
         m_cond.wakeAll();
+        worker = std::move(m_worker);
     }
-    if (m_worker.joinable())
-        m_worker.join();
+    if (worker.joinable())
+        worker.join();
 }
 
 void SpeechPlayer::workerLoop() {
@@ -815,8 +855,7 @@ void SpeechPlayer::workerLoop() {
     QVector<qint16> windowBuf;
 
     for (;;) {
-        QVector<QByteArray> chunksSnap;
-        QVector<qint64> offsetsSnap;
+        std::vector<PcmBlock> blocksSnap;
         qint64 available = 0;
         bool complete = false;
         double rate = 1.0;
@@ -831,6 +870,11 @@ void SpeechPlayer::workerLoop() {
             for (;;) {
                 if (m_stopWorker)
                     return;
+                Q_ASSERT(m_workerIndex >= 0 && m_workerIndex <= m_tracks.size());
+                Q_ASSERT(m_workerRead >= 0);
+                Q_ASSERT(m_readySamples >= 0);
+                Q_ASSERT(!m_ready.isEmpty() || m_readySamples == 0);
+                Q_ASSERT(m_rate >= 0.25 && m_rate <= 4.0);
                 if (localGen != m_generation) {
                     localGen = m_generation;
                     localRateGen = m_rateGeneration;
@@ -872,8 +916,7 @@ void SpeechPlayer::workerLoop() {
                         hasData = t.complete || (targetUpper + Stretcher::seek + Stretcher::frame <= avail);
                     }
                     if (hasData) {
-                        chunksSnap = t.chunks;
-                        offsetsSnap = t.chunkOffsets;
+                        blocksSnap = t.blocks;
                         available = avail;
                         complete = t.complete;
                         rate = m_rate;
@@ -895,6 +938,7 @@ void SpeechPlayer::workerLoop() {
         }
 
         // Run WSOLA / pass-through completely off the GUI thread without holding m_mutex.
+        Q_ASSERT(available >= 0 && readPos >= 0);
         const bool plain = qFuzzyCompare(rate, 1.0);
         QVector<qint16> out;
         qint64 sourceStart = 0;
@@ -906,7 +950,7 @@ void SpeechPlayer::workerLoop() {
             const qint64 n = std::min<qint64>(chunkRoom, qMax<qint64>(0, available - readPos));
             if (n > 0) {
                 out.resize(n);
-                copySampleRange(chunksSnap, offsetsSnap, readPos, n, out.data());
+                copySampleRange(blocksSnap, readPos, n, out.data());
                 newReadPos = readPos + n;
             }
             more = !(complete && newReadPos >= available);
@@ -931,7 +975,7 @@ void SpeechPlayer::workerLoop() {
             const qint64 winLen = winEnd - winStart;
             windowBuf.resize(qsizetype(winLen));
             if (winLen > 0)
-                copySampleRange(chunksSnap, offsetsSnap, winStart, winLen, windowBuf.data());
+                copySampleRange(blocksSnap, winStart, winLen, windowBuf.data());
             if (doReseed)
                 stretcher.reseed(readPos, windowBuf.constData(), winStart, winLen, available);
             sourceStart = stretcher.position();
@@ -943,6 +987,7 @@ void SpeechPlayer::workerLoop() {
         QByteArray bytes;
         if (!out.isEmpty())
             bytes = QByteArray(reinterpret_cast<const char *>(out.constData()), int(out.size() * 2));
+        Q_ASSERT((bytes.size() & 1) == 0);
 
         AudioOutputPump *pumpToNotify = nullptr;
         {
@@ -951,9 +996,11 @@ void SpeechPlayer::workerLoop() {
                 return;
             if (gen != m_generation || rateGen != m_rateGeneration)
                 continue;
+            Q_ASSERT(m_workerIndex >= 0 && m_workerIndex < m_tracks.size());
             if (!bytes.isEmpty() || !more) {
                 m_ready.append({std::move(bytes), trackId, sourceStart, plain ? 1.0 : rate, !more});
                 m_readySamples += out.size();
+                Q_ASSERT(m_readySamples >= 0);
                 pumpToNotify = m_pump;
             }
             if (!more) {
@@ -971,19 +1018,23 @@ void SpeechPlayer::workerLoop() {
             }
         }
 
-        if (pumpToNotify && !m_notifyPending.exchange(true, std::memory_order_relaxed))
+        if (pumpToNotify && !m_notifyPending.exchange(true, std::memory_order_acq_rel))
             QMetaObject::invokeMethod(pumpToNotify, &AudioOutputPump::onWorkerReady, Qt::QueuedConnection);
     }
 }
 
-SpeechPlayer::Track *SpeechPlayer::trackLocked(int id) {
+SpeechPlayer::Track *SpeechPlayer::trackLocked(int id, const QMutexLocker<QMutex> &lock) {
+    Q_ASSERT(lock.mutex() == &m_mutex && lock.isLocked());
+    Q_UNUSED(lock);
     for (Track &t : m_tracks)
         if (t.id == id)
             return &t;
     return nullptr;
 }
 
-int SpeechPlayer::trackIndexLocked(int id) const {
+int SpeechPlayer::trackIndexLocked(int id, const QMutexLocker<QMutex> &lock) const {
+    Q_ASSERT(lock.mutex() == &m_mutex && lock.isLocked());
+    Q_UNUSED(lock);
     for (int i = 0; i < m_tracks.size(); ++i)
         if (m_tracks[i].id == id)
             return i;
@@ -992,17 +1043,19 @@ int SpeechPlayer::trackIndexLocked(int id) const {
 
 void SpeechPlayer::addTrack(int id, qint64 startSample) {
     QMutexLocker lock(&m_mutex);
-    if (trackLocked(id))
+    if (trackLocked(id, lock))
         return;
     Track t;
     t.id = id;
     t.startSample = qMax<qint64>(0, startSample);
+    Q_ASSERT(t.startSample >= 0);
     const bool nextForWorker = (m_workerIndex == m_tracks.size());
     m_tracks.append(t);
     if (nextForWorker)
         m_workerRead = t.startSample;
     m_workerFinishedAll = false;
     m_drained = false;
+    Q_ASSERT(m_workerIndex >= 0 && m_workerIndex <= m_tracks.size());
     m_cond.wakeOne();
 }
 
@@ -1010,35 +1063,34 @@ void SpeechPlayer::appendAudio(int id, const QByteArray &pcm) {
     if (pcm.isEmpty())
         return;
     QMutexLocker lock(&m_mutex);
-    if (Track *t = trackLocked(id)) {
-        QByteArray chunk;
-        if (!t->hasTrailingByte && (pcm.size() & 1) == 0) {
-            chunk = pcm;
-        } else {
-            chunk.reserve((t->hasTrailingByte ? 1 : 0) + pcm.size());
+    if (Track *t = trackLocked(id, lock)) {
+        const qsizetype totalBytes = (t->hasTrailingByte ? 1 : 0) + pcm.size();
+        const qsizetype evenBytes = totalBytes & ~qsizetype(1);
+        const bool nextHasTrailing = (totalBytes & 1) != 0;
+        const char nextTrailing = nextHasTrailing ? pcm.back() : 0;
+        if (evenBytes > 0) {
+            auto block = std::make_shared<std::vector<qint16>>(size_t(evenBytes / 2));
+            auto *dst = reinterpret_cast<char *>(block->data());
+            qsizetype written = 0;
             if (t->hasTrailingByte) {
-                chunk.append(t->trailingByte);
-                t->hasTrailingByte = false;
+                dst[0] = t->trailingByte;
+                written = 1;
             }
-            chunk.append(pcm);
-            if ((chunk.size() & 1) != 0) {
-                t->trailingByte = chunk.back();
-                t->hasTrailingByte = true;
-                chunk.chop(1);
-            }
-        }
-        if (!chunk.isEmpty()) {
-            t->chunkOffsets.append(t->totalSamples);
-            t->chunks.append(std::move(chunk));
-            t->totalSamples += t->chunks.back().size() / 2;
+            std::memcpy(dst + written, pcm.constData(), size_t(evenBytes - written));
+            const qint64 blockSamples = qint64(block->size());
+            t->blocks.push_back({t->totalSamples, std::move(block)});
+            t->totalSamples += blockSamples;
+            Q_ASSERT(t->totalSamples >= 0);
             m_cond.wakeOne();
         }
+        t->hasTrailingByte = nextHasTrailing;
+        t->trailingByte = nextTrailing;
     }
 }
 
 void SpeechPlayer::finishTrack(int id) {
     QMutexLocker lock(&m_mutex);
-    if (Track *t = trackLocked(id)) {
+    if (Track *t = trackLocked(id, lock)) {
         t->complete = true;
         m_cond.wakeOne();
     }
@@ -1046,24 +1098,25 @@ void SpeechPlayer::finishTrack(int id) {
 
 bool SpeechPlayer::hasTrack(int id) const {
     QMutexLocker lock(&m_mutex);
-    return trackIndexLocked(id) >= 0;
+    return trackIndexLocked(id, lock) >= 0;
 }
 
 qint64 SpeechPlayer::trackSamples(int id) const {
     QMutexLocker lock(&m_mutex);
-    const int idx = trackIndexLocked(id);
+    const int idx = trackIndexLocked(id, lock);
     return idx >= 0 ? m_tracks[idx].totalSamples : 0;
 }
 
 bool SpeechPlayer::trackComplete(int id) const {
     QMutexLocker lock(&m_mutex);
-    const int idx = trackIndexLocked(id);
+    const int idx = trackIndexLocked(id, lock);
     return idx >= 0 ? m_tracks[idx].complete : false;
 }
 
 void SpeechPlayer::clear() {
     bool playingNow = false;
     quint64 clearGen = 0;
+    AudioOutputPump *pump = nullptr;
     {
         QMutexLocker lock(&m_mutex);
         m_tracks.clear();
@@ -1072,16 +1125,19 @@ void SpeechPlayer::clear() {
         m_workerIndex = 0;
         m_workerRead = 0;
         m_workerFinishedAll = true;
+        m_drained = true;
         ++m_generation;
         clearGen = ++m_clearGeneration;
         playingNow = m_playing;
+        pump = m_pump;
+        Q_ASSERT(m_tracks.isEmpty() && m_ready.isEmpty() && m_readySamples == 0);
+        Q_ASSERT(m_workerIndex == 0 && m_workerRead == 0 && m_workerFinishedAll);
         m_cond.wakeOne();
     }
-    m_drained = true;
     setStarved(false);
-    if (m_pump) {
+    if (pump) {
         QMetaObject::invokeMethod(
-            m_pump, [pump = m_pump, clearGen, playingNow] { pump->resetPlayback(clearGen, playingNow); },
+            pump, [pump, clearGen, playingNow] { pump->resetPlayback(clearGen, playingNow); },
             Qt::QueuedConnection);
     }
 }
@@ -1103,51 +1159,92 @@ bool SpeechPlayer::isHeadless() const {
 }
 
 void SpeechPlayer::play() {
-    quint64 clearGen = 0;
+    bool needAudioThread = false;
     {
         QMutexLocker lock(&m_mutex);
         if (m_headless) {
             m_playing = true;
             return;
         }
-        clearGen = m_clearGeneration;
+        needAudioThread = (m_pump == nullptr);
     }
-    ensureAudioThread();
+    if (needAudioThread && QThread::currentThread() == thread())
+        ensureAudioThread();
+    quint64 clearGen = 0;
+    AudioOutputPump *pump = nullptr;
     {
         QMutexLocker lock(&m_mutex);
+        if (m_headless) {
+            m_playing = true;
+            return;
+        }
         m_playing = true;
         startWorker();
+        clearGen = m_clearGeneration;
+        pump = m_pump;
         m_cond.wakeOne();
     }
-    QMetaObject::invokeMethod(
-        m_pump, [pump = m_pump, clearGen] { pump->startPlayback(clearGen); }, Qt::QueuedConnection);
+    if (pump) {
+        QMetaObject::invokeMethod(
+            pump, [pump, clearGen] { pump->startPlayback(clearGen); }, Qt::QueuedConnection);
+    }
 }
 
 void SpeechPlayer::pause() {
+    AudioOutputPump *pump = nullptr;
     {
         QMutexLocker lock(&m_mutex);
         m_playing = false;
+        pump = m_pump;
         m_cond.wakeOne();
     }
-    if (m_pump)
-        QMetaObject::invokeMethod(m_pump, &AudioOutputPump::pausePlayback, Qt::QueuedConnection);
+    if (pump)
+        QMetaObject::invokeMethod(pump, &AudioOutputPump::pausePlayback, Qt::QueuedConnection);
     setStarved(false);
 }
 
 void SpeechPlayer::setMuted(bool muted) {
-    m_muted = muted;
-    if (m_pump)
-        QMetaObject::invokeMethod(m_pump, [pump = m_pump, muted] { pump->setMuted(muted); }, Qt::QueuedConnection);
+    AudioOutputPump *pump = nullptr;
+    {
+        QMutexLocker lock(&m_mutex);
+        m_muted = muted;
+        pump = m_pump;
+    }
+    if (pump)
+        QMetaObject::invokeMethod(pump, [pump, muted] { pump->setMuted(muted); }, Qt::QueuedConnection);
+}
+
+double SpeechPlayer::volume() const {
+    QMutexLocker lock(&m_mutex);
+    return m_volume;
 }
 
 void SpeechPlayer::setVolume(double volume) {
     const double clamped = std::clamp(volume, 0.0, 1.0);
-    if (qFuzzyCompare(clamped, m_volume))
-        return;
-    m_volume = clamped;
-    if (m_pump)
-        QMetaObject::invokeMethod(m_pump, [pump = m_pump, clamped] { pump->setVolume(clamped); }, Qt::QueuedConnection);
-    emit volumeChanged();
+    AudioOutputPump *pump = nullptr;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (qFuzzyCompare(clamped, m_volume))
+            return;
+        m_volume = clamped;
+        pump = m_pump;
+    }
+    if (pump)
+        QMetaObject::invokeMethod(pump, [pump, clamped] { pump->setVolume(clamped); }, Qt::QueuedConnection);
+    if (QThread::currentThread() == thread())
+        emit volumeChanged();
+    else
+        QMetaObject::invokeMethod(this, &SpeechPlayer::volumeChanged, Qt::QueuedConnection);
+}
+
+bool SpeechPlayer::starved() const {
+    QMutexLocker lock(&m_mutex);
+    return m_starved;
+}
+
+bool SpeechPlayer::drainedOut() const {
+    QMutexLocker lock(&m_mutex);
+    return m_drained;
 }
 
 void SpeechPlayer::setRate(double rate) {
@@ -1159,7 +1256,8 @@ void SpeechPlayer::setRate(double rate) {
     // cursor to the exact first unplayed source sample so nothing is skipped.
     if (!m_ready.isEmpty()) {
         const ReadyChunk &first = m_ready.first();
-        const int idx = trackIndexLocked(first.trackId);
+        Q_ASSERT(first.sourceStart >= 0);
+        const int idx = trackIndexLocked(first.trackId, lock);
         if (idx >= 0) {
             m_workerIndex = idx;
             m_workerRead = first.sourceStart;
@@ -1171,14 +1269,38 @@ void SpeechPlayer::setRate(double rate) {
     ++m_rateGeneration;
     if (m_workerIndex < m_tracks.size())
         m_workerFinishedAll = false;
+    Q_ASSERT(m_rate >= 0.25 && m_rate <= 4.0);
+    Q_ASSERT(m_workerIndex >= 0 && m_workerIndex <= m_tracks.size());
+    Q_ASSERT(m_workerRead >= 0 && m_readySamples == 0);
     m_cond.wakeOne();
 }
 
 void SpeechPlayer::setStarved(bool starved) {
-    if (starved == m_starved)
+    bool changed = false;
+    {
+        QMutexLocker lock(&m_mutex);
+        if (starved != m_starved) {
+            m_starved = starved;
+            changed = true;
+        }
+    }
+    if (!changed)
         return;
-    m_starved = starved;
-    emit starvedChanged(starved);
+    if (QThread::currentThread() == thread()) {
+        emit starvedChanged(starved);
+    } else {
+        QMetaObject::invokeMethod(
+            this,
+            [this] {
+                bool current = false;
+                {
+                    QMutexLocker lock(&m_mutex);
+                    current = m_starved;
+                }
+                emit starvedChanged(current);
+            },
+            Qt::QueuedConnection);
+    }
 }
 
 #include "speechplayer.moc"

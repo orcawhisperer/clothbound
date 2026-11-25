@@ -98,4 +98,30 @@ QVector<float> resample(const QVector<float> &samples, int from, int to);
 QString speakable(const QString &text);
 // Samples between -1 and 1 as 16-bit PCM.
 QByteArray pcm16(const QVector<float> &samples);
+// Atomically replaces `target` with `source` (POSIX rename with remove+rename fallback).
+bool atomicReplace(const QString &source, const QString &target);
+// Personality trait label for classic Gemini prebuilt voices (shared by Narration & VoiceCatalog).
+QString classicGeminiTrait(const QString &voiceId);
+
+// Stateless clip timeline & seek calculations shared by Narration and tests.
+struct TimelineEntry {
+    int chapter = 0;
+    int pauseMs = 0;
+    qint64 samples = 0;
+};
+struct SeekTarget {
+    int index = -1;
+    qint64 sample = 0;
+    bool wantNextChapter = false;
+};
+qint64 usToSamples(qint64 us, int sampleRate);
+int sentenceForSample(const SpeechClip &clip, const QList<QPair<double, double>> &spans,
+                      const QList<qint64> &boundaries, qint64 expectedSamples, qint64 sample);
+qint64 sampleOfSentence(const SpeechClip &clip, const QList<QPair<double, double>> &spans,
+                        const QList<qint64> &boundaries, qint64 expectedSamples, int sentence);
+SeekTarget seekBySamples(const QList<TimelineEntry> &entries, int currentIndex, qint64 currentSample,
+                         qint64 deltaSamples, int sampleRate);
+SeekTarget seekToChapterUs(const QList<TimelineEntry> &entries, int currentIndex, qint64 targetUs, int sampleRate);
+QPair<qint64, qint64> chapterTimingUs(const QList<TimelineEntry> &entries, int currentIndex, qint64 currentSample,
+                                      int sampleRate);
 }

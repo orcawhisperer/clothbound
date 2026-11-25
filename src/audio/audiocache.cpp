@@ -16,6 +16,7 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QStandardPaths>
+#include <QThread>
 #include <QUrl>
 #include <QtConcurrent>
 #include <QtEndian>
@@ -27,15 +28,6 @@ namespace {
 constexpr int maxConcurrentEncodes = 3;
 constexpr int maxConcurrentDecodes = 4;
 constexpr int touchFlushMs = 5000;
-
-bool atomicReplace(const QString &source, const QString &target) {
-    const QByteArray src = QFile::encodeName(source);
-    const QByteArray dst = QFile::encodeName(target);
-    if (std::rename(src.constData(), dst.constData()) == 0)
-        return true;
-    QFile::remove(target);
-    return QFile::rename(source, target);
-}
 
 bool decodeWavPcm(const QByteArray &bytes, int targetSampleRate, QByteArray &outPcm) {
     if (bytes.size() < 44 || targetSampleRate <= 0)
@@ -220,6 +212,7 @@ void AudioCache::cleanupPartials() {
 }
 
 bool AudioCache::migrate() {
+    Q_ASSERT(QThread::currentThread() == thread());
     QSqlQuery query(QSqlDatabase::database(m_connection));
     return query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS audio_clips (key TEXT PRIMARY KEY, file TEXT NOT NULL,"
                                      " bytes INTEGER NOT NULL, seconds REAL NOT NULL, used_at INTEGER NOT NULL)")) &&
@@ -240,6 +233,7 @@ bool AudioCache::hasBoundaries() const {
 }
 
 QList<qint64> AudioCache::boundaries(const QString &key) {
+    Q_ASSERT(QThread::currentThread() == thread());
     QSqlQuery query(QSqlDatabase::database(m_connection));
     query.prepare(QStringLiteral("SELECT boundaries FROM audio_clips WHERE key = ?"));
     query.addBindValue(key);
@@ -251,6 +245,7 @@ QList<qint64> AudioCache::boundaries(const QString &key) {
 }
 
 QString AudioCache::directions(const QString &key) {
+    Q_ASSERT(QThread::currentThread() == thread());
     QSqlQuery query(QSqlDatabase::database(m_connection));
     query.prepare(QStringLiteral("SELECT json FROM narration_directions WHERE key = ?"));
     query.addBindValue(key);
@@ -258,6 +253,7 @@ QString AudioCache::directions(const QString &key) {
 }
 
 void AudioCache::storeDirections(const QString &key, const QString &json) {
+    Q_ASSERT(QThread::currentThread() == thread());
     QSqlQuery query(QSqlDatabase::database(m_connection));
     query.prepare(QStringLiteral("INSERT OR REPLACE INTO narration_directions (key, json, made_at) VALUES (?, ?, ?)"));
     query.addBindValue(key);
@@ -273,6 +269,7 @@ QString AudioCache::keyFor(const QString &provider, const QString &model, const 
 }
 
 QString AudioCache::lookup(const QString &key) {
+    Q_ASSERT(QThread::currentThread() == thread());
     QSqlDatabase db = QSqlDatabase::database(m_connection);
     QSqlQuery query(db);
     query.prepare(QStringLiteral("SELECT file FROM audio_clips WHERE key = ?"));
@@ -296,6 +293,7 @@ QString AudioCache::lookup(const QString &key) {
 }
 
 QString AudioCache::lookupPath(const QString &key) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     QSqlQuery query(QSqlDatabase::database(m_connection));
     query.prepare(QStringLiteral("SELECT file FROM audio_clips WHERE key = ?"));
     query.addBindValue(key);
@@ -306,6 +304,7 @@ QString AudioCache::lookupPath(const QString &key) const {
 }
 
 QHash<QString, QPair<QString, double>> AudioCache::clipInfoBatch(const QStringList &keys) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     QHash<QString, QPair<QString, double>> result;
     if (keys.isEmpty())
         return result;
@@ -335,6 +334,7 @@ QHash<QString, QPair<QString, double>> AudioCache::clipInfoBatch(const QStringLi
 }
 
 void AudioCache::remove(const QString &key) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (key.isEmpty())
         return;
     m_pendingTouches.remove(key);
@@ -353,6 +353,7 @@ void AudioCache::remove(const QString &key) {
 }
 
 bool AudioCache::isStoring(const QString &key) const {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_activeEncodeKeys.contains(key))
         return true;
     for (const EncodeJob &job : m_encodeQueue)
@@ -361,7 +362,10 @@ bool AudioCache::isStoring(const QString &key) const {
     return false;
 }
 
-bool AudioCache::hasPendingStores() const { return m_activeEncodes > 0 || !m_encodeQueue.isEmpty(); }
+bool AudioCache::hasPendingStores() const {
+    Q_ASSERT(QThread::currentThread() == thread());
+    return m_activeEncodes > 0 || !m_encodeQueue.isEmpty();
+}
 
 void AudioCache::indexClip(const QString &key, const QString &name, double seconds, const QString &joined) {
     const QString path = QDir(m_directory).filePath(name);
@@ -382,6 +386,7 @@ void AudioCache::indexClip(const QString &key, const QString &name, double secon
 }
 
 void AudioCache::store(const QString &key, const QByteArray &pcm, int sampleRate, const QList<qint64> &boundaries) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (pcm.isEmpty() || sampleRate <= 0)
         return;
     const double seconds = double(pcm.size()) / 2.0 / sampleRate;
@@ -459,7 +464,7 @@ void AudioCache::pumpEncodes() {
             if (clearGen != m_clearGen) {
                 QFile::remove(partial);
             } else if (ok && QFile::exists(partial)) {
-                if (atomicReplace(partial, target)) {
+                if (Speech::atomicReplace(partial, target)) {
                     indexClip(key, name, secs, joined);
                 } else {
                     QFile::remove(partial);
@@ -492,6 +497,7 @@ void AudioCache::pumpEncodes() {
 
 void AudioCache::decode(const QString &file, int sampleRate, QObject *context,
                         std::function<void(const QByteArray &, bool)> done) {
+    Q_ASSERT(QThread::currentThread() == thread());
     QObject *target = context ? context : this;
     QPointer<QObject> guard(target);
     auto defer = [target, guard, done](const QByteArray &pcm, bool ok) {
@@ -584,6 +590,7 @@ void AudioCache::syncStats() {
 }
 
 void AudioCache::refreshStats() {
+    Q_ASSERT(QThread::currentThread() == thread());
     const qint64 beforeBytes = m_totalBytes;
     const int beforeClips = m_clipCount;
     syncStats();
@@ -599,6 +606,7 @@ QString AudioCache::audiobookFolder() const {
 }
 
 void AudioCache::openAudiobookFolder() const {
+    Q_ASSERT(QThread::currentThread() == thread());
     const QString folder = audiobookFolder();
     QDir().mkpath(folder);
     QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
@@ -657,6 +665,7 @@ void AudioCache::pumpTrash() {
 }
 
 void AudioCache::clear() {
+    Q_ASSERT(QThread::currentThread() == thread());
     ++m_clearGen;
     m_touchTimer.stop();
     m_pendingTouches.clear();
@@ -754,6 +763,7 @@ void AudioCache::clear() {
 }
 
 double AudioCache::seconds(const QString &key) {
+    Q_ASSERT(QThread::currentThread() == thread());
     QSqlQuery query(QSqlDatabase::database(m_connection));
     query.prepare(QStringLiteral("SELECT seconds FROM audio_clips WHERE key = ?"));
     query.addBindValue(key);

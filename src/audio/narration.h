@@ -1,11 +1,11 @@
 #pragma once
 
 #include "ai/ai.h"
+#include "audio/responsespeech.h"
+#include "audio/sleepcontroller.h"
 #include "audio/speech.h"
 #include "audio/speechcleaner.h"
 
-#include <QDateTime>
-#include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
 #include <QPair>
@@ -81,7 +81,7 @@ public:
     void setFollowing(bool following);
     QString voice() const { return m_voice; }
     QString voiceName() const { return m_voiceName; }
-    QString voiceAccent() const;
+    QString voiceAccent() const { return ResponseSpeech::voiceAccent(m_ai, m_voice); }
     Library *library() const { return m_library; }
     double rate() const { return m_rate; }
     void setRate(double rate);
@@ -91,16 +91,16 @@ public:
     void setPerformance(const QString &performance);
     bool economy() const { return m_economy; }
     void setEconomy(bool economy);
-    int chapter() const;
+    int chapter() const { return m_current >= 0 && m_current < m_clips.size() ? m_clips[m_current].chapter : m_startChapter; }
     qint64 sentenceStart() const { return m_sentenceStart; }
     qint64 sentenceEnd() const { return m_sentenceEnd; }
     int minutesLeftInChapter() const;
     qint64 positionUs() const;
     qint64 durationUs() const;
-    int sleepMinutes() const;
-    int sleepSecondsLeft() const;
-    bool sleepFading() const { return m_sleepFading; }
-    bool sleepAtChapterEnd() const { return m_sleepAtChapterEnd; }
+    int sleepMinutes() const { return m_sleep->sleepMinutes(); }
+    int sleepSecondsLeft() const { return m_sleep->sleepSecondsLeft(); }
+    bool sleepFading() const { return m_sleep->isFading(); }
+    bool sleepAtChapterEnd() const { return m_sleep->atChapterEnd(); }
     QString problem() const { return m_problem; }
     QString fallbackVoice() const { return m_fallbackVoice; }
     QString fallbackVoiceName() const { return m_fallbackVoiceName; }
@@ -109,9 +109,9 @@ public:
     bool hasPendingStart() const { return m_pendingStart; }
     bool preparing() const { return m_holdSamples > 0; }
     int preparedPercent() const;
-    bool speakingResponse() const { return m_responseActive; }
-    bool responseBuffering() const { return m_responseBuffering; }
-    QString speakingResponseId() const { return m_responseId; }
+    bool speakingResponse() const { return m_response->active(); }
+    bool responseBuffering() const { return m_response->buffering(); }
+    QString speakingResponseId() const { return m_response->itemId(); }
 
     // Starts reading the open book at a chapter and offset.
     Q_INVOKABLE void start(int chapter, qint64 offset);
@@ -122,7 +122,9 @@ public:
     Q_INVOKABLE void stop();
     Q_INVOKABLE void speakResponse(const QString &markdownOrText, const QString &itemId);
     Q_INVOKABLE void stopResponse();
-    static QString cleanSpeechText(const QString &markdownOrText);
+    static QString cleanSpeechText(const QString &markdownOrText) {
+        return SpeechCleaner::cleanSpeechText(markdownOrText);
+    }
     Q_INVOKABLE void nextParagraph();
     Q_INVOKABLE void previousParagraph();
     Q_INVOKABLE void nextSentence();
@@ -165,18 +167,7 @@ signals:
 
 private:
     friend class ClothboundTests;
-    struct ResponseChunk {
-        enum State { Waiting, Working, Complete, Failed };
-        int trackId = 0;
-        QString text;
-        QStringList sentences;
-        QString voice;
-        QString key;
-        State state = Waiting;
-        bool queued = false;
-        QByteArray pcm;
-        QPointer<Ai::Reply> reply;
-    };
+    using ResponseChunk = ResponseSpeech::Chunk;
     struct Clip : SpeechClip {
         // Waiting: not started. Working: its audio is arriving (from the
         // network, or being decoded from the cache). Complete: all of it is
@@ -197,57 +188,61 @@ private:
 
     void pump();
     void fetch(int index);
+    void handleFetchError(int index, const Ai::Error &err);
     void decode(int index, const QString &file);
     void queue();
     void stallIfFailed();
     void heard(int trackId, qint64 sample);
     void jumpTo(int index, qint64 sampleOffset = 0, bool preservePause = false, int forceSentence = -1);
     void seekBySamples(qint64 deltaSamples);
-    qint64 sampleOfSentence(const Clip &clip, int sentence) const;
+    QList<Speech::TimelineEntry> timelineEntries() const;
     void showSentenceForSample(int index, qint64 sample, int forceSentence = -1);
-    void showSentence(double fraction);
     void showSentenceAt(int sentence);
-    int indexOfClip(int trackId) const;
+    int indexOfClip(int trackId) const {
+        for (int i = 0; i < m_clips.size(); ++i)
+            if (m_clips[i].id == trackId)
+                return i;
+        return -1;
+    }
     qint64 expectedSamples(const Clip &clip) const;
     bool allRemainingComplete() const;
     void checkHeadStart();
     void setBuffering(bool buffering);
     void setProblem(const QString &problem);
-    void onSleepTick();
-    void finishSleep();
-    void restoreSleepVolume();
+    bool canFeedBookPlayer() const { return m_wanted && !speakingResponse() && !m_bookPlayerDirty; }
+    void claimBookFocus();
+    void restartAtCurrentPosition();
+    void resetQueuedClipsFrom(int startIndex);
+    void stopAtChapterBoundary(int nextIndex);
+    void adoptLocalVoice(const QString &id, const QString &name, const QString &notice);
+    void onSleepTick() { m_sleep->onTick(); }
+    void finishSleep() { m_sleep->finish(); }
     QPair<QString, QString> bestLocalVoice() const;
-    bool localPacksSupported() const;
     void updateFallbackOffer();
     void clearFallbackOffer();
     void setFallbackNotice(const QString &notice);
     bool fallbackToLocalMidSession(int fromIndex, const QString &reason);
-    bool keptDirections(int chapter);
+    bool loadCastForChapter(int chapter, const QList<SpeechBlock> &blocks, bool requestIfMissing);
     QSet<int> breaksFor(int chapter) const;
     QMap<int, QString> blockVoicesFor(int chapter, const QList<SpeechBlock> &blocks) const;
-    // A clip of the chapter's, with its reader.
     Clip clipFrom(const SpeechClip &spoken);
-    QString voiceOf(const Clip &clip) const;
-    // The chapter's clips not yet begun, cut again (after new direction or casting).
+    QString voiceOf(const Clip &clip) const { return clip.voice.isEmpty() ? m_voice : clip.voice; }
     void recut(int chapter);
+    void applyMoods(int chapter, const QMap<int, QString> &moods) {
+        m_moods.insert(chapter, moods);
+        if (!moods.isEmpty())
+            recut(chapter);
+        else
+            pump();
+    }
     void requestCast(int chapter);
     void requestDirections(int chapter);
-    void applyMoods(int chapter, const QMap<int, QString> &moods);
-    bool waitingForDirections(const Clip &clip) const;
     qint64 directionWaitLeft(const Clip &clip) const;
     QString styleFor(const Clip &clip) const;
     bool directed() const;
     Ai::SpeechSynthesizer *speaker() const;
     int nextChapterAfter(int chapter) const;
     void loadVoice();
-    QString resolveResponseVoice() const;
-    int indexOfResponseChunk(int trackId) const;
-    void pumpResponse();
-    void fetchResponse(int index);
-    void decodeResponse(int index, const QString &file);
-    void queueResponse();
-    void failResponse(const QString &message);
-    void setResponseBuffering(bool buffering);
 
     AiServices *m_ai;
     AudioCache *m_cache;
@@ -257,6 +252,15 @@ private:
     Director *m_director;
     QPointer<Cast> m_cast;
     SpeechPlayer *m_player;
+    SleepController *m_sleep;
+    ResponseSpeech *m_response;
+    // References preserved for ClothboundTests friend-class hooks (single source of truth in m_sleep / m_response).
+    SleepController::Deadline &m_sleepAt;
+    bool &m_sleepFading;
+    double &m_preFadeVolume;
+    const QList<ResponseChunk> &m_responseChunks;
+    const QString &m_responseVoice;
+
     QList<Clip> m_clips;
     int m_nextClipId = 1;
     quint64 m_session = 0;
@@ -303,50 +307,7 @@ private:
     int m_pendingChapter = 0;
     qint64 m_pendingOffset = 0;
 
-    struct SleepDeadline {
-        QElapsedTimer clock;
-        qint64 durationMs = 0;
-
-        bool isValid() const { return clock.isValid(); }
-        void clear() {
-            clock.invalidate();
-            durationMs = 0;
-        }
-        void startMs(qint64 ms) {
-            durationMs = ms;
-            clock.start();
-        }
-        qint64 remainingMs() const { return clock.isValid() ? (durationMs - clock.elapsed()) : 0; }
-        SleepDeadline &operator=(const QDateTime &dt) {
-            if (!dt.isValid()) {
-                clear();
-            } else {
-                durationMs = QDateTime::currentDateTime().msecsTo(dt);
-                clock.start();
-            }
-            return *this;
-        }
-    };
-
     QTimer m_directionsTimer;
     QTimer m_retryTimer;
-    QTimer m_sleepTimer;
-    QTimer m_sleepTick;
-    SleepDeadline m_sleepAt;
-    int m_lastSleepSec = 0;
-    bool m_sleepFading = false;
-    bool m_sleepPausedRestore = false;
-    double m_preFadeVolume = -1.0;
-    bool m_sleepAtChapterEnd = false;
-
-    QList<ResponseChunk> m_responseChunks;
-    quint64 m_responseSession = 0;
-    int m_responseCurrent = 0;
-    int m_responseQueued = -1;
-    bool m_responseActive = false;
-    bool m_responseBuffering = false;
-    bool m_responseHeadless = false;
-    QString m_responseId;
-    QString m_responseVoice;
     bool m_bookPlayerDirty = false;
 };

@@ -8,7 +8,9 @@
 #include <QVector>
 #include <QWaitCondition>
 #include <atomic>
+#include <memory>
 #include <thread>
+#include <vector>
 
 class AudioOutputPump;
 
@@ -75,11 +77,11 @@ public:
     void setMuted(bool muted);
     void setHeadless(bool headless);
     bool isHeadless() const;
-    double volume() const { return m_volume; }
+    double volume() const;
     void setVolume(double volume);
-    bool starved() const { return m_starved; }
+    bool starved() const;
     // Everything queued has been heard (or nothing was).
-    bool drainedOut() const { return m_drained; }
+    bool drainedOut() const;
     int sampleRate() const { return m_sampleRate; }
 
 signals:
@@ -94,12 +96,15 @@ signals:
 private:
     friend class ClothboundTests;
     friend class AudioOutputPump;
+    struct PcmBlock {
+        qint64 offset = 0;
+        std::shared_ptr<const std::vector<qint16>> samples;
+    };
     struct Track {
         int id = 0;
-        // Immutable even-aligned PCM chunks so appendAudio() never detaches/deep-copies
-        // audio buffers while the WSOLA worker reads them outside m_mutex.
-        QVector<QByteArray> chunks;
-        QVector<qint64> chunkOffsets;
+        // Non-CoW vector of immutable sample blocks so worker snapshots outside
+        // m_mutex never share Qt QArrayData refcounts with appendAudio() reallocs.
+        std::vector<PcmBlock> blocks;
         qint64 totalSamples = 0;
         char trailingByte = 0;
         bool hasTrailingByte = false;
@@ -125,16 +130,17 @@ private:
     void workerLoop();
     void ensureAudioThread();
     void stopAudioThread();
-    Track *trackLocked(int id);
-    int trackIndexLocked(int id) const;
+    static void copySampleRange(const std::vector<PcmBlock> &blocks, qint64 startSample, qint64 count, qint16 *dst);
+    Track *trackLocked(int id, const QMutexLocker<QMutex> &lock);
+    int trackIndexLocked(int id, const QMutexLocker<QMutex> &lock) const;
     void setStarved(bool starved);
 
-    int m_sampleRate;
+    const int m_sampleRate;
 
     // Dedicated high-priority thread owning QAudioSink, QMediaDevices, and the
     // 15 ms feed/report timer (started lazily on first non-headless play()).
     QThread m_audioThread;
-    AudioOutputPump *m_pump = nullptr;
+    AudioOutputPump *m_pump = nullptr;  // guarded by m_mutex
 
     // Shared between the GUI thread, WSOLA worker thread, and audio output thread.
     mutable QMutex m_mutex;
@@ -155,7 +161,7 @@ private:
     bool m_stopWorker = false;
     std::atomic_bool m_notifyPending{false};
 
-    // GUI thread state mirrors.
+    // State mirrors protected by m_mutex so concurrent callers never race.
     double m_volume = 1.0;
     bool m_muted = false;
     bool m_starved = false;

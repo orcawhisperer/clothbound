@@ -15273,6 +15273,12 @@ async function flushMicrotasks(n = 8) {
     void w5CoreLibSchemaTelemetryAndReadOnlyOpen();
     void w5CoreLibFastEpubImportScanPerformance();
     // === end w5-core-lib tests ===
+
+    // === w5-audio-arch tests ===
+    void w5AudioSleepControllerMonotonicFadeAndChapterEnd();
+    void w5AudioResponseSpeechAndFocusArbitration();
+    void w5AudioSpeechPlayerConcurrencyStress();
+    // === end w5-audio-arch tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS
@@ -16213,5 +16219,410 @@ void ClothboundTests::w5CoreLibFastEpubImportScanPerformance() {
     QVERIFY2(importMs < 250, qPrintable(QStringLiteral("200k-word EPUB import took %1 ms").arg(importMs)));
 }
 // === end w5-core-lib tests ===
+
+// === w5-audio-arch tests ===
+#include "audio/responsespeech.h"
+#include "audio/sleepcontroller.h"
+
+void ClothboundTests::w5AudioSleepControllerMonotonicFadeAndChapterEnd() {
+    // 1. Standalone SleepController: monotonic QElapsedTimer countdown, smooth quadratic fade,
+    //    external volume override, sleep expiry + pre-fade volume restore, and chapter-end mode.
+    SpeechPlayer player(24000);
+    player.setHeadless(true);
+    player.setVolume(0.8);
+    player.play();
+
+    SleepController sleep(&player);
+    QSignalSpy changedSpy(&sleep, &SleepController::changed);
+    QSignalSpy finishedSpy(&sleep, &SleepController::sleepFinished);
+
+    QCOMPARE(sleep.sleepMinutes(), 0);
+    QCOMPARE(sleep.sleepSecondsLeft(), 0);
+    QVERIFY(!sleep.isActive());
+    QVERIFY(!sleep.isFading());
+    QVERIFY(!sleep.atChapterEnd());
+
+    // Arm a 2-minute countdown and verify monotonic elapsed progress.
+    QCOMPARE(sleep.sleepIn(2), false);
+    QVERIFY(sleep.isActive());
+    QCOMPARE(sleep.sleepMinutes(), 2);
+    QVERIFY(sleep.sleepSecondsLeft() >= 119 && sleep.sleepSecondsLeft() <= 120);
+    QVERIFY(changedSpy.count() >= 1);
+
+    sleep.setDeadlineMs(15000);
+    const qint64 remBefore = sleep.deadlineRef().remainingMs();
+    QTest::qWait(30);
+    const qint64 remAfter = sleep.deadlineRef().remainingMs();
+    QVERIFY2(remAfter < remBefore, qPrintable(QStringLiteral("before=%1 after=%2").arg(remBefore).arg(remAfter)));
+    QVERIFY(!sleep.isFading());
+
+    // Smooth quadratic fade curve over the final 10 seconds: vol = preFade * t^2.
+    sleep.setDeadlineMs(8000);
+    sleep.onTick();
+    QVERIFY(sleep.isFading());
+    QVERIFY(qFuzzyCompare(sleep.preFadeVolume(), 0.8));
+    const double vol8s = player.volume();
+    QVERIFY2(vol8s > 0.45 && vol8s < 0.56, qPrintable(QString::number(vol8s)));
+
+    sleep.setDeadlineMs(5000);
+    sleep.onTick();
+    const double vol5s = player.volume();
+    QVERIFY2(vol5s > 0.14 && vol5s < 0.25 && vol5s < vol8s, qPrintable(QString::number(vol5s)));
+
+    sleep.setDeadlineMs(2000);
+    sleep.onTick();
+    const double vol2s = player.volume();
+    QVERIFY2(vol2s > 0.01 && vol2s < 0.06 && vol2s < vol5s, qPrintable(QString::number(vol2s)));
+
+    // External volume change cancels fade and discards pending restore.
+    QCOMPARE(sleep.onExternalVolumeChange(), true);
+    player.setVolume(0.65);
+    QVERIFY(!sleep.isFading());
+    QVERIFY(sleep.preFadeVolume() < 0.0);
+    QVERIFY(qFuzzyCompare(player.volume(), 0.65));
+
+    // Reaching deadline triggers finish(): pauses playback at 0.0 and arms volume restore.
+    sleep.setDeadlineMs(0);
+    sleep.onTick();
+    QCOMPARE(finishedSpy.count(), 1);
+    QVERIFY(!player.isPlaying());
+    QVERIFY(qFuzzyCompare(player.volume(), 0.0));
+    QVERIFY(!sleep.isFading());
+    QVERIFY(sleep.isPausedRestore());
+
+    // Resuming after sleep-pause restores exact pre-fade volume (0.65).
+    QCOMPARE(sleep.onResume(), false);
+    QVERIFY(qFuzzyCompare(player.volume(), 0.65));
+    QVERIFY(!sleep.isPausedRestore());
+
+    // End-of-chapter mode arming, clearing via sleepIn(0), and consumeChapterEnd().
+    sleep.sleepAtEndOfChapter();
+    QVERIFY(sleep.atChapterEnd());
+    QVERIFY(sleep.isActive());
+    QCOMPARE(sleep.sleepMinutes(), 0);
+    QCOMPARE(sleep.sleepSecondsLeft(), 0);
+    QCOMPARE(sleep.sleepIn(0), true);
+    QVERIFY(!sleep.atChapterEnd());
+    QVERIFY(!sleep.isActive());
+
+    sleep.sleepAtEndOfChapter();
+    QVERIFY(sleep.atChapterEnd());
+    sleep.consumeChapterEnd();
+    QVERIFY(!sleep.atChapterEnd());
+    QVERIFY(!sleep.isActive());
+
+    // 2. Deduplicated Speech::atomicReplace() & Speech::classicGeminiTrait().
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString srcPath = dir.filePath(QStringLiteral("clip.part"));
+    const QString dstPath = dir.filePath(QStringLiteral("clip.opus"));
+    {
+        QFile f(srcPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("fresh-payload");
+    }
+    {
+        QFile f(dstPath);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write("stale-payload");
+    }
+    QVERIFY(Speech::atomicReplace(srcPath, dstPath));
+    QVERIFY(!QFile::exists(srcPath));
+    {
+        QFile f(dstPath);
+        QVERIFY(f.open(QIODevice::ReadOnly));
+        QCOMPARE(f.readAll(), QByteArray("fresh-payload"));
+    }
+    QCOMPARE(Speech::classicGeminiTrait(QStringLiteral("sulafat")), QStringLiteral("Warm"));
+    QCOMPARE(Speech::classicGeminiTrait(QStringLiteral("Kore")), QStringLiteral("Firm"));
+}
+
+void ClothboundTests::w5AudioResponseSpeechAndFocusArbitration() {
+    // 1. Direct AudioFocus exclusivity & re-entrancy tests.
+    QObject ownerA;
+    QObject ownerB;
+    int yieldA = 0;
+    int yieldB = 0;
+    auto &focus = AudioFocus::instance();
+    focus.claim(&ownerA, AudioFocus::Kind::Book, [&] {
+        ++yieldA;
+        focus.release(&ownerA, AudioFocus::Kind::Book);
+    });
+    QCOMPARE(focus.currentOwner(), &ownerA);
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Book);
+
+    // Different owner claiming Preview yields Book synchronously.
+    focus.claim(&ownerB, AudioFocus::Kind::Preview, [&] { ++yieldB; });
+    QCOMPARE(yieldA, 1);
+    QCOMPARE(yieldB, 0);
+    QCOMPARE(focus.currentOwner(), &ownerB);
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Preview);
+
+    // Re-claiming the same (owner, kind) does not fire yield; stale release is ignored.
+    focus.claim(&ownerB, AudioFocus::Kind::Preview, [&] { ++yieldB; });
+    QCOMPARE(yieldB, 0);
+    focus.release(&ownerA, AudioFocus::Kind::Book);
+    QCOMPARE(focus.currentOwner(), &ownerB);
+    focus.release(&ownerB, AudioFocus::Kind::Preview);
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::None);
+
+    // 2. End-to-end Book vs Response vs VoiceCatalog Preview mutual exclusion.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString epubPath = dir.filePath(QStringLiteral("focus-arb.epub"));
+    QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(16, 16))));
+
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    const int bookId = library.addBookFile(epubPath);
+    QVERIFY(bookId > 0);
+    BookScheme scheme;
+    Reader reader(&library, &scheme);
+    QVERIFY(reader.openBook(bookId));
+
+    qunsetenv("GEMINI_API_KEY");
+    GeminiProvider gemini;
+    MemoryKeyStore keys;
+    AiServices services(&gemini, &keys, library.database().connectionName());
+    VoicePacks packs(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                     packsManifest(QStringLiteral("http://x")));
+    fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("engine-arm"));
+    fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("kokoro-fp32"));
+    LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+    services.setLocalSpeech(&local);
+    AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+
+    Narration narration(&services, &cache, &reader, &library);
+    narration.m_player->setHeadless(true);
+    VoiceCatalog voices(&services, &cache, &reader, library.database().connectionName(),
+                        dir.filePath(QStringLiteral("voices.json")));
+    voices.m_player->setHeadless(true);
+
+    const QString voiceId = QStringLiteral("builtin:kokoro:bm_george");
+    narration.setVoice(voiceId, QStringLiteral("George"));
+
+    // 2a. Voice preview active -> starting Book narration stops preview cleanly.
+    voices.preview(voiceId, QStringLiteral("Preview sample text before book starts."));
+    QCOMPARE(voices.previewing(), voiceId);
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Preview);
+
+    narration.start(0, 0);
+    narration.addBlocks(0, R"([{"start":0,"end":36,"text":"Book sentence taking exclusive focus.","kind":"text"}])");
+    QVERIFY(voices.previewing().isEmpty());
+    QVERIFY(narration.playing());
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Book);
+    QTRY_VERIFY_WITH_TIMEOUT(!narration.m_clips.isEmpty() && narration.m_clips[0].state == Narration::Clip::Complete,
+                             5000);
+
+    // 2b. Book narration active -> starting VoiceCatalog preview pauses Book cleanly.
+    voices.preview(voiceId, QStringLiteral("Preview interrupts playing book narration."));
+    QVERIFY(!narration.playing());
+    QCOMPARE(voices.previewing(), voiceId);
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Preview);
+
+    // 2c. Voice preview active -> starting Companion response speech stops preview cleanly.
+    narration.speakResponse(QStringLiteral("Companion response stops voice preview."), QStringLiteral("w5-resp-1"));
+    QVERIFY(voices.previewing().isEmpty());
+    QVERIFY(narration.speakingResponse());
+    QVERIFY(!narration.playing());
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Response);
+    QTRY_VERIFY_WITH_TIMEOUT(!narration.m_responseChunks.isEmpty() &&
+                                 narration.m_responseChunks.first().state == Narration::ResponseChunk::Complete,
+                             5000);
+
+    // 2d. Companion response active -> VoiceCatalog preview stops response cleanly.
+    voices.preview(voiceId, QStringLiteral("Preview interrupts companion response."));
+    QVERIFY(!narration.speakingResponse());
+    QCOMPARE(voices.previewing(), voiceId);
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Preview);
+
+    // 2e. Resuming Book narration stops active preview cleanly.
+    narration.resume();
+    QVERIFY(voices.previewing().isEmpty());
+    QVERIFY(narration.playing());
+    QVERIFY(!narration.speakingResponse());
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Book);
+
+    narration.stop();
+    voices.stopPreview();
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::None);
+
+    // 3. Direct standalone ResponseSpeech lifecycle + drain completion.
+    SpeechPlayer standalonePlayer(24000);
+    standalonePlayer.setHeadless(true);
+    ResponseSpeech standalone(&services, &cache, &standalonePlayer);
+    standalone.speak(QStringLiteral("First standalone sentence. Second standalone sentence."),
+                     QStringLiteral("standalone-1"));
+    QVERIFY(standalone.active());
+    QCOMPARE(standalone.itemId(), QStringLiteral("standalone-1"));
+    QVERIFY(!standalone.chunks().isEmpty());
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::Response);
+    QTRY_VERIFY_WITH_TIMEOUT(standalone.chunks().first().state == ResponseSpeech::Chunk::Complete, 5000);
+    QVERIFY(standalonePlayer.hasTrack(standalone.chunks().first().trackId));
+    QVERIFY(standalone.handleDrained());
+    QVERIFY(!standalone.active());
+    QCOMPARE(focus.currentKind(), AudioFocus::Kind::None);
+}
+
+void ClothboundTests::w5AudioSpeechPlayerConcurrencyStress() {
+    constexpr int sr = 24000;
+    constexpr int sineSamples = sr / 2;  // 0.5 s of 330 Hz sine wave
+    QByteArray sinePcm(sineSamples * 2, '\0');
+    auto *pcmData = reinterpret_cast<qint16 *>(sinePcm.data());
+    for (int n = 0; n < sineSamples; ++n)
+        pcmData[n] = qint16(6000 * std::sin(2.0 * M_PI * 330.0 * n / sr));
+
+    SpeechPlayer player(sr);
+    player.setMuted(true);
+
+    // Start the real off-thread WSOLA std::thread worker without requiring a hardware QAudioSink.
+    {
+        QMutexLocker lock(&player.m_mutex);
+        player.m_headless = false;
+        player.m_playing = true;
+        player.startWorker();
+        player.m_cond.wakeOne();
+    }
+
+    std::atomic<bool> go{false};
+    std::atomic<bool> stop{false};
+    std::atomic<int> tracksAdded{0};
+    std::atomic<int> rateChanges{0};
+    std::atomic<int> clearsDone{0};
+    std::atomic<int> chunksConsumed{0};
+    std::atomic<bool> invariantFailed{false};
+
+    // Thread 1: producer appending both aligned and unaligned (odd-byte) PCM chunks across tracks.
+    std::thread producer([&] {
+        while (!go.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        int nextId = 1;
+        while (!stop.load(std::memory_order_relaxed)) {
+            const int id = nextId++;
+            player.addTrack(id, (id % 3 == 0) ? 128 : 0);
+            tracksAdded.fetch_add(1, std::memory_order_relaxed);
+            qsizetype off = 0;
+            int stepIdx = 0;
+            while (off < sinePcm.size() && !stop.load(std::memory_order_relaxed)) {
+                const qsizetype sliceLen = ((stepIdx++ & 1) == 0) ? 1024 : 777;  // mix even & odd byte boundaries
+                const qsizetype take = qMin(sliceLen, sinePcm.size() - off);
+                player.appendAudio(id, sinePcm.mid(off, take));
+                off += take;
+            }
+            player.finishTrack(id);
+            std::this_thread::yield();
+        }
+    });
+
+    // Thread 2: rapid rate/volume/mute mutations exercising WSOLA <-> 1.0x pass-through transitions.
+    std::thread rateMutator([&] {
+        while (!go.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        constexpr double rates[] = {0.75, 1.0, 1.25, 1.5, 2.0, 1.0, 0.85, 1.75};
+        int i = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            player.setRate(rates[i % 8]);
+            player.setVolume(0.2 + 0.1 * (i % 8));
+            player.setMuted((i & 1) == 0);
+            (void)player.volume();
+            (void)player.starved();
+            (void)player.drainedOut();
+            (void)player.isPlaying();
+            ++i;
+            rateChanges.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::yield();
+        }
+    });
+
+    // Thread 3: rapid pause / play / clear lifecycle storms.
+    std::thread lifecycleMutator([&] {
+        while (!go.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        int iter = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            if ((iter % 5) == 0)
+                player.pause();
+            else if ((iter % 5) == 1)
+                player.play();
+            else if ((iter % 5) == 4) {
+                player.clear();
+                clearsDone.fetch_add(1, std::memory_order_relaxed);
+            }
+            ++iter;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+    });
+
+    // Thread 4: simulated AudioOutputPump consumer verifying ready-queue invariants.
+    std::thread consumer([&] {
+        while (!go.load(std::memory_order_acquire))
+            std::this_thread::yield();
+        while (!stop.load(std::memory_order_relaxed)) {
+            bool woke = false;
+            {
+                QMutexLocker lock(&player.m_mutex);
+                if (player.m_readySamples < 0 || (player.m_ready.isEmpty() && player.m_readySamples != 0))
+                    invariantFailed.store(true, std::memory_order_relaxed);
+                while (!player.m_ready.isEmpty()) {
+                    const SpeechPlayer::ReadyChunk chunk = player.m_ready.takeFirst();
+                    if ((chunk.bytes.size() & 1) != 0 || chunk.sourceStart < 0 || chunk.rate < 0.25 ||
+                        chunk.rate > 4.0) {
+                        invariantFailed.store(true, std::memory_order_relaxed);
+                    }
+                    player.m_readySamples = qMax<qint64>(0, player.m_readySamples - chunk.bytes.size() / 2);
+                    chunksConsumed.fetch_add(1, std::memory_order_relaxed);
+                    woke = true;
+                }
+                if (woke)
+                    player.m_cond.wakeOne();
+            }
+            std::this_thread::yield();
+        }
+    });
+
+    go.store(true, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    stop.store(true, std::memory_order_relaxed);
+
+    producer.join();
+    rateMutator.join();
+    lifecycleMutator.join();
+    consumer.join();
+
+    QVERIFY(!invariantFailed.load());
+    QVERIFY2(tracksAdded.load() > 0, "Producer must have added tracks");
+    QVERIFY2(rateChanges.load() > 0, "Rate mutator must have executed");
+    QVERIFY2(clearsDone.load() > 0, "Lifecycle mutator must have cleared");
+    QVERIFY2(chunksConsumed.load() > 0, "Consumer must have drained WSOLA output chunks");
+
+    // Verify clean deterministic recovery on the same SpeechPlayer after the stress storm.
+    player.clear();
+    player.setRate(1.25);
+    player.addTrack(99999);
+    player.appendAudio(99999, sinePcm);
+    player.finishTrack(99999);
+    {
+        QMutexLocker lock(&player.m_mutex);
+        player.m_playing = true;
+        player.m_cond.wakeOne();
+    }
+
+    qint64 recoveredSamples = 0;
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        QMutexLocker lock(&player.m_mutex);
+        while (!player.m_ready.isEmpty()) {
+            const SpeechPlayer::ReadyChunk c = player.m_ready.takeFirst();
+            player.m_readySamples = qMax<qint64>(0, player.m_readySamples - c.bytes.size() / 2);
+            recoveredSamples += c.bytes.size() / 2;
+        }
+        player.m_cond.wakeOne();
+        return player.m_workerFinishedAll && player.m_ready.isEmpty() && player.m_readySamples == 0;
+    }()), 5000);
+
+    player.stopWorker();
+    QCoreApplication::processEvents();
+    QVERIFY2(recoveredSamples > sineSamples / 2, qPrintable(QString::number(recoveredSamples)));
+}
+// === end w5-audio-arch tests ===
 
 #include "clothbound_tests.moc"

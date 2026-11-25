@@ -54,6 +54,13 @@ public:
     // preserving mood continuity across page boundaries.
     void askPdfBatch(int page, const QString &performance, QObject *context,
                      std::function<void(const QHash<int, QMap<int, QString>> &byPage)> done);
+    // Unified EPUB/PDF helpers: resolves cached moods or requests them for either
+    // a single EPUB chapter or the enclosing PDF page batch.
+    std::optional<QHash<int, QMap<int, QString>>> keptChapterOrBatch(int chapter, const QList<SpeechBlock> &blocks,
+                                                                     const QString &performance) const;
+    QPair<int, int> chapterRange(int chapter) const;
+    void askChapterOrBatch(int chapter, const QList<SpeechBlock> &blocks, const QString &performance, QObject *context,
+                           std::function<void(const QHash<int, QMap<int, QString>> &byChapter)> done);
     // Aborts any in-flight direction requests.
     void cancel();
 

@@ -19,10 +19,10 @@
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QUrl>
 #include <QtEndian>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -41,15 +41,6 @@ QString escaped(const QString &value) {
         out += c;
     }
     return out;
-}
-
-bool atomicReplace(const QString &source, const QString &target) {
-    const QByteArray src = QFile::encodeName(source);
-    const QByteArray dst = QFile::encodeName(target);
-    if (std::rename(src.constData(), dst.constData()) == 0)
-        return true;
-    QFile::remove(target);
-    return QFile::rename(source, target);
 }
 
 // Reads {channels, sampleRate} from a standard PCM WAV header; returns {0, 0} if non-standard.
@@ -148,6 +139,7 @@ void Audiobook::fail(const QString &problem) {
 }
 
 void Audiobook::cancel() {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_cancelled = true;
     m_prepQueue.clear();
     if (m_ffmpeg)
@@ -155,6 +147,7 @@ void Audiobook::cancel() {
 }
 
 void Audiobook::revealSaved() const {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_saved.isEmpty() || !QFileInfo::exists(m_saved))
         return;
     const QString savedPath = m_saved;
@@ -179,6 +172,7 @@ void Audiobook::revealSaved() const {
 }
 
 void Audiobook::save() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_busy)
         return;
     m_problem.clear();
@@ -547,7 +541,7 @@ void Audiobook::startMux() {
                            .arg(QString::fromUtf8(process->readAllStandardError()).trimmed().left(200)));
             return;
         }
-        if (!atomicReplace(partial, target)) {
+        if (!Speech::atomicReplace(partial, target)) {
             fail(tr("Couldn't move the audiobook into %1.").arg(target));
             return;
         }

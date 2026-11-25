@@ -2,6 +2,7 @@
 
 #include "ai/aiservices.h"
 #include "audio/audiocache.h"
+#include "audio/responsespeech.h"
 #include "reader/reader.h"
 #include "audio/speech.h"
 #include "audio/speechplayer.h"
@@ -17,6 +18,7 @@
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSqlQuery>
+#include <QThread>
 #include <algorithm>
 #include <memory>
 
@@ -60,41 +62,6 @@ QString regionOf(const QString &language) {
     const QString norm = QString(language).replace('_', '-');
     return norm.section('-', 1, 1).toUpper();
 }
-QString classicTrait(const QString &id) {
-    static const QHash<QString, QString> traits{
-        {QStringLiteral("sulafat"), QStringLiteral("Warm")},
-        {QStringLiteral("charon"), QStringLiteral("Informative")},
-        {QStringLiteral("kore"), QStringLiteral("Firm")},
-        {QStringLiteral("puck"), QStringLiteral("Upbeat")},
-        {QStringLiteral("aoede"), QStringLiteral("Breezy")},
-        {QStringLiteral("fenrir"), QStringLiteral("Excitable")},
-        {QStringLiteral("zephyr"), QStringLiteral("Bright")},
-        {QStringLiteral("orus"), QStringLiteral("Firm")},
-        {QStringLiteral("leda"), QStringLiteral("Youthful")},
-        {QStringLiteral("autonoe"), QStringLiteral("Bright")},
-        {QStringLiteral("enceladus"), QStringLiteral("Breathy")},
-        {QStringLiteral("iapetus"), QStringLiteral("Clear")},
-        {QStringLiteral("umbriel"), QStringLiteral("Easy-going")},
-        {QStringLiteral("algieba"), QStringLiteral("Smooth")},
-        {QStringLiteral("despina"), QStringLiteral("Smooth")},
-        {QStringLiteral("erinome"), QStringLiteral("Clear")},
-        {QStringLiteral("algenib"), QStringLiteral("Gravelly")},
-        {QStringLiteral("rasalgethi"), QStringLiteral("Informative")},
-        {QStringLiteral("laomedeia"), QStringLiteral("Upbeat")},
-        {QStringLiteral("achernar"), QStringLiteral("Soft")},
-        {QStringLiteral("alnilam"), QStringLiteral("Firm")},
-        {QStringLiteral("schedar"), QStringLiteral("Even")},
-        {QStringLiteral("gacrux"), QStringLiteral("Mature")},
-        {QStringLiteral("pulcherrima"), QStringLiteral("Forward")},
-        {QStringLiteral("achird"), QStringLiteral("Friendly")},
-        {QStringLiteral("zubenelgenubi"), QStringLiteral("Casual")},
-        {QStringLiteral("vindemiatrix"), QStringLiteral("Gentle")},
-        {QStringLiteral("sadachbia"), QStringLiteral("Lively")},
-        {QStringLiteral("sadaltager"), QStringLiteral("Knowledgeable")},
-        {QStringLiteral("callirrhoe"), QStringLiteral("Easy-going")},
-    };
-    return traits.value(id.toLower());
-}
 }
 
 VoiceCatalog::VoiceCatalog(AiServices *ai, AudioCache *cache, Reader *reader, const QString &databaseConnection,
@@ -110,6 +77,7 @@ VoiceCatalog::VoiceCatalog(AiServices *ai, AudioCache *cache, Reader *reader, co
         }
     });
     connect(m_player, &SpeechPlayer::drained, this, [this] {
+        AudioFocus::instance().release(this, AudioFocus::Kind::Preview);
         if (m_previewing.isEmpty())
             return;
         m_previewing.clear();
@@ -124,6 +92,7 @@ VoiceCatalog::VoiceCatalog(AiServices *ai, AudioCache *cache, Reader *reader, co
 }
 
 VoiceCatalog::~VoiceCatalog() {
+    AudioFocus::instance().release(this, AudioFocus::Kind::Preview);
     if (m_refreshReply)
         m_refreshReply->abort();
     if (m_studioReply)
@@ -167,6 +136,7 @@ void VoiceCatalog::save() const {
 }
 
 void VoiceCatalog::setVoices(const QList<Ai::Voice> &voices) {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_voices = voices;
     emit changed();
 }
@@ -179,6 +149,7 @@ void VoiceCatalog::setProblem(const QString &problem) {
 }
 
 void VoiceCatalog::refresh(bool force) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_loading)
         return;
     if (!force && !m_voices.isEmpty() && m_fetched.isValid() && m_fetched.secsTo(QDateTime::currentDateTime()) < 24 * 3600)
@@ -224,7 +195,7 @@ QVariantMap VoiceCatalog::toMap(const Ai::Voice &voice) {
     map["title"] = !voice.designed && !isClassic(voice) && !voice.accent.isEmpty() ? voice.accent : map["name"];
     map["description"] = voice.description;
     const bool studio = voice.id.startsWith(QLatin1String("studio:"));
-    const QString trait = isClassic(voice) && !studio ? classicTrait(voice.id) : QString();
+    const QString trait = isClassic(voice) && !studio ? Speech::classicGeminiTrait(voice.id) : QString();
     QString accent = voice.accent;
     if (accent.isEmpty())
         accent = trait;
@@ -381,6 +352,7 @@ QVariantList VoiceCatalog::studioVoices() const {
 }
 
 void VoiceCatalog::loadStudioVoices() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_studioReply) {
         m_studioReply->abort();
         m_studioReply = nullptr;
@@ -421,7 +393,9 @@ void VoiceCatalog::loadStudioVoices() {
 }
 
 int VoiceCatalog::startPreview(const QString &voiceId) {
+    Q_ASSERT(QThread::currentThread() == thread());
     stopPreview();
+    AudioFocus::instance().claim(this, AudioFocus::Kind::Preview, [this] { stopPreview(); });
     m_previewing = voiceId;
     m_previewBuffering = true;
     emit previewChanged();
@@ -478,6 +452,7 @@ void VoiceCatalog::synthesizePreview(int track, const QString &voiceId, const QS
 }
 
 void VoiceCatalog::preview(const QString &voiceId, const QString &text) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (voiceId.isEmpty())
         return;
     if (!m_ai->canSpeakWith(voiceId)) {
@@ -518,6 +493,8 @@ void VoiceCatalog::preview(const QString &voiceId, const QString &text) {
 }
 
 void VoiceCatalog::stopPreview() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    AudioFocus::instance().release(this, AudioFocus::Kind::Preview);
     ++m_previewTrack;
     if (m_previewReply)
         m_previewReply->abort();
@@ -537,6 +514,7 @@ void VoiceCatalog::setCasting(const QString &state, const QString &problem) {
 }
 
 void VoiceCatalog::resetCasting() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_castingReply)
         m_castingReply->abort();
     stopPreview();
@@ -548,6 +526,7 @@ void VoiceCatalog::resetCasting() {
 }
 
 void VoiceCatalog::cast(const QString &passage) {
+    Q_ASSERT(QThread::currentThread() == thread());
     Ai::TextModel *model = m_ai->textFor(QStringLiteral("casting"));
     Ai::Provider *provider = m_ai->textProviderFor(QStringLiteral("casting"));
     if (!model || !m_ai->voiceDesigner()) {
@@ -609,6 +588,7 @@ void VoiceCatalog::cast(const QString &passage) {
 }
 
 void VoiceCatalog::design(const QVariantMap &proposal) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_ai->voiceDesigner()) {
         setCasting(QStringLiteral("failed"), m_ai->describe(int(Ai::Error::NoKey)));
         return;
@@ -672,6 +652,7 @@ void VoiceCatalog::design(const QVariantMap &proposal) {
 }
 
 void VoiceCatalog::forget(const QString &voiceId) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_ai->voiceDesigner() || voiceId.isEmpty())
         return;
     if (m_previewing == voiceId)
@@ -711,6 +692,7 @@ void VoiceCatalog::remember(const Ai::Voice &voice, const Ai::VoiceDesign &desig
 }
 
 void VoiceCatalog::revise() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_proposal.isEmpty())
         return;
     stopPreview();
@@ -718,6 +700,7 @@ void VoiceCatalog::revise() {
 }
 
 void VoiceCatalog::playSample() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_sample.isEmpty() || m_designed.isEmpty())
         return;
     const int track = startPreview(m_designed.value("id").toString());

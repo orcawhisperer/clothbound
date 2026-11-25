@@ -5,24 +5,17 @@
 #include "audio/audiocache.h"
 #include "audio/cast.h"
 #include "audio/director.h"
-#include "library/library.h"
-#include "audio/localspeech.h"
-#include "reader/reader.h"
 #include "audio/speechplayer.h"
-#include "audio/voicepacks.h"
+#include "library/library.h"
+#include "reader/reader.h"
 
-#include <QAudioDevice>
-#include <QFile>
-#include <QJsonArray>
-#include <QJsonDocument>
-#include <QJsonObject>
-#include <QMediaDevices>
+#include <QDateTime>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QThread>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <limits>
 
 namespace {
 QSettings settings() {
@@ -37,125 +30,66 @@ void trace(const QString &message) {
     if (on)
         fprintf(stderr, "narration %6.2fs %s\n", (nowMs() - started) / 1000.0, qPrintable(message));
 }
-// Clips after the first few wait this long for the director or cast before
-// going ahead in the ordinary reading.
 constexpr qint64 directionsPatienceMs = 6000;
-// Narration runs at about this many characters a minute at normal speed.
 constexpr double charsPerMinute = 900;
 constexpr int sampleRate = 24000;
-constexpr qint64 sleepFadeMs = 10000;
 constexpr qint64 timeEmitIntervalMs = 250;
-
-QString classicGeminiTrait(const QString &voiceId) {
-    static const QHash<QString, QString> traits{
-        {QStringLiteral("sulafat"), QStringLiteral("Warm")},
-        {QStringLiteral("charon"), QStringLiteral("Informative")},
-        {QStringLiteral("kore"), QStringLiteral("Firm")},
-        {QStringLiteral("puck"), QStringLiteral("Upbeat")},
-        {QStringLiteral("aoede"), QStringLiteral("Breezy")},
-        {QStringLiteral("fenrir"), QStringLiteral("Excitable")},
-        {QStringLiteral("zephyr"), QStringLiteral("Bright")},
-        {QStringLiteral("orus"), QStringLiteral("Firm")},
-        {QStringLiteral("leda"), QStringLiteral("Youthful")},
-        {QStringLiteral("autonoe"), QStringLiteral("Bright")},
-        {QStringLiteral("enceladus"), QStringLiteral("Breathy")},
-        {QStringLiteral("iapetus"), QStringLiteral("Clear")},
-        {QStringLiteral("umbriel"), QStringLiteral("Easy-going")},
-        {QStringLiteral("algieba"), QStringLiteral("Smooth")},
-        {QStringLiteral("despina"), QStringLiteral("Smooth")},
-        {QStringLiteral("erinome"), QStringLiteral("Clear")},
-        {QStringLiteral("algenib"), QStringLiteral("Gravelly")},
-        {QStringLiteral("rasalgethi"), QStringLiteral("Informative")},
-        {QStringLiteral("laomedeia"), QStringLiteral("Upbeat")},
-        {QStringLiteral("achernar"), QStringLiteral("Soft")},
-        {QStringLiteral("alnilam"), QStringLiteral("Firm")},
-        {QStringLiteral("schedar"), QStringLiteral("Even")},
-        {QStringLiteral("gacrux"), QStringLiteral("Mature")},
-        {QStringLiteral("pulcherrima"), QStringLiteral("Forward")},
-        {QStringLiteral("achird"), QStringLiteral("Friendly")},
-        {QStringLiteral("zubenelgenubi"), QStringLiteral("Casual")},
-        {QStringLiteral("vindemiatrix"), QStringLiteral("Gentle")},
-        {QStringLiteral("sadachbia"), QStringLiteral("Lively")},
-        {QStringLiteral("sadaltager"), QStringLiteral("Knowledgeable")},
-        {QStringLiteral("callirrhoe"), QStringLiteral("Easy-going")},
-    };
-    return traits.value(voiceId.toLower());
-}
-
-qint64 usToSamples(qint64 us, int rate) {
-    // Split into whole seconds + sub-second remainder after clamping so
-    // extreme D-Bus Seek/SetPosition values can never overflow int64.
-    constexpr qint64 maxUs = 100LL * 365 * 24 * 3600 * 1000000LL;
-    const qint64 clamped = std::clamp(us, -maxUs, maxUs);
-    const qint64 sec = clamped / 1000000LL;
-    const qint64 rem = clamped % 1000000LL;
-    return sec * rate + (rem * rate) / 1000000LL;
-}
-
-}
+}  // namespace
 
 Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, QObject *parent)
     : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_library(library),
-      m_director(new Director(ai, cache, reader, this)), m_player(new SpeechPlayer(sampleRate, this)) {
+      m_director(new Director(ai, cache, reader, this)), m_player(new SpeechPlayer(sampleRate, this)),
+      m_sleep(new SleepController(m_player, this)), m_response(new ResponseSpeech(ai, cache, m_player, this)),
+      m_sleepAt(m_sleep->deadlineRef()), m_sleepFading(m_sleep->fadingRef()),
+      m_preFadeVolume(m_sleep->preFadeVolumeRef()), m_responseChunks(m_response->chunks()),
+      m_responseVoice(m_response->voice()) {
+    m_sleep->setCallbacks({[this] { return m_active; }, [this] { return m_wanted; },
+                           [this] { stopResponse(); }, [this] { pause(); }});
+    connect(m_sleep, &SleepController::changed, this, &Narration::sleepChanged);
+
+    m_response->setCallbacks({
+        [this] { return m_nextClipId++; },
+        [this] {
+            if (!m_voice.isEmpty())
+                return m_voice;
+            if (m_library && m_reader && m_reader->bookId() > 0)
+                return m_library->bookSetting(m_reader->bookId(), QStringLiteral("voice"));
+            return QString();
+        },
+        [this] { return m_reader ? m_reader->language() : QString(); },
+        [this] { return m_economy; },
+        [this] {
+            if (playing())
+                pause();
+            setProblem({});
+            if (m_active)
+                m_bookPlayerDirty = true;
+            if (m_reader && m_reader->bookId() > 0)
+                m_bookId = m_reader->bookId();
+        },
+        [this](const QString &msg) { setProblem(msg); },
+    });
+    connect(m_response, &ResponseSpeech::changed, this, &Narration::responseSpeechChanged);
+    connect(m_response, &ResponseSpeech::problemOccurred, this, &Narration::responseSpeechProblem);
+
     connect(m_player, &SpeechPlayer::position, this, &Narration::heard);
     connect(m_player, &SpeechPlayer::volumeChanged, this, &Narration::volumeChanged);
     connect(m_player, &SpeechPlayer::sinkError, this, [this](const QString &message) {
-        if (m_responseActive) {
-            failResponse(message);
-            return;
-        }
-        if (!m_active)
+        if (m_response->handleSinkError(message) || !m_active)
             return;
         pause();
         setProblem(message);
     });
     connect(m_player, &SpeechPlayer::starvedChanged, this, [this](bool starved) {
-        if (m_responseActive) {
-            setResponseBuffering(starved);
-            return;
-        }
-        if (m_wanted)
+        if (!m_response->handleStarved(starved) && m_wanted)
             setBuffering(starved);
     });
     connect(m_player, &SpeechPlayer::drained, this, [this] {
-        if (m_responseActive) {
-            if (m_responseQueued + 1 >= m_responseChunks.size()) {
-                stopResponse();
-                return;
-            }
-            if (m_responseChunks[m_responseQueued + 1].state == ResponseChunk::Failed) {
-                stopResponse();
-                return;
-            }
-            pumpResponse();
-            if (m_responseActive && m_player->drainedOut())
-                setResponseBuffering(true);
+        if (m_response->handleDrained() || !m_active)
             return;
-        }
-        // Everything queued has been heard: chapter end (for sleep), the end
-        // of the book, or the next chapter's words haven't arrived yet.
-        if (!m_active)
-            return;
-        if (m_sleepAtChapterEnd && m_current >= 0 && m_current < m_clips.size() &&
+        if (m_sleep->atChapterEnd() && m_current >= 0 && m_current < m_clips.size() &&
             (m_queued + 1 >= m_clips.size() || m_clips[m_queued + 1].chapter != m_clips[m_current].chapter)) {
-            m_sleepAtChapterEnd = false;
-            const bool hasNextClip = m_queued + 1 < m_clips.size();
-            if (hasNextClip) {
-                m_current = m_queued + 1;
-                m_currentSample = 0;
-                m_sentence = -1;
-                m_bookPlayerDirty = true;
-                m_player->clear();
-            }
-            pause();
-            if (hasNextClip) {
-                if (!m_clips[m_current].sentences.isEmpty())
-                    showSentenceForSample(m_current, 0, 0);
-                else
-                    emit positionChanged();
-                emit timeChanged();
-            }
-            emit sleepChanged();
+            stopAtChapterBoundary(m_queued + 1 < m_clips.size() ? m_queued + 1 : -1);
             return;
         }
         if (m_queued + 1 < m_clips.size() && m_clips[m_queued + 1].state == Clip::Failed) {
@@ -179,16 +113,10 @@ Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library 
         if (m_active && m_wanted)
             pump();
     });
-    m_sleepTimer.setSingleShot(true);
-    connect(&m_sleepTimer, &QTimer::timeout, this, &Narration::finishSleep);
-    m_sleepTick.setInterval(1000);
-    connect(&m_sleepTick, &QTimer::timeout, this, &Narration::onSleepTick);
     connect(m_reader, &Reader::speakable, this, &Narration::addBlocks);
-    // The open book's narrator and style are known before listening starts,
-    // so they can be shown and changed.
     connect(m_reader, &Reader::bookChanged, this, [this] {
         m_pendingStart = false;
-        if (m_responseActive && (m_reader->bookId() <= 0 || m_reader->bookId() != m_bookId))
+        if (speakingResponse() && (m_reader->bookId() <= 0 || m_reader->bookId() != m_bookId))
             stopResponse();
         if (m_active && m_reader->bookId() != m_bookId)
             stop();
@@ -209,21 +137,69 @@ Narration::~Narration() { stop(); }
 double Narration::volume() const { return m_player->volume(); }
 
 void Narration::setVolume(double volume) {
+    Q_ASSERT(QThread::currentThread() == thread());
     // Explicit external volume change supersedes any pending sleep-fade restore.
-    const bool wasFading = m_sleepFading;
-    m_sleepPausedRestore = false;
-    m_sleepFading = false;
-    m_preFadeVolume = -1.0;
+    const bool wasFading = m_sleep->onExternalVolumeChange();
     m_player->setVolume(volume);
     if (wasFading)
         emit sleepChanged();
 }
 
-int Narration::indexOfClip(int trackId) const {
-    for (int i = 0; i < m_clips.size(); ++i)
-        if (m_clips[i].id == trackId)
-            return i;
-    return -1;
+void Narration::claimBookFocus() {
+    AudioFocus::instance().claim(this, AudioFocus::Kind::Book, [this] {
+        if (playing())
+            pause();
+    });
+}
+
+void Narration::restartAtCurrentPosition() {
+    if (!m_active)
+        return;
+    const int at = m_sentenceStart >= 0 ? chapter() : m_startChapter;
+    const qint64 offset = m_sentenceStart >= 0 ? m_sentenceStart : m_startOffset;
+    const bool wanted = m_wanted;
+    start(at, offset);
+    if (!wanted)
+        pause();
+}
+
+void Narration::resetQueuedClipsFrom(int startIndex) {
+    Q_ASSERT(startIndex >= 0 && startIndex < m_clips.size());
+    m_queued = startIndex - 1;
+    for (int i = startIndex; i < m_clips.size(); ++i) {
+        m_clips[i].queued = false;
+        if (m_clips[i].state == Clip::Complete && m_clips[i].pcm.isEmpty())
+            m_clips[i].state = Clip::Waiting;
+    }
+}
+
+void Narration::stopAtChapterBoundary(int nextIndex) {
+    const bool hasNextClip = nextIndex >= 0 && nextIndex < m_clips.size();
+    if (hasNextClip) {
+        m_current = nextIndex;
+        m_currentSample = 0;
+        m_sentence = -1;
+        m_bookPlayerDirty = true;
+        m_player->clear();
+    }
+    pause();
+    if (hasNextClip) {
+        if (!m_clips[m_current].sentences.isEmpty())
+            showSentenceForSample(m_current, 0, 0);
+        else
+            emit positionChanged();
+        emit timeChanged();
+    }
+    m_sleep->consumeChapterEnd();
+}
+
+void Narration::adoptLocalVoice(const QString &id, const QString &name, const QString &notice) {
+    m_voice = id;
+    m_voiceName = name;
+    if (m_cast)
+        m_cast->setNarrator(m_voice);
+    emit voiceChanged();
+    setFallbackNotice(notice);
 }
 
 void Narration::loadVoice() {
@@ -249,27 +225,8 @@ void Narration::loadVoice() {
     emit voiceChanged();
 }
 
-int Narration::chapter() const {
-    return m_current >= 0 && m_current < m_clips.size() ? m_clips[m_current].chapter : m_startChapter;
-}
-
-QString Narration::voiceAccent() const {
-    if (m_voice.isEmpty())
-        return {};
-    if (AiServices::isBuiltinVoice(m_voice)) {
-        if (auto *local = qobject_cast<LocalSpeech *>(m_ai->providerFor(QStringLiteral("builtin:"))))
-            if (local->packs())
-                return local->packs()->voice(m_voice).value(QStringLiteral("accent")).toString();
-        return {};
-    }
-    if (AiServices::isStudioVoice(m_voice)) {
-        const QString model = m_ai ? m_ai->localSpeechModel() : QString();
-        return model.isEmpty() ? tr("Studio") : model;
-    }
-    return classicGeminiTrait(m_voice);
-}
-
 void Narration::setFollowing(bool following) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (following == m_following)
         return;
     m_following = following;
@@ -279,6 +236,7 @@ void Narration::setFollowing(bool following) {
 }
 
 void Narration::setRate(double rate) {
+    Q_ASSERT(QThread::currentThread() == thread());
     rate = std::clamp(std::round(rate * 20) / 20, 0.75, 2.0);
     if (qFuzzyCompare(rate, m_rate))
         return;
@@ -292,6 +250,7 @@ void Narration::setRate(double rate) {
 }
 
 void Narration::setPerformance(const QString &performance) {
+    Q_ASSERT(QThread::currentThread() == thread());
     static const QStringList known{"plain", "natural", "dramatic"};
     if (!known.contains(performance) || performance == m_performance)
         return;
@@ -300,18 +259,11 @@ void Narration::setPerformance(const QString &performance) {
     if (m_reader->bookId() > 0)
         m_library->setBookSetting(m_reader->bookId(), QStringLiteral("performance"), performance);
     emit settingsChanged();
-    // The new reading takes over from the sentence being spoken (or where we started).
-    if (m_active) {
-        const int at = m_sentenceStart >= 0 ? chapter() : m_startChapter;
-        const qint64 offset = m_sentenceStart >= 0 ? m_sentenceStart : m_startOffset;
-        const bool wanted = m_wanted;
-        start(at, offset);
-        if (!wanted)
-            pause();
-    }
+    restartAtCurrentPosition();
 }
 
 void Narration::setEconomy(bool economy) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (economy == m_economy)
         return;
     m_economy = economy;
@@ -320,6 +272,7 @@ void Narration::setEconomy(bool economy) {
 }
 
 void Narration::setVoice(const QString &id, const QString &name) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (id.isEmpty())
         return;
     m_voice = id;
@@ -336,18 +289,11 @@ void Narration::setVoice(const QString &id, const QString &name) {
     if (m_cast)
         m_cast->setNarrator(m_voice);
     emit voiceChanged();
-    // The new voice takes over from the sentence being spoken (or where we started).
-    if (m_active) {
-        const int at = m_sentenceStart >= 0 ? chapter() : m_startChapter;
-        const qint64 offset = m_sentenceStart >= 0 ? m_sentenceStart : m_startOffset;
-        const bool wanted = m_wanted;
-        start(at, offset);
-        if (!wanted)
-            pause();
-    }
+    restartAtCurrentPosition();
 }
 
 void Narration::useFallbackVoice() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (m_fallbackVoice.isEmpty() || !m_ai->canSpeakWith(m_fallbackVoice))
         return;
     const QString id = m_fallbackVoice;
@@ -368,6 +314,7 @@ void Narration::useFallbackVoice() {
 }
 
 void Narration::startPending() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_pendingStart)
         return;
     const int ch = m_pendingChapter;
@@ -394,33 +341,17 @@ void Narration::setProblem(const QString &problem) {
 }
 
 QPair<QString, QString> Narration::bestLocalVoice() const {
-    auto *local = qobject_cast<LocalSpeech *>(m_ai->providerFor(QStringLiteral("builtin:")));
-    if (!local)
-        return {};
-    const QVariantMap best = local->bestInstalledVoice(m_reader ? m_reader->language() : QString());
-    if (best.isEmpty())
-        return {};
-    const QString id = best.value(QStringLiteral("id")).toString();
-    const QString name = best.value(QStringLiteral("name")).toString();
-    if (id.isEmpty() || !m_ai->canSpeakWith(id))
-        return {};
-    return {id, name.isEmpty() ? id : name};
-}
-
-bool Narration::localPacksSupported() const {
-    auto *local = qobject_cast<LocalSpeech *>(m_ai->providerFor(QStringLiteral("builtin:")));
-    return local && local->packsSupported();
+    return ResponseSpeech::bestLocalVoice(m_ai, m_reader ? m_reader->language() : QString(), false);
 }
 
 void Narration::updateFallbackOffer() {
     const auto [id, name] = bestLocalVoice();
-    QString nextId;
-    QString nextName;
+    QString nextId, nextName;
     bool nextSetup = false;
     if (!id.isEmpty() && id != m_voice) {
         nextId = id;
         nextName = name;
-    } else if (id.isEmpty() && !AiServices::isBuiltinVoice(m_voice) && localPacksSupported()) {
+    } else if (id.isEmpty() && !AiServices::isBuiltinVoice(m_voice) && ResponseSpeech::localPacksSupported(m_ai)) {
         nextSetup = true;
     }
     if (nextId != m_fallbackVoice || nextName != m_fallbackVoiceName || nextSetup != m_offerOfflineSetup) {
@@ -454,14 +385,10 @@ bool Narration::fallbackToLocalMidSession(int fromIndex, const QString &reason) 
     trace(QStringLiteral("fallback mid-session -> %1 (%2)").arg(fbId, reason));
     m_retryTimer.stop();
     clearFallbackOffer();
-    m_voice = fbId;
-    m_voiceName = fbName;
-    if (m_cast)
-        m_cast->setNarrator(m_voice);
-    emit voiceChanged();
     setProblem({});
-    setFallbackNotice(reason.isEmpty() ? tr("Switched to %1 offline").arg(fbName)
-                                       : tr("Switched to %1 offline (%2)").arg(fbName, reason));
+    adoptLocalVoice(fbId, fbName,
+                    reason.isEmpty() ? tr("Switched to %1 offline").arg(fbName)
+                                     : tr("Switched to %1 offline (%2)").arg(fbName, reason));
     // Abort any other in-flight cloud requests for unqueued clips from fromIndex
     // onward and re-synthesize them locally.
     for (int i = qMax(0, fromIndex); i < m_clips.size(); ++i) {
@@ -497,6 +424,7 @@ int Narration::nextChapterAfter(int chapter) const {
 }
 
 void Narration::start(int chapter, qint64 offset) {
+    Q_ASSERT(QThread::currentThread() == thread());
     stop();
     setProblem({});
     clearFallbackOffer();
@@ -522,17 +450,11 @@ void Narration::start(int chapter, qint64 offset) {
             return;
         }
         // Cloud voice with no Gemini key: seamlessly fall back to the best
-        // installed local voice for this book's language, or open VoicePanel
-        // cleanly on the Built-in tab for one-click offline setup.
+        // installed local voice for this book's language, or offer offline setup.
         const auto [fbId, fbName] = bestLocalVoice();
         if (!fbId.isEmpty()) {
-            m_voice = fbId;
-            m_voiceName = fbName;
-            if (m_cast)
-                m_cast->setNarrator(m_voice);
-            emit voiceChanged();
-            setFallbackNotice(tr("Using %1 offline").arg(fbName));
-        } else if (localPacksSupported()) {
+            adoptLocalVoice(fbId, fbName, tr("Using %1 offline").arg(fbName));
+        } else if (ResponseSpeech::localPacksSupported(m_ai)) {
             m_pendingStart = true;
             m_pendingChapter = chapter;
             m_pendingOffset = offset;
@@ -546,16 +468,9 @@ void Narration::start(int chapter, qint64 offset) {
             return;
         }
     } else if (!AiServices::isOnThisComputer(m_voice) && !m_ai->fitsBudget(0.001)) {
-        // Cloud voice already at monthly budget cap: seamlessly switch to local if installed.
         const auto [fbId, fbName] = bestLocalVoice();
-        if (!fbId.isEmpty()) {
-            m_voice = fbId;
-            m_voiceName = fbName;
-            if (m_cast)
-                m_cast->setNarrator(m_voice);
-            emit voiceChanged();
-            setFallbackNotice(tr("Using %1 offline (budget reached)").arg(fbName));
-        }
+        if (!fbId.isEmpty())
+            adoptLocalVoice(fbId, fbName, tr("Using %1 offline (budget reached)").arg(fbName));
     }
     m_active = true;
     m_wanted = true;
@@ -566,51 +481,44 @@ void Narration::start(int chapter, qint64 offset) {
     m_startOffset = offset;
     m_requested.insert(chapter);
     setBuffering(true);
+    claimBookFocus();
     m_player->play();
     emit stateChanged();
     emit blocksWanted(chapter);
 }
 
+bool Narration::loadCastForChapter(int chapter, const QList<SpeechBlock> &blocks, bool requestIfMissing) {
+    if (!m_cast || !m_cast->enabled() || !m_cast->available() || m_cast->knows(chapter))
+        return true;
+    if (const auto byChapter = m_cast->keptChapterOrBatch(chapter, blocks)) {
+        for (auto it = byChapter->cbegin(); it != byChapter->cend(); ++it)
+            m_cast->learn(it.key(), it.value());
+        return true;
+    }
+    if (requestIfMissing)
+        requestCast(chapter);
+    return false;
+}
+
 void Narration::addBlocks(int chapter, const QString &json) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_active || !m_requested.contains(chapter) || m_loadedChapters.contains(chapter))
         return;
     m_loadedChapters.insert(chapter);
     m_lastChapter = qMax(m_lastChapter, chapter);
     const QList<SpeechBlock> blocks = Speech::parseBlocks(json);
     m_blocks.insert(chapter, blocks);
-    const bool isPdf = m_reader && m_reader->format() == QLatin1String("pdf");
-    // Direction kept from an earlier reading shapes the clips from the
-    // start, so they match the audio made then.
     bool kept = false;
     if (directed() && m_ai->textFor(QStringLiteral("director"))) {
         if (m_moods.contains(chapter)) {
             kept = true;
-        } else if (isPdf) {
-            if (const auto byPage = m_director->keptPdfBatch(chapter, m_performance)) {
-                for (auto it = byPage->cbegin(); it != byPage->cend(); ++it)
-                    m_moods.insert(it.key(), it.value());
-                kept = true;
-            }
-        } else {
-            kept = keptDirections(chapter);
+        } else if (const auto byChapter = m_director->keptChapterOrBatch(chapter, blocks, m_performance)) {
+            for (auto it = byChapter->cbegin(); it != byChapter->cend(); ++it)
+                m_moods.insert(it.key(), it.value());
+            kept = true;
         }
     }
-    // The cast too, kept from an earlier reading, or asked for below.
-    bool castKept = true;
-    if (m_cast && m_cast->enabled() && m_cast->available() && !m_cast->knows(chapter)) {
-        if (isPdf) {
-            if (const auto byPage = m_cast->keptPdfBatch(chapter)) {
-                for (auto it = byPage->cbegin(); it != byPage->cend(); ++it)
-                    m_cast->learn(it.key(), it.value());
-            } else {
-                castKept = false;
-            }
-        } else if (const auto lines = m_cast->kept(chapter, blocks)) {
-            m_cast->learn(chapter, *lines);
-        } else {
-            castKept = false;
-        }
-    }
+    const bool castKept = loadCastForChapter(chapter, blocks, false);
     const qint64 from = chapter == m_startChapter ? m_startOffset : 0;
     const bool firstOfSession = m_clips.isEmpty();
     const QList<SpeechClip> made =
@@ -618,15 +526,13 @@ void Narration::addBlocks(int chapter, const QString &json) {
     const int before = int(m_clips.size());
     for (const SpeechClip &spoken : made)
         m_clips.append(clipFrom(spoken));
-    // Otherwise the first few clips go ahead without direction, so the
-    // voice starts at once and never waits on the director or cast.
+    // First few clips go ahead without waiting on the director or cast.
     if (firstOfSession && (!kept || !castKept))
         for (int i = before; i < qMin<qsizetype>(before + 3, m_clips.size()); ++i)
             m_clips[i].immediate = true;
     if (m_current < 0 && !m_clips.isEmpty())
         m_current = 0;
-    // A voice made more slowly than it's heard needs a head start:
-    // enough that, made while it plays, it never runs out.
+    // A voice made more slowly than it's heard gets a head start first.
     if (firstOfSession && !made.isEmpty()) {
         const double speed = speaker() ? speaker()->speedOf(m_voice) : 0;
         if (speed > 0 && speed < 1.2 * m_rate) {
@@ -635,7 +541,8 @@ void Narration::addBlocks(int chapter, const QString &json) {
                 characters += clip.text.size();
             const double seconds = characters * m_samplesPerChar / sampleRate;
             const double head = seconds * qMax(0.0, 1.0 - speed / m_rate) * 1.1 + 2.0;
-            m_holdSamples = qint64(head * sampleRate);
+            m_holdSamples = qMax<qint64>(0, qint64(head * sampleRate));
+            Q_ASSERT(m_holdSamples >= 0);
             trace(QStringLiteral("head start: %1 s of audio at %2x").arg(head, 0, 'f', 1).arg(speed, 0, 'f', 2));
             m_player->pause();
             emit stateChanged();
@@ -657,18 +564,20 @@ bool Narration::allRemainingComplete() const {
         return false;
     const int start = qMax(0, m_current);
     const int currentChapter = (m_current >= 0 && m_current < m_clips.size()) ? m_clips[m_current].chapter : -1;
+    const bool chapterStop = m_sleep->atChapterEnd();
     for (int i = start; i < m_clips.size(); ++i) {
-        if (m_sleepAtChapterEnd && currentChapter >= 0 && m_clips[i].chapter != currentChapter)
+        if (chapterStop && currentChapter >= 0 && m_clips[i].chapter != currentChapter)
             return true;
         if (m_clips[i].state == Clip::Waiting || m_clips[i].state == Clip::Working)
             return false;
     }
-    if (m_sleepAtChapterEnd && currentChapter >= 0 && m_loadedChapters.contains(currentChapter))
+    if (chapterStop && currentChapter >= 0 && m_loadedChapters.contains(currentChapter))
         return true;
     return m_requested.size() <= m_loadedChapters.size() && nextChapterAfter(m_lastChapter) < 0;
 }
 
 int Narration::preparedPercent() const {
+    Q_ASSERT(m_holdSamples >= 0);
     if (m_holdSamples <= 0 || allRemainingComplete())
         return 100;
     qint64 have = 0;
@@ -677,8 +586,8 @@ int Narration::preparedPercent() const {
     return int(qMin<qint64>(100, have * 100 / m_holdSamples));
 }
 
-// Plays once the head start is made, or when all remaining clips have finished.
 void Narration::checkHeadStart() {
+    Q_ASSERT(m_holdSamples >= 0);
     if (m_holdSamples <= 0)
         return;
     emit positionChanged();
@@ -686,7 +595,7 @@ void Narration::checkHeadStart() {
         return;
     trace(QStringLiteral("head start made"));
     m_holdSamples = 0;
-    if (m_active && m_wanted && !m_responseActive && !m_bookPlayerDirty)
+    if (m_active && canFeedBookPlayer())
         m_player->play();
     emit stateChanged();
 }
@@ -703,13 +612,8 @@ qint64 Narration::directionWaitLeft(const Clip &clip) const {
     return left;
 }
 
-bool Narration::waitingForDirections(const Clip &clip) const { return directionWaitLeft(clip) > 0; }
-
-// The voice speaks through its own provider: built-in voices here, the rest
-// in the cloud.
 Ai::SpeechSynthesizer *Narration::speaker() const { return m_ai->speechFor(m_voice); }
 
-// Moods need a voice that can take direction; built-in voices read plainly.
 bool Narration::directed() const {
     const Ai::SpeechSynthesizer *voice = speaker();
     return m_performance != QStringLiteral("plain") && voice && voice->supportsStyle();
@@ -723,12 +627,10 @@ QString Narration::styleFor(const Clip &clip) const {
 }
 
 void Narration::pump() {
-    // Do not prefetch, spend, or touch the shared player while paused, inactive,
-    // or while Companion response speech owns m_player.
-    if (!m_active || !m_wanted || m_responseActive || m_bookPlayerDirty)
+    Q_ASSERT(QThread::currentThread() == thread());
+    Q_ASSERT(m_holdSamples >= 0);
+    if (!m_active || !canFeedBookPlayer())
         return;
-    // Ask for the next chapter's words before these run out, skipping past
-    // chapters with nothing to say (a cover, an image page).
     const int remaining = int(m_clips.size()) - qMax(0, m_current);
     if (remaining < 5 && m_lastChapter >= 0) {
         const int next = nextChapterAfter(m_lastChapter);
@@ -737,7 +639,6 @@ void Narration::pump() {
             emit blocksWanted(next);
         }
     }
-    // If every remaining chapter was empty (cover/image pages only), stop cleanly.
     if (m_clips.isEmpty() && m_requested.size() == m_loadedChapters.size() && nextChapterAfter(m_lastChapter) < 0) {
         stop();
         setProblem(tr("Nothing left to read aloud in this book."));
@@ -766,8 +667,6 @@ void Narration::pump() {
             continue;
         }
         clip.style = styleFor(clip);
-        // A character's voice that can't speak now (not downloaded, no key)
-        // gives way to the narrator's.
         if (!clip.voice.isEmpty() && clip.voice != m_voice && !m_ai->canSpeakWith(clip.voice))
             clip.voice = m_voice;
         QString voice = voiceOf(clip);
@@ -781,11 +680,7 @@ void Narration::pump() {
         }
         if (!synth || !provider) {
             pause();
-            setProblem(AiServices::isBuiltinVoice(m_voice)
-                           ? tr("This built-in voice isn't downloaded yet.")
-                           : AiServices::isStudioVoice(m_voice)
-                                 ? tr("This Studio voice needs its model server running.")
-                                 : m_ai->describe(int(Ai::Error::NoKey)));
+            setProblem(ResponseSpeech::voiceUnavailableMessage(m_ai, m_voice));
             updateFallbackOffer();
             return;
         }
@@ -796,11 +691,7 @@ void Narration::pump() {
             decode(i, file);
             continue;
         }
-        if (m_retryTimer.isActive())
-            continue;
-        // Two requests at a time: enough to stay ahead of the voice, gentle
-        // on the key's rate limits. Built-in voices take their turns.
-        if (working >= (local ? ahead : 2))
+        if (m_retryTimer.isActive() || working >= (local ? ahead : 2))
             continue;
         fetch(i);
         ++working;
@@ -812,19 +703,18 @@ void Narration::pump() {
         checkHeadStart();
 }
 
-// Clips join the player strictly in order, as soon as their audio starts to
-// arrive, so the voice plays on without a gap.
 void Narration::queue() {
-    if (!m_active || !m_wanted || m_responseActive || m_bookPlayerDirty)
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_active || !canFeedBookPlayer())
         return;
+    Q_ASSERT(!speakingResponse());
     while (m_queued + 1 < m_clips.size()) {
         const int nextIndex = m_queued + 1;
         Clip &clip = m_clips[nextIndex];
         if (clip.state == Clip::Waiting || clip.state == Clip::Failed ||
             (clip.state == Clip::Working && !clip.reply))
             break;
-        // Stop queuing at the chapter boundary when sleeping at chapter end.
-        if (m_sleepAtChapterEnd && m_current >= 0 && m_current < m_clips.size() &&
+        if (m_sleep->atChapterEnd() && m_current >= 0 && m_current < m_clips.size() &&
             clip.chapter != m_clips[m_current].chapter)
             break;
         ++m_queued;
@@ -839,16 +729,59 @@ void Narration::queue() {
     stallIfFailed();
 }
 
-// The voice has caught up with a clip that couldn't be made: it stops
-// there, with the reason shown, until asked to go on (which tries again).
 void Narration::stallIfFailed() {
     if (!m_wanted || m_queued + 1 >= m_clips.size() || m_clips[m_queued + 1].state != Clip::Failed ||
         !m_player->drainedOut())
         return;
     m_wanted = false;
+    AudioFocus::instance().release(this, AudioFocus::Kind::Book);
     m_player->pause();
     setBuffering(false);
     emit stateChanged();
+}
+
+void Narration::handleFetchError(int index, const Ai::Error &err) {
+    Clip &clip = m_clips[index];
+    trace(QStringLiteral("failed #%1: %2").arg(index).arg(err.message));
+    const bool isCloud = !AiServices::isOnThisComputer(voiceOf(clip));
+    if ((err.kind == Ai::Error::Limited || err.kind == Ai::Error::Server) && !clip.queued && clip.tries < 3 && m_wanted) {
+        ++clip.tries;
+        clip.state = Clip::Waiting;
+        clip.pcm = QByteArray();
+        setProblem(m_ai->describe(int(err.kind), err.message));
+        if (isCloud && err.kind == Ai::Error::Limited)
+            updateFallbackOffer();
+        const int delayMs = err.retryAfterSeconds > 0 ? qBound(1000, err.retryAfterSeconds * 1000, 60000)
+                                                      : 3000 * clip.tries;
+        if (!m_retryTimer.isActive())
+            m_retryTimer.start(delayMs);
+        return;
+    }
+    if (isCloud && !clip.queued &&
+        (err.kind == Ai::Error::Offline || err.kind == Ai::Error::Limited || err.kind == Ai::Error::Budget)) {
+        const QString reason = err.kind == Ai::Error::Offline ? tr("offline")
+                             : err.kind == Ai::Error::Limited ? tr("Gemini limit reached")
+                                                              : tr("budget reached");
+        clip.state = Clip::Waiting;
+        clip.pcm = QByteArray();
+        if (fallbackToLocalMidSession(index, reason))
+            return;
+    }
+    clip.state = Clip::Failed;
+    clip.pcm = QByteArray();
+    if (err.kind != Ai::Error::Cancelled) {
+        setProblem(m_ai->describe(int(err.kind), err.message));
+        if (isCloud && (err.kind == Ai::Error::Offline || err.kind == Ai::Error::Limited || err.kind == Ai::Error::Budget ||
+                        err.kind == Ai::Error::NoKey || err.kind == Ai::Error::BadKey))
+            updateFallbackOffer();
+    }
+    if (canFeedBookPlayer()) {
+        Q_ASSERT(!speakingResponse());
+        if (clip.queued)
+            m_player->finishTrack(clip.id);
+        queue();
+        checkHeadStart();
+    }
 }
 
 void Narration::fetch(int index) {
@@ -870,11 +803,7 @@ void Narration::fetch(int index) {
     }
     if (!synth) {
         clip.state = Clip::Failed;
-        setProblem(AiServices::isBuiltinVoice(m_voice)
-                       ? tr("This built-in voice isn't downloaded yet.")
-                       : AiServices::isStudioVoice(m_voice)
-                             ? tr("This Studio voice needs its model server running.")
-                             : m_ai->describe(int(Ai::Error::NoKey)));
+        setProblem(ResponseSpeech::voiceUnavailableMessage(m_ai, m_voice));
         updateFallbackOffer();
         queue();
         return;
@@ -919,15 +848,14 @@ void Narration::fetch(int index) {
         clip.pcm += pcm;
         if (const Ai::Reply *from = clip.reply)
             clip.boundaries = from->boundaries();
-        const bool canFeedPlayer = m_wanted && !m_responseActive && !m_bookPlayerDirty;
-        if (clip.queued) {
-            if (canFeedPlayer)
+        if (canFeedBookPlayer()) {
+            Q_ASSERT(!speakingResponse());
+            if (clip.queued)
                 m_player->appendAudio(clip.id, pcm);
-        } else if (canFeedPlayer) {
-            queue();
-        }
-        if (canFeedPlayer)
+            else
+                queue();
             checkHeadStart();
+        }
     });
     connect(reply, &Ai::Reply::finished, this, [this, session, clipId, reply] {
         reply->deleteLater();
@@ -939,52 +867,7 @@ void Narration::fetch(int index) {
         Clip &clip = m_clips[i];
         clip.reply = nullptr;
         if (reply->error()) {
-            const Ai::Error err = reply->error();
-            trace(QStringLiteral("failed #%1: %2").arg(i).arg(err.message));
-            const bool isCloud = !AiServices::isOnThisComputer(voiceOf(clip));
-            if ((err.kind == Ai::Error::Limited || err.kind == Ai::Error::Server) && !clip.queued && clip.tries < 3 &&
-                m_wanted) {
-                ++clip.tries;
-                clip.state = Clip::Waiting;
-                clip.pcm = QByteArray();
-                setProblem(m_ai->describe(int(err.kind), err.message));
-                if (isCloud && err.kind == Ai::Error::Limited)
-                    updateFallbackOffer();
-                const int delayMs = err.retryAfterSeconds > 0 ? qBound(1000, err.retryAfterSeconds * 1000, 60000)
-                                                              : 3000 * clip.tries;
-                if (!m_retryTimer.isActive())
-                    m_retryTimer.start(delayMs);
-                return;
-            }
-            if (isCloud && !clip.queued &&
-                (err.kind == Ai::Error::Offline || err.kind == Ai::Error::Limited || err.kind == Ai::Error::Budget)) {
-                const QString reason = err.kind == Ai::Error::Offline ? tr("offline")
-                                     : err.kind == Ai::Error::Limited ? tr("Gemini limit reached")
-                                                                      : tr("budget reached");
-                clip.state = Clip::Waiting;
-                clip.pcm = QByteArray();
-                if (fallbackToLocalMidSession(i, reason))
-                    return;
-            }
-            clip.state = Clip::Failed;
-            clip.pcm = QByteArray();
-            if (err.kind != Ai::Error::Cancelled) {
-                setProblem(m_ai->describe(int(err.kind), err.message));
-                if (isCloud &&
-                    (err.kind == Ai::Error::Offline || err.kind == Ai::Error::Limited || err.kind == Ai::Error::Budget ||
-                     err.kind == Ai::Error::NoKey || err.kind == Ai::Error::BadKey))
-                    updateFallbackOffer();
-            }
-            const bool canFeedPlayer = m_wanted && !m_responseActive && !m_bookPlayerDirty;
-            if (clip.queued && canFeedPlayer) {
-                // Part of it was already playing: what arrived is heard, and
-                // the voice stops at its end.
-                m_player->finishTrack(clip.id);
-            }
-            if (canFeedPlayer) {
-                queue();
-                checkHeadStart();
-            }
+            handleFetchError(i, reply->error());
             return;
         }
         clip.state = Clip::Complete;
@@ -996,16 +879,18 @@ void Narration::fetch(int index) {
         if (!clip.text.isEmpty() && clip.samples > 0)
             m_samplesPerChar = 0.8 * m_samplesPerChar + 0.2 * double(clip.samples) / clip.text.size();
         trace(QStringLiteral("complete #%1 (%2 s)").arg(i).arg(clip.samples / double(sampleRate), 0, 'f', 1));
-        const bool canFeedPlayer = m_wanted && !m_responseActive && !m_bookPlayerDirty;
-        if (clip.queued && canFeedPlayer)
-            m_player->finishTrack(clip.id);
+        if (canFeedBookPlayer()) {
+            Q_ASSERT(!speakingResponse());
+            if (clip.queued)
+                m_player->finishTrack(clip.id);
+        }
         if (!clip.pcm.isEmpty() && reply->sampleRate() > 0)
             m_cache->store(clip.key, clip.pcm, reply->sampleRate(), clip.boundaries);
         if (m_current >= 0 && m_current < m_clips.size() && clip.chapter == m_clips[m_current].chapter) {
             emit positionChanged();
             emit timeChanged();
         }
-        if (canFeedPlayer)
+        if (canFeedBookPlayer())
             checkHeadStart();
         pump();
     });
@@ -1038,13 +923,14 @@ void Narration::decode(int index, const QString &file) {
         clip.samples = clip.pcm.size() / 2;
         clip.boundaries = m_cache->boundaries(key);
         clip.state = Clip::Complete;
-        const bool canFeedPlayer = m_wanted && !m_responseActive && !m_bookPlayerDirty;
-        if (clip.queued && canFeedPlayer) {
-            m_player->appendAudio(clip.id, clip.pcm);
-            m_player->finishTrack(clip.id);
-        }
-        if (canFeedPlayer)
+        if (canFeedBookPlayer()) {
+            Q_ASSERT(!speakingResponse());
+            if (clip.queued) {
+                m_player->appendAudio(clip.id, clip.pcm);
+                m_player->finishTrack(clip.id);
+            }
             checkHeadStart();
+        }
         if (m_current >= 0 && m_current < m_clips.size() && clip.chapter == m_clips[m_current].chapter) {
             emit positionChanged();
             emit timeChanged();
@@ -1058,60 +944,38 @@ qint64 Narration::expectedSamples(const Clip &clip) const {
         return clip.samples;
     if (clip.pauseMs > 0)
         return qint64(clip.pauseMs) * sampleRate / 1000;
-    // Still arriving: judge by its length in letters, at the pace heard so far.
     return qMax(qint64(clip.pcm.size() / 2), qint64(clip.text.size() * m_samplesPerChar));
 }
 
+QList<Speech::TimelineEntry> Narration::timelineEntries() const {
+    QList<Speech::TimelineEntry> out;
+    out.reserve(m_clips.size());
+    for (const Clip &clip : m_clips)
+        out.append({clip.chapter, clip.pauseMs, expectedSamples(clip)});
+    return out;
+}
+
 void Narration::heard(int trackId, qint64 sample) {
-    if (m_responseActive) {
-        const int idx = indexOfResponseChunk(trackId);
-        if (idx >= 0) {
-            if (m_responseBuffering)
-                setResponseBuffering(false);
-            if (idx != m_responseCurrent) {
-                m_responseCurrent = idx;
-                for (int i = 0; i < idx; ++i)
-                    if (m_responseChunks[i].state == ResponseChunk::Complete)
-                        m_responseChunks[i].pcm = QByteArray();
-                pumpResponse();
-            }
-        }
-        return;
-    }
-    if (!m_active)
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (m_response->handlePosition(trackId, sample) || !m_active)
         return;
     const int track = indexOfClip(trackId);
     if (track < 0)
         return;
-    // The voice is moving.
     if (m_buffering)
         setBuffering(false);
     if (track != m_current) {
         const int previous = m_current;
         const bool newChapter = previous >= 0 && previous < m_clips.size() &&
                                 m_clips[previous].chapter != m_clips[track].chapter;
-        if (newChapter && m_sleepAtChapterEnd) {
-            m_sleepAtChapterEnd = false;
-            m_current = track;
-            m_currentSample = 0;
-            m_sentence = -1;
-            m_bookPlayerDirty = true;
-            m_player->clear();
-            pause();
-            if (!m_clips[track].sentences.isEmpty())
-                showSentenceForSample(track, 0, 0);
-            else
-                emit positionChanged();
-            emit timeChanged();
-            emit sleepChanged();
+        if (newChapter && m_sleep->atChapterEnd()) {
+            stopAtChapterBoundary(track);
             return;
         }
         m_current = track;
         m_currentSample = 0;
         m_sentence = -1;
         trace(QStringLiteral("hearing #%1 (id %2)").arg(track).arg(trackId));
-        // Keep two clips behind in memory so -15s rewind is instantaneous;
-        // older clips are in the cache.
         for (int i = 0; i < track - 2; ++i)
             if (m_clips[i].state == Clip::Complete)
                 m_clips[i].pcm = QByteArray();
@@ -1120,6 +984,7 @@ void Narration::heard(int trackId, qint64 sample) {
         pump();
     }
     m_currentSample = qMax<qint64>(0, sample);
+    Q_ASSERT(m_currentSample >= 0);
     showSentenceForSample(track, m_currentSample);
     const qint64 now = nowMs();
     const qint64 sec = positionUs() / 1000000LL;
@@ -1140,30 +1005,7 @@ void Narration::showSentenceForSample(int index, qint64 sample, int forceSentenc
         showSentenceAt(forceSentence);
         return;
     }
-    // Where the voice said each sentence ends, when it did; otherwise by
-    // the sentences' share of the clip.
-    if (!clip.boundaries.isEmpty() && clip.boundaries.size() <= clip.sentences.size()) {
-        int at = 0;
-        while (at < clip.boundaries.size() && sample >= clip.boundaries[at])
-            ++at;
-        showSentenceAt(qMin(at, int(clip.sentences.size()) - 1));
-        return;
-    }
-    const qint64 total = expectedSamples(clip);
-    showSentence(total > 0 ? double(sample) / double(total) : 0);
-}
-
-qint64 Narration::sampleOfSentence(const Clip &clip, int sentence) const {
-    if (sentence <= 0 || clip.sentences.isEmpty())
-        return 0;
-    if (!clip.boundaries.isEmpty() && sentence - 1 < clip.boundaries.size())
-        return qMax<qint64>(0, clip.boundaries[sentence - 1]);
-    if (sentence < clip.spans.size()) {
-        const qint64 total = expectedSamples(clip);
-        if (total > 0)
-            return qBound<qint64>(0, qint64(std::ceil(clip.spans[sentence].first * double(total))), total - 1);
-    }
-    return 0;
+    showSentenceAt(Speech::sentenceForSample(clip, clip.spans, clip.boundaries, expectedSamples(clip), sample));
 }
 
 void Narration::showSentenceAt(int at) {
@@ -1179,26 +1021,11 @@ void Narration::showSentenceAt(int at) {
     emit speaking(clip.chapter, m_sentenceStart, m_sentenceEnd);
 }
 
-void Narration::showSentence(double fraction) {
-    if (m_current < 0 || m_current >= m_clips.size())
-        return;
-    const Clip &clip = m_clips[m_current];
-    if (clip.sentences.isEmpty())
-        return;
-    const auto &spans = clip.spans;
-    int at = int(spans.size()) - 1;
-    for (int i = 0; i < spans.size(); ++i)
-        if (fraction < spans[i].second) {
-            at = i;
-            break;
-        }
-    showSentenceAt(at);
-}
-
 void Narration::jumpTo(int index, qint64 sampleOffset, bool preservePause, int forceSentence) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (index < 0 || index >= m_clips.size())
         return;
-    if (m_responseActive)
+    if (speakingResponse())
         stopResponse();
     m_bookPlayerDirty = false;
     const qint64 clampedSample = qMax<qint64>(0, sampleOffset);
@@ -1210,23 +1037,19 @@ void Narration::jumpTo(int index, qint64 sampleOffset, bool preservePause, int f
     const int ahead = AiServices::isOnThisComputer(m_voice) ? 8 : 4;
     for (int i = 0; i < m_clips.size(); ++i) {
         Clip &clip = m_clips[i];
-        if (i < index || i >= index + ahead) {
-            if (clip.reply) {
-                QPointer<Ai::Reply> obsolete = clip.reply;
-                clip.reply = nullptr;
-                obsolete->abort();
-                if (clip.state == Clip::Working) {
-                    clip.state = Clip::Waiting;
-                    clip.pcm = QByteArray();
-                }
+        if ((i < index || i >= index + ahead) && clip.reply) {
+            QPointer<Ai::Reply> obsolete = clip.reply;
+            clip.reply = nullptr;
+            obsolete->abort();
+            if (clip.state == Clip::Working) {
+                clip.state = Clip::Waiting;
+                clip.pcm = QByteArray();
             }
         }
         if (i >= index) {
             clip.queued = false;
             clip.tries = 0;
-            if (clip.state == Clip::Complete && clip.pcm.isEmpty())
-                clip.state = Clip::Waiting;
-            if (clip.state == Clip::Failed)
+            if ((clip.state == Clip::Complete && clip.pcm.isEmpty()) || clip.state == Clip::Failed)
                 clip.state = Clip::Waiting;
         }
     }
@@ -1237,9 +1060,9 @@ void Narration::jumpTo(int index, qint64 sampleOffset, bool preservePause, int f
     m_sentence = -1;
     m_wanted = playAfter;
     if (playAfter) {
-        if (m_sleepPausedRestore || m_sleepFading)
-            restoreSleepVolume();
+        m_sleep->onJumpToPlay();
         setBuffering(m_clips[index].state != Clip::Complete);
+        claimBookFocus();
         m_player->play();
     } else {
         setBuffering(false);
@@ -1259,6 +1082,7 @@ void Narration::jumpTo(int index, qint64 sampleOffset, bool preservePause, int f
 }
 
 void Narration::nextParagraph() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_active || m_current < 0 || m_current >= m_clips.size())
         return;
     const Clip &now = m_clips[m_current];
@@ -1270,9 +1094,9 @@ void Narration::nextParagraph() {
 }
 
 void Narration::previousParagraph() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_active || m_current < 0 || m_current >= m_clips.size())
         return;
-    // A little way into a clip, back to its start; at its start, the one before.
     if (m_sentence > 0 && m_clips[m_current].pauseMs == 0) {
         jumpTo(m_current);
         return;
@@ -1284,21 +1108,21 @@ void Narration::previousParagraph() {
 }
 
 void Narration::nextSentence() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_active || m_current < 0 || m_current >= m_clips.size())
         return;
     const Clip &clip = m_clips[m_current];
     const int curS = qMax(0, m_sentence);
     if (clip.pauseMs == 0 && curS + 1 < clip.sentences.size()) {
-        const qint64 sample = sampleOfSentence(clip, curS + 1);
+        const qint64 sample = Speech::sampleOfSentence(clip, clip.spans, clip.boundaries, expectedSamples(clip), curS + 1);
         jumpTo(m_current, sample, true, curS + 1);
         return;
     }
-    for (int i = m_current + 1; i < m_clips.size(); ++i) {
+    for (int i = m_current + 1; i < m_clips.size(); ++i)
         if (m_clips[i].pauseMs == 0 && !m_clips[i].sentences.isEmpty()) {
             jumpTo(i, 0, true, 0);
             return;
         }
-    }
     const int nextCh = nextChapterAfter(m_lastChapter);
     if (nextCh >= 0 && !m_requested.contains(nextCh)) {
         m_requested.insert(nextCh);
@@ -1307,19 +1131,21 @@ void Narration::nextSentence() {
 }
 
 void Narration::prevSentence() {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_active || m_current < 0 || m_current >= m_clips.size())
         return;
     const Clip &clip = m_clips[m_current];
     const int curS = qMax(0, m_sentence);
     if (clip.pauseMs == 0 && curS > 0) {
-        const qint64 sample = sampleOfSentence(clip, curS - 1);
+        const qint64 sample = Speech::sampleOfSentence(clip, clip.spans, clip.boundaries, expectedSamples(clip), curS - 1);
         jumpTo(m_current, sample, true, curS - 1);
         return;
     }
     for (int i = m_current - 1; i >= 0; --i) {
         if (m_clips[i].pauseMs == 0 && !m_clips[i].sentences.isEmpty()) {
             const int lastS = int(m_clips[i].sentences.size()) - 1;
-            const qint64 sample = sampleOfSentence(m_clips[i], lastS);
+            const qint64 sample =
+                Speech::sampleOfSentence(m_clips[i], m_clips[i].spans, m_clips[i].boundaries, expectedSamples(m_clips[i]), lastS);
             jumpTo(i, sample, true, lastS);
             return;
         }
@@ -1328,115 +1154,59 @@ void Narration::prevSentence() {
 }
 
 void Narration::skipSeconds(int delta) {
-    if (delta == 0)
-        return;
-    seekBySamples(qint64(delta) * sampleRate);
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (delta != 0)
+        seekBySamples(qint64(delta) * sampleRate);
 }
 
 void Narration::seekByUs(qint64 deltaUs) {
-    if (deltaUs == 0)
-        return;
-    seekBySamples(usToSamples(deltaUs, sampleRate));
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (deltaUs != 0)
+        seekBySamples(Speech::usToSamples(deltaUs, sampleRate));
 }
 
 void Narration::seekBySamples(qint64 deltaSamples) {
     if (!m_active || m_clips.isEmpty() || m_current < 0 || m_current >= m_clips.size())
         return;
-    int idx = m_current;
-    qint64 pos = m_currentSample + deltaSamples;
-
-    if (deltaSamples > 0) {
-        while (idx < m_clips.size()) {
-            const qint64 len = qMax<qint64>(1, expectedSamples(m_clips[idx]));
-            if (pos < len)
-                break;
-            if (idx + 1 >= m_clips.size()) {
-                const int nextCh = nextChapterAfter(m_lastChapter);
-                if (nextCh >= 0 && !m_requested.contains(nextCh)) {
-                    m_requested.insert(nextCh);
-                    emit blocksWanted(nextCh);
-                }
-                pos = qMax<qint64>(0, len - sampleRate);
-                break;
-            }
-            pos -= len;
-            ++idx;
-        }
-        while (idx + 1 < m_clips.size() && m_clips[idx].pauseMs > 0) {
-            ++idx;
-            pos = 0;
-        }
-    } else {
-        while (pos < 0 && idx > 0) {
-            --idx;
-            const qint64 len = qMax<qint64>(1, expectedSamples(m_clips[idx]));
-            pos += len;
-        }
-        if (pos < 0)
-            pos = 0;
-        if (m_clips[idx].pauseMs > 0) {
-            if (idx > 0) {
-                --idx;
-                pos = qMax<qint64>(0, expectedSamples(m_clips[idx]) - sampleRate);
-            } else if (idx + 1 < m_clips.size()) {
-                ++idx;
-                pos = 0;
-            }
+    const Speech::SeekTarget target =
+        Speech::seekBySamples(timelineEntries(), m_current, m_currentSample, deltaSamples, sampleRate);
+    if (target.wantNextChapter) {
+        const int nextCh = nextChapterAfter(m_lastChapter);
+        if (nextCh >= 0 && !m_requested.contains(nextCh)) {
+            m_requested.insert(nextCh);
+            emit blocksWanted(nextCh);
         }
     }
-    jumpTo(idx, pos, true);
+    if (target.index >= 0)
+        jumpTo(target.index, target.sample, true);
 }
 
 void Narration::seekToUs(qint64 targetUs) {
+    Q_ASSERT(QThread::currentThread() == thread());
     if (!m_active || m_clips.isEmpty() || m_current < 0 || m_current >= m_clips.size())
         return;
-    const int at = m_clips[m_current].chapter;
-    qint64 targetSamples = qMax<qint64>(0, usToSamples(targetUs, sampleRate));
-    int firstInChapter = -1;
-    int lastInChapter = -1;
-    for (int i = 0; i < m_clips.size(); ++i) {
-        if (m_clips[i].chapter == at) {
-            if (firstInChapter < 0)
-                firstInChapter = i;
-            lastInChapter = i;
-        }
-    }
-    if (firstInChapter < 0)
-        return;
-    int idx = firstInChapter;
-    qint64 pos = targetSamples;
-    while (idx < lastInChapter) {
-        const qint64 len = qMax<qint64>(1, expectedSamples(m_clips[idx]));
-        if (pos < len)
-            break;
-        pos -= len;
-        ++idx;
-    }
-    const qint64 lastLen = qMax<qint64>(1, expectedSamples(m_clips[idx]));
-    pos = qBound<qint64>(0, pos, qMax<qint64>(0, lastLen - 1));
-    if (m_clips[idx].pauseMs > 0 && idx + 1 <= lastInChapter) {
-        ++idx;
-        pos = 0;
-    }
-    jumpTo(idx, pos, true);
+    const Speech::SeekTarget target = Speech::seekToChapterUs(timelineEntries(), m_current, targetUs, sampleRate);
+    if (target.index >= 0)
+        jumpTo(target.index, target.sample, true);
 }
 
 void Narration::toggle() {
-    if (m_responseActive)
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (speakingResponse())
         stopResponse();
     playing() ? pause() : resume();
 }
 
 void Narration::pause() {
-    if (m_responseActive)
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (speakingResponse())
         stopResponse();
     if (!m_active)
         return;
     trace(QStringLiteral("pause"));
-    const bool wasFading = m_sleepFading;
-    if (m_sleepFading && !m_sleepPausedRestore)
-        restoreSleepVolume();
+    const bool wasFading = m_sleep->onPause();
     m_wanted = false;
+    AudioFocus::instance().release(this, AudioFocus::Kind::Book);
     m_directionsTimer.stop();
     m_retryTimer.stop();
     m_player->pause();
@@ -1447,34 +1217,27 @@ void Narration::pause() {
 }
 
 void Narration::resume() {
-    if (m_responseActive)
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (speakingResponse())
         stopResponse();
     if (!m_active)
         return;
     trace(QStringLiteral("resume"));
     setProblem({});
-    const bool wasFading = m_sleepFading;
-    if (m_sleepPausedRestore || m_sleepFading)
-        restoreSleepVolume();
+    const bool wasFading = m_sleep->onResume();
     if (m_bookPlayerDirty) {
         m_bookPlayerDirty = false;
         m_player->clear();
-        if (m_current >= 0 && m_current < m_clips.size()) {
-            m_queued = m_current - 1;
-            for (int i = m_current; i < m_clips.size(); ++i) {
-                m_clips[i].queued = false;
-                if (m_clips[i].state == Clip::Complete && m_clips[i].pcm.isEmpty())
-                    m_clips[i].state = Clip::Waiting;
-            }
-        }
+        if (m_current >= 0 && m_current < m_clips.size())
+            resetQueuedClipsFrom(m_current);
     }
-    // A clip that couldn't be made is tried again.
     for (int i = qMax(0, m_current); i < m_clips.size(); ++i)
         if (m_clips[i].state == Clip::Failed) {
             m_clips[i].state = Clip::Waiting;
             m_clips[i].tries = 0;
         }
     m_wanted = true;
+    claimBookFocus();
     if (m_holdSamples > 0)
         checkHeadStart();
     if (m_holdSamples <= 0)
@@ -1486,10 +1249,11 @@ void Narration::resume() {
 }
 
 void Narration::stop() {
+    Q_ASSERT(QThread::currentThread() == thread());
     stopResponse();
+    AudioFocus::instance().release(this, AudioFocus::Kind::Book);
     m_bookPlayerDirty = false;
     ++m_session;
-    // The clips are let go first, so a request's ending finds nothing to update.
     const QList<Clip> clips = std::exchange(m_clips, {});
     for (const Clip &clip : clips)
         if (clip.reply)
@@ -1499,21 +1263,12 @@ void Narration::stop() {
         m_cast->cancel(this);
     m_directionsTimer.stop();
     m_retryTimer.stop();
-    const bool hadSleep = m_sleepAt.isValid() || m_sleepAtChapterEnd || m_sleepFading;
-    m_sleepTimer.stop();
-    m_sleepTick.stop();
-    m_sleepAt.clear();
-    m_lastSleepSec = 0;
-    m_sleepAtChapterEnd = false;
-    if (m_sleepFading || m_sleepPausedRestore)
-        restoreSleepVolume();
+    const bool hadSleep = m_sleep->reset();
     m_player->pause();
     m_player->clear();
-    m_current = -1;
-    m_queued = -1;
-    m_currentSample = 0;
-    m_lastTimeEmitMs = 0;
-    m_lastReportedSec = -1;
+    m_current = m_queued = m_lastChapter = m_sentence = -1;
+    m_currentSample = m_lastTimeEmitMs = m_holdSamples = 0;
+    m_lastReportedSec = m_sentenceStart = m_sentenceEnd = -1;
     m_requested.clear();
     m_loadedChapters.clear();
     m_directionsAsked.clear();
@@ -1522,16 +1277,10 @@ void Narration::stop() {
     m_castBatchesAsked.clear();
     m_blocks.clear();
     m_moods.clear();
-    m_lastChapter = -1;
-    m_holdSamples = 0;
-    m_sentence = -1;
-    m_sentenceStart = m_sentenceEnd = -1;
     clearFallbackOffer();
     setFallbackNotice({});
     const bool was = m_active;
-    m_active = false;
-    m_wanted = false;
-    m_buffering = false;
+    m_active = m_wanted = m_buffering = false;
     if (hadSleep)
         emit sleepChanged();
     if (was) {
@@ -1539,6 +1288,16 @@ void Narration::stop() {
         emit positionChanged();
         emit timeChanged();
     }
+}
+
+void Narration::speakResponse(const QString &markdownOrText, const QString &itemId) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_response->speak(markdownOrText, itemId);
+}
+
+void Narration::stopResponse() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_response->stop();
 }
 
 int Narration::minutesLeftInChapter() const {
@@ -1554,176 +1313,49 @@ int Narration::minutesLeftInChapter() const {
 qint64 Narration::positionUs() const {
     if (!m_active || m_current < 0 || m_current >= m_clips.size())
         return 0;
-    const int at = m_clips[m_current].chapter;
-    qint64 samples = 0;
-    for (int i = 0; i < m_current; ++i)
-        if (m_clips[i].chapter == at)
-            samples += expectedSamples(m_clips[i]);
-    samples += qMin(m_currentSample, expectedSamples(m_clips[m_current]));
-    return samples * 1000000LL / sampleRate;
+    return Speech::chapterTimingUs(timelineEntries(), m_current, m_currentSample, sampleRate).first;
 }
 
 qint64 Narration::durationUs() const {
     if (!m_active || m_current < 0 || m_current >= m_clips.size())
         return 0;
-    const int at = m_clips[m_current].chapter;
-    qint64 samples = 0;
-    for (int i = 0; i < m_clips.size(); ++i)
-        if (m_clips[i].chapter == at)
-            samples += expectedSamples(m_clips[i]);
-    return samples * 1000000LL / sampleRate;
-}
-
-void Narration::restoreSleepVolume() {
-    const double saved = m_preFadeVolume;
-    m_preFadeVolume = -1.0;
-    m_sleepFading = false;
-    m_sleepPausedRestore = false;
-    if (saved >= 0.0)
-        m_player->setVolume(saved);
-}
-
-void Narration::onSleepTick() {
-    if (!m_sleepAt.isValid()) {
-        m_sleepTick.stop();
-        return;
-    }
-    const qint64 leftMs = m_sleepAt.remainingMs();
-    if (leftMs <= 0) {
-        finishSleep();
-        return;
-    }
-    if (leftMs <= sleepFadeMs && m_active && m_wanted) {
-        if (!m_sleepFading) {
-            m_sleepFading = true;
-            if (m_preFadeVolume < 0.0)
-                m_preFadeVolume = m_player->volume();
-            m_sleepTick.setInterval(100);
-        }
-        const double t = qBound(0.0, double(leftMs) / double(sleepFadeMs), 1.0);
-        m_player->setVolume(m_preFadeVolume * t * t);
-    } else if (m_sleepFading && !m_wanted) {
-        restoreSleepVolume();
-        m_sleepTick.setInterval(1000);
-        emit sleepChanged();
-    } else if (!m_wanted && m_sleepTick.interval() < 1000) {
-        m_sleepTick.setInterval(1000);
-    }
-    const int secs = sleepSecondsLeft();
-    if (secs != m_lastSleepSec || m_sleepFading) {
-        m_lastSleepSec = secs;
-        emit sleepChanged();
-    }
-}
-
-void Narration::finishSleep() {
-    if (m_responseActive)
-        stopResponse();
-    m_sleepTimer.stop();
-    m_sleepTick.stop();
-    m_sleepAt.clear();
-    m_lastSleepSec = 0;
-    if (!m_active) {
-        if (m_sleepFading || m_sleepPausedRestore)
-            restoreSleepVolume();
-        emit sleepChanged();
-        return;
-    }
-    if (m_preFadeVolume < 0.0)
-        m_preFadeVolume = m_player->volume();
-    m_player->setVolume(0.0);
-    m_sleepFading = false;
-    m_sleepPausedRestore = true;
-    pause();
-    emit sleepChanged();
+    return Speech::chapterTimingUs(timelineEntries(), m_current, m_currentSample, sampleRate).second;
 }
 
 void Narration::sleepIn(int minutes) {
-    const bool wasChapterEnd = m_sleepAtChapterEnd;
-    m_sleepAtChapterEnd = false;
-    if (m_sleepFading || m_sleepPausedRestore)
-        restoreSleepVolume();
-    if (minutes <= 0) {
-        m_sleepTimer.stop();
-        m_sleepTick.stop();
-        m_sleepAt.clear();
-        m_lastSleepSec = 0;
-    } else {
-        const qint64 durationMs = qint64(minutes) * 60LL * 1000LL;
-        m_sleepAt.startMs(durationMs);
-        m_lastSleepSec = int(qMin<qint64>(qint64(minutes) * 60LL, std::numeric_limits<int>::max()));
-        m_sleepTimer.start(int(qMin<qint64>(durationMs, std::numeric_limits<int>::max())));
-        m_sleepTick.setInterval(1000);
-        m_sleepTick.start();
-    }
-    emit sleepChanged();
-    if (wasChapterEnd && m_active && m_wanted)
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (m_sleep->sleepIn(minutes) && m_active && m_wanted)
         pump();
 }
 
 void Narration::sleepAtEndOfChapter() {
-    if (m_sleepFading || m_sleepPausedRestore)
-        restoreSleepVolume();
-    m_sleepTimer.stop();
-    m_sleepTick.stop();
-    m_sleepAt.clear();
-    m_lastSleepSec = 0;
-    m_sleepAtChapterEnd = true;
-    // Trim any next-chapter clips already pushed into m_player so playback stops
-    // cleanly at the current chapter boundary instead of spilling into Chapter N+1.
-    if (m_active && m_current >= 0 && m_current < m_clips.size()) {
-        const int currentChapter = m_clips[m_current].chapter;
-        bool nextChapterQueued = false;
-        for (int i = m_current; i <= m_queued && i < m_clips.size(); ++i) {
-            if (m_clips[i].chapter != currentChapter) {
-                nextChapterQueued = true;
-                break;
-            }
+    Q_ASSERT(QThread::currentThread() == thread());
+    m_sleep->sleepAtEndOfChapter();
+    if (!m_active || m_current < 0 || m_current >= m_clips.size())
+        return;
+    const int currentChapter = m_clips[m_current].chapter;
+    bool nextChapterQueued = false;
+    for (int i = m_current; i <= m_queued && i < m_clips.size(); ++i)
+        if (m_clips[i].chapter != currentChapter) {
+            nextChapterQueued = true;
+            break;
         }
-        if (nextChapterQueued) {
-            if (!m_responseActive && !m_bookPlayerDirty) {
-                const bool playAfter = m_wanted && m_holdSamples <= 0;
-                m_player->clear();
-                m_queued = m_current - 1;
-                for (int i = m_current; i < m_clips.size(); ++i) {
+    if (nextChapterQueued) {
+        if (!speakingResponse() && !m_bookPlayerDirty) {
+            const bool playAfter = m_wanted && m_holdSamples <= 0;
+            m_player->clear();
+            resetQueuedClipsFrom(m_current);
+            if (playAfter)
+                m_player->play();
+            queue();
+        } else {
+            for (int i = m_current; i < m_clips.size(); ++i)
+                if (m_clips[i].chapter != currentChapter)
                     m_clips[i].queued = false;
-                    if (m_clips[i].state == Clip::Complete && m_clips[i].pcm.isEmpty())
-                        m_clips[i].state = Clip::Waiting;
-                }
-                if (playAfter)
-                    m_player->play();
-                queue();
-            } else {
-                for (int i = m_current; i < m_clips.size(); ++i)
-                    if (m_clips[i].chapter != currentChapter)
-                        m_clips[i].queued = false;
-            }
         }
-        if (m_holdSamples > 0)
-            checkHeadStart();
     }
-    emit sleepChanged();
-}
-
-int Narration::sleepMinutes() const {
-    if (!m_sleepAt.isValid())
-        return 0;
-    return qMax(1, int(std::ceil(m_sleepAt.remainingMs() / 60000.0)));
-}
-
-int Narration::sleepSecondsLeft() const {
-    if (!m_sleepAt.isValid())
-        return 0;
-    return int(qMax<qint64>(0, (m_sleepAt.remainingMs() + 999) / 1000));
-}
-
-bool Narration::keptDirections(int chapter) {
-    const auto kept = m_director->kept(chapter, m_blocks.value(chapter), m_performance);
-    if (!kept)
-        return false;
-    trace(QStringLiteral("director (kept): %1 changes for chapter %2").arg(kept->size()).arg(chapter));
-    m_moods.insert(chapter, *kept);
-    return true;
+    if (m_holdSamples > 0)
+        checkHeadStart();
 }
 
 QSet<int> Narration::breaksFor(int chapter) const {
@@ -1746,37 +1378,20 @@ Narration::Clip Narration::clipFrom(const SpeechClip &spoken) {
     return clip;
 }
 
-QString Narration::voiceOf(const Clip &clip) const { return clip.voice.isEmpty() ? m_voice : clip.voice; }
-
 void Narration::setCast(Cast *cast) {
+    Q_ASSERT(QThread::currentThread() == thread());
     m_cast = cast;
     if (!cast)
         return;
     cast->setNarrator(m_voice);
-    // A voice changed by hand, or the cast turned on or off: what's not yet
-    // heard is read again by whoever reads it now.
     connect(cast, &Cast::recast, this, [this] {
         if (!m_active || !m_cast)
             return;
-        const bool isPdf = m_reader && m_reader->format() == QLatin1String("pdf");
         QSet<int> chapters;
         for (const Clip &clip : std::as_const(m_clips))
             chapters.insert(clip.chapter);
         for (int chapter : chapters) {
-            if (m_cast->enabled() && m_cast->available() && !m_cast->knows(chapter)) {
-                if (isPdf) {
-                    if (const auto byPage = m_cast->keptPdfBatch(chapter)) {
-                        for (auto it = byPage->cbegin(); it != byPage->cend(); ++it)
-                            m_cast->learn(it.key(), it.value());
-                    } else {
-                        requestCast(chapter);
-                    }
-                } else if (const auto lines = m_cast->kept(chapter, m_blocks.value(chapter))) {
-                    m_cast->learn(chapter, *lines);
-                } else {
-                    requestCast(chapter);
-                }
-            }
+            loadCastForChapter(chapter, m_blocks.value(chapter), true);
             recut(chapter);
         }
     });
@@ -1785,94 +1400,60 @@ void Narration::setCast(Cast *cast) {
 void Narration::requestCast(int chapter) {
     if (!m_cast)
         return;
+    const auto [first, last] = m_cast->chapterRange(chapter);
+    if (m_castBatchesAsked.contains(first))
+        return;
+    m_castBatchesAsked.insert(first);
+    const qint64 askedAt = nowMs();
+    for (int p = first; p <= last; ++p)
+        m_castAsked.insert(p, askedAt);
     const quint64 session = m_session;
     const int bookId = m_bookId;
-    if (m_reader && m_reader->format() == QLatin1String("pdf")) {
-        const auto [first, last] = Director::pdfBatchRange(m_reader, chapter);
-        if (m_castBatchesAsked.contains(first))
-            return;
-        m_castBatchesAsked.insert(first);
-        const qint64 askedAt = nowMs();
-        for (int p = first; p <= last; ++p)
-            m_castAsked.insert(p, askedAt);
-        m_cast->askPdfBatch(chapter, this, [this, session, bookId, first, last](const QHash<int, QMap<int, Cast::Line>> &byPage) {
-            if (!m_active || session != m_session || m_reader->bookId() != bookId || !m_cast)
-                return;
-            m_castBatchesAsked.remove(first);
-            for (int p = first; p <= last; ++p) {
-                m_castAsked.remove(p);
-                m_cast->learn(p, byPage.value(p));
-                if (m_blocks.contains(p))
-                    recut(p);
-            }
-            trace(QStringLiteral("cast pdf batch %1-%2").arg(first).arg(last));
-        });
-        return;
-    }
-    m_castAsked.insert(chapter, nowMs());
-    m_cast->ask(chapter, m_blocks.value(chapter), this, [this, session, bookId, chapter](const QMap<int, Cast::Line> &lines) {
-        if (!m_active || session != m_session || m_reader->bookId() != bookId || !m_blocks.contains(chapter) || !m_cast)
-            return;
-        m_castAsked.remove(chapter);
-        m_cast->learn(chapter, lines);
-        trace(QStringLiteral("cast: chapter %1: %2 lines").arg(chapter).arg(lines.size()));
-        recut(chapter);
-    });
+    m_cast->askChapterOrBatch(chapter, m_blocks.value(chapter), this,
+                              [this, session, bookId, first, last](const QHash<int, QMap<int, Cast::Line>> &byChapter) {
+                                  if (!m_active || session != m_session || m_reader->bookId() != bookId || !m_cast)
+                                      return;
+                                  m_castBatchesAsked.remove(first);
+                                  for (int p = first; p <= last; ++p) {
+                                      m_castAsked.remove(p);
+                                      m_cast->learn(p, byChapter.value(p));
+                                      if (m_blocks.contains(p))
+                                          recut(p);
+                                  }
+                                  trace(QStringLiteral("cast %1-%2").arg(first).arg(last));
+                              });
 }
 
 void Narration::requestDirections(int chapter) {
+    const auto [first, last] = m_director->chapterRange(chapter);
+    if (m_directorBatchesAsked.contains(first))
+        return;
+    m_directorBatchesAsked.insert(first);
+    const qint64 askedAt = nowMs();
+    for (int p = first; p <= last; ++p)
+        m_directionsAsked.insert(p, askedAt);
     const quint64 session = m_session;
     const int bookId = m_bookId;
-    if (m_reader && m_reader->format() == QLatin1String("pdf")) {
-        const auto [first, last] = Director::pdfBatchRange(m_reader, chapter);
-        if (m_directorBatchesAsked.contains(first))
-            return;
-        m_directorBatchesAsked.insert(first);
-        const qint64 askedAt = nowMs();
-        for (int p = first; p <= last; ++p)
-            m_directionsAsked.insert(p, askedAt);
-        m_director->askPdfBatch(chapter, m_performance, this,
-                                [this, session, bookId, first, last](const QHash<int, QMap<int, QString>> &byPage) {
-                                    if (!m_active || session != m_session || m_reader->bookId() != bookId)
-                                        return;
-                                    m_directorBatchesAsked.remove(first);
-                                    bool anyRecut = false;
-                                    for (int p = first; p <= last; ++p) {
-                                        m_directionsAsked.remove(p);
-                                        const QMap<int, QString> moods = byPage.value(p);
-                                        m_moods.insert(p, moods);
-                                        if (m_blocks.contains(p) && !moods.isEmpty()) {
-                                            recut(p);
-                                            anyRecut = true;
-                                        }
-                                    }
-                                    trace(QStringLiteral("director pdf batch %1-%2").arg(first).arg(last));
-                                    if (!anyRecut)
-                                        pump();
-                                });
-        return;
-    }
-    m_directionsAsked.insert(chapter, nowMs());
-    m_director->ask(chapter, m_blocks.value(chapter), m_performance, this,
-                    [this, session, bookId, chapter](const QMap<int, QString> &moods) {
-                        if (!m_active || session != m_session || m_reader->bookId() != bookId || !m_blocks.contains(chapter))
-                            return;
-                        QStringList said;
-                        for (auto it = moods.cbegin(); it != moods.cend(); ++it)
-                            said.append(QStringLiteral("%1 %2").arg(it.key()).arg(it.value().isEmpty() ? "neutral" : it.value()));
-                        trace(QStringLiteral("director: chapter %1: %2").arg(chapter).arg(said.join(", ")));
-                        applyMoods(chapter, moods);
-                    });
-}
-
-// The chapter's clips not yet begun are made again, so each change of mood
-// begins a clip of its own and every clip is read in one mood.
-void Narration::applyMoods(int chapter, const QMap<int, QString> &moods) {
-    m_moods.insert(chapter, moods);
-    if (!moods.isEmpty())
-        recut(chapter);
-    else
-        pump();
+    m_director->askChapterOrBatch(
+        chapter, m_blocks.value(chapter), m_performance, this,
+        [this, session, bookId, first, last](const QHash<int, QMap<int, QString>> &byChapter) {
+            if (!m_active || session != m_session || m_reader->bookId() != bookId)
+                return;
+            m_directorBatchesAsked.remove(first);
+            bool anyRecut = false;
+            for (int p = first; p <= last; ++p) {
+                m_directionsAsked.remove(p);
+                const QMap<int, QString> moods = byChapter.value(p);
+                m_moods.insert(p, moods);
+                if (m_blocks.contains(p) && !moods.isEmpty()) {
+                    recut(p);
+                    anyRecut = true;
+                }
+            }
+            trace(QStringLiteral("director %1-%2").arg(first).arg(last));
+            if (!anyRecut)
+                pump();
+        });
 }
 
 void Narration::recut(int chapter) {
@@ -1902,420 +1483,4 @@ void Narration::recut(int chapter) {
             m_queued = indexOfClip(queuedId);
     }
     pump();
-}
-
-// --- Companion response speech playback --------------------------------------
-
-QString Narration::cleanSpeechText(const QString &markdownOrText) {
-    return SpeechCleaner::cleanSpeechText(markdownOrText);
-}
-
-QString Narration::resolveResponseVoice() const {
-    if (!m_ai)
-        return {};
-    auto tryLocal = [this]() -> QString {
-        const auto [fbId, fbName] = bestLocalVoice();
-        Q_UNUSED(fbName);
-        if (!fbId.isEmpty() && m_ai->canSpeakWith(fbId))
-            return fbId;
-        if (auto *local = qobject_cast<LocalSpeech *>(m_ai->providerFor(QStringLiteral("builtin:")))) {
-            const QVariantMap any = local->bestInstalledVoice({});
-            const QString anyId = any.value(QStringLiteral("id")).toString();
-            if (!anyId.isEmpty() && m_ai->canSpeakWith(anyId))
-                return anyId;
-        }
-        return {};
-    };
-
-    QString candidate = m_voice;
-    if (candidate.isEmpty()) {
-        if (m_library && m_reader && m_reader->bookId() > 0)
-            candidate = m_library->bookSetting(m_reader->bookId(), QStringLiteral("voice"));
-        if (candidate.isEmpty())
-            candidate = settings().value(QStringLiteral("listen/voice")).toString();
-    }
-
-    if (!candidate.isEmpty() && m_ai->canSpeakWith(candidate)) {
-        if (!AiServices::isOnThisComputer(candidate) && !m_ai->fitsBudget(0.001)) {
-            if (const QString local = tryLocal(); !local.isEmpty())
-                return local;
-        }
-        return candidate;
-    }
-
-    if (const QString local = tryLocal(); !local.isEmpty())
-        return local;
-    if (m_ai->canSpeakWith(QStringLiteral("sulafat")))
-        return QStringLiteral("sulafat");
-    return {};
-}
-
-int Narration::indexOfResponseChunk(int trackId) const {
-    for (int i = 0; i < m_responseChunks.size(); ++i)
-        if (m_responseChunks[i].trackId == trackId)
-            return i;
-    return -1;
-}
-
-void Narration::setResponseBuffering(bool buffering) {
-    if (buffering == m_responseBuffering)
-        return;
-    m_responseBuffering = buffering;
-    emit responseSpeechChanged();
-}
-
-void Narration::failResponse(const QString &message) {
-    stopResponse();
-    if (!message.isEmpty()) {
-        setProblem(message);
-        emit responseSpeechProblem(message);
-    }
-}
-
-void Narration::speakResponse(const QString &markdownOrText, const QString &itemId) {
-    const QString id = itemId.trimmed();
-    // Clicking the active/buffering item again toggles playback off cleanly.
-    if ((m_responseActive || m_responseBuffering) && m_responseId == id) {
-        stopResponse();
-        return;
-    }
-
-    const QString cleaned = cleanSpeechText(markdownOrText);
-    if (cleaned.isEmpty()) {
-        stopResponse();
-        return;
-    }
-
-    const QString voice = resolveResponseVoice();
-    if (voice.isEmpty()) {
-        failResponse(tr("Choose or download a voice first (P) to listen to Companion responses."));
-        return;
-    }
-    if (!AiServices::isOnThisComputer(voice) && m_ai && !m_ai->fitsBudget(0.001)) {
-        failResponse(m_ai->describe(int(Ai::Error::Budget)));
-        return;
-    }
-    const bool headless = m_player->isHeadless();
-    if (!headless && QMediaDevices::defaultAudioOutput().isNull()) {
-        failResponse(SpeechPlayer::tr("No audio output device is available."));
-        return;
-    }
-
-    // Never play two voices simultaneously: pause active book narration cleanly first.
-    if (playing())
-        pause();
-    stopResponse();
-    setProblem({});
-    if (m_active)
-        m_bookPlayerDirty = true;
-    if (m_reader && m_reader->bookId() > 0)
-        m_bookId = m_reader->bookId();
-
-    // Split into clean sequential sentences/chunks so the first sentence begins immediately.
-    QStringList sentences;
-    const QStringList paragraphs = cleaned.split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-    for (const QString &paragraph : paragraphs) {
-        SpeechBlock block;
-        block.text = paragraph;
-        block.end = paragraph.size();
-        block.kind = QStringLiteral("text");
-        const QList<SpeechSentence> split = Speech::sentences(block);
-        for (const SpeechSentence &s : split)
-            sentences.append(SpeechCleaner::splitOverlongSentence(s.text, 450));
-    }
-    if (sentences.isEmpty())
-        return;
-
-    QList<ResponseChunk> chunks;
-    auto flushChunk = [&](QStringList &group) {
-        if (group.isEmpty())
-            return;
-        ResponseChunk chunk;
-        chunk.trackId = m_nextClipId++;
-        chunk.sentences = group;
-        chunk.text = group.join(QLatin1Char(' '));
-        chunk.voice = voice;
-        chunks.append(std::move(chunk));
-        group.clear();
-    };
-
-    QStringList current;
-    qsizetype currentChars = 0;
-    for (const QString &sentence : std::as_const(sentences)) {
-        // Keep the very first chunk snappy (1 sentence, or merging a tiny <40-char opener up to 220 chars).
-        const bool buildingFirst = chunks.isEmpty();
-        const qsizetype limit = buildingFirst ? 220 : 450;
-        const bool firstDone = buildingFirst && !current.isEmpty() && currentChars >= 40;
-        if (!current.isEmpty() && (firstDone || currentChars + 1 + sentence.size() > limit)) {
-            flushChunk(current);
-            currentChars = 0;
-        }
-        current.append(sentence);
-        currentChars += sentence.size() + (current.size() > 1 ? 1 : 0);
-    }
-    flushChunk(current);
-    if (chunks.isEmpty())
-        return;
-
-    ++m_responseSession;
-    m_responseChunks = std::move(chunks);
-    m_responseCurrent = 0;
-    m_responseQueued = -1;
-    m_responseVoice = voice;
-    m_responseId = id;
-    m_responseActive = true;
-    m_responseBuffering = true;
-    m_responseHeadless = headless;
-
-    m_player->clear();
-    if (!m_responseHeadless)
-        m_player->play();
-    emit responseSpeechChanged();
-    pumpResponse();
-}
-
-void Narration::stopResponse() {
-    if (!m_responseActive && !m_responseBuffering && m_responseId.isEmpty() && m_responseChunks.isEmpty())
-        return;
-    ++m_responseSession;
-    const QList<ResponseChunk> chunks = std::exchange(m_responseChunks, {});
-    for (const ResponseChunk &chunk : chunks)
-        if (chunk.reply)
-            chunk.reply->abort();
-    m_responseCurrent = 0;
-    m_responseQueued = -1;
-    m_responseVoice.clear();
-    const bool ownedPlayer = m_responseActive;
-    m_responseActive = false;
-    m_responseBuffering = false;
-    m_responseHeadless = false;
-    m_responseId.clear();
-    if (ownedPlayer) {
-        m_player->pause();
-        m_player->clear();
-    }
-    emit responseSpeechChanged();
-}
-
-void Narration::pumpResponse() {
-    if (!m_responseActive || !m_ai)
-        return;
-    int working = 0;
-    for (const ResponseChunk &chunk : std::as_const(m_responseChunks))
-        working += (chunk.state == ResponseChunk::Working && chunk.reply) ? 1 : 0;
-
-    const int from = qMax(0, m_responseCurrent);
-    const bool local = AiServices::isOnThisComputer(m_responseVoice);
-    const int ahead = local ? 3 : 2;
-    const int maxWorking = local ? 2 : 1;
-
-    for (int i = from; i < m_responseChunks.size() && i < from + ahead; ++i) {
-        ResponseChunk &chunk = m_responseChunks[i];
-        if (chunk.state != ResponseChunk::Waiting)
-            continue;
-        if (chunk.voice.isEmpty())
-            chunk.voice = m_responseVoice;
-        Ai::SpeechSynthesizer *synth = m_ai->speechFor(chunk.voice);
-        Ai::Provider *provider = m_ai->providerFor(chunk.voice);
-        if (!synth || !provider) {
-            failResponse(tr("Choose or download a voice first (P) to listen to Companion responses."));
-            return;
-        }
-        if (m_cache) {
-            const QString model = synth->speechModelName(m_economy);
-            chunk.key = AudioCache::keyFor(provider->id(), model, chunk.voice, {}, chunk.text);
-            const QString file = m_cache->lookup(chunk.key);
-            if (!file.isEmpty()) {
-                decodeResponse(i, file);
-                continue;
-            }
-        }
-        if (working >= maxWorking)
-            continue;
-        fetchResponse(i);
-        ++working;
-    }
-    queueResponse();
-}
-
-void Narration::queueResponse() {
-    while (m_responseQueued + 1 < m_responseChunks.size()) {
-        const int nextIndex = m_responseQueued + 1;
-        ResponseChunk &chunk = m_responseChunks[nextIndex];
-        if (chunk.state == ResponseChunk::Waiting || chunk.state == ResponseChunk::Failed ||
-            (chunk.state == ResponseChunk::Working && !chunk.reply))
-            break;
-        ++m_responseQueued;
-        chunk.queued = true;
-        m_player->addTrack(chunk.trackId, 0);
-        if (!chunk.pcm.isEmpty())
-            m_player->appendAudio(chunk.trackId, chunk.pcm);
-        if (chunk.state == ResponseChunk::Complete)
-            m_player->finishTrack(chunk.trackId);
-    }
-}
-
-void Narration::fetchResponse(int index) {
-    if (index < 0 || index >= m_responseChunks.size() || !m_ai)
-        return;
-    ResponseChunk &chunk = m_responseChunks[index];
-    Ai::SpeechRequest request;
-    request.feature = QStringLiteral("companion speech");
-    request.text = Speech::speakable(chunk.text);
-    request.voice = chunk.voice;
-    request.economy = m_economy;
-    request.stream = true;
-    for (const QString &sentence : std::as_const(chunk.sentences))
-        request.sentences.append(Speech::speakable(sentence));
-
-    Ai::SpeechSynthesizer *synth = m_ai->speechFor(request.voice);
-    if (!synth) {
-        chunk.state = ResponseChunk::Failed;
-        failResponse(tr("Choose or download a voice first (P) to listen to Companion responses."));
-        return;
-    }
-
-    const bool local = AiServices::isOnThisComputer(request.voice);
-    const double cost = local ? 0.0 : m_ai->listeningCost(qMax(0.05, chunk.text.size() / charsPerMinute), m_economy, false);
-    if (!local && !m_ai->fitsBudget(cost)) {
-        chunk.state = ResponseChunk::Failed;
-        failResponse(m_ai->describe(int(Ai::Error::Budget)));
-        return;
-    }
-
-    Ai::Reply *reply = synth->synthesize(request);
-    m_ai->track(reply);
-    chunk.reply = reply;
-    chunk.state = ResponseChunk::Working;
-    const quint64 session = m_responseSession;
-    const int trackId = chunk.trackId;
-
-    connect(reply, &Ai::Reply::audioReceived, this, [this, session, trackId, reply](const QByteArray &pcm) {
-        if (!m_responseActive || session != m_responseSession)
-            return;
-        const int i = indexOfResponseChunk(trackId);
-        if (i < 0 || m_responseChunks[i].reply != reply)
-            return;
-        ResponseChunk &c = m_responseChunks[i];
-        c.pcm += pcm;
-        if (c.queued)
-            m_player->appendAudio(c.trackId, pcm);
-        else
-            queueResponse();
-        if (!pcm.isEmpty() && m_responseBuffering)
-            setResponseBuffering(false);
-    });
-
-    connect(reply, &Ai::Reply::finished, this, [this, session, trackId, reply] {
-        reply->deleteLater();
-        if (!m_responseActive || session != m_responseSession)
-            return;
-        const int i = indexOfResponseChunk(trackId);
-        if (i < 0 || m_responseChunks[i].reply != reply)
-            return;
-        ResponseChunk &c = m_responseChunks[i];
-        c.reply = nullptr;
-        if (reply->error()) {
-            const Ai::Error err = reply->error();
-            if (err.kind == Ai::Error::Cancelled)
-                return;
-            // Seamless cloud-to-local fallback if an installed local voice is ready.
-            const bool isCloud = !AiServices::isOnThisComputer(c.voice);
-            if (isCloud && !c.queued &&
-                (err.kind == Ai::Error::Offline || err.kind == Ai::Error::Limited || err.kind == Ai::Error::Budget ||
-                 err.kind == Ai::Error::NoKey || err.kind == Ai::Error::BadKey)) {
-                const auto [fbId, fbName] = bestLocalVoice();
-                Q_UNUSED(fbName);
-                if (!fbId.isEmpty() && fbId != c.voice && m_ai->canSpeakWith(fbId)) {
-                    m_responseVoice = fbId;
-                    for (int k = i; k < m_responseChunks.size(); ++k) {
-                        if (m_responseChunks[k].queued)
-                            continue;
-                        if (m_responseChunks[k].reply) {
-                            QPointer<Ai::Reply> obsolete = m_responseChunks[k].reply;
-                            m_responseChunks[k].reply = nullptr;
-                            obsolete->abort();
-                        }
-                        m_responseChunks[k].state = ResponseChunk::Waiting;
-                        m_responseChunks[k].pcm = QByteArray();
-                        m_responseChunks[k].key.clear();
-                        m_responseChunks[k].voice = fbId;
-                    }
-                    pumpResponse();
-                    return;
-                }
-            }
-            c.state = ResponseChunk::Failed;
-            if (c.queued)
-                m_player->finishTrack(c.trackId);
-            const QString msg = m_ai->describe(int(err.kind), err.message);
-            if (i == 0 || m_responseHeadless || m_player->drainedOut()) {
-                failResponse(msg);
-                return;
-            }
-            setProblem(msg);
-            queueResponse();
-            return;
-        }
-        c.state = ResponseChunk::Complete;
-        if (c.queued)
-            m_player->finishTrack(c.trackId);
-        else
-            queueResponse();
-        if (!c.pcm.isEmpty() && m_responseBuffering)
-            setResponseBuffering(false);
-        if (m_cache && !c.pcm.isEmpty() && !c.key.isEmpty() && reply->sampleRate() > 0)
-            m_cache->store(c.key, c.pcm, reply->sampleRate());
-        // Guard against an empty response yielding zero audio samples across all chunks.
-        bool allDone = true;
-        bool anyAudio = false;
-        for (const ResponseChunk &item : std::as_const(m_responseChunks)) {
-            if (item.state == ResponseChunk::Waiting || item.state == ResponseChunk::Working)
-                allDone = false;
-            if (!item.pcm.isEmpty())
-                anyAudio = true;
-        }
-        if (allDone && !anyAudio && m_player->drainedOut()) {
-            stopResponse();
-            return;
-        }
-        pumpResponse();
-    });
-}
-
-void Narration::decodeResponse(int index, const QString &file) {
-    if (index < 0 || index >= m_responseChunks.size() || !m_cache)
-        return;
-    ResponseChunk &chunk = m_responseChunks[index];
-    chunk.state = ResponseChunk::Working;
-    const QString key = chunk.key;
-    const int trackId = chunk.trackId;
-    const quint64 session = m_responseSession;
-    m_cache->decode(file, sampleRate, this, [this, session, trackId, key](const QByteArray &pcm, bool ok) {
-        if (!m_responseActive || session != m_responseSession)
-            return;
-        const int i = indexOfResponseChunk(trackId);
-        if (i < 0 || m_responseChunks[i].state != ResponseChunk::Working || m_responseChunks[i].reply)
-            return;
-        ResponseChunk &c = m_responseChunks[i];
-        if (!ok) {
-            m_cache->remove(key);
-            c.state = ResponseChunk::Waiting;
-            c.queued = false;
-            c.key.clear();
-            pumpResponse();
-            return;
-        }
-        c.pcm = pcm;
-        c.state = ResponseChunk::Complete;
-        if (c.queued) {
-            m_player->appendAudio(c.trackId, c.pcm);
-            m_player->finishTrack(c.trackId);
-        } else {
-            queueResponse();
-        }
-        if (!c.pcm.isEmpty() && m_responseBuffering)
-            setResponseBuffering(false);
-        pumpResponse();
-    });
 }

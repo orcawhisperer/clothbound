@@ -68,6 +68,11 @@ public:
     std::optional<QHash<int, QMap<int, Line>>> keptPdfBatch(int page) const;
     void ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context, std::function<void(const QMap<int, Line> &)> done);
     void askPdfBatch(int page, QObject *context, std::function<void(const QHash<int, QMap<int, Line>> &byPage)> done);
+    // Unified EPUB/PDF helpers for single chapters or PDF page batches.
+    QPair<int, int> chapterRange(int chapter) const;
+    std::optional<QHash<int, QMap<int, Line>>> keptChapterOrBatch(int chapter, const QList<SpeechBlock> &blocks) const;
+    void askChapterOrBatch(int chapter, const QList<SpeechBlock> &blocks, QObject *context,
+                           std::function<void(const QHash<int, QMap<int, Line>> &byChapter)> done);
     // Aborts in-flight casting requests for `scope`, or all when `scope` is null.
     void cancel(const QObject *scope = nullptr);
     // What's known of a chapter's speakers (asked, or kept).

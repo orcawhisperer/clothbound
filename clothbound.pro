@@ -64,7 +64,9 @@ HEADERS += \
     src/audio/localspeech.h \
     src/audio/mpris.h \
     src/audio/narration.h \
+    src/audio/responsespeech.h \
     src/audio/sherpaonnx.h \
+    src/audio/sleepcontroller.h \
     src/audio/speech.h \
     src/audio/speechcleaner.h \
     src/audio/speechplayer.h \
@@ -127,6 +129,8 @@ SOURCES += \
     src/audio/localspeech.cpp \
     src/audio/mpris.cpp \
     src/audio/narration.cpp \
+    src/audio/responsespeech.cpp \
+    src/audio/sleepcontroller.cpp \
     src/audio/speech.cpp \
     src/audio/speechcleaner.cpp \
     src/audio/speechplayer.cpp \
