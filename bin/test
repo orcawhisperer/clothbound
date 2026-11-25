@@ -148,13 +148,21 @@ run_in_session() {
     fi
 }
 
+run_tsan() {
+    if command -v setarch >/dev/null 2>&1 && setarch "$(uname -m)" -R true >/dev/null 2>&1; then
+        run_in_session setarch "$(uname -m)" -R "$@"
+    else
+        run_in_session "$@"
+    fi
+}
+
 cd "$BUILD_DIR"
 if [ "$SANITIZER" = "tsan" ]; then
     if [ "$#" -gt 0 ]; then
-        run_in_session ./tst_concurrency "$@"
+        run_tsan ./tst_concurrency "$@"
     else
-        run_in_session ./tst_concurrency
-        run_in_session ./tst_w8_storage_palette
+        run_tsan ./tst_concurrency
+        run_tsan ./tst_w8_storage_palette
     fi
 elif [ "$#" -gt 0 ]; then
     run_in_session ./clothbound_tests "$@"

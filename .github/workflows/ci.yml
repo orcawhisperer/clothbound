@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: archlinux:base-devel
+      options: --security-opt seccomp=unconfined
     steps:
       - name: Install dependencies
         run: |
