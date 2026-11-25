@@ -30,6 +30,6 @@ pkgbase = clothbound
 	options = !debug
 	options = !lto
 	source = clothbound-0.5.1.tar.gz::https://github.com/orcawhisperer/clothbound/archive/refs/tags/v0.5.1.tar.gz
-	sha256sums = SKIP
+	sha256sums = d78c501e346eb128507ccc9b03f7633c679a0c0a2c1d02075f1b0cefaf802642
 
 pkgname = clothbound
