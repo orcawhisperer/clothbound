@@ -1145,9 +1145,37 @@ bool SpeechPlayer::isPlaying() const {
 }
 
 void SpeechPlayer::setHeadless(bool headless) {
-    std::unique_lock<std::mutex> lock(m_mutex);
-    m_headless = headless;
-    m_cond.notify_one();
+    bool needAudioThread = false;
+    bool startNow = false;
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        const bool wasHeadless = m_headless;
+        m_headless = headless;
+        if (wasHeadless && !headless && m_playing) {
+            needAudioThread = (m_pump == nullptr);
+            startNow = true;
+        }
+        m_cond.notify_one();
+    }
+    if (!startNow)
+        return;
+    if (needAudioThread && QThread::currentThread() == thread())
+        ensureAudioThread();
+    quint64 clearGen = 0;
+    AudioOutputPump *pump = nullptr;
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        if (m_headless || !m_playing)
+            return;
+        startWorker(lock);
+        clearGen = m_clearGeneration;
+        pump = m_pump;
+        m_cond.notify_one();
+    }
+    if (pump) {
+        QMetaObject::invokeMethod(
+            pump, [pump, clearGen] { pump->startPlayback(clearGen); }, Qt::QueuedConnection);
+    }
 }
 
 bool SpeechPlayer::isHeadless() const {

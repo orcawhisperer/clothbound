@@ -1,5 +1,7 @@
 #include "formats/coverprovider.h"
 
+#include "formats/tsanhandoff.h"
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -85,6 +87,7 @@ public:
     void cancel() override { m_cancelled.store(true, std::memory_order_relaxed); }
 
     void run() override {
+        Clothbound::acquirePoolRunnable(this);
         if (m_cancelled.load(std::memory_order_relaxed)) {
             emit finished();
             return;
@@ -274,7 +277,8 @@ void CoverProvider::maybeScheduleCacheGc() {
         return;
     }
     const QString coversDir = cacheRoot + QStringLiteral("/covers");
-    QThreadPool::globalInstance()->start(
+    Clothbound::startPoolTask(
+        QThreadPool::globalInstance(),
         [coversDir] {
             struct Guard {
                 ~Guard() { s_gcRunning.store(false, std::memory_order_release); }
@@ -304,6 +308,6 @@ QQuickImageResponse *CoverProvider::requestImageResponse(const QString &id, cons
 
     // Defer QFileInfo::exists()/stat() and disk decode off the GUI thread.
     auto *response = new CoverResponse(std::move(filePath), requestedSize, radiusPx, spineRadiusPx, boxWidthPx);
-    QThreadPool::globalInstance()->start(response);
+    Clothbound::startPoolRunnable(QThreadPool::globalInstance(), response);
     return response;
 }

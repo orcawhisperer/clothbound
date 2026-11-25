@@ -383,12 +383,12 @@ def check(strings, strict=False):
 
 
 def register(codes):
-    """Every catalog compiled in, and the launcher entry translated."""
+    """Keep only the English fallback embedded in resources.qrc (non-English
+    catalogs load lazily from disk), and update the translated launcher entry."""
     qrc = SRC / "resources.qrc"
     text = qrc.read_text()
-    lines = "".join(f'        <file alias="i18n/{code}.json">i18n/{code}.json</file>\n'
-                    for code in sorted(p.stem for p in I18N.glob("*.json")))
-    text = re.sub(r'(        <file alias="i18n/[^"]+">[^<]+</file>\n)+', lambda _: lines, text)
+    en_line = '        <file alias="i18n/en.json">i18n/en.json</file>\n'
+    text = re.sub(r'(        <file alias="i18n/[^"]+">[^<]+</file>\n)+', lambda _: en_line, text)
     qrc.write_text(text)
     desktop = ROOT / "pkgbuild/clothbound.desktop"
     entry = [line for line in desktop.read_text().splitlines() if not re.match(r"^(Name|Comment|GenericName)\[", line)]

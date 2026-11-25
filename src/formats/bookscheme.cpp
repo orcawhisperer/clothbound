@@ -2,6 +2,7 @@
 
 #include "formats/epubbook.h"
 #include "formats/htmltokenizer.h"
+#include "formats/tsanhandoff.h"
 
 #include <QBuffer>
 #include <QFile>
@@ -273,14 +274,11 @@ void BookScheme::resolveRequestAsync(const QUrl &url, const QByteArray &referer,
     auto deliver = [this, guard, hasContext, cancelled, callback = std::move(callback)](ResolvedResource res) mutable {
         if (cancelled->load(std::memory_order_relaxed) || m_shuttingDown.load(std::memory_order_acquire))
             return;
-        QMetaObject::invokeMethod(
-            this,
-            [guard, hasContext, cancelled, callback = std::move(callback), res = std::move(res)]() mutable {
-                if (cancelled->load(std::memory_order_relaxed) || (hasContext && !guard))
-                    return;
-                callback(std::move(res));
-            },
-            Qt::QueuedConnection);
+        {
+            std::lock_guard<std::mutex> lock(m_deliveryMutex);
+            m_pendingDeliveries.push_back({guard, hasContext, std::move(cancelled), std::move(callback), std::move(res)});
+        }
+        QMetaObject::invokeMethod(this, &BookScheme::drainDeliveries, Qt::QueuedConnection);
     };
 
     if (url.host() != QStringLiteral("local")) {
@@ -321,13 +319,29 @@ void BookScheme::resolveRequestAsync(const QUrl &url, const QByteArray &referer,
         return;
     }
 
-    m_pool.start([this, book = std::move(book), token = std::move(token), entry = std::move(entry), cancelled,
-                  deliver = std::move(deliver)]() mutable {
-        if (cancelled->load(std::memory_order_relaxed) || m_shuttingDown.load(std::memory_order_acquire))
-            return;
-        ResolvedResource resolved = resolveBookResource(book, token, std::move(entry), cancelled.get());
-        deliver(std::move(resolved));
-    });
+    Clothbound::startPoolTask(
+        &m_pool,
+        [this, book = std::move(book), token = std::move(token), entry = std::move(entry), cancelled,
+         deliver = std::move(deliver)]() mutable {
+            if (cancelled->load(std::memory_order_relaxed) || m_shuttingDown.load(std::memory_order_acquire))
+                return;
+            ResolvedResource resolved = resolveBookResource(book, token, std::move(entry), cancelled.get());
+            deliver(std::move(resolved));
+        });
+}
+
+void BookScheme::drainDeliveries() {
+    std::vector<PendingDelivery> batch;
+    {
+        std::lock_guard<std::mutex> lock(m_deliveryMutex);
+        batch.swap(m_pendingDeliveries);
+    }
+    for (auto &item : batch) {
+        if (item.cancelled->load(std::memory_order_relaxed) || (item.hasContext && !item.guard) ||
+            m_shuttingDown.load(std::memory_order_acquire))
+            continue;
+        item.callback(std::move(item.result));
+    }
 }
 
 void BookScheme::requestStarted(QWebEngineUrlRequestJob *job) {

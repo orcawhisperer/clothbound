@@ -1,6 +1,7 @@
 #include "formats/pdfpages.h"
 
 #include "formats/pdfbook.h"
+#include "formats/tsanhandoff.h"
 
 #include <QCoreApplication>
 #include <QMetaObject>
@@ -113,6 +114,7 @@ public:
     void cancel() override { m_cancelled.store(true, std::memory_order_relaxed); }
 
     void run() override {
+        Clothbound::acquirePoolRunnable(this);
         if (m_worker)
             assertWorkerAffinity(m_worker.get());
         if (m_cancelled.load(std::memory_order_relaxed)) {
@@ -212,6 +214,7 @@ public:
     }
 
     void run() override {
+        Clothbound::acquirePoolRunnable(this);
         if (m_worker)
             assertWorkerAffinity(m_worker.get());
         if (m_gen != PdfPages::s_prefetchGen.load(std::memory_order_relaxed))
@@ -292,7 +295,7 @@ PdfPages::~PdfPages() {
     }
     s_prefetchGen.fetch_add(1, std::memory_order_relaxed);
     auto worker = m_worker;
-    m_pool.start([worker] { resetWorkerBook(worker.get()); });
+    Clothbound::startPoolTask(&m_pool, [worker] { resetWorkerBook(worker.get()); });
     m_pool.waitForDone();
 }
 
@@ -322,7 +325,8 @@ void PdfPages::remove(const QString &token) {
         auto worker = s_instance->m_worker;
         // Release the closed QPdfDocument and its file descriptor on its affine
         // worker thread instead of pinning hundreds of MB until another PDF opens.
-        s_instance->m_pool.start(
+        Clothbound::startPoolTask(
+            &s_instance->m_pool,
             [worker, token] {
                 if (worker)
                     assertWorkerAffinity(worker.get());
@@ -521,7 +525,8 @@ void PdfPages::prefetch(const QString &token, const QList<int> &pages, const QSi
         const QString cacheKey = makeCacheKey(id, requestedSize);
         if (s_cache.contains(cacheKey))
             continue;
-        instance->m_pool.start(
+        Clothbound::startPoolRunnable(
+            &instance->m_pool,
             new PrefetchTask(instance->m_worker, gen, token, id, cacheKey, page, requestedSize, bg, fg), -1);
     }
 }
@@ -683,7 +688,7 @@ QQuickImageResponse *PdfPages::requestImageResponse(const QString &id, const QSi
     const QColor bg(query.queryItemValue(QStringLiteral("bg"), QUrl::FullyDecoded));
     const QColor fg(query.queryItemValue(QStringLiteral("fg"), QUrl::FullyDecoded));
     auto *response = new PageResponse(m_worker, token, id, cacheKey, page, requestedSize, bg, fg, tile);
-    m_pool.start(response, 1);
+    Clothbound::startPoolRunnable(&m_pool, response, 1);
     return response;
 }
 

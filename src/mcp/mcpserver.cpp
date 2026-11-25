@@ -3,7 +3,6 @@
 #include "ai/aiservices.h"
 #include "ai/localmodels.h"
 #include "ai/passageindex.h"
-#include "app/cli.h"
 #include "formats/bookrecord.h"
 #include "formats/epubbook.h"
 #include "formats/pdfbook.h"
@@ -764,11 +763,6 @@ QVariantList searchUnindexedBooksLexical(const QList<BookRecord> &candidateBooks
     }
     return out;
 }
-
-// Register McpServer::runStdio with the CLI dispatcher whenever this module is linked.
-struct McpRunnerRegistrar {
-    McpRunnerRegistrar() { registerMcpRunner(&McpServer::runStdio); }
-} s_mcpRunnerRegistrar;
 
 }  // namespace
 

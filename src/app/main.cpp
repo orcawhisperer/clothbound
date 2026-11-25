@@ -23,7 +23,7 @@
 #include "audio/voicecatalog.h"
 #include "audio/mpris.h"
 #include "audio/download.h"
-#include "library/booksearch.h"
+#include "ai/booksearch.h"
 #include "library/marks.h"
 #include "audio/localspeech.h"
 #include "audio/voicepacks.h"

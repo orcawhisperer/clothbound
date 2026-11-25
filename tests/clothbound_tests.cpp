@@ -72,7 +72,7 @@
 #include "app/surfacewatcher.h"
 #include "formats/bookname.h"
 #include "formats/bookscheme.h"
-#include "library/booksearch.h"
+#include "ai/booksearch.h"
 #include "library/library.h"
 #include "library/libraryfinder.h"
 #include "library/libraryindex.h"
@@ -15920,7 +15920,7 @@ void ClothboundTests::aPlusCoreParserFuzzStress() {
 #include "library/readingtelemetry.h"
 
 void ClothboundTests::w5CoreLibNoReaderCycleAndDecoupledBookSearch() {
-    // 1. Strict DAG check: ZERO #include "reader/..." anywhere in src/library/.
+    // 1. Strict DAG check: ZERO #include "reader/..." or "ai/..." anywhere in src/library/.
     const QString libDir = QFINDTESTDATA("../src/library");
     QVERIFY2(QFileInfo(libDir).isDir(), qPrintable(libDir));
     int checkedFiles = 0;
@@ -15933,6 +15933,8 @@ void ClothboundTests::w5CoreLibNoReaderCycleAndDecoupledBookSearch() {
         const QByteArray bytes = f.readAll();
         QVERIFY2(!bytes.contains("#include \"reader/") && !bytes.contains("#include <reader/"),
                  qPrintable(QStringLiteral("Forbidden reader/ include found in %1").arg(filePath)));
+        QVERIFY2(!bytes.contains("#include \"ai/") && !bytes.contains("#include <ai/"),
+                 qPrintable(QStringLiteral("Forbidden ai/ include found in %1").arg(filePath)));
         ++checkedFiles;
     }
     QVERIFY(checkedFiles >= 14);

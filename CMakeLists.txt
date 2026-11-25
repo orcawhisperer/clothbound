@@ -124,6 +124,7 @@ add_library(clothbound_headless STATIC
     src/formats/htmltokenizer.cpp
     src/formats/pdfbook.h
     src/formats/pdfbook.cpp
+    src/formats/tsanhandoff.h
     src/formats/ziparchive.h
     src/formats/ziparchive.cpp
 
@@ -225,10 +226,6 @@ add_library(clothbound_app STATIC
     src/formats/pdfpages.h
     src/formats/pdfpages.cpp
 
-    # Library (semantic book search)
-    src/library/booksearch.h
-    src/library/booksearch.cpp
-
     # Reader
     src/reader/reader.h
     src/reader/reader.cpp
@@ -271,6 +268,8 @@ add_library(clothbound_app STATIC
     # AI (reader-coupled / companion / online)
     src/ai/bookcontextreader.h
     src/ai/bookcontextreader.cpp
+    src/ai/booksearch.h
+    src/ai/booksearch.cpp
     src/ai/companion.h
     src/ai/companion.cpp
     src/ai/companionstore.h

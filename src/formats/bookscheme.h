@@ -3,6 +3,7 @@
 #include <QHash>
 #include <QMultiMap>
 #include <QMutex>
+#include <QPointer>
 #include <QThreadPool>
 #include <QUrl>
 #include <QWebEngineUrlRequestInterceptor>
@@ -10,6 +11,8 @@
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <vector>
 
 class EpubBook;
 class QQuickWebEngineProfile;
@@ -57,15 +60,26 @@ public:
     static const QMultiMap<QByteArray, QByteArray> &bookHeaders();
 
 private:
+    struct PendingDelivery {
+        QPointer<QObject> guard;
+        bool hasContext = false;
+        std::shared_ptr<std::atomic_bool> cancelled;
+        std::function<void(ResolvedResource)> callback;
+        ResolvedResource result;
+    };
+
     static ResolvedResource resolveAppRequest(const QString &path);
     ResolvedResource resolveBookResource(const std::shared_ptr<EpubBook> &book, const QString &token, QString entry,
                                          const std::atomic_bool *cancelled = nullptr);
+    void drainDeliveries();
 
     QMutex m_mutex;
     QHash<QString, std::shared_ptr<EpubBook>> m_books;
     QHash<QString, bool> m_wellFormed;
     QThreadPool m_pool;
     std::atomic_bool m_shuttingDown{false};
+    std::mutex m_deliveryMutex;
+    std::vector<PendingDelivery> m_pendingDeliveries;
 };
 
 // Books never reach the network: everything but clothbound:, data: and blob:

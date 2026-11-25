@@ -1,6 +1,7 @@
 #include "reader/readerimageprovider.h"
 
 #include "formats/epubbook.h"
+#include "formats/tsanhandoff.h"
 
 #include <QBuffer>
 #include <QCoreApplication>
@@ -56,6 +57,7 @@ public:
     void cancel() override { m_cancelled.store(true, std::memory_order_relaxed); }
 
     void run() override {
+        Clothbound::acquirePoolRunnable(this);
         Q_ASSERT(!QCoreApplication::instance() || QThread::currentThread() != QCoreApplication::instance()->thread());
         if (m_cancelled.load(std::memory_order_relaxed) || !m_book) {
             emit finished();
@@ -256,6 +258,6 @@ QQuickImageResponse *ReaderImageProvider::requestImageResponse(const QString &id
         return new CachedBookImageResponse(QImage());
 
     auto *response = new BookImageResponse(book, token, entry, cacheKey, requestedSize);
-    m_pool.start(response, 1);
+    Clothbound::startPoolRunnable(&m_pool, response, 1);
     return response;
 }

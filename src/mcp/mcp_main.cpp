@@ -2,7 +2,6 @@
 // Shares Clothbound's read-only library/index/settings paths without linking
 // QtWebEngine, QtQuick, QtQml, or QtMultimedia.
 
-#include "app/cli.h"
 #include "mcp/mcpserver.h"
 
 #include <QCoreApplication>
@@ -13,9 +12,6 @@
 #ifndef CLOTHBOUND_VERSION
 #define CLOTHBOUND_VERSION "0.4.1"
 #endif
-
-// Satisfies McpServer's static CLI registrar without pulling in the full CLI.
-void registerMcpRunner(McpRunner) {}
 
 namespace {
 
