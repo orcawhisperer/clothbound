@@ -179,6 +179,10 @@ target_link_libraries(clothbound_headless
 # Isolated headless MCP library layered strictly on top of clothbound_headless
 # so clothbound_bench links clothbound_headless cleanly without MCP's CLI hook.
 add_library(clothbound_mcp STATIC
+    src/mcp/libraryqueryservice.h
+    src/mcp/libraryqueryservice.cpp
+    src/mcp/mcpprotocol.h
+    src/mcp/mcpprotocol.cpp
     src/mcp/mcpserver.h
     src/mcp/mcpserver.cpp
 )

@@ -35,8 +35,8 @@ Clothbound follows your Omarchy theme, language, and window corner rounding (wit
 - **Adaptive Story & Study Companion (`C`)**:
   - Switch cleanly between **Story mode** (*Ask*, *Previously…*, *Who's who*, *Pictures* — strictly spoiler-free up to your current page) and **Study mode** (*Ask*, *Brief*, *Glossary* with **Smart Scope**: *Up to here* · *Whole book* · *This shelf*).
   - Renders **offline LaTeX math** (zero CDN), reads replies aloud, resizes via left-edge drag (double-click snaps to 384 px), and powers inline *Define* (offline `sdcv` StarDict or model), *Explain*, and *Translate*.
-- **Built-in Local MCP Server (`clothbound mcp`)**:
-  - Read-only stdio JSON-RPC 2.0 server so your local coding and research agents (Antigravity, Claude Code, Cursor, Codex) can query `list_books`, `search_library`, `search_passages`, `get_book_outline`, `read_passage`, and `list_marks` privately — one-click **Copy MCP config** in **Settings › Intelligence**.
+- **Built-in Local MCP Server (`clothbound-mcp`)**:
+  - Standalone WebEngine-free read-only stdio JSON-RPC 2.0 server (~31 ms startup, zero Qt WebEngine/QML linkage; also accessible via `clothbound mcp`) so your local coding and research agents (Antigravity, Claude Code, Cursor, Codex) can query `list_books`, `search_library`, `search_passages`, `get_book_outline`, `read_passage`, and `list_marks` privately — one-click **Copy MCP config** in **Settings › Intelligence**.
 - **Desktop craft & 50 languages**:
   - Live Omarchy theme matching, **Corners (`Match desktop | Rounded | Sharp`)** and **Reduce motion** in **Settings › General**, and 50 shipped interface languages.
 
@@ -86,9 +86,14 @@ cd clothbound
 
 ### Build & test from source
 
+Clothbound uses **CMake 3.24+** (C++20, Ninja or Unix Makefiles, Qt 6):
+
 ```sh
-./bin/build          # builds ./build/clothbound
-./bin/test           # runs the full offscreen QtTest suite (184 tests)
+./bin/build           # CMake Release build -> ./build/clothbound and ./build/clothbound-mcp
+./bin/test            # builds & runs the full offscreen QtTest suite (266+ tests)
+./bin/test --asan     # runs tests under AddressSanitizer + UBSan
+./bin/test --tsan     # runs concurrency stress tests under ThreadSanitizer
+./bin/bench           # runs C++ core micro-benchmarks and headless startup/memory benchmarks
 ./bin/translate check # verifies all 50 translation catalogs
 ```
 
@@ -131,6 +136,20 @@ cd clothbound
 
 ## CLI & MCP commands
 
+### Standalone WebEngine-free `clothbound-mcp`
+
+For local AI agents and fast read-only terminal queries without loading Qt WebEngine, Qt Quick, Qt QML, or Qt Multimedia, use the standalone `clothbound-mcp` binary (opens `library.sqlite` and `index.sqlite` strictly read-only with `QSQLITE_OPEN_READONLY` and `PRAGMA query_only=ON`):
+
+```sh
+clothbound-mcp [mcp]                         # run the read-only local stdio JSON-RPC 2.0 MCP server (default)
+clothbound-mcp list [--json]                 # list books in the library with reading progress
+clothbound-mcp search <query> [--json]       # read-only full-text FTS5 + lexical search
+clothbound-mcp notes [book] [--json]         # export highlights, notes & bookmarks (one book or whole library)
+clothbound-mcp --version | --help            # version and usage
+```
+
+### Full `clothbound` CLI
+
 Every CLI command works headless without a display and supports `--json`:
 
 ```sh
@@ -140,7 +159,7 @@ clothbound list                              # list books with reading progress
 clothbound info <book>                       # metadata and table of contents
 clothbound search <query>                    # full-text search across your offline library
 clothbound notes <book>                      # export highlights, notes, and bookmarks as Markdown
-clothbound mcp                               # run the read-only local stdio MCP server
+clothbound mcp                               # run the read-only local stdio MCP server (or use clothbound-mcp)
 clothbound voices [list|install|remove|bench] # manage built-in offline voices
 clothbound ai [status|key|forget|local]      # inspect Gemini usage/keys and local models
 clothbound skill [install]                   # install the Clothbound skill for coding agents

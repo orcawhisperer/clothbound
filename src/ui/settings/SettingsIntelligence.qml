@@ -31,14 +31,13 @@ ColumnLayout {
     readonly property bool askingForKey: !ai.hasKey || replacing
     readonly property bool twoColumns: width >= 760
     readonly property bool budgetOpen: budgetSheet.open
-    readonly property string mcpCommandPath: (typeof executablePath !== "undefined" && String(executablePath || "") !== "")
-                                             ? String(executablePath) : "clothbound"
+    readonly property string mcpCommandPath: "clothbound-mcp"
     function mcpConfigJson() {
         return JSON.stringify({
             mcpServers: {
                 clothbound: {
                     command: mcpCommandPath,
-                    args: ["mcp"]
+                    args: []
                 }
             }
         }, null, 2)
@@ -971,7 +970,7 @@ ColumnLayout {
                         anchors.verticalCenter: parent.verticalCenter
                         anchors.leftMargin: 10
                         anchors.rightMargin: 10
-                        text: "clothbound mcp"
+                        text: page.mcpCommandPath
                         color: theme.ink2
                         font.family: "monospace"
                         font.pixelSize: 12
