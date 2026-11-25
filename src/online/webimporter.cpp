@@ -12,11 +12,9 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QEventLoop>
+#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
-#include <QHostInfo>
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
@@ -139,8 +137,7 @@ QString detectImageFormat(const QString &contentType, const QByteArray &data, QS
         return QStringLiteral("image/webp");
     }
     if (ct == QLatin1String("image/svg+xml")) {
-        const QByteArray head = data.left(256).trimmed().toLower();
-        if (head.contains("<svg")) {
+        if (EpubWriter::isSafeSvg(data)) {
             if (extOut)
                 *extOut = QStringLiteral("svg");
             return QStringLiteral("image/svg+xml");
@@ -176,8 +173,12 @@ bool saveBytesAtomically(const QString &destPath, const QByteArray &bytes, QStri
     return true;
 }
 
-bool isRedirectStatus(int code) {
-    return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+QByteArray headerValueFromList(const QList<QPair<QByteArray, QByteArray>> &headers, const QByteArray &name) {
+    for (const auto &[k, v] : headers) {
+        if (k.compare(name, Qt::CaseInsensitive) == 0)
+            return v;
+    }
+    return {};
 }
 }  // namespace
 
@@ -317,6 +318,11 @@ QVariantMap WebImporter::parseArxivAtom(const QByteArray &xml) {
         return {};
 
     QXmlStreamReader reader(xml);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 12, 0)
+    reader.setEntityExpansionLimit(1);
+#else
+    reader.setEntityExpansionLimit(0);
+#endif
     bool inEntry = false;
     bool inAuthor = false;
     QString title;
@@ -329,6 +335,8 @@ QVariantMap WebImporter::parseArxivAtom(const QByteArray &xml) {
 
     while (!reader.atEnd()) {
         const auto token = reader.readNext();
+        if (token == QXmlStreamReader::DTD)
+            return {};
         if (token == QXmlStreamReader::StartElement) {
             const QStringView name = reader.name();
             if (name == QLatin1String("entry")) {
@@ -529,17 +537,12 @@ void WebImporter::setDetectedKind(const QString &kind) {
 
 void WebImporter::abortActiveOperations() {
     ++m_generation;
-    for (const int lookupId : std::as_const(m_activeLookups))
-        QHostInfo::abortHostLookup(lookupId);
-    m_activeLookups.clear();
-
-    const auto replies = m_activeReplies;
-    m_activeReplies.clear();
-    for (const QPointer<QNetworkReply> &reply : replies) {
-        if (reply) {
-            reply->disconnect(this);
-            reply->abort();
-            reply->deleteLater();
+    const auto requests = m_activeRequests;
+    m_activeRequests.clear();
+    for (const QPointer<PinnedHttpRequest> &req : requests) {
+        if (req) {
+            req->abort();
+            req->deleteLater();
         }
     }
 }
@@ -562,7 +565,7 @@ void WebImporter::completeFailure(const QString &error) {
 }
 
 void WebImporter::cancel() {
-    if (!m_busy && m_activeReplies.isEmpty() && m_activeLookups.isEmpty())
+    if (!m_busy && m_activeRequests.isEmpty())
         return;
     abortActiveOperations();
     setProgress(0.0);
@@ -660,201 +663,395 @@ bool WebImporter::importUrlSync(const QString &rawUrl, int *bookIdOut, QString *
     return ok;
 }
 
-void WebImporter::fetchUrl(const QUrl &url, qint64 maxBytes, bool allowBookCapUpgrade, bool trackProgress,
-                           int redirectCount, quint64 generation, const QByteArray &acceptHeader,
-                           FetchCallback callback, int timeoutMs) {
+void WebImporter::fetchToMemory(const QUrl &url, qint64 maxBytes, bool trackProgress, quint64 generation,
+                                const QByteArray &acceptHeader, FetchCallback callback, int timeoutMs) {
     if (generation != m_generation)
         return;
 
-    QString guardReason;
-    if (!UrlGuard::isAllowedUrl(url, m_allowLocalNetwork, &guardReason)) {
-        FetchResult res;
-        res.error = guardReason;
-        callback(std::move(res));
-        return;
-    }
+    auto declaredLength = std::make_shared<qint64>(-1);
+    auto bodyBuffer = std::make_shared<QByteArray>();
 
-    if (!m_allowLocalNetwork) {
-        const QString host = url.host(QUrl::FullyEncoded).trimmed();
-        const QHostAddress literal = UrlGuard::parseHostLiteral(host);
-        if (literal.isNull()) {
-            auto cbPtr = std::make_shared<FetchCallback>(std::move(callback));
-            int lookupId = 0;
-            lookupId = QHostInfo::lookupHost(
-                host, this,
-                [this, url, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount, generation, acceptHeader, cbPtr,
-                 host, timeoutMs](const QHostInfo &info) {
-                    m_activeLookups.removeOne(info.lookupId());
-                    if (generation != m_generation)
-                        return;
-                    if (info.error() != QHostInfo::NoError || info.addresses().isEmpty()) {
-                        FetchResult res;
-                        const QString detail =
-                            info.errorString().isEmpty() ? QStringLiteral("host lookup failed") : info.errorString();
-                        res.error = QStringLiteral("Could not resolve host “%1” (%2).").arg(host, detail);
-                        (*cbPtr)(std::move(res));
-                        return;
-                    }
-                    for (const QHostAddress &addr : info.addresses()) {
-                        if (UrlGuard::isPrivateHostAddress(addr)) {
-                            FetchResult res;
-                            res.error =
-                                QStringLiteral("Host “%1” resolved to a blocked private or local network address.")
-                                    .arg(host);
-                            (*cbPtr)(std::move(res));
-                            return;
-                        }
-                    }
-                    startHttpRequest(url, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount, generation,
-                                     acceptHeader, std::move(*cbPtr), timeoutMs);
-                });
-            m_activeLookups.append(lookupId);
-            return;
-        }
-    }
+    PinnedHttpOptions opts;
+    opts.url = url;
+    opts.allowLocalNetwork = m_allowLocalNetwork;
+    opts.maxBytes = maxBytes;
+    opts.maxRedirects = UrlGuard::maxRedirects;
+    opts.timeoutMs = timeoutMs > 0 ? timeoutMs : kRequestTimeoutMs;
+    opts.userAgent = QByteArrayLiteral("Clothbound/" CLOTHBOUND_VERSION " (+https://clothbound.app)");
+    opts.acceptHeader = acceptHeader;
 
-    startHttpRequest(url, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount, generation, acceptHeader,
-                     std::move(callback), timeoutMs);
-}
-
-void WebImporter::startHttpRequest(const QUrl &url, qint64 maxBytes, bool allowBookCapUpgrade, bool trackProgress,
-                                   int redirectCount, quint64 generation, const QByteArray &acceptHeader,
-                                   FetchCallback callback, int timeoutMs) {
-    if (generation != m_generation)
-        return;
-
-    QNetworkRequest req(url);
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
-    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
-    req.setTransferTimeout(timeoutMs > 0 ? timeoutMs : kRequestTimeoutMs);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Clothbound/0.4 (+https://clothbound.app)"));
-    if (!acceptHeader.isEmpty())
-        req.setRawHeader("Accept", acceptHeader);
-
-    QNetworkReply *reply = m_nam.get(req);
-    m_activeReplies.append(reply);
-
-    struct State {
-        QByteArray buffer;
-        qint64 limit = 0;
-        qint64 declaredLength = -1;
-        bool tooLarge = false;
-        FetchCallback cb;
+    opts.onHeaders = [declaredLength](int, const QUrl &, const QList<QPair<QByteArray, QByteArray>> &,
+                                      qint64 contentLength, qint64 *, QString *) {
+        *declaredLength = contentLength;
+        return true;
     };
-    auto state = std::make_shared<State>();
-    state->limit = maxBytes;
-    state->cb = std::move(callback);
 
-    connect(reply, &QNetworkReply::metaDataChanged, this, [reply, state, allowBookCapUpgrade, generation, this] {
+    opts.onBodyChunk = [this, bodyBuffer, declaredLength, trackProgress, generation](
+                           const QByteArray &chunk, qint64 wireBytes, qint64, QString *) {
         if (generation != m_generation)
-            return;
-        const QString ct = reply->header(QNetworkRequest::ContentTypeHeader).toString();
-        if (allowBookCapUpgrade && isBookContentType(ct) && state->limit < UrlGuard::maxBookBytes)
-            state->limit = UrlGuard::maxBookBytes;
-        const QVariant lenVar = reply->header(QNetworkRequest::ContentLengthHeader);
-        if (lenVar.isValid()) {
-            state->declaredLength = lenVar.toLongLong();
-            if (state->declaredLength > state->limit) {
-                state->tooLarge = true;
-                reply->abort();
-            }
-        }
-    });
-
-    connect(reply, &QNetworkReply::readyRead, this, [reply, state, trackProgress, generation, this] {
-        if (generation != m_generation || state->tooLarge)
-            return;
-        const QByteArray chunk = reply->readAll();
-        if (qint64(state->buffer.size()) + qint64(chunk.size()) > state->limit) {
-            state->tooLarge = true;
-            state->buffer.clear();
-            reply->abort();
-            return;
-        }
-        state->buffer.append(chunk);
-        if (trackProgress && state->declaredLength > 0) {
-            const double frac = double(state->buffer.size()) / double(state->declaredLength);
+            return false;
+        bodyBuffer->append(chunk);
+        if (trackProgress && *declaredLength > 0) {
+            const double frac = double(wireBytes) / double(*declaredLength);
             setProgress(qBound(0.05, frac * 0.8, 0.8));
         }
-    });
+        return true;
+    };
 
-    connect(reply, &QNetworkReply::finished, this,
-            [reply, state, url, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount, generation, acceptHeader,
-             timeoutMs, this] {
-                m_activeReplies.removeOne(reply);
-                const auto cleanup = qScopeGuard([reply] { reply->deleteLater(); });
-                if (generation != m_generation)
-                    return;
+    auto reqPtr = std::make_shared<QPointer<PinnedHttpRequest>>();
+    PinnedHttpRequest *req = UrlGuard::fetchPinned(
+        std::move(opts),
+        [this, reqPtr, bodyBuffer, generation, cb = std::move(callback)](PinnedHttpResponse resp) mutable {
+            if (*reqPtr) {
+                m_activeRequests.removeOne(*reqPtr);
+                (*reqPtr)->deleteLater();
+            }
+            if (generation != m_generation)
+                return;
 
-                if (state->tooLarge) {
-                    FetchResult res;
-                    res.error = QStringLiteral("Download exceeded the maximum allowed size (%1 MiB).")
-                                    .arg(state->limit / (1024 * 1024));
-                    state->cb(std::move(res));
-                    return;
+            FetchResult res;
+            if (!resp.ok) {
+                res.error = resp.error.isEmpty() ? QStringLiteral("Network request failed.") : resp.error;
+                cb(std::move(res));
+                return;
+            }
+            if (resp.httpStatus >= 400) {
+                res.error = QStringLiteral("Server returned HTTP %1.").arg(resp.httpStatus);
+                cb(std::move(res));
+                return;
+            }
+            res.ok = true;
+            res.finalUrl = resp.finalUrl;
+            res.contentType = resp.contentType;
+            res.contentDisposition = resp.contentDisposition;
+            res.data = std::move(*bodyBuffer);
+            cb(std::move(res));
+        },
+        this);
+    *reqPtr = req;
+    if (!req->isFinished())
+        m_activeRequests.append(req);
+}
+
+void WebImporter::fetchDirectOrStream(const QUrl &url, qint64 initialMaxBytes, bool allowBookCapUpgrade,
+                                      bool trackProgress, quint64 generation, const QByteArray &acceptHeader,
+                                      const QString &forcedBookFormat, DestPathBuilder destPathBuilder,
+                                      FetchCallback callback, int timeoutMs) {
+    if (generation != m_generation)
+        return;
+
+    struct StreamState {
+        QByteArray sniffBuf;
+        QString finalFormat;
+        QString destPath;
+        QUrl finalUrl;
+        QString contentType;
+        QString contentDisposition;
+        qint64 declaredLength = -1;
+        bool isHttpSuccess = false;
+        bool decidedAsNonBook = false;
+        std::unique_ptr<QSaveFile> saveFile;
+        DestPathBuilder destPathBuilder;
+
+        ~StreamState() {
+            if (saveFile) {
+                saveFile->cancelWriting();
+                saveFile.reset();
+            }
+        }
+    };
+
+    auto state = std::make_shared<StreamState>();
+    state->destPathBuilder = std::move(destPathBuilder);
+
+    auto tryStartDiskStream = [state, forcedBookFormat](QString *abortErrorOut) -> bool {
+        if (state->saveFile || state->decidedAsNonBook)
+            return true;
+
+        const QString mime = state->contentType.section(QLatin1Char(';'), 0, 0).trimmed().toLower();
+        const QString finalPath = state->finalUrl.path().toLower();
+        const bool isPdf = looksLikePdf(state->sniffBuf);
+        const bool isEpub = !isPdf &&
+                            (looksLikeEpubBytes(state->sniffBuf) ||
+                             ((mime == QLatin1String("application/epub+zip") ||
+                               finalPath.endsWith(QLatin1String(".epub")) ||
+                               finalPath.endsWith(QLatin1String(".kepub"))) &&
+                              state->sniffBuf.startsWith("PK\x03\x04")));
+
+        QString detectedFormat;
+        if (forcedBookFormat == QLatin1String("pdf")) {
+            if (isPdf)
+                detectedFormat = QStringLiteral("pdf");
+        } else if (isPdf) {
+            detectedFormat = QStringLiteral("pdf");
+        } else if (isEpub) {
+            detectedFormat = QStringLiteral("epub");
+        }
+
+        if (!detectedFormat.isEmpty()) {
+            state->finalFormat = detectedFormat;
+            state->destPath = state->destPathBuilder
+                                  ? state->destPathBuilder(detectedFormat, state->finalUrl, state->contentDisposition)
+                                  : QString();
+            if (state->destPath.isEmpty()) {
+                if (abortErrorOut)
+                    *abortErrorOut = QStringLiteral("Could not determine destination path for download.");
+                return false;
+            }
+            const QFileInfo info(state->destPath);
+            if (!QDir().mkpath(info.absolutePath())) {
+                if (abortErrorOut)
+                    *abortErrorOut = QStringLiteral("Could not create folder %1.").arg(info.absolutePath());
+                return false;
+            }
+            state->saveFile = std::make_unique<QSaveFile>(state->destPath);
+            if (!state->saveFile->open(QIODevice::WriteOnly)) {
+                if (abortErrorOut)
+                    *abortErrorOut = QStringLiteral("Could not write %1: %2")
+                                         .arg(state->destPath, state->saveFile->errorString());
+                state->saveFile.reset();
+                return false;
+            }
+            if (!state->sniffBuf.isEmpty() && state->saveFile->write(state->sniffBuf) != state->sniffBuf.size()) {
+                if (abortErrorOut)
+                    *abortErrorOut = QStringLiteral("Failed writing %1: %2")
+                                         .arg(state->destPath, state->saveFile->errorString());
+                state->saveFile->cancelWriting();
+                state->saveFile.reset();
+                return false;
+            }
+            state->sniffBuf.clear();
+            return true;
+        }
+
+        if (!forcedBookFormat.isEmpty()) {
+            if (abortErrorOut)
+                *abortErrorOut = QStringLiteral("Downloaded file is not a valid %1 document.")
+                                     .arg(forcedBookFormat.toUpper());
+            return false;
+        }
+
+        state->decidedAsNonBook = true;
+        if (qint64(state->sniffBuf.size()) > UrlGuard::maxHtmlBytes) {
+            if (abortErrorOut)
+                *abortErrorOut = QStringLiteral("Download exceeded the maximum allowed size (%1 MiB).")
+                                     .arg(UrlGuard::maxHtmlBytes / (1024 * 1024));
+            return false;
+        }
+        return true;
+    };
+
+    PinnedHttpOptions opts;
+    opts.url = url;
+    opts.allowLocalNetwork = m_allowLocalNetwork;
+    opts.maxBytes = initialMaxBytes;
+    opts.maxRedirects = UrlGuard::maxRedirects;
+    opts.timeoutMs = timeoutMs > 0 ? timeoutMs : kRequestTimeoutMs;
+    opts.userAgent = QByteArrayLiteral("Clothbound/" CLOTHBOUND_VERSION " (+https://clothbound.app)");
+    opts.acceptHeader = acceptHeader;
+
+    opts.onHeaders = [state, allowBookCapUpgrade](int statusCode, const QUrl &finalUrl,
+                                                  const QList<QPair<QByteArray, QByteArray>> &headers,
+                                                  qint64 contentLength, qint64 *maxBytesInOut, QString *) {
+        state->finalUrl = finalUrl;
+        state->contentType = QString::fromUtf8(headerValueFromList(headers, "Content-Type"));
+        state->contentDisposition = QString::fromUtf8(headerValueFromList(headers, "Content-Disposition"));
+        state->declaredLength = contentLength;
+        state->isHttpSuccess = (statusCode >= 200 && statusCode < 300);
+        if (allowBookCapUpgrade && isBookContentType(state->contentType) &&
+            *maxBytesInOut < UrlGuard::maxBookBytes) {
+            *maxBytesInOut = UrlGuard::maxBookBytes;
+        }
+        return true;
+    };
+
+    const qsizetype sniffThreshold = (forcedBookFormat == QLatin1String("pdf")) ? 32 : 512;
+    opts.onBodyChunk = [this, state, tryStartDiskStream, sniffThreshold, trackProgress, generation](
+                           const QByteArray &chunk, qint64 wireBytes, qint64, QString *abortErrorOut) {
+        if (generation != m_generation)
+            return false;
+        if (!state->isHttpSuccess)
+            return true;
+
+        if (state->saveFile) {
+            if (state->saveFile->write(chunk) != chunk.size()) {
+                if (abortErrorOut)
+                    *abortErrorOut = QStringLiteral("Failed writing %1: %2")
+                                         .arg(state->destPath, state->saveFile->errorString());
+                state->saveFile->cancelWriting();
+                state->saveFile.reset();
+                return false;
+            }
+        } else if (state->decidedAsNonBook) {
+            if (qint64(state->sniffBuf.size()) + qint64(chunk.size()) > UrlGuard::maxHtmlBytes) {
+                if (abortErrorOut)
+                    *abortErrorOut = QStringLiteral("Download exceeded the maximum allowed size (%1 MiB).")
+                                         .arg(UrlGuard::maxHtmlBytes / (1024 * 1024));
+                return false;
+            }
+            state->sniffBuf.append(chunk);
+        } else {
+            state->sniffBuf.append(chunk);
+            if (state->sniffBuf.size() >= sniffThreshold) {
+                if (!tryStartDiskStream(abortErrorOut))
+                    return false;
+            }
+        }
+
+        if (trackProgress && state->declaredLength > 0) {
+            const double frac = double(wireBytes) / double(state->declaredLength);
+            setProgress(qBound(0.05, frac * 0.8, 0.8));
+        }
+        return true;
+    };
+
+    auto reqPtr = std::make_shared<QPointer<PinnedHttpRequest>>();
+    PinnedHttpRequest *req = UrlGuard::fetchPinned(
+        std::move(opts),
+        [this, reqPtr, state, tryStartDiskStream, generation, cb = std::move(callback)](
+            PinnedHttpResponse resp) mutable {
+            if (*reqPtr) {
+                m_activeRequests.removeOne(*reqPtr);
+                (*reqPtr)->deleteLater();
+            }
+            if (generation != m_generation)
+                return;
+
+            if (!resp.ok) {
+                if (state->saveFile) {
+                    state->saveFile->cancelWriting();
+                    state->saveFile.reset();
                 }
-
-                // Drain any final unread bytes.
-                const QByteArray tail = reply->readAll();
-                if (!tail.isEmpty()) {
-                    if (qint64(state->buffer.size()) + qint64(tail.size()) > state->limit) {
-                        FetchResult res;
-                        res.error = QStringLiteral("Download exceeded the maximum allowed size (%1 MiB).")
-                                        .arg(state->limit / (1024 * 1024));
-                        state->cb(std::move(res));
-                        return;
-                    }
-                    state->buffer.append(tail);
-                }
-
-                const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                if (isRedirectStatus(httpStatus)) {
-                    if (redirectCount >= UrlGuard::maxRedirects) {
-                        FetchResult res;
-                        res.error = QStringLiteral("Too many redirects (more than %1).").arg(UrlGuard::maxRedirects);
-                        state->cb(std::move(res));
-                        return;
-                    }
-                    const QByteArray rawLoc = reply->rawHeader("Location").trimmed();
-                    if (rawLoc.isEmpty()) {
-                        FetchResult res;
-                        res.error = QStringLiteral("Server sent a redirect without a target URL.");
-                        state->cb(std::move(res));
-                        return;
-                    }
-                    const QUrl target = QUrl::fromEncoded(rawLoc, QUrl::TolerantMode);
-                    const QUrl nextUrl = target.isRelative() ? url.resolved(target) : target;
-                    fetchUrl(nextUrl, maxBytes, allowBookCapUpgrade, trackProgress, redirectCount + 1, generation,
-                             acceptHeader, std::move(state->cb), timeoutMs);
-                    return;
-                }
-
-                if (reply->error() != QNetworkReply::NoError) {
-                    FetchResult res;
-                    if (httpStatus >= 400)
-                        res.error = QStringLiteral("Server returned HTTP %1.").arg(httpStatus);
-                    else
-                        res.error = reply->errorString().isEmpty() ? QStringLiteral("Network request failed.")
-                                                                   : reply->errorString();
-                    state->cb(std::move(res));
-                    return;
-                }
-
-                if (httpStatus >= 400) {
-                    FetchResult res;
-                    res.error = QStringLiteral("Server returned HTTP %1.").arg(httpStatus);
-                    state->cb(std::move(res));
-                    return;
-                }
-
                 FetchResult res;
-                res.ok = true;
-                res.finalUrl = url;
-                res.contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
-                res.contentDisposition = QString::fromUtf8(reply->rawHeader("Content-Disposition"));
-                res.data = std::move(state->buffer);
-                state->cb(std::move(res));
-            });
+                res.error = resp.error.isEmpty() ? QStringLiteral("Network request failed.") : resp.error;
+                cb(std::move(res));
+                return;
+            }
+            if (resp.httpStatus >= 400) {
+                if (state->saveFile) {
+                    state->saveFile->cancelWriting();
+                    state->saveFile.reset();
+                }
+                FetchResult res;
+                res.error = QStringLiteral("Server returned HTTP %1.").arg(resp.httpStatus);
+                cb(std::move(res));
+                return;
+            }
+
+            if (!state->saveFile && !state->decidedAsNonBook && !state->sniffBuf.isEmpty()) {
+                QString abortErr;
+                if (!tryStartDiskStream(&abortErr)) {
+                    FetchResult res;
+                    res.error = abortErr.isEmpty() ? QStringLiteral("Invalid downloaded file.") : abortErr;
+                    cb(std::move(res));
+                    return;
+                }
+            }
+
+            FetchResult res;
+            res.ok = true;
+            res.finalUrl = resp.finalUrl;
+            res.contentType = resp.contentType;
+            res.contentDisposition = resp.contentDisposition;
+
+            if (state->saveFile) {
+                if (!state->saveFile->commit()) {
+                    res.ok = false;
+                    res.error = QStringLiteral("Could not save %1: %2")
+                                    .arg(state->destPath, state->saveFile->errorString());
+                    state->saveFile.reset();
+                    cb(std::move(res));
+                    return;
+                }
+                state->saveFile.reset();
+                res.streamedFilePath = state->destPath;
+                res.streamedFormat = state->finalFormat;
+            } else {
+                res.data = std::move(state->sniffBuf);
+            }
+            cb(std::move(res));
+        },
+        this);
+    *reqPtr = req;
+    if (!req->isFinished())
+        m_activeRequests.append(req);
+}
+
+QString WebImporter::computeDirectBookDestPath(const QString &format, const QUrl &finalUrl,
+                                               const QString &contentDisposition,
+                                               const QVariantMap &citationMeta,
+                                               const QString &sourceUrlOverride) const {
+    QString stem;
+    const QString citeTitle = sanitizeFileStem(citationMeta.value(QStringLiteral("title")).toString(), 110);
+    const QString citeAuthor = sanitizeFileStem(
+        BookName::displayAuthor(citationMeta.value(QStringLiteral("firstAuthor")).toString()), 48);
+    const int citeYear = citationMeta.value(QStringLiteral("year")).toInt();
+    if (format == QLatin1String("pdf") && !citeTitle.isEmpty()) {
+        stem = !citeAuthor.isEmpty() ? (citeAuthor + QStringLiteral(" - ") + citeTitle) : citeTitle;
+        if (citeYear > 0)
+            stem += QStringLiteral(" (%1)").arg(citeYear);
+    }
+
+    if (stem.isEmpty()) {
+        QString rawName = parseContentDispositionFilename(contentDisposition);
+        if (rawName.isEmpty())
+            rawName = QFileInfo(QUrl::fromPercentEncoding(finalUrl.path().toUtf8())).fileName();
+
+        stem = QFileInfo(rawName).completeBaseName();
+        stem = sanitizeFileStem(stem, 96);
+    }
+    if (stem.isEmpty())
+        stem = slugify(finalUrl.host(), 32) + QLatin1Char('-') + shortHashHex(finalUrl.toString());
+
+    const QString ext = QLatin1Char('.') + format;
+    const QString effectiveSourceUrl =
+        !sourceUrlOverride.isEmpty() ? sourceUrlOverride : finalUrl.toString();
+
+    auto isSameSource = [this, &effectiveSourceUrl](const QString &path) {
+        if (!m_library)
+            return false;
+        const int existingId = m_library->idForPath(path);
+        return existingId > 0 && m_library->bookSetting(existingId, QStringLiteral("source_url")) == effectiveSourceUrl;
+    };
+
+    QString destPath = QDir(downloadsDir()).filePath(stem + ext);
+    if (!QFileInfo::exists(destPath) || isSameSource(destPath))
+        return destPath;
+
+    const QString hashedStem = stem + QLatin1Char('-') + shortHashHex(effectiveSourceUrl);
+    destPath = QDir(downloadsDir()).filePath(hashedStem + ext);
+    if (!QFileInfo::exists(destPath) || isSameSource(destPath))
+        return destPath;
+
+    for (int n = 2; n < 1000; ++n) {
+        const QString candidate = QDir(downloadsDir()).filePath(QStringLiteral("%1-%2%3").arg(hashedStem).arg(n).arg(ext));
+        if (!QFileInfo::exists(candidate) || isSameSource(candidate))
+            return candidate;
+    }
+    return destPath;
+}
+
+QString WebImporter::computeArticleDestPath(const QString &title, const QString &fetchedUrl) const {
+    const QString baseStem = slugify(title, 60) + QLatin1Char('-') + shortHashHex(fetchedUrl);
+    const QString dir = articlesDir();
+
+    auto isSameSource = [this, &fetchedUrl](const QString &path) {
+        if (!m_library)
+            return false;
+        const int existingId = m_library->idForPath(path);
+        return existingId > 0 && m_library->bookSetting(existingId, QStringLiteral("source_url")) == fetchedUrl;
+    };
+
+    QString destPath = QDir(dir).filePath(baseStem + QStringLiteral(".epub"));
+    if (!QFileInfo::exists(destPath) || isSameSource(destPath))
+        return destPath;
+
+    for (int n = 2; n < 1000; ++n) {
+        const QString candidate = QDir(dir).filePath(QStringLiteral("%1-%2.epub").arg(baseStem).arg(n));
+        if (!QFileInfo::exists(candidate) || isSameSource(candidate))
+            return candidate;
+    }
+    return destPath;
 }
 
 void WebImporter::runArxivImport(const QString &arxivId, int targetCollectionId, quint64 generation) {
@@ -862,8 +1059,8 @@ void WebImporter::runArxivImport(const QString &arxivId, int targetCollectionId,
     setProgress(0.1);
 
     const QUrl apiUrl(m_arxivApiBase + QString::fromLatin1(QUrl::toPercentEncoding(arxivId)));
-    fetchUrl(
-        apiUrl, UrlGuard::maxHtmlBytes, false, false, 0, generation,
+    fetchToMemory(
+        apiUrl, UrlGuard::maxHtmlBytes, false, generation,
         QByteArrayLiteral("application/atom+xml, application/xml;q=0.9, */*;q=0.1"),
         [this, arxivId, targetCollectionId, generation](FetchResult atomRes) {
             if (generation != m_generation)
@@ -877,8 +1074,8 @@ void WebImporter::runArxivImport(const QString &arxivId, int targetCollectionId,
             // to CDN-cached arxiv.org/abs/<id> Highwire citation_* meta tags.
             if (meta.value(QStringLiteral("title")).toString().trimmed().isEmpty() && !m_arxivAbsBase.isEmpty()) {
                 const QUrl absUrl(m_arxivAbsBase + arxivId);
-                fetchUrl(
-                    absUrl, UrlGuard::maxHtmlBytes, false, false, 0, generation,
+                fetchToMemory(
+                    absUrl, UrlGuard::maxHtmlBytes, false, generation,
                     QByteArrayLiteral("text/html, application/xhtml+xml;q=0.9, */*;q=0.1"),
                     [this, arxivId, targetCollectionId, generation](FetchResult absRes) {
                         if (generation != m_generation)
@@ -911,51 +1108,46 @@ void WebImporter::downloadArxivPdf(const QString &arxivId, const QVariantMap &me
                                    : QStringLiteral("Downloading “%1”…").arg(paperTitle));
     setProgress(0.25);
 
+    // Build clean filename matching BookName::parseFileName():
+    // "<FirstAuthor> - <SafeTitle> (<Year>).pdf" or "<id>.pdf" fallback.
+    QString stem;
+    const QString safeTitle = sanitizeFileStem(paperTitle, 110);
+    const QString safeAuthor = sanitizeFileStem(firstAuthor, 48);
+    if (!safeTitle.isEmpty()) {
+        stem = !safeAuthor.isEmpty() ? (safeAuthor + QStringLiteral(" - ") + safeTitle) : safeTitle;
+        if (year > 0)
+            stem += QStringLiteral(" (%1)").arg(year);
+    } else {
+        QString safeId = arxivId;
+        safeId.replace(QLatin1Char('/'), QLatin1Char('_'));
+        stem = sanitizeFileStem(safeId, 64);
+    }
+    if (stem.isEmpty())
+        stem = QStringLiteral("arxiv-paper");
+    const QString plannedDestPath = QDir(downloadsDir()).filePath(stem + QStringLiteral(".pdf"));
+
     const QUrl pdfUrl(m_arxivPdfBase + arxivId + QStringLiteral(".pdf"));
-    fetchUrl(
-        pdfUrl, UrlGuard::maxBookBytes, false, true, 0, generation,
+    fetchDirectOrStream(
+        pdfUrl, UrlGuard::maxBookBytes, false, true, generation,
         QByteArrayLiteral("application/pdf, */*;q=0.1"),
-        [this, arxivId, paperTitle, firstAuthor, abstractText, year, targetCollectionId,
-         generation](FetchResult pdfRes) {
+        QStringLiteral("pdf"),
+        [plannedDestPath](const QString &, const QUrl &, const QString &) { return plannedDestPath; },
+        [this, arxivId, paperTitle, abstractText, targetCollectionId, generation](FetchResult pdfRes) {
             if (generation != m_generation)
                 return;
             if (!pdfRes.ok) {
                 completeFailure(pdfRes.error);
                 return;
             }
-            if (!looksLikePdf(pdfRes.data)) {
+            if (pdfRes.streamedFilePath.isEmpty()) {
                 completeFailure(QStringLiteral("Downloaded arXiv file is not a valid PDF document."));
-                return;
-            }
-
-            // Build clean filename matching BookName::parseFileName():
-            // "<FirstAuthor> - <SafeTitle> (<Year>).pdf" or "<id>.pdf" fallback.
-            QString stem;
-            const QString safeTitle = sanitizeFileStem(paperTitle, 110);
-            const QString safeAuthor = sanitizeFileStem(firstAuthor, 48);
-            if (!safeTitle.isEmpty()) {
-                stem = !safeAuthor.isEmpty() ? (safeAuthor + QStringLiteral(" - ") + safeTitle) : safeTitle;
-                if (year > 0)
-                    stem += QStringLiteral(" (%1)").arg(year);
-            } else {
-                QString safeId = arxivId;
-                safeId.replace(QLatin1Char('/'), QLatin1Char('_'));
-                stem = sanitizeFileStem(safeId, 64);
-            }
-            if (stem.isEmpty())
-                stem = QStringLiteral("arxiv-paper");
-
-            const QString destPath = QDir(downloadsDir()).filePath(stem + QStringLiteral(".pdf"));
-            QString saveErr;
-            if (!saveBytesAtomically(destPath, pdfRes.data, &saveErr)) {
-                completeFailure(saveErr);
                 return;
             }
 
             setStatus(QStringLiteral("Adding paper to library…"));
             setProgress(0.92);
 
-            const int bookId = m_library->addBookFile(destPath);
+            const int bookId = m_library->addBookFile(pdfRes.streamedFilePath);
             if (bookId <= 0) {
                 completeFailure(m_library->errorString().isEmpty()
                                     ? QStringLiteral("Could not add downloaded PDF to the library.")
@@ -989,13 +1181,22 @@ void WebImporter::runDirectOrArticleImport(const QUrl &initialUrl, const QString
         expectBook ? QByteArrayLiteral("application/epub+zip, application/pdf, application/octet-stream;q=0.9, */*;q=0.1")
                    : QByteArrayLiteral("text/html, application/xhtml+xml;q=0.9, application/pdf;q=0.8, application/epub+zip;q=0.8, */*;q=0.1");
 
-    fetchUrl(
-        initialUrl, initialCap, true, true, 0, generation, accept,
+    fetchDirectOrStream(
+        initialUrl, initialCap, true, true, generation, accept, {},
+        [this](const QString &format, const QUrl &finalUrl, const QString &contentDisposition) {
+            return computeDirectBookDestPath(format, finalUrl, contentDisposition);
+        },
         [this, initialKind, targetCollectionId, generation](FetchResult res) {
             if (generation != m_generation)
                 return;
             if (!res.ok) {
                 completeFailure(res.error);
+                return;
+            }
+
+            if (!res.streamedFilePath.isEmpty()) {
+                setDetectedKind(res.streamedFormat);
+                finishDirectBook(res.streamedFormat, res, targetCollectionId);
                 return;
             }
 
@@ -1051,13 +1252,19 @@ void WebImporter::runDirectOrArticleImport(const QUrl &initialUrl, const QString
                         setDetectedKind(QStringLiteral("pdf"));
                         setStatus(paperTitle.isEmpty() ? QStringLiteral("Downloading paper PDF…")
                                                        : QStringLiteral("Downloading “%1”…").arg(paperTitle));
-                        fetchUrl(
-                            resolvedPdf, UrlGuard::maxBookBytes, false, true, 0, generation,
+                        fetchDirectOrStream(
+                            resolvedPdf, UrlGuard::maxBookBytes, false, true, generation,
                             QByteArrayLiteral("application/pdf, */*;q=0.1"),
+                            QStringLiteral("pdf"),
+                            [this, citation, landingUrl](const QString &format, const QUrl &finalUrl,
+                                                         const QString &contentDisposition) {
+                                return computeDirectBookDestPath(format, finalUrl, contentDisposition, citation,
+                                                                 landingUrl);
+                            },
                             [this, citation, landingUrl, targetCollectionId, generation, res](FetchResult pdfRes) {
                                 if (generation != m_generation)
                                     return;
-                                if (pdfRes.ok && looksLikePdf(pdfRes.data)) {
+                                if (pdfRes.ok && !pdfRes.streamedFilePath.isEmpty()) {
                                     finishDirectBook(QStringLiteral("pdf"), pdfRes, targetCollectionId, citation,
                                                      landingUrl);
                                     return;
@@ -1084,44 +1291,18 @@ void WebImporter::finishDirectBook(const QString &format, const FetchResult &res
     setStatus(QStringLiteral("Saving %1…").arg(format.toUpper()));
     setProgress(0.88);
 
-    QString stem;
-    const QString citeTitle = sanitizeFileStem(citationMeta.value(QStringLiteral("title")).toString(), 110);
-    const QString citeAuthor = sanitizeFileStem(
-        BookName::displayAuthor(citationMeta.value(QStringLiteral("firstAuthor")).toString()), 48);
-    const int citeYear = citationMeta.value(QStringLiteral("year")).toInt();
-    if (format == QLatin1String("pdf") && !citeTitle.isEmpty()) {
-        stem = !citeAuthor.isEmpty() ? (citeAuthor + QStringLiteral(" - ") + citeTitle) : citeTitle;
-        if (citeYear > 0)
-            stem += QStringLiteral(" (%1)").arg(citeYear);
-    }
-
-    if (stem.isEmpty()) {
-        QString rawName = parseContentDispositionFilename(res.contentDisposition);
-        if (rawName.isEmpty())
-            rawName = QFileInfo(QUrl::fromPercentEncoding(res.finalUrl.path().toUtf8())).fileName();
-
-        stem = QFileInfo(rawName).completeBaseName();
-        stem = sanitizeFileStem(stem, 96);
-    }
-    if (stem.isEmpty())
-        stem = slugify(res.finalUrl.host(), 32) + QLatin1Char('-') + shortHashHex(res.finalUrl.toString());
-
-    const QString ext = QLatin1Char('.') + format;
-    QString destPath = QDir(downloadsDir()).filePath(stem + ext);
     const QString effectiveSourceUrl =
         !sourceUrlOverride.isEmpty() ? sourceUrlOverride : res.finalUrl.toString();
-    // Avoid overwriting a different file from another URL with the same generic filename.
-    if (QFileInfo::exists(destPath)) {
-        const int existingId = m_library->idForPath(destPath);
-        const QString existingSrc = existingId > 0 ? m_library->bookSetting(existingId, QStringLiteral("source_url")) : QString();
-        if (existingSrc != effectiveSourceUrl)
-            destPath = QDir(downloadsDir()).filePath(stem + QLatin1Char('-') + shortHashHex(effectiveSourceUrl) + ext);
-    }
 
-    QString saveErr;
-    if (!saveBytesAtomically(destPath, res.data, &saveErr)) {
-        completeFailure(saveErr);
-        return;
+    QString destPath = res.streamedFilePath;
+    if (destPath.isEmpty()) {
+        destPath = computeDirectBookDestPath(format, res.finalUrl, res.contentDisposition, citationMeta,
+                                             sourceUrlOverride);
+        QString saveErr;
+        if (!saveBytesAtomically(destPath, res.data, &saveErr)) {
+            completeFailure(saveErr);
+            return;
+        }
     }
 
     if (format == QLatin1String("epub")) {
@@ -1162,10 +1343,12 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
         return;
     }
 
-    const QString sourceUrl =
-        extracted->canonicalUrl.isValid() ? extracted->canonicalUrl.toString() : res.finalUrl.toString();
+    // Security invariant: derive output filename hash and source ownership strictly from
+    // res.finalUrl (never untrusted <link rel="canonical"> / og:url) so a hostile page
+    // cannot collide with or overwrite an existing saved article EPUB.
+    const QString fetchedUrl = res.finalUrl.toString();
 
-    auto finalizePackaging = [this, extracted, sourceUrl, targetCollectionId, generation](
+    auto finalizePackaging = [this, extracted, fetchedUrl, targetCollectionId, generation](
                                  QList<EpubImageAsset> bundledImages, QHash<QString, QString> pathMap) {
         if (generation != m_generation)
             return;
@@ -1179,7 +1362,7 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
         epub.publisher = extracted->siteName;
         epub.publishedDate = extracted->publishedDate;
         epub.language = extracted->language;
-        epub.sourceUrl = sourceUrl;
+        epub.sourceUrl = fetchedUrl;
         epub.description = extracted->description;
         epub.subjects = {QStringLiteral("Clothbound Article")};
         epub.readingMinutes = extracted->readingMinutes;
@@ -1188,9 +1371,7 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
         for (const ExtractedHeading &h : std::as_const(extracted->headings))
             epub.headings.append({h.id, h.title, h.level});
 
-        const QString fileName = slugify(extracted->title, 60) + QLatin1Char('-') + shortHashHex(sourceUrl) +
-                                 QStringLiteral(".epub");
-        const QString destPath = QDir(articlesDir()).filePath(fileName);
+        const QString destPath = computeArticleDestPath(extracted->title, fetchedUrl);
 
         QString writeErr;
         if (!EpubWriter::writeArticle(destPath, epub, &writeErr)) {
@@ -1209,10 +1390,10 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
         if (targetCollectionId > 0)
             m_library->addToCollection(bookId, targetCollectionId);
 
-        m_library->setBookSetting(bookId, QStringLiteral("source_url"), sourceUrl);
+        m_library->setBookSetting(bookId, QStringLiteral("source_url"), fetchedUrl);
         m_library->setBookSetting(bookId, QStringLiteral("content_kind"), QStringLiteral("article"));
 
-        completeSuccess(bookId, extracted->title, QStringLiteral("article"), sourceUrl);
+        completeSuccess(bookId, extracted->title, QStringLiteral("article"), fetchedUrl);
     };
 
     if (extracted->images.isEmpty()) {
@@ -1263,8 +1444,8 @@ void WebImporter::finishWebArticle(const FetchResult &res, int targetCollectionI
             }
             ++batch->inFlight;
             const qint64 imgLimit = qMin(UrlGuard::maxImageBytes, remainingBudget);
-            fetchUrl(
-                img.sourceUrl, imgLimit, false, false, 0, generation,
+            fetchToMemory(
+                img.sourceUrl, imgLimit, false, generation,
                 QByteArrayLiteral("image/webp, image/png, image/jpeg, image/gif, image/svg+xml;q=0.8, */*;q=0.1"),
                 [this, batch, pump, tryFinish, img, generation](FetchResult imgRes) {
                     if (generation != m_generation || batch->finished)

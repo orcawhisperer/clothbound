@@ -2,24 +2,29 @@
 
 #include "ai/keystore.h"
 #include "library/library.h"
+#include "online/urlguard.h"
 
+#include <QBuffer>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QFutureWatcher>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QNetworkReply>
-#include <QNetworkRequest>
+#include <QMetaObject>
 #include <QRegularExpression>
+#include <QRunnable>
 #include <QSettings>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QStandardPaths>
 #include <QUrlQuery>
 #include <QUuid>
+#include <algorithm>
+#include <atomic>
 #include <functional>
 
 namespace {
@@ -36,21 +41,8 @@ int effectivePort(const QUrl &url) {
     return url.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) == 0 ? 443 : 80;
 }
 
-bool isRedirectStatus(int status) {
-    return status == 301 || status == 302 || status == 303 || status == 307 || status == 308;
-}
-
-QNetworkRequest makeBaseRequest(const QUrl &url, const QByteArray &accept) {
-    QNetworkRequest req(url);
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
-    req.setAttribute(QNetworkRequest::AuthenticationReuseAttribute, QNetworkRequest::Manual);
-    // Avoid Qt 6 HTTP/2 half-closed stream errors on Open Library / Archive.org / HAProxy servers.
-    req.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
-    req.setHeader(QNetworkRequest::UserAgentHeader, QStringLiteral("Clothbound/" CLOTHBOUND_VERSION " (OPDS)"));
-    if (!accept.isEmpty())
-        req.setRawHeader("Accept", accept);
-    req.setTransferTimeout(kTransferTimeoutMs);
-    return req;
+QByteArray opdsUserAgent() {
+    return QByteArrayLiteral("Clothbound/" CLOTHBOUND_VERSION " (OPDS)");
 }
 
 QString detectBookMagicFormat(const QByteArray &header) {
@@ -62,7 +54,8 @@ QString detectBookMagicFormat(const QByteArray &header) {
     return {};
 }
 
-QString friendlyNetworkError(QNetworkReply *reply, int httpStatus) {
+QString friendlyHttpError(const PinnedHttpResponse &resp) {
+    const int httpStatus = resp.httpStatus;
     if (httpStatus == 403)
         return QObject::tr("Access to this catalog was forbidden (HTTP 403).");
     if (httpStatus == 404)
@@ -71,10 +64,44 @@ QString friendlyNetworkError(QNetworkReply *reply, int httpStatus) {
         return QObject::tr("The catalog server returned an error (HTTP %1).").arg(httpStatus);
     if (httpStatus >= 400)
         return QObject::tr("Catalog request failed (HTTP %1).").arg(httpStatus);
-    if (reply && !reply->errorString().isEmpty())
-        return reply->errorString();
+    if (!resp.error.isEmpty())
+        return resp.error;
     return QObject::tr("Could not connect to the catalog server.");
 }
+
+QUrl rewriteStandardEbooksDownloadUrl(QUrl reqUrl) {
+    // Standard Ebooks serves an HTML interstitial on /downloads/*.epub unless ?source= is present
+    // (Open Library OPDS book manifests link the bare URL without ?source=download).
+    const QString hostLower = reqUrl.host().toLower();
+    if ((hostLower == QLatin1String("standardebooks.org") || hostLower == QLatin1String("www.standardebooks.org")) &&
+        reqUrl.path().contains(QLatin1String("/downloads/"), Qt::CaseInsensitive) &&
+        reqUrl.path().endsWith(QLatin1String(".epub"), Qt::CaseInsensitive)) {
+        QUrlQuery q(reqUrl);
+        if (!q.hasQueryItem(QStringLiteral("source"))) {
+            q.addQueryItem(QStringLiteral("source"), QStringLiteral("download"));
+            reqUrl.setQuery(q);
+        }
+    }
+    return reqUrl;
+}
+
+class ImmediateOpdsCoverResponse : public QQuickImageResponse {
+public:
+    explicit ImmediateOpdsCoverResponse(QImage image, QString error = {})
+        : m_image(std::move(image)), m_error(std::move(error)) {
+        QMetaObject::invokeMethod(this, &QQuickImageResponse::finished, Qt::QueuedConnection);
+    }
+
+    QQuickTextureFactory *textureFactory() const override {
+        return m_image.isNull() ? nullptr : QQuickTextureFactory::textureFactoryForImage(m_image);
+    }
+
+    QString errorString() const override { return m_error; }
+
+private:
+    QImage m_image;
+    QString m_error;
+};
 
 }  // namespace
 
@@ -89,9 +116,11 @@ OpdsClient::OpdsClient(Library *library, KeyStore *keyStore, const QString &stor
       m_settingsPath(settingsPath.isEmpty()
                          ? (QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) +
                             QStringLiteral("/settings.ini"))
-                         : settingsPath) {
+                         : settingsPath),
+      m_localRegistry(std::make_shared<LocalCatalogRegistry>()) {
     seedBuiltInCatalogs();
     loadSettings();
+    syncLocalRegistry();
     loadExistingDownloadStates();
 }
 
@@ -101,8 +130,11 @@ OpdsClient::~OpdsClient() {
     m_activeDownloads.clear();
     for (const auto &dl : downloads) {
         dl->cancelled = true;
-        if (dl->reply)
-            dl->reply->abort();
+        if (dl->request) {
+            dl->request->abort();
+            dl->request->deleteLater();
+            dl->request = nullptr;
+        }
         if (dl->saveFile)
             dl->saveFile->cancelWriting();
     }
@@ -119,6 +151,8 @@ void OpdsClient::seedBuiltInCatalogs() {
             true,
             false,
             {},
+            false,
+            false,
         },
         Catalog{
             QStringLiteral("unglue-it"),
@@ -129,6 +163,8 @@ void OpdsClient::seedBuiltInCatalogs() {
             true,
             false,
             {},
+            false,
+            false,
         },
         Catalog{
             QStringLiteral("open-library"),
@@ -139,6 +175,8 @@ void OpdsClient::seedBuiltInCatalogs() {
             true,
             false,
             {},
+            false,
+            false,
         },
         Catalog{
             QStringLiteral("standard-ebooks"),
@@ -149,6 +187,8 @@ void OpdsClient::seedBuiltInCatalogs() {
             true,
             true,
             QStringLiteral("Enter your Standard Ebooks Patrons Circle email as username (leave password blank)."),
+            false,
+            false,
         },
     };
 }
@@ -181,18 +221,23 @@ void OpdsClient::loadSettings() {
             const QString id = o.value(QStringLiteral("id")).toString().trimmed();
             const QString name = o.value(QStringLiteral("name")).toString().trimmed();
             const QString url = o.value(QStringLiteral("url")).toString().trimmed();
-            if (id.isEmpty() || !OpdsParser::isAllowedHttpUrl(QUrl(url)))
+            const QUrl parsed(url);
+            if (id.isEmpty() || !OpdsParser::isAllowedHttpUrl(parsed))
                 continue;
             Catalog c;
             c.id = id;
-            c.name = name.isEmpty() ? QUrl(url).host() : name;
+            c.name = name.isEmpty() ? parsed.host() : name;
             c.url = url;
             c.subtitle = o.value(QStringLiteral("subtitle")).toString().trimmed();
             if (c.subtitle.isEmpty())
-                c.subtitle = QUrl(url).host();
+                c.subtitle = parsed.host();
             c.username = o.value(QStringLiteral("username")).toString().trimmed();
             c.builtIn = false;
             c.authOptional = true;
+            c.allowLocalNetwork = o.contains(QStringLiteral("allowLocalNetwork"))
+                                      ? o.value(QStringLiteral("allowLocalNetwork")).toBool(false)
+                                      : UrlGuard::isLocalNetworkUrl(parsed);
+            c.allowInsecureHttpAuth = o.value(QStringLiteral("allowInsecureHttpAuth")).toBool(false);
             m_customCatalogs.append(std::move(c));
         }
     }
@@ -230,6 +275,9 @@ void OpdsClient::saveSettings() const {
         o.insert(QStringLiteral("subtitle"), c.subtitle);
         if (!c.username.isEmpty())
             o.insert(QStringLiteral("username"), c.username);
+        o.insert(QStringLiteral("allowLocalNetwork"), c.allowLocalNetwork);
+        if (c.allowInsecureHttpAuth)
+            o.insert(QStringLiteral("allowInsecureHttpAuth"), true);
         customArr.append(o);
     }
     settings.setValue(QStringLiteral("customCatalogs"),
@@ -237,6 +285,21 @@ void OpdsClient::saveSettings() const {
 
     settings.endGroup();
     settings.sync();
+}
+
+void OpdsClient::syncLocalRegistry() {
+    if (!m_localRegistry)
+        return;
+    QSet<QString> ids;
+    for (const Catalog &c : m_builtInCatalogs) {
+        if (c.allowLocalNetwork)
+            ids.insert(c.id);
+    }
+    for (const Catalog &c : m_customCatalogs) {
+        if (c.allowLocalNetwork)
+            ids.insert(c.id);
+    }
+    m_localRegistry->resetFrom(ids);
 }
 
 void OpdsClient::loadExistingDownloadStates() {
@@ -287,6 +350,8 @@ QVariantList OpdsClient::catalogs() const {
             {QStringLiteral("authOptional"), c.authOptional},
             {QStringLiteral("authHint"), c.authHint},
             {QStringLiteral("hasCredentials"), !c.username.isEmpty()},
+            {QStringLiteral("allowLocalNetwork"), c.allowLocalNetwork},
+            {QStringLiteral("allowInsecureHttpAuth"), c.allowInsecureHttpAuth},
         };
     };
 
@@ -309,6 +374,16 @@ QString OpdsClient::activeCatalogUsername() const {
     if (const Catalog *c = findCatalog(m_activeCatalogId))
         return c->username;
     return {};
+}
+
+bool OpdsClient::activeCatalogAllowsLocalNetwork() const {
+    return catalogAllowsLocalNetwork(m_activeCatalogId);
+}
+
+bool OpdsClient::catalogAllowsLocalNetwork(const QString &catalogId) const {
+    if (const Catalog *c = findCatalog(catalogId))
+        return c->allowLocalNetwork;
+    return false;
 }
 
 QVariantList OpdsClient::breadcrumbs() const {
@@ -414,11 +489,20 @@ QString OpdsClient::sanitizeFilename(const QString &raw, const QString &fallback
 }
 
 QString OpdsClient::addCatalog(const QString &name, const QString &url,
-                               const QString &username, const QString &password) {
+                               const QString &username, const QString &password,
+                               bool allowLocalNetwork) {
     const QString trimmedUrl = url.trimmed();
     const QUrl parsed(trimmedUrl);
-    if (!OpdsParser::isAllowedHttpUrl(parsed)) {
+    if (!OpdsParser::isAllowedHttpUrl(parsed) || !UrlGuard::isAllowedUrl(parsed, true)) {
         m_error = tr("Catalog URL must start with http:// or https://.");
+        emit feedChanged();
+        return {};
+    }
+
+    const bool effectiveAllowLocal = allowLocalNetwork || UrlGuard::isLocalNetworkUrl(parsed);
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(parsed, effectiveAllowLocal, &guardReason)) {
+        m_error = guardReason;
         emit feedChanged();
         return {};
     }
@@ -444,8 +528,12 @@ QString OpdsClient::addCatalog(const QString &name, const QString &url,
     cat.username = trimmedUser;
     cat.builtIn = false;
     cat.authOptional = true;
+    cat.allowLocalNetwork = effectiveAllowLocal;
+    cat.allowInsecureHttpAuth = false;
     m_customCatalogs.append(cat);
 
+    if (m_localRegistry)
+        m_localRegistry->setCatalog(id, cat.allowLocalNetwork);
     saveSettings();
 
     m_passwordLoaded.insert(id);
@@ -489,6 +577,18 @@ bool OpdsClient::updateCatalogCredentials(const QString &catalogId,
     return true;
 }
 
+bool OpdsClient::setCatalogAllowInsecureHttpAuth(const QString &catalogId, bool allow) {
+    Catalog *cat = findCatalog(catalogId);
+    if (!cat)
+        return false;
+    if (cat->allowInsecureHttpAuth == allow)
+        return true;
+    cat->allowInsecureHttpAuth = allow;
+    saveSettings();
+    emit catalogsChanged();
+    return true;
+}
+
 bool OpdsClient::removeCatalog(const QString &catalogId) {
     bool removed = false;
     for (qsizetype i = 0; i < m_customCatalogs.size(); ++i) {
@@ -513,6 +613,8 @@ bool OpdsClient::removeCatalog(const QString &catalogId) {
     if (!removed)
         return false;
 
+    if (m_localRegistry)
+        m_localRegistry->setCatalog(catalogId, false);
     m_passwordCache.remove(catalogId);
     m_passwordLoaded.remove(catalogId);
     if (m_keyStore)
@@ -552,9 +654,9 @@ void OpdsClient::restoreBuiltInCatalogs() {
 
 void OpdsClient::abortActiveFeedRequest() {
     ++m_feedGeneration;
-    if (m_activeFeedReply) {
-        QPointer<QNetworkReply> r = m_activeFeedReply;
-        m_activeFeedReply = nullptr;
+    if (m_activeFeedRequest) {
+        QPointer<PinnedHttpRequest> r = m_activeFeedRequest;
+        m_activeFeedRequest = nullptr;
         r->abort();
         r->deleteLater();
     }
@@ -571,54 +673,67 @@ void OpdsClient::ensurePasswordLoaded(const QString &catalogId, std::function<vo
         return;
     }
 
-    const quint64 gen = m_feedGeneration;
-    QFuture<QString> future = m_keyStore->loadLater(secretKeyFor(catalogId));
-    if (future.isFinished()) {
-        const QString secret = future.result();
+    auto &pending = m_pendingPasswordCallbacks[catalogId];
+    pending.append(std::move(ready));
+    if (pending.size() > 1)
+        return;  // Keyring lookup for this catalogId is already in flight.
+
+    auto deliver = [this, catalogId](const QString &secret) {
         m_passwordLoaded.insert(catalogId);
         if (!secret.isEmpty())
             m_passwordCache.insert(catalogId, secret);
         else
             m_passwordCache.remove(catalogId);
-        ready();
+
+        const auto callbacks = m_pendingPasswordCallbacks.take(catalogId);
+        for (const auto &cb : callbacks) {
+            if (cb)
+                cb();
+        }
+    };
+
+    QFuture<QString> future = m_keyStore->loadLater(secretKeyFor(catalogId));
+    if (future.isFinished()) {
+        deliver(future.result());
         return;
     }
 
     auto *watcher = new QFutureWatcher<QString>(this);
     connect(watcher, &QFutureWatcher<QString>::finished, this,
-            [this, watcher, catalogId, gen, ready = std::move(ready)]() mutable {
+            [watcher, deliver = std::move(deliver)]() mutable {
                 const QString secret = watcher->result();
                 watcher->deleteLater();
-                m_passwordLoaded.insert(catalogId);
-                if (!secret.isEmpty())
-                    m_passwordCache.insert(catalogId, secret);
-                else
-                    m_passwordCache.remove(catalogId);
-                if (gen == m_feedGeneration)
-                    ready();
+                deliver(secret);
             });
     watcher->setFuture(future);
 }
 
-void OpdsClient::applyAuthIfAllowed(QNetworkRequest &request, const QUrl &targetUrl,
-                                    const QUrl &catalogOrigin, const QUrl &initialOrigin,
-                                    const QString &catalogId) const {
+QList<QPair<QByteArray, QByteArray>> OpdsClient::authHeadersIfAllowed(const QUrl &targetUrl,
+                                                                      const QUrl &catalogOrigin,
+                                                                      const QUrl &initialOrigin,
+                                                                      const QString &catalogId) const {
     const Catalog *cat = findCatalog(catalogId);
     if (!cat)
-        return;
+        return {};
     const QString user = cat->username;
     const QString pass = m_passwordCache.value(catalogId);
     if (user.isEmpty() && pass.isEmpty())
-        return;
+        return {};
 
-    // Security invariant: never transmit credentials to any origin other than the catalog's own.
+    // Security invariant 1: never transmit credentials to any origin other than the catalog's own.
     if (!sameOrigin(targetUrl, catalogOrigin))
-        return;
+        return {};
     if (initialOrigin.isValid() && !sameOrigin(targetUrl, initialOrigin))
-        return;
+        return {};
+
+    // Security invariant 2: block sending Basic/Bearer credentials over non-loopback plaintext http://
+    // unless explicitly opted-in for this catalog.
+    const bool isHttps = targetUrl.scheme().compare(QLatin1String("https"), Qt::CaseInsensitive) == 0;
+    if (!isHttps && !UrlGuard::isLoopbackUrl(targetUrl) && !cat->allowInsecureHttpAuth)
+        return {};
 
     const QByteArray token = (user + QLatin1Char(':') + pass).toUtf8().toBase64();
-    request.setRawHeader("Authorization", "Basic " + token);
+    return {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Basic ") + token}};
 }
 
 void OpdsClient::openCatalog(const QString &catalogId) {
@@ -630,8 +745,9 @@ void OpdsClient::openCatalog(const QString &catalogId) {
     }
 
     const QUrl url(cat->url);
-    if (!OpdsParser::isAllowedHttpUrl(url)) {
-        m_error = tr("Catalog URL is not a valid HTTP or HTTPS address.");
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(url, cat->allowLocalNetwork, &guardReason)) {
+        m_error = guardReason;
         emit feedChanged();
         return;
     }
@@ -658,13 +774,18 @@ void OpdsClient::openCatalog(const QString &catalogId) {
     emit feedChanged();
 
     const QString cid = cat->id;
-    ensurePasswordLoaded(cid, [this, url]() { fetchFeed(url, false, 0, url); });
+    const quint64 gen = m_feedGeneration;
+    ensurePasswordLoaded(cid, [this, url, gen]() {
+        if (gen == m_feedGeneration)
+            fetchFeed(url, false, url);
+    });
 }
 
 void OpdsClient::navigate(const QString &url, const QString &title) {
     const QUrl target(url.trimmed());
-    if (!OpdsParser::isAllowedHttpUrl(target)) {
-        m_error = tr("Only HTTP and HTTPS catalog links are supported.");
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(target, activeCatalogAllowsLocalNetwork(), &guardReason)) {
+        m_error = guardReason;
         emit feedChanged();
         return;
     }
@@ -683,7 +804,11 @@ void OpdsClient::navigate(const QString &url, const QString &title) {
     emit loadingChanged();
     emit feedChanged();
 
-    ensurePasswordLoaded(m_activeCatalogId, [this, target]() { fetchFeed(target, false, 0, target); });
+    const quint64 gen = m_feedGeneration;
+    ensurePasswordLoaded(m_activeCatalogId, [this, target, gen]() {
+        if (gen == m_feedGeneration)
+            fetchFeed(target, false, target);
+    });
 }
 
 void OpdsClient::goBack() {
@@ -691,7 +816,7 @@ void OpdsClient::goBack() {
         return;
     m_history.removeLast();
     const QUrl target(m_history.last().url);
-    if (!OpdsParser::isAllowedHttpUrl(target))
+    if (!UrlGuard::isAllowedUrl(target, activeCatalogAllowsLocalNetwork()))
         return;
 
     abortActiveFeedRequest();
@@ -706,7 +831,11 @@ void OpdsClient::goBack() {
     emit loadingChanged();
     emit feedChanged();
 
-    ensurePasswordLoaded(m_activeCatalogId, [this, target]() { fetchFeed(target, false, 0, target); });
+    const quint64 gen = m_feedGeneration;
+    ensurePasswordLoaded(m_activeCatalogId, [this, target, gen]() {
+        if (gen == m_feedGeneration)
+            fetchFeed(target, false, target);
+    });
 }
 
 void OpdsClient::navigateBreadcrumb(int index) {
@@ -714,7 +843,7 @@ void OpdsClient::navigateBreadcrumb(int index) {
         return;
     m_history.resize(index + 1);
     const QUrl target(m_history.last().url);
-    if (!OpdsParser::isAllowedHttpUrl(target))
+    if (!UrlGuard::isAllowedUrl(target, activeCatalogAllowsLocalNetwork()))
         return;
 
     abortActiveFeedRequest();
@@ -729,7 +858,11 @@ void OpdsClient::navigateBreadcrumb(int index) {
     emit loadingChanged();
     emit feedChanged();
 
-    ensurePasswordLoaded(m_activeCatalogId, [this, target]() { fetchFeed(target, false, 0, target); });
+    const quint64 gen = m_feedGeneration;
+    ensurePasswordLoaded(m_activeCatalogId, [this, target, gen]() {
+        if (gen == m_feedGeneration)
+            fetchFeed(target, false, target);
+    });
 }
 
 void OpdsClient::search(const QString &query) {
@@ -753,8 +886,9 @@ void OpdsClient::search(const QString &query) {
     }
 
     const QUrl osUrl(searchEndpoint);
-    if (!OpdsParser::isAllowedHttpUrl(osUrl)) {
-        m_error = tr("Catalog search link is not a valid HTTP or HTTPS URL.");
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(osUrl, activeCatalogAllowsLocalNetwork(), &guardReason)) {
+        m_error = guardReason;
         emit feedChanged();
         return;
     }
@@ -769,16 +903,23 @@ void OpdsClient::search(const QString &query) {
     emit loadingChanged();
     emit feedChanged();
 
-    ensurePasswordLoaded(m_activeCatalogId,
-                         [this, osUrl, trimmed]() { fetchOpenSearchAndExecute(osUrl, trimmed, 0, osUrl); });
+    const quint64 gen = m_feedGeneration;
+    ensurePasswordLoaded(m_activeCatalogId, [this, osUrl, trimmed, gen]() {
+        if (gen == m_feedGeneration)
+            fetchOpenSearchAndExecute(osUrl, trimmed, osUrl);
+    });
 }
 
 void OpdsClient::loadMore() {
     if (m_nextUrl.isEmpty() || m_loading || m_loadingMore)
         return;
     const QUrl next(m_nextUrl);
-    if (!OpdsParser::isAllowedHttpUrl(next))
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(next, activeCatalogAllowsLocalNetwork(), &guardReason)) {
+        m_error = guardReason;
+        emit feedChanged();
         return;
+    }
 
     abortActiveFeedRequest();
     m_error.clear();
@@ -786,13 +927,23 @@ void OpdsClient::loadMore() {
     m_loadingMore = true;
     emit loadingChanged();
 
-    ensurePasswordLoaded(m_activeCatalogId, [this, next]() { fetchFeed(next, true, 0, next); });
+    const quint64 gen = m_feedGeneration;
+    ensurePasswordLoaded(m_activeCatalogId, [this, next, gen]() {
+        if (gen == m_feedGeneration)
+            fetchFeed(next, true, next);
+    });
 }
 
 void OpdsClient::retry() {
     if (!m_pendingSearchQuery.isEmpty() && m_pendingOpenSearchUrl.isValid()) {
         const QUrl osUrl = m_pendingOpenSearchUrl;
         const QString query = m_pendingSearchQuery;
+        QString guardReason;
+        if (!UrlGuard::isAllowedUrl(osUrl, activeCatalogAllowsLocalNetwork(), &guardReason)) {
+            m_error = guardReason;
+            emit feedChanged();
+            return;
+        }
         abortActiveFeedRequest();
         m_authRequired = false;
         m_error.clear();
@@ -800,8 +951,11 @@ void OpdsClient::retry() {
         m_loadingMore = false;
         emit loadingChanged();
         emit feedChanged();
-        ensurePasswordLoaded(m_activeCatalogId,
-                             [this, osUrl, query]() { fetchOpenSearchAndExecute(osUrl, query, 0, osUrl); });
+        const quint64 gen = m_feedGeneration;
+        ensurePasswordLoaded(m_activeCatalogId, [this, osUrl, query, gen]() {
+            if (gen == m_feedGeneration)
+                fetchOpenSearchAndExecute(osUrl, query, osUrl);
+        });
         return;
     }
 
@@ -812,8 +966,12 @@ void OpdsClient::retry() {
     }
 
     const QUrl target(m_currentUrl);
-    if (!OpdsParser::isAllowedHttpUrl(target))
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(target, activeCatalogAllowsLocalNetwork(), &guardReason)) {
+        m_error = guardReason;
+        emit feedChanged();
         return;
+    }
 
     abortActiveFeedRequest();
     m_authRequired = false;
@@ -823,292 +981,240 @@ void OpdsClient::retry() {
     emit loadingChanged();
     emit feedChanged();
 
-    ensurePasswordLoaded(m_activeCatalogId, [this, target]() { fetchFeed(target, false, 0, target); });
+    const quint64 gen = m_feedGeneration;
+    ensurePasswordLoaded(m_activeCatalogId, [this, target, gen]() {
+        if (gen == m_feedGeneration)
+            fetchFeed(target, false, target);
+    });
 }
 
-void OpdsClient::fetchFeed(const QUrl &url, bool appendMode, int hops, const QUrl &initialOrigin) {
-    if (!OpdsParser::isAllowedHttpUrl(url)) {
+void OpdsClient::fetchFeed(const QUrl &url, bool appendMode, const QUrl &initialOrigin) {
+    const Catalog *cat = findCatalog(m_activeCatalogId);
+    const bool allowLocal = cat ? cat->allowLocalNetwork : false;
+    const QUrl catalogOrigin = cat ? QUrl(cat->url) : url;
+    const QString catalogId = m_activeCatalogId;
+
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(url, allowLocal, &guardReason)) {
         m_loading = false;
         m_loadingMore = false;
-        m_error = tr("Blocked unsupported URL scheme.");
+        m_error = guardReason;
         emit loadingChanged();
         emit feedChanged();
         return;
     }
 
-    const Catalog *cat = findCatalog(m_activeCatalogId);
-    const QUrl catalogOrigin = cat ? QUrl(cat->url) : url;
-
-    QNetworkRequest req = makeBaseRequest(
-        url, "application/opds+json, application/opds-publication+json, application/atom+xml;profile=opds-catalog, application/atom+xml, application/xml;q=0.9, */*;q=0.5");
-    applyAuthIfAllowed(req, url, catalogOrigin, initialOrigin, m_activeCatalogId);
-
     const quint64 gen = m_feedGeneration;
-    QNetworkReply *reply = m_nam.get(req);
-    m_activeFeedReply = reply;
+    PinnedHttpOptions opts;
+    opts.url = url;
+    opts.allowLocalNetwork = allowLocal;
+    opts.maxBytes = kMaxFeedBytes;
+    opts.maxRedirects = kMaxRedirects;
+    opts.timeoutMs = kTransferTimeoutMs;
+    opts.userAgent = opdsUserAgent();
+    opts.acceptHeader = QByteArrayLiteral(
+        "application/opds+json, application/opds-publication+json, "
+        "application/atom+xml;profile=opds-catalog, application/atom+xml, application/xml;q=0.9, */*;q=0.5");
+    opts.headersForHop = [this, catalogOrigin, initialOrigin, catalogId](const QUrl &hopUrl) {
+        return authHeadersIfAllowed(hopUrl, catalogOrigin, initialOrigin, catalogId);
+    };
 
-    auto buffer = std::make_shared<QByteArray>();
-    auto sizeExceeded = std::make_shared<bool>(false);
+    auto reqPtr = std::make_shared<QPointer<PinnedHttpRequest>>();
+    PinnedHttpRequest *req = UrlGuard::fetchPinned(
+        std::move(opts),
+        [this, reqPtr, url, appendMode, gen](PinnedHttpResponse resp) {
+            if (*reqPtr) {
+                if (m_activeFeedRequest == *reqPtr)
+                    m_activeFeedRequest = nullptr;
+                (*reqPtr)->deleteLater();
+            }
+            if (gen != m_feedGeneration)
+                return;
 
-    connect(reply, &QNetworkReply::metaDataChanged, this, [reply, sizeExceeded]() {
-        const QVariant cl = reply->header(QNetworkRequest::ContentLengthHeader);
-        if (cl.isValid() && cl.toLongLong() > kMaxFeedBytes) {
-            *sizeExceeded = true;
-            reply->abort();
-        }
-    });
-
-    connect(reply, &QNetworkReply::readyRead, this, [reply, buffer, sizeExceeded]() {
-        const QByteArray chunk = reply->readAll();
-        if (buffer->size() + chunk.size() > kMaxFeedBytes) {
-            *sizeExceeded = true;
-            reply->abort();
-            return;
-        }
-        buffer->append(chunk);
-    });
-
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, url, appendMode, hops, initialOrigin, gen, buffer, sizeExceeded]() {
-                if (m_activeFeedReply == reply)
-                    m_activeFeedReply = nullptr;
-                reply->deleteLater();
-                if (gen != m_feedGeneration)
-                    return;
-
-                if (!*sizeExceeded && reply->isOpen()) {
-                    const QByteArray tail = reply->readAll();
-                    if (!tail.isEmpty()) {
-                        if (buffer->size() + tail.size() > kMaxFeedBytes)
-                            *sizeExceeded = true;
-                        else
-                            buffer->append(tail);
-                    }
-                }
-
-                if (*sizeExceeded) {
-                    m_loading = false;
-                    m_loadingMore = false;
-                    m_error = tr("Catalog feed exceeds the 10 MB size limit.");
-                    emit loadingChanged();
-                    emit feedChanged();
-                    return;
-                }
-
-                const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-
-                // Manual redirect handling (max 5 hops, strict scheme check, cross-origin auth stripped).
-                if (isRedirectStatus(status)) {
-                    const QByteArray loc = reply->rawHeader("Location").trimmed();
-                    const QUrl nextUrl = url.resolved(QUrl::fromEncoded(loc));
-                    if (loc.isEmpty() || !OpdsParser::isAllowedHttpUrl(nextUrl)) {
-                        m_loading = false;
-                        m_loadingMore = false;
-                        m_error = tr("Catalog redirected to an unsupported address.");
-                        emit loadingChanged();
-                        emit feedChanged();
-                        return;
-                    }
-                    if (hops >= kMaxRedirects) {
-                        m_loading = false;
-                        m_loadingMore = false;
-                        m_error = tr("Too many redirects while loading this catalog.");
-                        emit loadingChanged();
-                        emit feedChanged();
-                        return;
-                    }
-                    fetchFeed(nextUrl, appendMode, hops + 1, initialOrigin);
-                    return;
-                }
-
-                // Clean HTTP 401 handling for inline sign-in card.
-                if (status == 401) {
-                    m_loading = false;
-                    m_loadingMore = false;
-                    m_authRequired = true;
-                    m_error.clear();
-                    const Catalog *activeCat = findCatalog(m_activeCatalogId);
-                    if (activeCat && !activeCat->authHint.isEmpty()) {
-                        m_authHint = activeCat->authHint;
-                    } else if (activeCat) {
-                        m_authHint = tr("Sign in to browse %1.").arg(activeCat->name);
-                    } else {
-                        m_authHint = tr("This catalog requires sign-in.");
-                    }
-                    emit loadingChanged();
-                    emit feedChanged();
-                    return;
-                }
-
-                if (reply->error() != QNetworkReply::NoError || (status > 0 && (status < 200 || status >= 300))) {
-                    m_loading = false;
-                    m_loadingMore = false;
-                    m_error = friendlyNetworkError(reply, status);
-                    emit loadingChanged();
-                    emit feedChanged();
-                    return;
-                }
-
-                const QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();
-                const OpdsFeed parsed = OpdsParser::parse(*buffer, url, contentType);
+            if (resp.sizeExceeded) {
                 m_loading = false;
                 m_loadingMore = false;
-
-                if (!parsed.isValid()) {
-                    m_error = parsed.error.isEmpty() ? tr("Could not read this catalog feed.") : parsed.error;
-                    emit loadingChanged();
-                    emit feedChanged();
-                    return;
-                }
-
-                m_authRequired = false;
-                m_error.clear();
-
-                if (!appendMode) {
-                    if (!parsed.title.isEmpty()) {
-                        m_feedTitle = parsed.title;
-                        if (!m_history.isEmpty() && m_history.last().title == m_history.last().url)
-                            m_history.last().title = parsed.title;
-                    }
-                    m_entries.clear();
-                    m_entries.reserve(parsed.entries.size());
-                    for (const OpdsEntry &e : parsed.entries)
-                        m_entries.append(e.toVariantMap());
-
-                    m_searchUrl = parsed.searchUrl;
-                    m_searchTemplated = parsed.searchTemplated;
-                    if (m_history.size() == 1 && !parsed.searchUrl.isEmpty()) {
-                        m_catalogSearchUrl = parsed.searchUrl;
-                        m_catalogSearchTemplated = parsed.searchTemplated;
-                    }
-                } else {
-                    for (const OpdsEntry &e : parsed.entries)
-                        m_entries.append(e.toVariantMap());
-                }
-
-                const QString reqEncoded = url.toString(QUrl::FullyEncoded);
-                m_nextUrl = (!parsed.nextUrl.isEmpty() && parsed.nextUrl != reqEncoded) ? parsed.nextUrl : QString();
-
+                m_error = tr("Catalog feed exceeds the 10 MB size limit.");
                 emit loadingChanged();
                 emit feedChanged();
-            });
+                return;
+            }
+            if (resp.tooManyRedirects) {
+                m_loading = false;
+                m_loadingMore = false;
+                m_error = tr("Too many redirects while loading this catalog.");
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
+
+            if (resp.ok && resp.httpStatus == 401) {
+                m_loading = false;
+                m_loadingMore = false;
+                m_authRequired = true;
+                m_error.clear();
+                const Catalog *activeCat = findCatalog(m_activeCatalogId);
+                if (activeCat && !activeCat->authHint.isEmpty()) {
+                    m_authHint = activeCat->authHint;
+                } else if (activeCat) {
+                    m_authHint = tr("Sign in to browse %1.").arg(activeCat->name);
+                } else {
+                    m_authHint = tr("This catalog requires sign-in.");
+                }
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
+
+            if (!resp.ok || (resp.httpStatus > 0 && (resp.httpStatus < 200 || resp.httpStatus >= 300))) {
+                m_loading = false;
+                m_loadingMore = false;
+                m_error = friendlyHttpError(resp);
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
+
+            const QUrl effectiveUrl = resp.finalUrl.isValid() ? resp.finalUrl : url;
+            const OpdsFeed parsed = OpdsParser::parse(resp.body, effectiveUrl, resp.contentType);
+            m_loading = false;
+            m_loadingMore = false;
+
+            if (!parsed.isValid()) {
+                m_error = parsed.error.isEmpty() ? tr("Could not read this catalog feed.") : parsed.error;
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
+
+            m_authRequired = false;
+            m_error.clear();
+
+            if (!appendMode) {
+                if (!parsed.title.isEmpty()) {
+                    m_feedTitle = parsed.title;
+                    if (!m_history.isEmpty() && m_history.last().title == m_history.last().url)
+                        m_history.last().title = parsed.title;
+                }
+                m_entries.clear();
+                m_entries.reserve(parsed.entries.size());
+                for (const OpdsEntry &e : parsed.entries)
+                    m_entries.append(e.toVariantMap());
+
+                m_searchUrl = parsed.searchUrl;
+                m_searchTemplated = parsed.searchTemplated;
+                if (m_history.size() == 1 && !parsed.searchUrl.isEmpty()) {
+                    m_catalogSearchUrl = parsed.searchUrl;
+                    m_catalogSearchTemplated = parsed.searchTemplated;
+                }
+            } else {
+                for (const OpdsEntry &e : parsed.entries)
+                    m_entries.append(e.toVariantMap());
+            }
+
+            const QString reqEncoded = effectiveUrl.toString(QUrl::FullyEncoded);
+            m_nextUrl = (!parsed.nextUrl.isEmpty() && parsed.nextUrl != reqEncoded) ? parsed.nextUrl : QString();
+
+            emit loadingChanged();
+            emit feedChanged();
+        },
+        this);
+    *reqPtr = req;
+    if (!req->isFinished())
+        m_activeFeedRequest = req;
 }
 
 void OpdsClient::fetchOpenSearchAndExecute(const QUrl &openSearchUrl, const QString &query,
-                                           int hops, const QUrl &initialOrigin) {
-    if (!OpdsParser::isAllowedHttpUrl(openSearchUrl)) {
+                                           const QUrl &initialOrigin) {
+    const Catalog *cat = findCatalog(m_activeCatalogId);
+    const bool allowLocal = cat ? cat->allowLocalNetwork : false;
+    const QUrl catalogOrigin = cat ? QUrl(cat->url) : openSearchUrl;
+    const QString catalogId = m_activeCatalogId;
+
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(openSearchUrl, allowLocal, &guardReason)) {
         m_loading = false;
-        m_error = tr("Blocked unsupported search URL scheme.");
+        m_error = guardReason;
         emit loadingChanged();
         emit feedChanged();
         return;
     }
 
-    const Catalog *cat = findCatalog(m_activeCatalogId);
-    const QUrl catalogOrigin = cat ? QUrl(cat->url) : openSearchUrl;
-
-    QNetworkRequest req = makeBaseRequest(
-        openSearchUrl, "application/opensearchdescription+xml, application/xml, text/xml;q=0.9, */*;q=0.5");
-    applyAuthIfAllowed(req, openSearchUrl, catalogOrigin, initialOrigin, m_activeCatalogId);
-
     const quint64 gen = m_feedGeneration;
-    QNetworkReply *reply = m_nam.get(req);
-    m_activeFeedReply = reply;
+    PinnedHttpOptions opts;
+    opts.url = openSearchUrl;
+    opts.allowLocalNetwork = allowLocal;
+    opts.maxBytes = kMaxFeedBytes;
+    opts.maxRedirects = kMaxRedirects;
+    opts.timeoutMs = kTransferTimeoutMs;
+    opts.userAgent = opdsUserAgent();
+    opts.acceptHeader = QByteArrayLiteral("application/opensearchdescription+xml, application/xml, text/xml;q=0.9, */*;q=0.5");
+    opts.headersForHop = [this, catalogOrigin, initialOrigin, catalogId](const QUrl &hopUrl) {
+        return authHeadersIfAllowed(hopUrl, catalogOrigin, initialOrigin, catalogId);
+    };
 
-    auto buffer = std::make_shared<QByteArray>();
-    auto sizeExceeded = std::make_shared<bool>(false);
+    auto reqPtr = std::make_shared<QPointer<PinnedHttpRequest>>();
+    PinnedHttpRequest *req = UrlGuard::fetchPinned(
+        std::move(opts),
+        [this, reqPtr, openSearchUrl, query, initialOrigin, gen](PinnedHttpResponse resp) {
+            if (*reqPtr) {
+                if (m_activeFeedRequest == *reqPtr)
+                    m_activeFeedRequest = nullptr;
+                (*reqPtr)->deleteLater();
+            }
+            if (gen != m_feedGeneration)
+                return;
 
-    connect(reply, &QNetworkReply::metaDataChanged, this, [reply, sizeExceeded]() {
-        const QVariant cl = reply->header(QNetworkRequest::ContentLengthHeader);
-        if (cl.isValid() && cl.toLongLong() > kMaxFeedBytes) {
-            *sizeExceeded = true;
-            reply->abort();
-        }
-    });
+            if (resp.sizeExceeded) {
+                m_loading = false;
+                m_error = tr("OpenSearch description exceeds the 10 MB size limit.");
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
+            if (resp.tooManyRedirects) {
+                m_loading = false;
+                m_error = tr("Could not follow catalog search redirect.");
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
+            if (resp.ok && resp.httpStatus == 401) {
+                m_loading = false;
+                m_authRequired = true;
+                m_error.clear();
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
+            if (!resp.ok || (resp.httpStatus > 0 && (resp.httpStatus < 200 || resp.httpStatus >= 300))) {
+                m_loading = false;
+                m_error = friendlyHttpError(resp);
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
 
-    connect(reply, &QNetworkReply::readyRead, this, [reply, buffer, sizeExceeded]() {
-        const QByteArray chunk = reply->readAll();
-        if (buffer->size() + chunk.size() > kMaxFeedBytes) {
-            *sizeExceeded = true;
-            reply->abort();
-            return;
-        }
-        buffer->append(chunk);
-    });
+            const QUrl effectiveUrl = resp.finalUrl.isValid() ? resp.finalUrl : openSearchUrl;
+            const QString tmpl = OpdsParser::parseOpenSearchTemplate(resp.body, effectiveUrl);
+            if (tmpl.isEmpty()) {
+                m_loading = false;
+                m_error = tr("This catalog does not advertise a compatible OPDS search endpoint.");
+                emit loadingChanged();
+                emit feedChanged();
+                return;
+            }
 
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, openSearchUrl, query, hops, initialOrigin, gen, buffer, sizeExceeded]() {
-                if (m_activeFeedReply == reply)
-                    m_activeFeedReply = nullptr;
-                reply->deleteLater();
-                if (gen != m_feedGeneration)
-                    return;
-
-                if (!*sizeExceeded && reply->isOpen()) {
-                    const QByteArray tail = reply->readAll();
-                    if (!tail.isEmpty()) {
-                        if (buffer->size() + tail.size() > kMaxFeedBytes)
-                            *sizeExceeded = true;
-                        else
-                            buffer->append(tail);
-                    }
-                }
-
-                if (*sizeExceeded) {
-                    m_loading = false;
-                    m_error = tr("OpenSearch description exceeds the 10 MB size limit.");
-                    emit loadingChanged();
-                    emit feedChanged();
-                    return;
-                }
-
-                const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-                if (isRedirectStatus(status)) {
-                    const QByteArray loc = reply->rawHeader("Location").trimmed();
-                    const QUrl nextUrl = openSearchUrl.resolved(QUrl::fromEncoded(loc));
-                    if (loc.isEmpty() || !OpdsParser::isAllowedHttpUrl(nextUrl) || hops >= kMaxRedirects) {
-                        m_loading = false;
-                        m_error = tr("Could not follow catalog search redirect.");
-                        emit loadingChanged();
-                        emit feedChanged();
-                        return;
-                    }
-                    fetchOpenSearchAndExecute(nextUrl, query, hops + 1, initialOrigin);
-                    return;
-                }
-
-                if (status == 401) {
-                    m_loading = false;
-                    m_authRequired = true;
-                    m_error.clear();
-                    emit loadingChanged();
-                    emit feedChanged();
-                    return;
-                }
-
-                if (reply->error() != QNetworkReply::NoError || (status > 0 && (status < 200 || status >= 300))) {
-                    m_loading = false;
-                    m_error = friendlyNetworkError(reply, status);
-                    emit loadingChanged();
-                    emit feedChanged();
-                    return;
-                }
-
-                const QString tmpl = OpdsParser::parseOpenSearchTemplate(*buffer, openSearchUrl);
-                if (tmpl.isEmpty()) {
-                    m_loading = false;
-                    m_error = tr("This catalog does not advertise a compatible OPDS search endpoint.");
-                    emit loadingChanged();
-                    emit feedChanged();
-                    return;
-                }
-
-                m_openSearchTemplates.insert(initialOrigin.toString(QUrl::FullyEncoded), tmpl);
-                const QString expanded = OpdsParser::expandSearchTemplate(tmpl, query);
-                m_pendingSearchQuery.clear();
-                m_pendingOpenSearchUrl.clear();
-                navigate(expanded, tr("Search: %1").arg(query));
-            });
+            m_openSearchTemplates.insert(initialOrigin.toString(QUrl::FullyEncoded), tmpl);
+            const QString expanded = OpdsParser::expandSearchTemplate(tmpl, query);
+            m_pendingSearchQuery.clear();
+            m_pendingOpenSearchUrl.clear();
+            navigate(expanded, tr("Search: %1").arg(query));
+        },
+        this);
+    *reqPtr = req;
+    if (!req->isFinished())
+        m_activeFeedRequest = req;
 }
 
 void OpdsClient::downloadPublication(const QString &acquisitionUrl, const QString &title,
@@ -1116,17 +1222,18 @@ void OpdsClient::downloadPublication(const QString &acquisitionUrl, const QStrin
                                      int targetCollectionId) {
     const QString key = acquisitionUrl.trimmed();
     const QUrl url(key);
-    if (!OpdsParser::isAllowedHttpUrl(url)) {
-        const QString err = tr("Only HTTP and HTTPS book downloads are supported.");
-        setDownloadState(key, QStringLiteral("error"), 0.0, 0, err);
-        emit downloadFailed(key, err);
+    const Catalog *cat = findCatalog(m_activeCatalogId);
+    const bool allowLocal = cat ? cat->allowLocalNetwork : false;
+
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(url, allowLocal, &guardReason)) {
+        setDownloadState(key, QStringLiteral("error"), 0.0, 0, guardReason);
+        emit downloadFailed(key, guardReason);
         return;
     }
 
     if (m_activeDownloads.contains(key))
         return;
-
-    const Catalog *cat = findCatalog(m_activeCatalogId);
 
     auto dl = std::make_shared<ActiveDownload>();
     dl->acquisitionUrl = key;
@@ -1135,6 +1242,7 @@ void OpdsClient::downloadPublication(const QString &acquisitionUrl, const QStrin
     dl->catalogOrigin = cat ? QUrl(cat->url) : url;
     dl->catalogId = m_activeCatalogId.isEmpty() ? QStringLiteral("catalog") : m_activeCatalogId;
     dl->catalogName = cat ? cat->name : url.host();
+    dl->allowLocalNetwork = allowLocal;
     dl->title = title.trimmed();
     dl->author = author.trimmed();
     dl->requestedFormat = format.trimmed().toLower();
@@ -1156,10 +1264,10 @@ void OpdsClient::cancelDownload(const QString &acquisitionUrl) {
         return;
 
     dl->cancelled = true;
-    if (dl->reply) {
-        dl->reply->abort();
-        dl->reply->deleteLater();
-        dl->reply = nullptr;
+    if (dl->request) {
+        dl->request->abort();
+        dl->request->deleteLater();
+        dl->request = nullptr;
     }
     if (dl->saveFile) {
         dl->saveFile->cancelWriting();
@@ -1171,30 +1279,14 @@ void OpdsClient::cancelDownload(const QString &acquisitionUrl) {
 }
 
 void OpdsClient::startDownloadRequest(const std::shared_ptr<ActiveDownload> &dl) {
-    QUrl reqUrl(dl->currentUrl);
-    if (!OpdsParser::isAllowedHttpUrl(reqUrl)) {
-        const QString err = tr("Download redirected to an unsupported address.");
+    const QUrl reqUrl(dl->currentUrl);
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(reqUrl, dl->allowLocalNetwork, &guardReason)) {
         m_activeDownloads.remove(dl->acquisitionUrl);
-        setDownloadState(dl->acquisitionUrl, QStringLiteral("error"), 0.0, 0, err);
-        emit downloadFailed(dl->acquisitionUrl, err);
+        setDownloadState(dl->acquisitionUrl, QStringLiteral("error"), 0.0, 0, guardReason);
+        emit downloadFailed(dl->acquisitionUrl, guardReason);
         return;
     }
-
-    // Standard Ebooks serves an HTML interstitial on /downloads/*.epub unless ?source= is present
-    // (Open Library OPDS book manifests link the bare URL without ?source=download).
-    const QString hostLower = reqUrl.host().toLower();
-    if ((hostLower == QLatin1String("standardebooks.org") || hostLower == QLatin1String("www.standardebooks.org")) &&
-        reqUrl.path().contains(QLatin1String("/downloads/"), Qt::CaseInsensitive) &&
-        reqUrl.path().endsWith(QLatin1String(".epub"), Qt::CaseInsensitive)) {
-        QUrlQuery q(reqUrl);
-        if (!q.hasQueryItem(QStringLiteral("source"))) {
-            q.addQueryItem(QStringLiteral("source"), QStringLiteral("download"));
-            reqUrl.setQuery(q);
-        }
-    }
-
-    QNetworkRequest req = makeBaseRequest(reqUrl, "application/epub+zip, application/pdf, application/octet-stream;q=0.8, */*;q=0.5");
-    applyAuthIfAllowed(req, reqUrl, dl->catalogOrigin, dl->initialOrigin, dl->catalogId);
 
     dl->bytesReceived = 0;
     dl->bytesTotal = -1;
@@ -1208,73 +1300,72 @@ void OpdsClient::startDownloadRequest(const std::shared_ptr<ActiveDownload> &dl)
         dl->saveFile.reset();
     }
 
-    QNetworkReply *reply = m_nam.get(req);
-    dl->reply = reply;
+    auto isHttpSuccess = std::make_shared<bool>(false);
 
-    connect(reply, &QNetworkReply::metaDataChanged, this, [reply, dl]() {
+    PinnedHttpOptions opts;
+    opts.url = reqUrl;
+    opts.allowLocalNetwork = dl->allowLocalNetwork;
+    opts.maxBytes = kMaxBookBytes;
+    opts.maxRedirects = kMaxRedirects;
+    opts.timeoutMs = kTransferTimeoutMs;
+    opts.userAgent = opdsUserAgent();
+    opts.acceptHeader = QByteArrayLiteral("application/epub+zip, application/pdf, application/octet-stream;q=0.8, */*;q=0.5");
+    opts.rewriteHopUrl = [](const QUrl &hopUrl) { return rewriteStandardEbooksDownloadUrl(hopUrl); };
+    opts.headersForHop = [this, dl](const QUrl &hopUrl) {
+        return authHeadersIfAllowed(hopUrl, dl->catalogOrigin, dl->initialOrigin, dl->catalogId);
+    };
+
+    opts.onHeaders = [dl, isHttpSuccess](int statusCode, const QUrl &, const QList<QPair<QByteArray, QByteArray>> &,
+                                         qint64 contentLength, qint64 *, QString *) {
         if (dl->cancelled)
-            return;
-        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status >= 300)
-            return;
-        const QVariant cl = reply->header(QNetworkRequest::ContentLengthHeader);
-        if (cl.isValid()) {
-            dl->bytesTotal = cl.toLongLong();
+            return false;
+        *isHttpSuccess = (statusCode >= 200 && statusCode < 300);
+        if (!*isHttpSuccess)
+            return true;
+        if (contentLength >= 0) {
+            dl->bytesTotal = contentLength;
             if (dl->bytesTotal > kMaxBookBytes) {
                 dl->sizeExceeded = true;
-                reply->abort();
+                return false;
             }
         }
-    });
+        return true;
+    };
 
-    connect(reply, &QNetworkReply::readyRead, this, [this, reply, dl]() {
+    opts.onBodyChunk = [this, dl, isHttpSuccess](const QByteArray &chunk, qint64 wireBytes, qint64, QString *) {
         if (dl->cancelled)
-            return;
-        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        if (status >= 300) {
-            // Discard redirect/error HTML bodies without touching disk.
-            reply->readAll();
-            return;
-        }
-
-        const QByteArray chunk = reply->readAll();
+            return false;
+        if (!*isHttpSuccess)
+            return true;  // Discard error HTML bodies without touching disk.
         if (chunk.isEmpty())
-            return;
+            return true;
 
         dl->bytesReceived += chunk.size();
         if (dl->bytesReceived > kMaxBookBytes) {
             dl->sizeExceeded = true;
-            reply->abort();
-            return;
+            return false;
         }
 
         if (!dl->saveFile) {
             dl->headerBuffer.append(chunk);
             if (dl->headerBuffer.size() < 5)
-                return;
+                return true;
 
             dl->verifiedFormat = detectBookMagicFormat(dl->headerBuffer);
             if (dl->verifiedFormat.isEmpty()) {
                 dl->invalidMagic = true;
-                reply->abort();
-                return;
+                return false;
             }
 
             dl->destPath = buildDownloadPath(dl->catalogId, dl->title, dl->verifiedFormat, dl->acquisitionUrl);
             QDir().mkpath(QFileInfo(dl->destPath).absolutePath());
             dl->saveFile = std::make_unique<QSaveFile>(dl->destPath);
-            if (!dl->saveFile->open(QIODevice::WriteOnly)) {
-                dl->diskError = true;
-                dl->saveFile.reset();
-                reply->abort();
-                return;
-            }
-            if (dl->saveFile->write(dl->headerBuffer) != dl->headerBuffer.size()) {
+            if (!dl->saveFile->open(QIODevice::WriteOnly) ||
+                dl->saveFile->write(dl->headerBuffer) != dl->headerBuffer.size()) {
                 dl->diskError = true;
                 dl->saveFile->cancelWriting();
                 dl->saveFile.reset();
-                reply->abort();
-                return;
+                return false;
             }
             dl->headerBuffer.clear();
         } else {
@@ -1282,155 +1373,106 @@ void OpdsClient::startDownloadRequest(const std::shared_ptr<ActiveDownload> &dl)
                 dl->diskError = true;
                 dl->saveFile->cancelWriting();
                 dl->saveFile.reset();
-                reply->abort();
-                return;
+                return false;
             }
         }
 
         if (dl->bytesTotal > 0) {
-            const double p = std::clamp(double(dl->bytesReceived) / double(dl->bytesTotal), 0.0, 0.99);
+            const double p = std::clamp(double(wireBytes) / double(dl->bytesTotal), 0.0, 0.99);
             setDownloadState(dl->acquisitionUrl, QStringLiteral("downloading"), p);
         }
-    });
-
-    connect(reply, &QNetworkReply::finished, this, [this, reply, dl]() {
-        finishDownload(dl, reply);
-    });
-}
-
-void OpdsClient::finishDownload(const std::shared_ptr<ActiveDownload> &dl, QNetworkReply *reply) {
-    if (dl->reply == reply)
-        dl->reply = nullptr;
-    reply->deleteLater();
-
-    if (dl->cancelled)
-        return;
-
-    auto fail = [&](const QString &message) {
-        if (dl->saveFile) {
-            dl->saveFile->cancelWriting();
-            dl->saveFile.reset();
-        }
-        m_activeDownloads.remove(dl->acquisitionUrl);
-        setDownloadState(dl->acquisitionUrl, QStringLiteral("error"), 0.0, 0, message);
-        emit downloadFailed(dl->acquisitionUrl, message);
+        return true;
     };
 
-    const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-
-    if (status >= 200 && status < 300 && !dl->sizeExceeded && !dl->invalidMagic && !dl->diskError && reply->isOpen()) {
-        const QByteArray tail = reply->readAll();
-        if (!tail.isEmpty()) {
-            dl->bytesReceived += tail.size();
-            if (dl->bytesReceived > kMaxBookBytes) {
-                dl->sizeExceeded = true;
-            } else if (!dl->saveFile) {
-                dl->headerBuffer.append(tail);
-                dl->verifiedFormat = detectBookMagicFormat(dl->headerBuffer);
-                if (dl->verifiedFormat.isEmpty()) {
-                    dl->invalidMagic = true;
-                } else {
-                    dl->destPath = buildDownloadPath(dl->catalogId, dl->title, dl->verifiedFormat, dl->acquisitionUrl);
-                    QDir().mkpath(QFileInfo(dl->destPath).absolutePath());
-                    dl->saveFile = std::make_unique<QSaveFile>(dl->destPath);
-                    if (!dl->saveFile->open(QIODevice::WriteOnly) ||
-                        dl->saveFile->write(dl->headerBuffer) != dl->headerBuffer.size()) {
-                        dl->diskError = true;
-                        dl->saveFile->cancelWriting();
-                        dl->saveFile.reset();
-                    } else {
-                        dl->headerBuffer.clear();
-                    }
-                }
-            } else if (dl->saveFile->write(tail) != tail.size()) {
-                dl->diskError = true;
-                dl->saveFile->cancelWriting();
-                dl->saveFile.reset();
+    auto reqPtr = std::make_shared<QPointer<PinnedHttpRequest>>();
+    PinnedHttpRequest *req = UrlGuard::fetchPinned(
+        std::move(opts),
+        [this, reqPtr, dl](PinnedHttpResponse resp) {
+            if (*reqPtr) {
+                if (dl->request == *reqPtr)
+                    dl->request = nullptr;
+                (*reqPtr)->deleteLater();
             }
-        }
-    }
+            if (dl->cancelled)
+                return;
 
-    if (isRedirectStatus(status)) {
-        if (dl->saveFile) {
-            dl->saveFile->cancelWriting();
+            auto fail = [&](const QString &message) {
+                if (dl->saveFile) {
+                    dl->saveFile->cancelWriting();
+                    dl->saveFile.reset();
+                }
+                m_activeDownloads.remove(dl->acquisitionUrl);
+                setDownloadState(dl->acquisitionUrl, QStringLiteral("error"), 0.0, 0, message);
+                emit downloadFailed(dl->acquisitionUrl, message);
+            };
+
+            if (resp.ok && resp.httpStatus == 401) {
+                if (dl->catalogId == m_activeCatalogId) {
+                    m_authRequired = true;
+                    emit feedChanged();
+                }
+                fail(tr("Sign in required to download from this catalog."));
+                return;
+            }
+            if (dl->sizeExceeded || resp.sizeExceeded) {
+                fail(tr("Book exceeds the 200 MB download size limit."));
+                return;
+            }
+            if (dl->invalidMagic) {
+                fail(tr("Downloaded file is not a valid EPUB or PDF."));
+                return;
+            }
+            if (dl->diskError) {
+                fail(tr("Could not write the downloaded book to disk."));
+                return;
+            }
+            if (resp.tooManyRedirects) {
+                fail(tr("Too many redirects while downloading this book."));
+                return;
+            }
+            if (!resp.ok || (resp.httpStatus > 0 && (resp.httpStatus < 200 || resp.httpStatus >= 300))) {
+                fail(friendlyHttpError(resp));
+                return;
+            }
+
+            if (!dl->saveFile) {
+                fail(tr("Downloaded file is not a valid EPUB or PDF."));
+                return;
+            }
+
+            if (!dl->saveFile->commit()) {
+                fail(tr("Could not finalize the downloaded book file."));
+                return;
+            }
             dl->saveFile.reset();
-        }
-        const QByteArray loc = reply->rawHeader("Location").trimmed();
-        const QUrl nextUrl = QUrl(dl->currentUrl).resolved(QUrl::fromEncoded(loc));
-        if (loc.isEmpty() || !OpdsParser::isAllowedHttpUrl(nextUrl)) {
-            fail(tr("Download redirected to an unsupported address."));
-            return;
-        }
-        if (dl->hops >= kMaxRedirects) {
-            fail(tr("Too many redirects while downloading this book."));
-            return;
-        }
-        dl->hops += 1;
-        dl->currentUrl = nextUrl.toString(QUrl::FullyEncoded);
-        startDownloadRequest(dl);
-        return;
-    }
 
-    if (status == 401) {
-        if (dl->catalogId == m_activeCatalogId) {
-            m_authRequired = true;
-            emit feedChanged();
-        }
-        fail(tr("Sign in required to download from this catalog."));
-        return;
-    }
+            if (!m_library) {
+                fail(tr("Library is unavailable."));
+                return;
+            }
 
-    if (dl->sizeExceeded) {
-        fail(tr("Book exceeds the 200 MB download size limit."));
-        return;
-    }
-    if (dl->invalidMagic) {
-        fail(tr("Downloaded file is not a valid EPUB or PDF."));
-        return;
-    }
-    if (dl->diskError) {
-        fail(tr("Could not write the downloaded book to disk."));
-        return;
-    }
-    if (reply->error() != QNetworkReply::NoError || (status > 0 && (status < 200 || status >= 300))) {
-        fail(friendlyNetworkError(reply, status));
-        return;
-    }
+            const int bookId = m_library->addBookFile(dl->destPath);
+            if (bookId <= 0) {
+                QFile::remove(dl->destPath);
+                fail(m_library->errorString().isEmpty() ? tr("Could not add downloaded book to library.")
+                                                        : m_library->errorString());
+                return;
+            }
 
-    // Flush any remaining tiny buffered payload (<5 bytes) or verify file was opened.
-    if (!dl->saveFile) {
-        fail(tr("Downloaded file is not a valid EPUB or PDF."));
-        return;
-    }
+            if (dl->targetCollectionId > 0)
+                m_library->addToCollection(bookId, dl->targetCollectionId);
 
-    if (!dl->saveFile->commit()) {
-        fail(tr("Could not finalize the downloaded book file."));
-        return;
-    }
-    dl->saveFile.reset();
+            m_library->setBookSetting(bookId, QStringLiteral("source_url"), dl->acquisitionUrl);
+            m_library->setBookSetting(bookId, QStringLiteral("opds_catalog"), dl->catalogName);
 
-    if (!m_library) {
-        fail(tr("Library is unavailable."));
-        return;
-    }
-
-    const int bookId = m_library->addBookFile(dl->destPath);
-    if (bookId <= 0) {
-        QFile::remove(dl->destPath);
-        fail(m_library->errorString().isEmpty() ? tr("Could not add downloaded book to library.")
-                                                : m_library->errorString());
-        return;
-    }
-
-    if (dl->targetCollectionId > 0)
-        m_library->addToCollection(bookId, dl->targetCollectionId);
-
-    m_library->setBookSetting(bookId, QStringLiteral("source_url"), dl->acquisitionUrl);
-    m_library->setBookSetting(bookId, QStringLiteral("opds_catalog"), dl->catalogName);
-
-    m_activeDownloads.remove(dl->acquisitionUrl);
-    setDownloadState(dl->acquisitionUrl, QStringLiteral("done"), 1.0, bookId);
-    emit bookDownloaded(dl->acquisitionUrl, bookId, dl->title);
+            m_activeDownloads.remove(dl->acquisitionUrl);
+            setDownloadState(dl->acquisitionUrl, QStringLiteral("done"), 1.0, bookId);
+            emit bookDownloaded(dl->acquisitionUrl, bookId, dl->title);
+        },
+        this);
+    *reqPtr = req;
+    if (!req->isFinished())
+        dl->request = req;
 }
 
 void OpdsClient::setDownloadState(const QString &acquisitionUrl, const QString &status,
@@ -1442,6 +1484,17 @@ void OpdsClient::setDownloadState(const QString &acquisitionUrl, const QString &
         {QStringLiteral("error"), error},
     });
     emit downloadStatesChanged();
+}
+
+QString OpdsClient::coverImageUrl(const QString &coverUrl, const QString &catalogId) const {
+    const QString trimmed = coverUrl.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    const QString cid = catalogId.trimmed().isEmpty() ? m_activeCatalogId : catalogId.trimmed();
+    const bool allowLocal = catalogAllowsLocalNetwork(cid);
+    if (!UrlGuard::isAllowedUrl(QUrl(trimmed), allowLocal))
+        return {};
+    return OpdsCoverProvider::imageUrl(trimmed, cid);
 }
 
 QString OpdsClient::buildDownloadPath(const QString &catalogId, const QString &title,
@@ -1468,4 +1521,201 @@ QString OpdsClient::buildDownloadPath(const QString &catalogId, const QString &t
     for (int n = 2; QFileInfo::exists(candidate) && n < 100; ++n)
         candidate = QDir(dirPath).filePath(QStringLiteral("%1-%2-%3%4").arg(baseName, shortHash).arg(n).arg(suffix));
     return candidate;
+}
+
+namespace {
+
+class OpdsCoverResponse : public QQuickImageResponse, public QRunnable {
+public:
+    OpdsCoverResponse(QString cacheKey, QUrl url, bool allowLocalNetwork, QSize requestedSize,
+                      std::function<QImage(const QString &)> cacheGet,
+                      std::function<void(const QString &, const QImage &)> cachePut)
+        : m_cacheKey(std::move(cacheKey)),
+          m_url(std::move(url)),
+          m_allowLocalNetwork(allowLocalNetwork),
+          m_requestedSize(requestedSize),
+          m_cacheGet(std::move(cacheGet)),
+          m_cachePut(std::move(cachePut)) {
+        setAutoDelete(false);
+    }
+
+    QQuickTextureFactory *textureFactory() const override {
+        return m_image.isNull() ? nullptr : QQuickTextureFactory::textureFactoryForImage(m_image);
+    }
+
+    QString errorString() const override { return m_error; }
+
+    void cancel() override { m_cancelled.store(true, std::memory_order_relaxed); }
+
+    void run() override {
+        if (m_cancelled.load(std::memory_order_relaxed)) {
+            emit finished();
+            return;
+        }
+        if (m_cacheGet) {
+            if (const QImage hit = m_cacheGet(m_cacheKey); !hit.isNull()) {
+                m_image = hit;
+                emit finished();
+                return;
+            }
+        }
+
+        QString guardReason;
+        if (!UrlGuard::isAllowedUrl(m_url, m_allowLocalNetwork, &guardReason)) {
+            m_error = guardReason;
+            emit finished();
+            return;
+        }
+
+        PinnedHttpOptions opts;
+        opts.url = m_url;
+        opts.allowLocalNetwork = m_allowLocalNetwork;
+        opts.maxBytes = OpdsCoverProvider::maxCoverBytes;
+        opts.maxRedirects = UrlGuard::maxRedirects;
+        opts.timeoutMs = OpdsCoverProvider::defaultTimeoutMs;
+        opts.userAgent = opdsUserAgent();
+        opts.acceptHeader = QByteArrayLiteral("image/webp, image/png, image/jpeg, image/gif, */*;q=0.1");
+
+        const PinnedHttpResponse resp = UrlGuard::fetchPinnedSync(std::move(opts), &m_cancelled);
+        if (m_cancelled.load(std::memory_order_relaxed)) {
+            emit finished();
+            return;
+        }
+        if (!resp.ok || resp.httpStatus < 200 || resp.httpStatus >= 300 || resp.body.isEmpty()) {
+            m_error = resp.error.isEmpty() ? QStringLiteral("Could not load cover image.") : resp.error;
+            emit finished();
+            return;
+        }
+
+        // Reject SVG payloads in OPDS cover thumbnails (raster formats only).
+        const QString ctLower = resp.contentType.section(QLatin1Char(';'), 0, 0).trimmed().toLower();
+        const QByteArray headLower = resp.body.left(256).trimmed().toLower();
+        if (ctLower.contains(QLatin1String("svg")) || headLower.startsWith("<svg") ||
+            headLower.contains("<svg")) {
+            m_error = QStringLiteral("SVG cover thumbnails are not allowed.");
+            emit finished();
+            return;
+        }
+
+        QByteArray data = resp.body;
+        QBuffer buf(&data);
+        buf.open(QIODevice::ReadOnly);
+        QImageReader reader(&buf);
+        reader.setAutoTransform(true);
+
+        const QByteArray fmt = reader.format().toLower();
+        if (fmt == "svg" || fmt == "svgz" || !reader.canRead()) {
+            m_error = QStringLiteral("Unsupported cover image format.");
+            emit finished();
+            return;
+        }
+
+        const QSize nativeSize = reader.size();
+        if (!nativeSize.isValid() || nativeSize.width() <= 0 || nativeSize.height() <= 0 ||
+            nativeSize.width() > OpdsCoverProvider::maxImageDimension ||
+            nativeSize.height() > OpdsCoverProvider::maxImageDimension ||
+            qint64(nativeSize.width()) * qint64(nativeSize.height()) > OpdsCoverProvider::maxImagePixels) {
+            m_error = QStringLiteral("Cover image dimensions exceed safety limits.");
+            emit finished();
+            return;
+        }
+
+        const int maxW = (m_requestedSize.width() > 0) ? qMin(m_requestedSize.width(), 1024) : 512;
+        const int maxH = (m_requestedSize.height() > 0) ? qMin(m_requestedSize.height(), 1024) : 768;
+        if (nativeSize.width() > maxW || nativeSize.height() > maxH) {
+            const QSize scaled = nativeSize.scaled(maxW, maxH, Qt::KeepAspectRatio);
+            if (scaled.isValid() && !scaled.isEmpty())
+                reader.setScaledSize(scaled);
+        }
+
+        const QImage decoded = reader.read();
+        if (decoded.isNull() || decoded.width() > OpdsCoverProvider::maxImageDimension ||
+            decoded.height() > OpdsCoverProvider::maxImageDimension) {
+            m_error = QStringLiteral("Could not decode cover image.");
+            emit finished();
+            return;
+        }
+
+        if (!m_cancelled.load(std::memory_order_relaxed)) {
+            if (m_cachePut)
+                m_cachePut(m_cacheKey, decoded);
+            m_image = decoded;
+        }
+        emit finished();
+    }
+
+private:
+    QString m_cacheKey;
+    QUrl m_url;
+    bool m_allowLocalNetwork = false;
+    QSize m_requestedSize;
+    std::function<QImage(const QString &)> m_cacheGet;
+    std::function<void(const QString &, const QImage &)> m_cachePut;
+    std::atomic_bool m_cancelled{false};
+    QImage m_image;
+    QString m_error;
+};
+
+}  // namespace
+
+OpdsCoverProvider::OpdsCoverProvider(const OpdsClient *client)
+    : m_localRegistry(client ? client->m_localRegistry : nullptr),
+      m_cache(std::make_shared<CoverCache>()) {
+    m_pool.setMaxThreadCount(4);
+}
+
+OpdsCoverProvider::~OpdsCoverProvider() {
+    m_pool.waitForDone(3000);
+}
+
+QString OpdsCoverProvider::imageUrl(const QString &coverUrl, const QString &catalogId) {
+    const QString trimmed = coverUrl.trimmed();
+    if (trimmed.isEmpty())
+        return {};
+    QString out = QStringLiteral("image://opdscover/") +
+                  QString::fromLatin1(QUrl::toPercentEncoding(trimmed));
+    const QString cid = catalogId.trimmed();
+    if (!cid.isEmpty()) {
+        out += QStringLiteral("?catalog=") + QString::fromLatin1(QUrl::toPercentEncoding(cid));
+    }
+    return out;
+}
+
+QQuickImageResponse *OpdsCoverProvider::requestImageResponse(const QString &id, const QSize &requestedSize) {
+    // Supported formats:
+    //   "<percent-encoded-url>?catalog=<percent-encoded-catalog-id>"
+    //   "?url=<percent-encoded-url>&catalog=<percent-encoded-catalog-id>"
+    const qsizetype qPos = id.indexOf(QLatin1Char('?'));
+    const QString encodedPath = qPos >= 0 ? id.left(qPos) : id;
+    const QUrlQuery query(qPos >= 0 ? id.mid(qPos + 1) : QString());
+
+    const QString rawUrl = encodedPath.isEmpty()
+                               ? QUrl::fromPercentEncoding(
+                                     query.queryItemValue(QStringLiteral("url"), QUrl::FullyEncoded).toUtf8())
+                               : QUrl::fromPercentEncoding(encodedPath.toUtf8());
+    const QString catalogId = QUrl::fromPercentEncoding(
+        query.queryItemValue(QStringLiteral("catalog"), QUrl::FullyEncoded).toUtf8());
+
+    const QUrl url(rawUrl.trimmed());
+    const bool allowLocal = m_localRegistry && m_localRegistry->allowsLocal(catalogId);
+
+    QString guardReason;
+    if (!UrlGuard::isAllowedUrl(url, allowLocal, &guardReason))
+        return new ImmediateOpdsCoverResponse({}, guardReason);
+
+    const QString cacheKey = QStringLiteral("%1|%2|%3x%4")
+                                 .arg(allowLocal ? QStringLiteral("1") : QStringLiteral("0"),
+                                      url.toString(QUrl::FullyEncoded))
+                                 .arg(requestedSize.width())
+                                 .arg(requestedSize.height());
+    if (const QImage hit = m_cache->get(cacheKey); !hit.isNull())
+        return new ImmediateOpdsCoverResponse(hit);
+
+    auto cache = m_cache;
+    auto *response = new OpdsCoverResponse(
+        cacheKey, url, allowLocal, requestedSize,
+        [cache](const QString &k) { return cache->get(k); },
+        [cache](const QString &k, const QImage &img) { cache->insert(k, img); });
+    m_pool.start(response);
+    return response;
 }

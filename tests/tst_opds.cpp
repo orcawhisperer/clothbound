@@ -8,10 +8,12 @@
 #include <QImage>
 #include <QMap>
 #include <QPointer>
+#include <QPromise>
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickStyle>
+#include <QScopeGuard>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
@@ -25,6 +27,7 @@
 #include "library/library.h"
 #include "online/opdsclient.h"
 #include "online/opdsparser.h"
+#include "online/urlguard.h"
 #include "testbooks.h"
 
 namespace {
@@ -135,6 +138,11 @@ private slots:
     void endToEndBrowseSearchAuthCrossOriginRedirectAndDownload();
     void catalogsSheetQmlSmokeTest();
     void opds2StandalonePublicationAndOpenLibrary();
+    void publicCatalogSsrfProtectionAndLocalAllowlist();
+    void nonLoopbackCleartextHttpAuthBlockedByDefault();
+    void opdsCoverProviderEnforcesUrlGuardAndRasterCaps();
+    void xmlDtdRejectedInOpdsAndOpenSearch();
+    void keyringUnlockRaceDoesNotWedgeDownloads();
 };
 
 void OpdsTests::opds1NavigationAndAcquisitionParsing() {
@@ -976,6 +984,403 @@ void OpdsTests::opds2StandalonePublicationAndOpenLibrary() {
         QVERIFY(!borrowFeed.entries[0].isNavigation);
         QVERIFY(borrowFeed.entries[0].acquisitions.isEmpty());
         QVERIFY(borrowFeed.entries[0].borrowOnly);
+}
+
+void OpdsTests::publicCatalogSsrfProtectionAndLocalAllowlist() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    Library lib(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(lib.open());
+    MemoryKeyStore keys;
+
+    OpdsTestServer publicServer;
+    OpdsTestServer secretServer;
+    const QHostAddress fakePublicIp(QStringLiteral("93.184.216.34"));
+    const QByteArray realEpub = TestBooks::epub2(samplePng());
+
+    secretServer.handler = [&](const OpdsTestServer::Request &) -> OpdsTestServer::Response {
+        return {200, "application/epub+zip", {}, realEpub};
+    };
+
+    publicServer.handler = [&](const OpdsTestServer::Request &req) -> OpdsTestServer::Response {
+        if (req.path == "/opds") {
+            return {200, "application/atom+xml", {},
+                    R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:public:root</id>
+  <title>Public OPDS</title>
+  <link rel="search" type="application/opensearchdescription+xml" href="/opensearch-redir"/>
+  <entry>
+    <id>urn:sub:evil</id>
+    <title>Evil Redirect</title>
+    <link rel="subsection" type="application/atom+xml" href="/redir-feed-local"/>
+  </entry>
+  <entry>
+    <id>urn:book:evil</id>
+    <title>Evil Book</title>
+    <link rel="http://opds-spec.org/acquisition/open-access" type="application/epub+zip" href="/redir-dl-local"/>
+  </entry>
+</feed>)"};
+        }
+        if (req.path == "/redir-feed-local") {
+            return {302, "text/plain", {{"Location", secretServer.url(QStringLiteral("/secret-feed")).toUtf8()}}, ""};
+        }
+        if (req.path == "/opensearch-redir") {
+            return {302, "text/plain", {{"Location", secretServer.url(QStringLiteral("/secret-os.xml")).toUtf8()}}, ""};
+        }
+        if (req.path == "/redir-dl-local") {
+            return {302, "text/plain", {{"Location", secretServer.url(QStringLiteral("/secret.epub")).toUtf8()}}, ""};
+        }
+        return {404, "text/plain", {}, "missing"};
+    };
+
+    const auto resetHooks = qScopeGuard([] {
+        UrlGuard::setHostResolverForTests({});
+        UrlGuard::setConnectAddressOverrideForTests({});
+    });
+    UrlGuard::setHostResolverForTests([fakePublicIp](const QString &host, QString *) -> QList<QHostAddress> {
+        if (host == QLatin1String("public-opds.example"))
+            return {fakePublicIp};
+        return {};
+    });
+    UrlGuard::setConnectAddressOverrideForTests([fakePublicIp](const QHostAddress &validated) {
+        return validated == fakePublicIp ? QHostAddress(QHostAddress::LocalHost) : validated;
+    });
+
+    OpdsClient client(&lib, &keys, dir.filePath(QStringLiteral("storage")),
+                      dir.filePath(QStringLiteral("settings.ini")));
+
+    // Built-in catalogs default to allowLocalNetwork == false.
+    QVERIFY(!client.catalogAllowsLocalNetwork(QStringLiteral("standard-ebooks-new")));
+    QVERIFY(!client.catalogAllowsLocalNetwork(QStringLiteral("open-library")));
+
+    // Adding a public catalog URL keeps allowLocalNetwork == false.
+    const QString pubUrl = QStringLiteral("http://public-opds.example:%1/opds").arg(publicServer.port());
+    const QString pubId = client.addCatalog(QStringLiteral("Public Test Catalog"), pubUrl);
+    QVERIFY(!pubId.isEmpty());
+    QVERIFY(!client.catalogAllowsLocalNetwork(pubId));
+
+    // Adding an explicit local/LAN server URL enables allowLocalNetwork == true.
+    const QString localId = client.addCatalog(QStringLiteral("Local LAN OPDS"),
+                                              secretServer.url(QStringLiteral("/local-opds")));
+    QVERIFY(!localId.isEmpty());
+    QVERIFY(client.catalogAllowsLocalNetwork(localId));
+
+    // Open public catalog root succeeds.
+    client.openCatalog(pubId);
+    QTRY_VERIFY_WITH_TIMEOUT(!client.loading(), 3000);
+    QVERIFY2(client.error().isEmpty(), qPrintable(client.error()));
+    QCOMPARE(client.feedTitle(), QStringLiteral("Public OPDS"));
+
+    // Public catalog redirecting feed fetch to loopback MUST be blocked.
+    client.navigate(QStringLiteral("http://public-opds.example:%1/redir-feed-local").arg(publicServer.port()),
+                    QStringLiteral("Evil"));
+    QTRY_VERIFY_WITH_TIMEOUT(!client.loading(), 3000);
+    QVERIFY(!client.error().isEmpty());
+    QCOMPARE(secretServer.requests.size(), 0);
+
+    // Public catalog OpenSearch redirect to loopback MUST be blocked.
+    client.search(QStringLiteral("test"));
+    QTRY_VERIFY_WITH_TIMEOUT(!client.loading(), 3000);
+    QVERIFY(!client.error().isEmpty());
+    QCOMPARE(secretServer.requests.size(), 0);
+
+    // Public catalog acquisition download redirecting to loopback MUST be blocked.
+    const QString redirDl = QStringLiteral("http://public-opds.example:%1/redir-dl-local").arg(publicServer.port());
+    client.downloadPublication(redirDl, QStringLiteral("Evil Book"), {}, QStringLiteral("epub"));
+    QTRY_COMPARE_WITH_TIMEOUT(
+        client.downloadStates().value(redirDl).toMap().value(QStringLiteral("status")).toString(),
+        QStringLiteral("error"), 3000);
+    QCOMPARE(secretServer.requests.size(), 0);
+
+    // Direct navigation/download to loopback/IMDS from active public catalog MUST be blocked immediately.
+    client.navigate(secretServer.url(QStringLiteral("/secret")), QStringLiteral("Direct Loopback"));
+    QVERIFY(!client.error().isEmpty());
+    QCOMPARE(secretServer.requests.size(), 0);
+    client.downloadPublication(QStringLiteral("http://169.254.169.254/latest/meta-data/"),
+                               QStringLiteral("IMDS"), {}, QStringLiteral("epub"));
+    QCOMPARE(client.downloadStates().value(QStringLiteral("http://169.254.169.254/latest/meta-data/"))
+                 .toMap().value(QStringLiteral("status")).toString(),
+             QStringLiteral("error"));
+
+    // Switching to the explicit local catalog permits loopback downloads.
+    secretServer.handler = [&](const OpdsTestServer::Request &req) -> OpdsTestServer::Response {
+        if (req.path == "/local-opds") {
+            return {200, "application/atom+xml", {},
+                    R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><id>urn:local</id><title>Local OK</title></feed>)"};
+        }
+        return {200, "application/epub+zip", {}, realEpub};
+    };
+    client.openCatalog(localId);
+    QTRY_VERIFY_WITH_TIMEOUT(!client.loading(), 3000);
+    QVERIFY2(client.error().isEmpty(), qPrintable(client.error()));
+    QCOMPARE(client.feedTitle(), QStringLiteral("Local OK"));
+}
+
+void OpdsTests::nonLoopbackCleartextHttpAuthBlockedByDefault() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    Library lib(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(lib.open());
+    MemoryKeyStore keys;
+
+    OpdsTestServer server;
+    const QHostAddress fakePublicIp(QStringLiteral("93.184.216.34"));
+    const QByteArray expectedAuth = "Basic " + QByteArray("alice:s3cr3t").toBase64();
+    server.handler = [](const OpdsTestServer::Request &) -> OpdsTestServer::Response {
+        return {200, "application/atom+xml", {},
+                R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><id>urn:auth</id><title>Auth Test</title></feed>)"};
+    };
+
+    const auto resetHooks = qScopeGuard([] {
+        UrlGuard::setHostResolverForTests({});
+        UrlGuard::setConnectAddressOverrideForTests({});
+    });
+    UrlGuard::setHostResolverForTests([fakePublicIp](const QString &host, QString *) -> QList<QHostAddress> {
+        if (host == QLatin1String("cleartext-auth.example"))
+            return {fakePublicIp};
+        return {};
+    });
+    UrlGuard::setConnectAddressOverrideForTests([fakePublicIp](const QHostAddress &validated) {
+        return validated == fakePublicIp ? QHostAddress(QHostAddress::LocalHost) : validated;
+    });
+
+    OpdsClient client(&lib, &keys, dir.filePath(QStringLiteral("storage")),
+                      dir.filePath(QStringLiteral("settings.ini")));
+    const QString cid = client.addCatalog(
+        QStringLiteral("Non-Loopback HTTP"),
+        QStringLiteral("http://cleartext-auth.example:%1/opds").arg(server.port()),
+        QStringLiteral("alice"), QStringLiteral("s3cr3t"));
+    QVERIFY(!cid.isEmpty());
+
+    // By default, Authorization MUST NOT be sent over non-loopback plaintext http://.
+    client.openCatalog(cid);
+    QTRY_VERIFY_WITH_TIMEOUT(!client.loading(), 3000);
+    QCOMPARE(server.requests.size(), 1);
+    QVERIFY(!server.requests.last().headers.contains("authorization"));
+
+    // Only after explicit opt-in is Authorization transmitted over non-loopback http://.
+    QVERIFY(client.setCatalogAllowInsecureHttpAuth(cid, true));
+    client.retry();
+    QTRY_VERIFY_WITH_TIMEOUT(!client.loading(), 3000);
+    QCOMPARE(server.requests.size(), 2);
+    QCOMPARE(server.requests.last().headers.value("authorization"), expectedAuth);
+}
+
+void OpdsTests::opdsCoverProviderEnforcesUrlGuardAndRasterCaps() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    Library lib(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(lib.open());
+    MemoryKeyStore keys;
+
+    OpdsTestServer publicServer;
+    OpdsTestServer secretServer;
+    const QHostAddress fakePublicIp(QStringLiteral("93.184.216.34"));
+    const QByteArray png = samplePng();
+    QByteArray oversizedDimPng;
+    {
+        QImage wide(5000, 10, QImage::Format_Mono);
+        wide.fill(0);
+        QBuffer b(&oversizedDimPng);
+        b.open(QIODevice::WriteOnly);
+        wide.save(&b, "PNG");
+    }
+
+    secretServer.handler = [&](const OpdsTestServer::Request &) -> OpdsTestServer::Response {
+        return {200, "image/png", {}, png};
+    };
+    publicServer.handler = [&](const OpdsTestServer::Request &req) -> OpdsTestServer::Response {
+        if (req.path == "/cover.png")
+            return {200, "image/png", {}, png};
+        if (req.path == "/huge-dim.png")
+            return {200, "image/png", {}, oversizedDimPng};
+        if (req.path == "/redir-local.png")
+            return {302, "text/plain", {{"Location", secretServer.url(QStringLiteral("/secret.png")).toUtf8()}}, ""};
+        if (req.path == "/cover.svg")
+            return {200, "image/svg+xml", {}, "<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"};
+        return {404, "text/plain", {}, "missing"};
+    };
+
+    const auto resetHooks = qScopeGuard([] {
+        UrlGuard::setHostResolverForTests({});
+        UrlGuard::setConnectAddressOverrideForTests({});
+    });
+    UrlGuard::setHostResolverForTests([fakePublicIp](const QString &host, QString *) -> QList<QHostAddress> {
+        if (host == QLatin1String("covers.example"))
+            return {fakePublicIp};
+        return {};
+    });
+    UrlGuard::setConnectAddressOverrideForTests([fakePublicIp](const QHostAddress &validated) {
+        return validated == fakePublicIp ? QHostAddress(QHostAddress::LocalHost) : validated;
+    });
+
+    OpdsClient client(&lib, &keys, dir.filePath(QStringLiteral("storage")),
+                      dir.filePath(QStringLiteral("settings.ini")));
+    const QString pubId = client.addCatalog(
+        QStringLiteral("Public Covers"),
+        QStringLiteral("http://covers.example:%1/opds").arg(publicServer.port()));
+    const QString localId = client.addCatalog(
+        QStringLiteral("Local Covers"),
+        secretServer.url(QStringLiteral("/opds")));
+
+    OpdsCoverProvider provider(&client);
+
+    auto fetchCover = [&](const QString &rawUrl, const QString &catalogId, QString *errOut) -> QImage {
+        const QString providerUrl = OpdsCoverProvider::imageUrl(rawUrl, catalogId);
+        const QString id = providerUrl.mid(QStringLiteral("image://opdscover/").size());
+        std::unique_ptr<QQuickImageResponse> resp(provider.requestImageResponse(id, QSize(140, 210)));
+        QSignalSpy doneSpy(resp.get(), &QQuickImageResponse::finished);
+        if (doneSpy.isEmpty())
+            doneSpy.wait(3000);
+        if (errOut)
+            *errOut = resp->errorString();
+        std::unique_ptr<QQuickTextureFactory> tf(resp->textureFactory());
+        return tf ? tf->image() : QImage();
+    };
+
+    // 1. Public catalog requesting loopback cover directly -> blocked, 0 requests to secretServer.
+    QString err;
+    QVERIFY(fetchCover(secretServer.url(QStringLiteral("/secret.png")), pubId, &err).isNull());
+    QVERIFY(!err.isEmpty());
+    QCOMPARE(secretServer.requests.size(), 0);
+    QVERIFY(client.coverImageUrl(secretServer.url(QStringLiteral("/secret.png")), pubId).isEmpty());
+
+    // 2. Public catalog cover redirecting to loopback -> blocked, 0 requests to secretServer.
+    QVERIFY(fetchCover(QStringLiteral("http://covers.example:%1/redir-local.png").arg(publicServer.port()),
+                       pubId, &err).isNull());
+    QVERIFY(!err.isEmpty());
+    QCOMPARE(secretServer.requests.size(), 0);
+
+    // 3. SVG cover rejected (raster only) and oversized pixel dimensions (>4096 px) rejected.
+    QVERIFY(fetchCover(QStringLiteral("http://covers.example:%1/cover.svg").arg(publicServer.port()),
+                       pubId, &err).isNull());
+    QVERIFY(!err.isEmpty());
+    QVERIFY(fetchCover(QStringLiteral("http://covers.example:%1/huge-dim.png").arg(publicServer.port()),
+                       pubId, &err).isNull());
+    QVERIFY(err.contains(QStringLiteral("dimensions"), Qt::CaseInsensitive));
+
+    // 4. Valid raster cover from public origin succeeds.
+    const QImage pubImg = fetchCover(QStringLiteral("http://covers.example:%1/cover.png").arg(publicServer.port()),
+                                     pubId, &err);
+    QVERIFY2(!pubImg.isNull(), qPrintable(err));
+    QCOMPARE(pubImg.size(), QSize(16, 24));
+
+    // 5. Explicit local catalog cover succeeds on loopback.
+    const QString localCoverUrl = secretServer.url(QStringLiteral("/local-cover.png"));
+    QVERIFY(client.coverImageUrl(localCoverUrl, localId).startsWith(QStringLiteral("image://opdscover/")));
+    const QImage localImg = fetchCover(localCoverUrl, localId, &err);
+    QVERIFY2(!localImg.isNull(), qPrintable(err));
+    QCOMPARE(localImg.size(), QSize(16, 24));
+}
+
+void OpdsTests::xmlDtdRejectedInOpdsAndOpenSearch() {
+    const QByteArray dtdFeed = R"XML(<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE feed [
+  <!ENTITY xxe "expanded">
+]>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <id>urn:evil</id>
+  <title>&xxe;</title>
+</feed>)XML";
+    const OpdsFeed parsedFeed = OpdsParser::parseAtom(dtdFeed, QUrl(QStringLiteral("https://example.org/opds")));
+    QVERIFY(!parsedFeed.isValid());
+    QVERIFY(parsedFeed.error.contains(QStringLiteral("DOCTYPE"), Qt::CaseInsensitive));
+
+    const QByteArray dtdOpenSearch = R"XML(<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE OpenSearchDescription [
+  <!ENTITY xxe "expanded">
+]>
+<OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
+  <Url type="application/atom+xml" template="/search?q={searchTerms}"/>
+</OpenSearchDescription>)XML";
+    QVERIFY(OpdsParser::parseOpenSearchTemplate(dtdOpenSearch, QUrl(QStringLiteral("https://example.org/os.xml"))).isEmpty());
+}
+
+void OpdsTests::keyringUnlockRaceDoesNotWedgeDownloads() {
+    class DelayedKeyStore : public KeyStore {
+    public:
+        QString load(const QString &provider) override { return m_keys.value(provider); }
+        QFuture<QString> loadLater(const QString &provider) override {
+            auto promise = std::make_shared<QPromise<QString>>();
+            promise->start();
+            m_pending.append({provider, promise});
+            return promise->future();
+        }
+        bool save(const QString &provider, const QString &key, QString * = nullptr) override {
+            m_keys.insert(provider, key);
+            return true;
+        }
+        bool remove(const QString &provider) override { return m_keys.remove(provider) > 0; }
+        QString where() const override { return QStringLiteral("delayed-test"); }
+
+        void resolveAll() {
+            const auto items = m_pending;
+            m_pending.clear();
+            for (const auto &[provider, promise] : items) {
+                promise->addResult(m_keys.value(provider));
+                promise->finish();
+            }
+        }
+
+    private:
+        QHash<QString, QString> m_keys;
+        QList<QPair<QString, std::shared_ptr<QPromise<QString>>>> m_pending;
+    };
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    Library lib(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(lib.open());
+    const QString settingsPath = dir.filePath(QStringLiteral("settings.ini"));
+    const QByteArray realEpub = TestBooks::epub2(samplePng());
+    const QByteArray expectedAuth = "Basic " + QByteArray("reader:unlockpass").toBase64();
+
+    OpdsTestServer server;
+    server.handler = [&](const OpdsTestServer::Request &req) -> OpdsTestServer::Response {
+        if (req.headers.value("authorization") != expectedAuth)
+            return {401, "text/plain", {{"WWW-Authenticate", "Basic realm=\"Test\""}}, "Unauthorized"};
+        if (req.path == "/dl/book.epub")
+            return {200, "application/epub+zip", {}, realEpub};
+        return {200, "application/atom+xml", {},
+                R"(<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom"><id>urn:ok</id><title>Unlocked Feed</title></feed>)"};
+    };
+
+    DelayedKeyStore keys;
+    QString catalogId;
+    {
+        OpdsClient seed(&lib, &keys, dir.filePath(QStringLiteral("storage")), settingsPath);
+        catalogId = seed.addCatalog(QStringLiteral("Keyring Race Server"), server.url(QStringLiteral("/opds")),
+                                    QStringLiteral("reader"), QStringLiteral("unlockpass"));
+        QVERIFY(!catalogId.isEmpty());
+    }
+
+    // Fresh OpdsClient has not loaded password from keyring yet.
+    OpdsClient client(&lib, &keys, dir.filePath(QStringLiteral("storage")), settingsPath);
+
+    // 1. Open catalog -> queues async keyring unlock.
+    client.openCatalog(catalogId);
+    // 2. Start a download BEFORE keyring unlock finishes.
+    const QString dlUrl = server.url(QStringLiteral("/dl/book.epub"));
+    client.downloadPublication(dlUrl, QStringLiteral("Keyring Book"), QStringLiteral("Ada"), QStringLiteral("epub"));
+    // 3. Navigate to another feed BEFORE keyring unlock finishes (bumps m_feedGeneration!).
+    client.navigate(server.url(QStringLiteral("/opds/other")), QStringLiteral("Other Feed"));
+
+    // 4. Unlock keyring now: download MUST proceed and complete rather than wedging forever.
+    keys.resolveAll();
+
+    QTRY_COMPARE_WITH_TIMEOUT(
+        client.downloadStates().value(dlUrl).toMap().value(QStringLiteral("status")).toString(),
+        QStringLiteral("done"), 3000);
+    QTRY_VERIFY_WITH_TIMEOUT(!client.loading(), 3000);
+    QCOMPARE(client.feedTitle(), QStringLiteral("Unlocked Feed"));
+    QVERIFY(client.downloadStates().value(dlUrl).toMap().value(QStringLiteral("bookId")).toInt() > 0);
 }
 
 #ifndef CLOTHBOUND_UNIFIED_TESTS

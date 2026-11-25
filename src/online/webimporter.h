@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QNetworkAccessManager>
 #include <QObject>
 #include <QPointer>
 #include <QString>
@@ -9,12 +8,12 @@
 #include <functional>
 
 class Library;
-class QNetworkReply;
+class PinnedHttpRequest;
 
 // Online-to-offline URL importer for both QML (`webImporter`) and headless CLI
 // (`clothbound add <url>`). Fetches arXiv papers (PDF + Atom metadata), direct
 // EPUB/PDF downloads, and web articles (packaged offline into EPUB 3.0 via
-// ArticleExtractor + EpubWriter), enforcing UrlGuard on every hop and image.
+// ArticleExtractor + EpubWriter), enforcing IP-pinned UrlGuard on every hop and image.
 class WebImporter : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -72,10 +71,14 @@ private:
         QString contentType;
         QString contentDisposition;
         QByteArray data;
+        QString streamedFilePath;
+        QString streamedFormat;
         QString error;
     };
 
     using FetchCallback = std::function<void(FetchResult)>;
+    using DestPathBuilder = std::function<QString(const QString &format, const QUrl &finalUrl,
+                                                  const QString &contentDisposition)>;
 
     void setBusy(bool busy);
     void setStatus(const QString &status);
@@ -86,11 +89,15 @@ private:
     void completeFailure(const QString &error);
     void abortActiveOperations();
 
-    void fetchUrl(const QUrl &url, qint64 maxBytes, bool allowBookCapUpgrade, bool trackProgress, int redirectCount,
-                  quint64 generation, const QByteArray &acceptHeader, FetchCallback callback, int timeoutMs = 30000);
-    void startHttpRequest(const QUrl &url, qint64 maxBytes, bool allowBookCapUpgrade, bool trackProgress,
-                          int redirectCount, quint64 generation, const QByteArray &acceptHeader,
-                          FetchCallback callback, int timeoutMs = 30000);
+    void fetchToMemory(const QUrl &url, qint64 maxBytes, bool trackProgress, quint64 generation,
+                       const QByteArray &acceptHeader, FetchCallback callback, int timeoutMs = 30000);
+    void fetchDirectOrStream(const QUrl &url, qint64 initialMaxBytes, bool allowBookCapUpgrade, bool trackProgress,
+                             quint64 generation, const QByteArray &acceptHeader, const QString &forcedBookFormat,
+                             DestPathBuilder destPathBuilder, FetchCallback callback, int timeoutMs = 30000);
+
+    QString computeDirectBookDestPath(const QString &format, const QUrl &finalUrl, const QString &contentDisposition,
+                                      const QVariantMap &citationMeta = {}, const QString &sourceUrlOverride = {}) const;
+    QString computeArticleDestPath(const QString &title, const QString &fetchedUrl) const;
 
     void runArxivImport(const QString &arxivId, int targetCollectionId, quint64 generation);
     void downloadArxivPdf(const QString &arxivId, const QVariantMap &meta, int targetCollectionId, quint64 generation);
@@ -105,9 +112,7 @@ private:
 
     QPointer<Library> m_library;
     QString m_storageDir;
-    QNetworkAccessManager m_nam;
-    QList<QPointer<QNetworkReply>> m_activeReplies;
-    QList<int> m_activeLookups;
+    QList<QPointer<PinnedHttpRequest>> m_activeRequests;
     quint64 m_generation = 0;
 
     bool m_busy = false;

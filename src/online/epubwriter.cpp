@@ -4,10 +4,13 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
 #include <QTimeZone>
 #include <QUrl>
 #include <QUuid>
+#include <QXmlStreamReader>
 #include <limits>
 #include <zlib.h>
 
@@ -277,6 +280,129 @@ QString EpubWriter::xmlEscape(QStringView text) {
     return out;
 }
 
+bool EpubWriter::isSafeSvg(const QByteArray &svgBytes) {
+    if (svgBytes.trimmed().isEmpty())
+        return false;
+
+    static const QSet<QString> blockedTags{
+        QStringLiteral("script"),       QStringLiteral("foreignobject"), QStringLiteral("iframe"),
+        QStringLiteral("object"),       QStringLiteral("embed"),         QStringLiteral("applet"),
+        QStringLiteral("frame"),        QStringLiteral("frameset"),      QStringLiteral("meta"),
+        QStringLiteral("link"),         QStringLiteral("base"),          QStringLiteral("form"),
+        QStringLiteral("input"),        QStringLiteral("button"),        QStringLiteral("textarea"),
+        QStringLiteral("select"),       QStringLiteral("handler"),       QStringLiteral("listener"),
+        QStringLiteral("set"),          QStringLiteral("animate"),       QStringLiteral("animatemotion"),
+        QStringLiteral("animatetransform"), QStringLiteral("animatecolor"), QStringLiteral("discard"),
+        QStringLiteral("mpath"),        QStringLiteral("audio"),         QStringLiteral("video"),
+        QStringLiteral("canvas"),       QStringLiteral("image"),         QStringLiteral("feimage"),
+    };
+    static const QRegularExpression safeFragmentRe(QStringLiteral(R"(^#[A-Za-z_][A-Za-z0-9_.\-:]*$)"));
+    static const QRegularExpression cssUrlRe(QStringLiteral(R"(url\s*\(([^)]*)\))"),
+                                             QRegularExpression::CaseInsensitiveOption);
+
+    auto compactLower = [](QStringView raw) -> QString {
+        QString out;
+        out.reserve(raw.size());
+        for (const QChar ch : raw) {
+            if (!ch.isSpace() && ch.unicode() >= 0x20)
+                out.append(ch.toLower());
+        }
+        return out;
+    };
+
+    auto hasDangerousCssOrUri = [&](QStringView raw, bool isCss) -> bool {
+        if (isCss && raw.contains(QLatin1Char('\\')))
+            return true;  // Reject CSS backslash escape obfuscation.
+        const QString compact = compactLower(raw);
+        if (compact.contains(QLatin1String("javascript:")) || compact.contains(QLatin1String("vbscript:")) ||
+            compact.contains(QLatin1String("data:")) || compact.contains(QLatin1String("@import")) ||
+            compact.contains(QLatin1String("expression(")) || compact.contains(QLatin1String("-moz-binding")) ||
+            compact.contains(QLatin1String("behavior:")))
+            return true;
+        if (compact.contains(QLatin1String("url("))) {
+            // Only allow internal fragment paint-server references like url(#grad1).
+            const QString rawStr = raw.toString();
+            auto it = cssUrlRe.globalMatch(rawStr);
+            if (!it.hasNext())
+                return true;
+            while (it.hasNext()) {
+                QString target = it.next().captured(1).trimmed();
+                if ((target.startsWith(QLatin1Char('"')) && target.endsWith(QLatin1Char('"'))) ||
+                    (target.startsWith(QLatin1Char('\'')) && target.endsWith(QLatin1Char('\'')))) {
+                    if (target.size() < 2)
+                        return true;
+                    target = target.mid(1, target.size() - 2).trimmed();
+                }
+                if (!safeFragmentRe.match(target).hasMatch())
+                    return true;
+            }
+        }
+        return false;
+    };
+
+    QXmlStreamReader reader(svgBytes);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 12, 0)
+    reader.setEntityExpansionLimit(1);
+#else
+    reader.setEntityExpansionLimit(0);
+#endif
+    bool seenRoot = false;
+    bool inStyle = false;
+
+    while (!reader.atEnd()) {
+        const auto token = reader.readNext();
+        if (token == QXmlStreamReader::DTD || token == QXmlStreamReader::ProcessingInstruction ||
+            token == QXmlStreamReader::EntityReference)
+            return false;
+
+        if (token == QXmlStreamReader::StartElement) {
+            const QString tag = reader.name().toString().toLower();
+            if (!seenRoot) {
+                seenRoot = true;
+                if (tag != QLatin1String("svg"))
+                    return false;
+            }
+            if (blockedTags.contains(tag))
+                return false;
+            if (tag == QLatin1String("style"))
+                inStyle = true;
+
+            const auto attrs = reader.attributes();
+            for (const QXmlStreamAttribute &attr : attrs) {
+                const QString local = attr.name().toString().toLower();
+                const QString qualified = attr.qualifiedName().toString().toLower();
+                const QString val = attr.value().toString().trimmed();
+
+                if (local.startsWith(QLatin1String("on")))
+                    return false;
+
+                if (local == QLatin1String("href") || qualified == QLatin1String("xlink:href") ||
+                    local == QLatin1String("src") || local == QLatin1String("data") ||
+                    local == QLatin1String("action") || local == QLatin1String("formaction") ||
+                    local == QLatin1String("poster") || local == QLatin1String("ping")) {
+                    if (!val.isEmpty() && !safeFragmentRe.match(val).hasMatch())
+                        return false;
+                }
+
+                if (local == QLatin1String("style")) {
+                    if (hasDangerousCssOrUri(val, true))
+                        return false;
+                } else if (hasDangerousCssOrUri(val, false)) {
+                    return false;
+                }
+            }
+        } else if (token == QXmlStreamReader::EndElement) {
+            if (reader.name().toString().compare(QLatin1String("style"), Qt::CaseInsensitive) == 0)
+                inStyle = false;
+        } else if (token == QXmlStreamReader::Characters && inStyle) {
+            if (hasDangerousCssOrUri(reader.text(), true))
+                return false;
+        }
+    }
+
+    return seenRoot && !reader.hasError();
+}
+
 QByteArray EpubWriter::buildCoverSvg(const QString &title, const QString &author, const QString &siteName) {
     struct ClothPair {
         const char *bg;
@@ -418,6 +544,10 @@ bool EpubWriter::writeArticle(const QString &outputPath, const EpubArticle &arti
     for (const EpubImageAsset &img : article.images) {
         const QString rel = sanitizeRelativePath(img.path);
         if (rel.isEmpty() || img.data.isEmpty() || seenImagePaths.contains(rel))
+            continue;
+        const bool isSvg = img.mediaType.compare(QLatin1String("image/svg+xml"), Qt::CaseInsensitive) == 0 ||
+                           rel.endsWith(QLatin1String(".svg"), Qt::CaseInsensitive);
+        if (isSvg && !isSafeSvg(img.data))
             continue;
         seenImagePaths.append(rel);
         EpubImageAsset copy = img;

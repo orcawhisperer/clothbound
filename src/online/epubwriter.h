@@ -42,4 +42,5 @@ public:
     static bool writeArticle(const QString &outputPath, const EpubArticle &article, QString *error = nullptr);
     static QByteArray buildCoverSvg(const QString &title, const QString &author, const QString &siteName);
     static QString xmlEscape(QStringView text);
+    static bool isSafeSvg(const QByteArray &svgBytes);
 };

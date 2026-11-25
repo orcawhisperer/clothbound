@@ -14,12 +14,14 @@
 #include <QHostAddress>
 #include <QImage>
 #include <QPointer>
+#include <QScopeGuard>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QXmlStreamReader>
 #include <memory>
+#include <zlib.h>
 
 namespace {
 // Minimal valid 1x1 PNG image (67 bytes).
@@ -58,6 +60,11 @@ public:
                     const QList<QByteArray> first = lines.value(0).trimmed().split(' ');
                     const QByteArray path = first.value(1);
                     requestedPaths.append(path);
+                    for (const QByteArray &line : lines.mid(1)) {
+                        const qsizetype colon = line.indexOf(':');
+                        if (colon > 0 && line.left(colon).trimmed().compare("host", Qt::CaseInsensitive) == 0)
+                            requestedHosts.append(line.mid(colon + 1).trimmed());
+                    }
 
                     Reply rep{404, "text/plain", {}, "Not Found", false};
                     if (routes.contains(path))
@@ -66,9 +73,13 @@ public:
                     QByteArray raw = "HTTP/1.1 " + QByteArray::number(rep.status) + " OK\r\n";
                     if (!rep.contentType.isEmpty())
                         raw += "Content-Type: " + rep.contentType + "\r\n";
-                    for (const auto &[k, v] : rep.headers)
+                    bool hasTransferEncoding = false;
+                    for (const auto &[k, v] : rep.headers) {
+                        if (k.compare("Transfer-Encoding", Qt::CaseInsensitive) == 0)
+                            hasTransferEncoding = true;
                         raw += k + ": " + v + "\r\n";
-                    if (!rep.omitContentLength)
+                    }
+                    if (!rep.omitContentLength && !hasTransferEncoding)
                         raw += "Content-Length: " + QByteArray::number(rep.body.size()) + "\r\n";
                     raw += "Connection: close\r\n\r\n";
                     raw += rep.body;
@@ -82,10 +93,12 @@ public:
 
     ~LocalHttpServer() { m_server.close(); }
 
+    quint16 port() const { return m_server.serverPort(); }
     QString origin() const { return QStringLiteral("http://127.0.0.1:%1").arg(m_server.serverPort()); }
 
     QMap<QByteArray, Reply> routes;
     QList<QByteArray> requestedPaths;
+    QList<QByteArray> requestedHosts;
 
 private:
     QTcpServer m_server;
@@ -122,6 +135,13 @@ private slots:
     void webImporterRejectsForbiddenRedirect();
     void webImporterRejectsExcessiveRedirects();
     void webImporterRejectsOversizedPayload();
+    void urlGuardBlocksTrailingDotIpLiterals();
+    void pinnedFetchPreventsDnsRebindingAndRedirectSsrf();
+    void pinnedFetchHandlesChunkedAndGzip();
+    void webImporterProtectsAgainstCanonicalUrlOverwrite();
+    void svgSanitizationRejectsUnsafePayloads();
+    void xmlDtdRejectedInArxivAtom();
+    void articleExtractorDeepDomLinearMetrics();
 };
 
 void TestOnlineIngest::urlGuardRejectsUnsafeSchemes() {
@@ -849,6 +869,351 @@ void TestOnlineIngest::webImporterRejectsOversizedPayload() {
     QCOMPARE(bookId, 0);
     QVERIFY(error.contains(QStringLiteral("size"), Qt::CaseInsensitive));
     QCOMPARE(library.bookCount(), 0);
+}
+
+void TestOnlineIngest::urlGuardBlocksTrailingDotIpLiterals() {
+    QCOMPARE(UrlGuard::parseHostLiteral(QStringLiteral("127.0.0.1.")), QHostAddress(QStringLiteral("127.0.0.1")));
+    QCOMPARE(UrlGuard::parseHostLiteral(QStringLiteral("127.0.0.1..")), QHostAddress(QStringLiteral("127.0.0.1")));
+    QCOMPARE(UrlGuard::parseHostLiteral(QStringLiteral("[::1].")), QHostAddress(QStringLiteral("::1")));
+    QCOMPARE(UrlGuard::parseHostLiteral(QStringLiteral("[::1.]")), QHostAddress(QStringLiteral("::1")));
+    QCOMPARE(UrlGuard::parseHostLiteral(QStringLiteral("[::ffff:127.0.0.1].")),
+             QHostAddress(QStringLiteral("::ffff:127.0.0.1")));
+    QCOMPARE(UrlGuard::parseHostLiteral(QStringLiteral("169.254.169.254.")),
+             QHostAddress(QStringLiteral("169.254.169.254")));
+    QCOMPARE(UrlGuard::parseHostLiteral(QStringLiteral("0177.0.0.1.")), QHostAddress(QStringLiteral("127.0.0.1")));
+    QCOMPARE(UrlGuard::parseHostLiteral(QStringLiteral("2130706433.")), QHostAddress(QStringLiteral("127.0.0.1")));
+
+    QString reason;
+    const QStringList blocked = {
+        QStringLiteral("http://127.0.0.1./secret"),
+        QStringLiteral("http://127.0.0.1../secret"),
+        QStringLiteral("http://169.254.169.254./latest/meta-data/"),
+        QStringLiteral("http://10.0.0.1./admin"),
+        QStringLiteral("http://[::1]./"),
+        QStringLiteral("http://[::ffff:127.0.0.1]./"),
+        QStringLiteral("http://0177.0.0.1./"),
+        QStringLiteral("http://2130706433./"),
+    };
+    for (const QString &raw : blocked) {
+        QVERIFY2(!UrlGuard::isAllowedUrl(QUrl(raw), false, &reason), qPrintable(raw));
+        QVERIFY2(!reason.isEmpty(), qPrintable(raw));
+    }
+}
+
+void TestOnlineIngest::pinnedFetchPreventsDnsRebindingAndRedirectSsrf() {
+    LocalHttpServer publicServer;
+    LocalHttpServer secretServer;
+
+    const QHostAddress fakePublicIp(QStringLiteral("93.184.216.34"));
+    const QByteArray articleHtml =
+        "<!doctype html><html><head><title>Pinned Essay</title></head><body><article>"
+        "<h1>Pinned Essay</h1>"
+        "<p>Connecting directly to the validated IP eliminates the DNS rebinding TOCTOU window completely, "
+        "ensuring a TTL-zero authoritative server cannot swap a public address for loopback between lookup and connect.</p>"
+        "</article></body></html>";
+    publicServer.routes.insert("/essay", {200, "text/html; charset=utf-8", {}, articleHtml, false});
+    publicServer.routes.insert(
+        "/redir-to-loopback",
+        {302, "text/plain", {{"Location", secretServer.origin().toUtf8() + "/admin"}}, "redirect", false});
+    publicServer.routes.insert(
+        "/redir-to-trailing-dot",
+        {302, "text/plain",
+         {{"Location", QStringLiteral("http://127.0.0.1.:%1/admin").arg(secretServer.port()).toUtf8()}},
+         "redirect", false});
+    publicServer.routes.insert(
+        "/redir-to-rebind",
+        {302, "text/plain",
+         {{"Location", QStringLiteral("http://evil-rebind.example:%1/admin").arg(secretServer.port()).toUtf8()}},
+         "redirect", false});
+    secretServer.routes.insert("/admin", {200, "text/plain", {}, "TOP_SECRET_INTERNAL", false});
+
+    int publicLookups = 0;
+    const auto resetHooks = qScopeGuard([] {
+        UrlGuard::setHostResolverForTests({});
+        UrlGuard::setConnectAddressOverrideForTests({});
+    });
+
+    // Stateful resolver: first lookup of rebind.example returns a public IP; a hypothetical second
+    // lookup would return 127.0.0.1 (classic DNS rebinding attack). PinnedHttpRequest must resolve
+    // ONLY ONCE and connect directly to the validated IP.
+    UrlGuard::setHostResolverForTests([&](const QString &host, QString *) -> QList<QHostAddress> {
+        if (host == QLatin1String("rebind.example")) {
+            ++publicLookups;
+            if (publicLookups == 1)
+                return {fakePublicIp};
+            return {QHostAddress::LocalHost};
+        }
+        if (host == QLatin1String("public.example"))
+            return {fakePublicIp};
+        if (host == QLatin1String("evil-rebind.example"))
+            return {QHostAddress::LocalHost};
+        if (host == QLatin1String("mixed.example"))
+            return {fakePublicIp, QHostAddress(QStringLiteral("10.0.0.5"))};
+        return {};
+    });
+    UrlGuard::setConnectAddressOverrideForTests([fakePublicIp](const QHostAddress &validated) {
+        return validated == fakePublicIp ? QHostAddress(QHostAddress::LocalHost) : validated;
+    });
+
+    // 1. Single DNS lookup + explicit Host header preserved + no second lookup.
+    PinnedHttpOptions opts;
+    opts.url = QUrl(QStringLiteral("http://rebind.example:%1/essay").arg(publicServer.port()));
+    opts.allowLocalNetwork = false;
+    const PinnedHttpResponse okResp = UrlGuard::fetchPinnedSync(opts);
+    QVERIFY2(okResp.ok, qPrintable(okResp.error));
+    QCOMPARE(okResp.httpStatus, 200);
+    QCOMPARE(publicLookups, 1);
+    QVERIFY(okResp.body.contains("TOCTOU"));
+    QCOMPARE(publicServer.requestedHosts.last(),
+             QStringLiteral("rebind.example:%1").arg(publicServer.port()).toUtf8());
+
+    // 2. Host resolving to mixed public + private IP is rejected before any connect.
+    PinnedHttpOptions mixedOpts;
+    mixedOpts.url = QUrl(QStringLiteral("http://mixed.example:%1/admin").arg(secretServer.port()));
+    mixedOpts.allowLocalNetwork = false;
+    const PinnedHttpResponse mixedResp = UrlGuard::fetchPinnedSync(mixedOpts);
+    QVERIFY(!mixedResp.ok);
+    QVERIFY(mixedResp.blockedByGuard);
+    QCOMPARE(secretServer.requestedPaths.size(), 0);
+
+    // 3. Public-origin redirect to loopback / trailing-dot IP / private-resolving DNS blocked by WebImporter.
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    Library library(tempDir.filePath(QStringLiteral("data")), tempDir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    WebImporter importer(&library, tempDir.filePath(QStringLiteral("storage")));
+    importer.setAllowLocalNetworkForTests(false);
+
+    int bookId = 0;
+    QString kind, error;
+    for (const QString &path : {QStringLiteral("/redir-to-loopback"), QStringLiteral("/redir-to-trailing-dot"),
+                                QStringLiteral("/redir-to-rebind")}) {
+        const QString u = QStringLiteral("http://public.example:%1%2").arg(publicServer.port()).arg(path);
+        QVERIFY2(!importer.importUrlSync(u, &bookId, &kind, &error), qPrintable(path));
+        QCOMPARE(bookId, 0);
+        QVERIFY(!error.isEmpty());
+    }
+    QCOMPARE(secretServer.requestedPaths.size(), 0);
+}
+
+void TestOnlineIngest::pinnedFetchHandlesChunkedAndGzip() {
+    LocalHttpServer server;
+
+    const QByteArray plain = "Hello chunked and gzipped Clothbound reader! ";
+    QByteArray fullPlain;
+    for (int i = 0; i < 64; ++i)
+        fullPlain += plain;
+
+    // Gzip-compress fullPlain with zlib.
+    QByteArray gzBody;
+    {
+        z_stream zs{};
+        QCOMPARE(deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY), Z_OK);
+        const uLong bound = deflateBound(&zs, uLong(fullPlain.size()));
+        gzBody.resize(qsizetype(bound) + 32);
+        zs.next_in = reinterpret_cast<Bytef *>(const_cast<char *>(fullPlain.data()));
+        zs.avail_in = uInt(fullPlain.size());
+        zs.next_out = reinterpret_cast<Bytef *>(gzBody.data());
+        zs.avail_out = uInt(gzBody.size());
+        QCOMPARE(deflate(&zs, Z_FINISH), Z_STREAM_END);
+        gzBody.truncate(qsizetype(zs.total_out));
+        deflateEnd(&zs);
+    }
+
+    // Wrap gzip payload in HTTP/1.1 chunked transfer encoding (split into two chunks).
+    const qsizetype mid = gzBody.size() / 2;
+    const QByteArray c1 = gzBody.left(mid);
+    const QByteArray c2 = gzBody.mid(mid);
+    const QByteArray chunkedBody = QByteArray::number(c1.size(), 16) + "\r\n" + c1 + "\r\n" +
+                                   QByteArray::number(c2.size(), 16) + "\r\n" + c2 + "\r\n" +
+                                   "0\r\n\r\n";
+
+    server.routes.insert(
+        "/chunked-gz",
+        {200, "text/plain", {{"Transfer-Encoding", "chunked"}, {"Content-Encoding", "gzip"}}, chunkedBody, true});
+
+    PinnedHttpOptions opts;
+    opts.url = QUrl(server.origin() + QStringLiteral("/chunked-gz"));
+    opts.allowLocalNetwork = true;
+    const PinnedHttpResponse resp = UrlGuard::fetchPinnedSync(opts);
+    QVERIFY2(resp.ok, qPrintable(resp.error));
+    QCOMPARE(resp.httpStatus, 200);
+    QCOMPARE(resp.body, fullPlain);
+}
+
+void TestOnlineIngest::webImporterProtectsAgainstCanonicalUrlOverwrite() {
+    LocalHttpServer server;
+    const QString origin = server.origin();
+    const QString legitUrl = origin + QStringLiteral("/essays/original");
+    const QString evilUrl = origin + QStringLiteral("/attacker/forged");
+
+    const QByteArray legitHtml =
+        QByteArrayLiteral(
+            "<!doctype html><html lang=\"en\"><head>"
+            "<meta property=\"og:title\" content=\"Shared Essay Title\">"
+            "<link rel=\"canonical\" href=\"") +
+        legitUrl.toUtf8() +
+        QByteArrayLiteral(
+            "\"></head><body><article>"
+            "<h1>Shared Essay Title</h1>"
+            "<p>Original trusted prose preserved safely in the user's offline library with careful typography and durable storage.</p>"
+            "</article></body></html>");
+
+    // Attacker uses identical title AND forges <link rel="canonical"> + og:url to point at legitUrl.
+    const QByteArray evilHtml =
+        QByteArrayLiteral(
+            "<!doctype html><html lang=\"en\"><head>"
+            "<meta property=\"og:title\" content=\"Shared Essay Title\">"
+            "<meta property=\"og:url\" content=\"") +
+        legitUrl.toUtf8() +
+        QByteArrayLiteral("\"><link rel=\"canonical\" href=\"") +
+        legitUrl.toUtf8() +
+        QByteArrayLiteral(
+            "\"></head><body><article>"
+            "<h1>Shared Essay Title</h1>"
+            "<p>Malicious replacement payload trying to overwrite an existing saved article via forged canonical metadata.</p>"
+            "</article></body></html>");
+
+    server.routes.insert("/essays/original", {200, "text/html; charset=utf-8", {}, legitHtml, false});
+    server.routes.insert("/attacker/forged", {200, "text/html; charset=utf-8", {}, evilHtml, false});
+
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    Library library(tempDir.filePath(QStringLiteral("data")), tempDir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+
+    WebImporter importer(&library, tempDir.filePath(QStringLiteral("storage")));
+    importer.setAllowLocalNetworkForTests(true);
+
+    int id1 = 0, id2 = 0;
+    QString kind1, kind2, err1, err2;
+    QVERIFY2(importer.importUrlSync(legitUrl, &id1, &kind1, &err1), qPrintable(err1));
+    QVERIFY2(importer.importUrlSync(evilUrl, &id2, &kind2, &err2), qPrintable(err2));
+    QVERIFY(id1 > 0 && id2 > 0);
+    QVERIFY(id1 != id2);
+
+    const BookRecord rec1 = library.record(id1);
+    const BookRecord rec2 = library.record(id2);
+    QVERIFY(rec1.path != rec2.path);
+    QCOMPARE(library.bookSetting(id1, QStringLiteral("source_url")), legitUrl);
+    QCOMPARE(library.bookSetting(id2, QStringLiteral("source_url")), evilUrl);
+
+    // Original article EPUB must remain completely intact.
+    EpubBook epub1(rec1.path);
+    QVERIFY2(epub1.open(), qPrintable(epub1.errorString()));
+    const QString text1 = epub1.chapterText(0);
+    QVERIFY(text1.contains(QStringLiteral("Original trusted prose")));
+    QVERIFY(!text1.contains(QStringLiteral("Malicious replacement")));
+}
+
+void TestOnlineIngest::svgSanitizationRejectsUnsafePayloads() {
+    const QByteArray cleanSvg = QByteArrayLiteral(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\">"
+        "<defs><linearGradient id=\"g1\"><stop offset=\"0\" stop-color=\"#112233\"/></linearGradient></defs>"
+        "<rect width=\"100\" height=\"100\" fill=\"url(#g1)\"/>"
+        "</svg>");
+    QVERIFY(EpubWriter::isSafeSvg(cleanSvg));
+    QVERIFY(EpubWriter::isSafeSvg(EpubWriter::buildCoverSvg(QStringLiteral("Essay"), QStringLiteral("Author"), QStringLiteral("Site"))));
+
+    const QList<QByteArray> unsafeSvgs = {
+        QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\"><script>alert(1)</script></svg>"),
+        QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"><rect width=\"10\" height=\"10\"/></svg>"),
+        QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\"><rect onclick=\"steal()\"/></svg>"),
+        QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\"><foreignObject><body xmlns=\"http://www.w3.org/1999/xhtml\"><p>x</p></body></foreignObject></svg>"),
+        QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\"><a href=\"javascript:alert(1)\"><rect/></a></svg>"),
+        QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\"><image xlink:href=\"http://127.0.0.1:11434/api/tags\"/></svg>"),
+        QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\"><use href=\"https://evil.example/sprite.svg#a\"/></svg>"),
+        QByteArrayLiteral("<svg xmlns=\"http://www.w3.org/2000/svg\"><rect style=\"fill:url(http://evil.example/beacon)\"/></svg>"),
+        QByteArrayLiteral("<!DOCTYPE svg [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><svg xmlns=\"http://www.w3.org/2000/svg\"><text>&xxe;</text></svg>"),
+    };
+    for (const QByteArray &bad : unsafeSvgs)
+        QVERIFY2(!EpubWriter::isSafeSvg(bad), bad.constData());
+
+    // Defense-in-depth in EpubWriter::writeArticle(): unsafe SVG assets are dropped while safe ones stay.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString epubPath = dir.filePath(QStringLiteral("svg-test.epub"));
+    EpubArticle art;
+    art.title = QStringLiteral("SVG Security");
+    art.sourceUrl = QStringLiteral("https://example.org/svg");
+    art.bodyXhtml = QStringLiteral("<p>Safe and unsafe SVG check.</p>");
+    art.images = {
+        {QStringLiteral("images/clean.svg"), QStringLiteral("image/svg+xml"), cleanSvg},
+        {QStringLiteral("images/evil.svg"), QStringLiteral("image/svg+xml"), unsafeSvgs.first()},
+    };
+    QString err;
+    QVERIFY2(EpubWriter::writeArticle(epubPath, art, &err), qPrintable(err));
+    ZipArchive zip(epubPath);
+    QVERIFY(zip.open());
+    QVERIFY(zip.contains(QStringLiteral("OEBPS/images/clean.svg")));
+    QVERIFY(!zip.contains(QStringLiteral("OEBPS/images/evil.svg")));
+
+    // End-to-end WebImporter drops unsafe SVG images while keeping safe SVGs.
+    LocalHttpServer server;
+    const QByteArray html =
+        "<!doctype html><html><head><title>SVG Article</title></head><body><article>"
+        "<h1>SVG Article</h1>"
+        "<p>An essay containing both a clean vector diagram and an active script-bearing SVG that must be rejected.</p>"
+        "<figure><img src=\"/img/clean.svg\" alt=\"Clean\"/></figure>"
+        "<figure><img src=\"/img/evil.svg\" alt=\"Evil\"/></figure>"
+        "</article></body></html>";
+    server.routes.insert("/svg-article", {200, "text/html; charset=utf-8", {}, html, false});
+    server.routes.insert("/img/clean.svg", {200, "image/svg+xml", {}, cleanSvg, false});
+    server.routes.insert("/img/evil.svg", {200, "image/svg+xml", {}, unsafeSvgs[3], false});
+
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    WebImporter importer(&library, dir.filePath(QStringLiteral("storage")));
+    importer.setAllowLocalNetworkForTests(true);
+
+    int bookId = 0;
+    QString kind, importErr;
+    QVERIFY2(importer.importUrlSync(server.origin() + QStringLiteral("/svg-article"), &bookId, &kind, &importErr),
+             qPrintable(importErr));
+    EpubBook imported(library.record(bookId).path);
+    QVERIFY(imported.open());
+    QCOMPARE(imported.resource(QStringLiteral("OEBPS/images/img-001.svg")), cleanSvg);
+    QVERIFY(imported.resource(QStringLiteral("OEBPS/images/img-002.svg")).isEmpty());
+}
+
+void TestOnlineIngest::xmlDtdRejectedInArxivAtom() {
+    const QByteArray dtdAtom = R"XML(<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE feed [
+  <!ENTITY lol "lololololol">
+]>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2301.07041</id>
+    <title>&lol;</title>
+    <author><name>Ada</name></author>
+  </entry>
+</feed>)XML";
+    QVERIFY(WebImporter::parseArxivAtom(dtdAtom).isEmpty());
+}
+
+void TestOnlineIngest::articleExtractorDeepDomLinearMetrics() {
+    // 120-level deeply nested <div> wrapper around real prose + link-heavy sibling.
+    QByteArray html = "<!doctype html><html><head><title>Deep DOM Stress</title></head><body>";
+    html += "<div class=\"links\"><p><a href=\"/1\">One</a> <a href=\"/2\">Two</a> <a href=\"/3\">Three</a></p></div>";
+    for (int i = 0; i < 120; ++i)
+        html += "<div>";
+    html += "<article><h1>Deep DOM Stress</h1>";
+    for (int i = 0; i < 20; ++i) {
+        html += "<p>Paragraph " + QByteArray::number(i) +
+                ": Carefully memoized bottom-up metrics keep container scoring strictly linear even on deeply nested markup, "
+                "preventing quadratic stalls on complex web pages.</p>";
+    }
+    html += "</article>";
+    for (int i = 0; i < 120; ++i)
+        html += "</div>";
+    html += "</body></html>";
+
+    const ExtractedArticle art = ArticleExtractor::extract(html, QUrl(QStringLiteral("https://example.org/deep")));
+    QCOMPARE(art.title, QStringLiteral("Deep DOM Stress"));
+    QVERIFY(art.bodyXhtml.contains(QStringLiteral("Carefully memoized bottom-up metrics")));
+    QVERIFY(!art.bodyXhtml.contains(QStringLiteral(">One<")));
+    QVERIFY(art.wordCount >= 200);
 }
 
 #ifndef CLOTHBOUND_UNIFIED_TESTS

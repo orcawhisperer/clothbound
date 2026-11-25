@@ -2,13 +2,17 @@
 
 #include "online/opdsparser.h"
 
+#include <QCache>
 #include <QHash>
-#include <QNetworkAccessManager>
+#include <QImage>
+#include <QMutex>
 #include <QObject>
 #include <QPointer>
+#include <QQuickAsyncImageProvider>
 #include <QSaveFile>
 #include <QSet>
 #include <QString>
+#include <QThreadPool>
 #include <QUrl>
 #include <QVariantList>
 #include <QVariantMap>
@@ -17,19 +21,22 @@
 
 class KeyStore;
 class Library;
-class QNetworkReply;
+class PinnedHttpRequest;
+class OpdsCoverProvider;
 
 // OPDS 1.2 & OPDS 2.0 catalog browser and book downloader exposed to QML as `opds`.
 // Keeps built-in curated DRM-free catalogs alongside user-added OPDS servers
 // (Calibre-Web, Kavita, Komga, Ubooquity, Stump, etc.). Passwords live strictly
 // in KeyStore (desktop keyring in production, MemoryKeyStore in tests) and are
-// never written to settings.ini or SQLite.
+// never written to settings.ini or SQLite. All HTTP/HTTPS traffic is IP-pinned
+// and SSRF-validated through UrlGuard with per-catalog `allowLocalNetwork`.
 class OpdsClient : public QObject {
     Q_OBJECT
     Q_PROPERTY(QVariantList catalogs READ catalogs NOTIFY catalogsChanged)
     Q_PROPERTY(QString activeCatalogId READ activeCatalogId NOTIFY feedChanged)
     Q_PROPERTY(QString activeCatalogName READ activeCatalogName NOTIFY feedChanged)
     Q_PROPERTY(QString activeCatalogUsername READ activeCatalogUsername NOTIFY feedChanged)
+    Q_PROPERTY(bool activeCatalogAllowsLocalNetwork READ activeCatalogAllowsLocalNetwork NOTIFY feedChanged)
     Q_PROPERTY(QString feedTitle READ feedTitle NOTIFY feedChanged)
     Q_PROPERTY(QVariantList breadcrumbs READ breadcrumbs NOTIFY feedChanged)
     Q_PROPERTY(QVariantList entries READ entries NOTIFY feedChanged)
@@ -53,6 +60,8 @@ public:
     QString activeCatalogId() const { return m_activeCatalogId; }
     QString activeCatalogName() const;
     QString activeCatalogUsername() const;
+    bool activeCatalogAllowsLocalNetwork() const;
+    bool catalogAllowsLocalNetwork(const QString &catalogId) const;
     QString feedTitle() const { return m_feedTitle; }
     QVariantList breadcrumbs() const;
     QVariantList entries() const { return m_entries; }
@@ -68,9 +77,11 @@ public:
     bool hasHiddenBuiltIns() const { return !m_hiddenBuiltIns.isEmpty(); }
 
     Q_INVOKABLE QString addCatalog(const QString &name, const QString &url,
-                                   const QString &username = {}, const QString &password = {});
+                                   const QString &username = {}, const QString &password = {},
+                                   bool allowLocalNetwork = false);
     Q_INVOKABLE bool updateCatalogCredentials(const QString &catalogId,
                                               const QString &username, const QString &password);
+    Q_INVOKABLE bool setCatalogAllowInsecureHttpAuth(const QString &catalogId, bool allow);
     Q_INVOKABLE bool removeCatalog(const QString &catalogId);
     Q_INVOKABLE void restoreBuiltInCatalogs();
 
@@ -87,6 +98,10 @@ public:
                                          int targetCollectionId = 0);
     Q_INVOKABLE void cancelDownload(const QString &acquisitionUrl);
 
+    // Builds an `image://opdscover/...` URL scoped to `catalogId` (or the active catalog)
+    // for safe QML cover rendering through OpdsCoverProvider. Returns empty if blocked.
+    Q_INVOKABLE QString coverImageUrl(const QString &coverUrl, const QString &catalogId = {}) const;
+
     static bool sameOrigin(const QUrl &a, const QUrl &b);
 
 signals:
@@ -98,6 +113,33 @@ signals:
     void downloadFailed(const QString &acquisitionUrl, const QString &error);
 
 private:
+    friend class OpdsCoverProvider;
+
+    struct LocalCatalogRegistry {
+        QMutex mutex;
+        QSet<QString> localCatalogIds;
+
+        bool allowsLocal(const QString &catalogId) {
+            if (catalogId.isEmpty())
+                return false;
+            QMutexLocker lock(&mutex);
+            return localCatalogIds.contains(catalogId);
+        }
+
+        void setCatalog(const QString &catalogId, bool allow) {
+            QMutexLocker lock(&mutex);
+            if (allow)
+                localCatalogIds.insert(catalogId);
+            else
+                localCatalogIds.remove(catalogId);
+        }
+
+        void resetFrom(const QSet<QString> &ids) {
+            QMutexLocker lock(&mutex);
+            localCatalogIds = ids;
+        }
+    };
+
     struct Catalog {
         QString id;
         QString name;
@@ -107,6 +149,8 @@ private:
         bool builtIn = false;
         bool authOptional = false;
         QString authHint;
+        bool allowLocalNetwork = false;
+        bool allowInsecureHttpAuth = false;
     };
 
     struct Breadcrumb {
@@ -121,18 +165,18 @@ private:
         QUrl catalogOrigin;
         QString catalogId;
         QString catalogName;
+        bool allowLocalNetwork = false;
         QString title;
         QString author;
         QString requestedFormat;
         int targetCollectionId = 0;
-        int hops = 0;
         qint64 bytesReceived = 0;
         qint64 bytesTotal = -1;
         QByteArray headerBuffer;
         QString verifiedFormat;
         QString destPath;
         std::unique_ptr<QSaveFile> saveFile;
-        QPointer<QNetworkReply> reply;
+        QPointer<PinnedHttpRequest> request;
         bool cancelled = false;
         bool sizeExceeded = false;
         bool invalidMagic = false;
@@ -142,6 +186,7 @@ private:
     void seedBuiltInCatalogs();
     void loadSettings();
     void saveSettings() const;
+    void syncLocalRegistry();
     void loadExistingDownloadStates();
 
     Catalog *findCatalog(const QString &catalogId);
@@ -151,15 +196,15 @@ private:
 
     void abortActiveFeedRequest();
     void ensurePasswordLoaded(const QString &catalogId, std::function<void()> ready);
-    void applyAuthIfAllowed(QNetworkRequest &request, const QUrl &targetUrl,
-                            const QUrl &catalogOrigin, const QUrl &initialOrigin,
-                            const QString &catalogId) const;
+    QList<QPair<QByteArray, QByteArray>> authHeadersIfAllowed(const QUrl &targetUrl,
+                                                              const QUrl &catalogOrigin,
+                                                              const QUrl &initialOrigin,
+                                                              const QString &catalogId) const;
 
-    void fetchFeed(const QUrl &url, bool appendMode, int hops = 0, const QUrl &initialOrigin = {});
+    void fetchFeed(const QUrl &url, bool appendMode, const QUrl &initialOrigin = {});
     void fetchOpenSearchAndExecute(const QUrl &openSearchUrl, const QString &query,
-                                   int hops = 0, const QUrl &initialOrigin = {});
+                                   const QUrl &initialOrigin = {});
     void startDownloadRequest(const std::shared_ptr<ActiveDownload> &dl);
-    void finishDownload(const std::shared_ptr<ActiveDownload> &dl, QNetworkReply *reply);
     void setDownloadState(const QString &acquisitionUrl, const QString &status,
                           double progress, int bookId = 0, const QString &error = {});
 
@@ -173,13 +218,14 @@ private:
     KeyStore *m_keyStore = nullptr;
     QString m_storageDir;
     QString m_settingsPath;
-    QNetworkAccessManager m_nam;
+    std::shared_ptr<LocalCatalogRegistry> m_localRegistry;
 
     QList<Catalog> m_builtInCatalogs;
     QList<Catalog> m_customCatalogs;
     QSet<QString> m_hiddenBuiltIns;
     QHash<QString, QString> m_passwordCache;
     QSet<QString> m_passwordLoaded;
+    QHash<QString, QList<std::function<void()>>> m_pendingPasswordCallbacks;
 
     QString m_activeCatalogId;
     QString m_feedTitle;
@@ -201,8 +247,57 @@ private:
     QString m_authHint;
     QString m_error;
     quint64 m_feedGeneration = 0;
-    QPointer<QNetworkReply> m_activeFeedReply;
+    QPointer<PinnedHttpRequest> m_activeFeedRequest;
 
     QVariantMap m_downloadStates;
     QHash<QString, std::shared_ptr<ActiveDownload>> m_activeDownloads;
+};
+
+// Safe asynchronous QML image provider for OPDS cover thumbnails (`image://opdscover/...`).
+// Fetches remote cover URLs through UrlGuard (IP-pinned, manual redirects, no credentials,
+// max 4 MiB download cap, max 4096px / 16 MP raster decode cap, respecting each catalog's
+// `allowLocalNetwork` setting) off the GUI thread.
+//
+// Provider registration name: "opdscover"
+// URL format: "image://opdscover/<percent-encoded-http-url>?catalog=<percent-encoded-catalog-id>"
+//             (or `opds.coverImageUrl(url)` from QML).
+class OpdsCoverProvider : public QQuickAsyncImageProvider {
+public:
+    static constexpr qint64 maxCoverBytes = 4ll * 1024 * 1024;    // 4 MiB
+    static constexpr int maxImageDimension = 4096;                // max width/height
+    static constexpr qint64 maxImagePixels = 16ll * 1024 * 1024;  // 16 megapixels
+    static constexpr int defaultTimeoutMs = 15000;
+
+    explicit OpdsCoverProvider(const OpdsClient *client = nullptr);
+    ~OpdsCoverProvider() override;
+
+    QQuickImageResponse *requestImageResponse(const QString &id, const QSize &requestedSize) override;
+
+    static QString imageUrl(const QString &coverUrl, const QString &catalogId = {});
+
+private:
+    struct CoverCache {
+        QMutex mutex;
+        QCache<QString, QImage> images{16 * 1024 * 1024};  // 16 MiB decoded image cache
+
+        QImage get(const QString &key) {
+            QMutexLocker lock(&mutex);
+            const QImage *img = images.object(key);
+            return img ? *img : QImage();
+        }
+
+        void insert(const QString &key, const QImage &img) {
+            if (img.isNull())
+                return;
+            const qsizetype bytes = img.sizeInBytes();
+            if (bytes <= 0 || bytes > images.maxCost())
+                return;
+            QMutexLocker lock(&mutex);
+            images.insert(key, new QImage(img), int(bytes));
+        }
+    };
+
+    std::shared_ptr<OpdsClient::LocalCatalogRegistry> m_localRegistry;
+    std::shared_ptr<CoverCache> m_cache;
+    QThreadPool m_pool;
 };

@@ -607,63 +607,52 @@ struct CandidateMetrics {
     double paragraphScore = 0.0;
 };
 
-int countPunctuation(QStringView text) {
-    int count = 0;
-    for (const QChar c : text) {
-        if (c == QLatin1Char(',') || c == QLatin1Char('.') || c == QLatin1Char(';') ||
-            c == QChar(0x3001) || c == QChar(0x3002) || c == QChar(0x060C))
-            ++count;
-    }
-    return count;
-}
+// Monoid summary of `node->textContent(true).simplified()` length + punctuation count
+// so every subtree's simplified text length and punctuation count are computed bottom-up in O(N).
+struct SimplifiedTextSummary {
+    int len = 0;
+    int punct = 0;
+    bool hasNonSpace = false;
+    bool leadingSpace = false;
+    bool trailingSpace = false;
 
-CandidateMetrics measureCandidate(const DomNode *root) {
-    CandidateMetrics m;
-    struct Frame {
-        const DomNode *node;
-        bool inLink;
-    };
-    std::vector<Frame> stack{{root, false}};
-    while (!stack.empty()) {
-        const auto [n, inLink] = stack.back();
-        stack.pop_back();
-        if (n->pruned)
-            continue;
-        if (n->isText()) {
-            const QString s = n->text.simplified();
-            if (!s.isEmpty()) {
-                m.totalChars += int(s.size());
-                if (inLink)
-                    m.linkChars += int(s.size());
+    static SimplifiedTextSummary fromText(QStringView text) {
+        SimplifiedTextSummary s;
+        if (text.isEmpty())
+            return s;
+        s.leadingSpace = text.first().isSpace();
+        s.trailingSpace = text.last().isSpace();
+        bool pendingSpace = false;
+        for (const QChar c : text) {
+            if (c.isSpace()) {
+                if (s.hasNonSpace)
+                    pendingSpace = true;
+                continue;
             }
-            continue;
+            if (pendingSpace) {
+                ++s.len;
+                pendingSpace = false;
+            }
+            s.hasNonSpace = true;
+            ++s.len;
+            if (c == QLatin1Char(',') || c == QLatin1Char('.') || c == QLatin1Char(';') ||
+                c == QChar(0x3001) || c == QChar(0x3002) || c == QChar(0x060C))
+                ++s.punct;
         }
-
-        const bool nowInLink = inLink || n->tag == QLatin1String("a");
-        if (n->tag == QLatin1String("p")) {
-            const QString txt = n->textContent(true).simplified();
-            const int len = int(txt.size());
-            if (len >= 20) {
-                ++m.paragraphs;
-                m.proseChars += len;
-                const int punct = qMin(countPunctuation(txt), 8);
-                m.paragraphScore += 1.5 + punct * 0.8 + qMin(len / 85.0, 4.5);
-            }
-        } else if (n->tag == QLatin1String("blockquote") || n->tag == QLatin1String("pre") ||
-                   n->tag == QLatin1String("li")) {
-            const QString txt = n->textContent(true).simplified();
-            const int len = int(txt.size());
-            if (len >= 30) {
-                m.proseChars += len;
-                m.paragraphScore += 0.65 * (1.0 + qMin(len / 110.0, 3.0));
-            }
-        }
-
-        for (auto it = n->children.rbegin(); it != n->children.rend(); ++it)
-            stack.push_back({it->get(), nowInLink});
+        return s;
     }
-    return m;
-}
+
+    static SimplifiedTextSummary concat(const SimplifiedTextSummary &a, const SimplifiedTextSummary &b) {
+        if (!a.hasNonSpace && !b.hasNonSpace)
+            return {0, 0, false, a.leadingSpace || b.leadingSpace, a.trailingSpace || b.trailingSpace};
+        if (!a.hasNonSpace)
+            return {b.len, b.punct, true, a.leadingSpace || a.trailingSpace || b.leadingSpace, b.trailingSpace};
+        if (!b.hasNonSpace)
+            return {a.len, a.punct, true, a.leadingSpace, a.trailingSpace || b.leadingSpace || b.trailingSpace};
+        const bool gap = a.trailingSpace || b.leadingSpace;
+        return {a.len + (gap ? 1 : 0) + b.len, a.punct + b.punct, true, a.leadingSpace, b.trailingSpace};
+    }
+};
 
 const DomNode *selectPrimaryContainer(DomNode *root) {
     DomNode *body = nullptr;
@@ -675,6 +664,82 @@ const DomNode *selectPrimaryContainer(DomNode *root) {
         return true;
     });
     DomNode *searchRoot = body ? body : root;
+    if (!searchRoot || searchRoot->pruned)
+        return searchRoot;
+
+    // Build flat top-down BFS layout so every parent precedes its contiguous children in
+    // exact left-to-right document order; reverse iteration then computes all metrics bottom-up in O(N).
+    struct VisitItem {
+        const DomNode *node = nullptr;
+        std::size_t firstChild = 0;
+        std::size_t childCount = 0;
+        int depth = 0;
+    };
+    std::vector<VisitItem> order;
+    order.reserve(256);
+    order.push_back({searchRoot, 0, 0, 0});
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const DomNode *n = order[i].node;
+        if (n->pruned || n->isText())
+            continue;
+        const std::size_t first = order.size();
+        for (const auto &child : n->children) {
+            if (!child->pruned)
+                order.push_back({child.get(), 0, 0, order[i].depth + 1});
+        }
+        order[i].firstChild = first;
+        order[i].childCount = order.size() - first;
+    }
+
+    struct NodeMemo {
+        CandidateMetrics metrics;
+        SimplifiedTextSummary text;
+    };
+    std::vector<NodeMemo> memo(order.size());
+
+    for (std::size_t i = order.size(); i-- > 0;) {
+        const VisitItem &item = order[i];
+        const DomNode *n = item.node;
+        NodeMemo &cur = memo[i];
+        if (n->isText()) {
+            cur.text = SimplifiedTextSummary::fromText(n->text);
+            cur.metrics.totalChars = cur.text.len;
+            continue;
+        }
+        if (n->tag == QLatin1String("br")) {
+            cur.text = {0, 0, false, true, true};
+            continue;
+        }
+
+        for (std::size_t c = item.firstChild; c < item.firstChild + item.childCount; ++c) {
+            const NodeMemo &cm = memo[c];
+            cur.text = SimplifiedTextSummary::concat(cur.text, cm.text);
+            cur.metrics.paragraphs += cm.metrics.paragraphs;
+            cur.metrics.proseChars += cm.metrics.proseChars;
+            cur.metrics.totalChars += cm.metrics.totalChars;
+            cur.metrics.linkChars += cm.metrics.linkChars;
+            cur.metrics.paragraphScore += cm.metrics.paragraphScore;
+        }
+
+        if (n->tag == QLatin1String("a")) {
+            cur.metrics.linkChars = cur.metrics.totalChars;
+        } else if (n->tag == QLatin1String("p")) {
+            const int len = cur.text.len;
+            if (len >= 20) {
+                ++cur.metrics.paragraphs;
+                cur.metrics.proseChars += len;
+                const int punct = qMin(cur.text.punct, 8);
+                cur.metrics.paragraphScore += 1.5 + punct * 0.8 + qMin(len / 85.0, 4.5);
+            }
+        } else if (n->tag == QLatin1String("blockquote") || n->tag == QLatin1String("pre") ||
+                   n->tag == QLatin1String("li")) {
+            const int len = cur.text.len;
+            if (len >= 30) {
+                cur.metrics.proseChars += len;
+                cur.metrics.paragraphScore += 0.65 * (1.0 + qMin(len / 110.0, 3.0));
+            }
+        }
+    }
 
     static const QRegularExpression posClass(
         QStringLiteral(R"((?:article|body|content|entry|essay|main|markdown|post|prose|story|text))"),
@@ -691,14 +756,9 @@ const DomNode *selectPrimaryContainer(DomNode *root) {
     };
     QList<ScoredCandidate> candidates;
 
-    struct Frame {
-        const DomNode *node;
-        int depth;
-    };
-    std::vector<Frame> stack{{searchRoot, 0}};
-    while (!stack.empty()) {
-        const auto [n, depth] = stack.back();
-        stack.pop_back();
+    for (std::size_t i = 0; i < order.size(); ++i) {
+        const DomNode *n = order[i].node;
+        const int depth = order[i].depth;
         if (n->pruned || n->isText())
             continue;
 
@@ -706,44 +766,43 @@ const DomNode *selectPrimaryContainer(DomNode *root) {
         const bool isCandidate = (n->tag == QLatin1String("article") || n->tag == QLatin1String("main") ||
                                   role == QLatin1String("main") || n->tag == QLatin1String("section") ||
                                   n->tag == QLatin1String("div") || n->tag == QLatin1String("body"));
-        if (isCandidate) {
-            const CandidateMetrics m = measureCandidate(n);
-            const int effectiveChars = qMax(m.proseChars, m.totalChars);
-            if (effectiveChars >= 60) {
-                double base = 0.0;
-                if (n->tag == QLatin1String("article"))
-                    base = 30.0;
-                else if (n->tag == QLatin1String("main") || role == QLatin1String("main"))
-                    base = 26.0;
-                else if (n->tag == QLatin1String("section"))
-                    base = 8.0;
-                else if (n->tag == QLatin1String("div"))
-                    base = 5.0;
+        if (!isCandidate)
+            continue;
 
-                const QString marker = n->attr(QStringLiteral("id")) + QLatin1Char(' ') + n->attr(QStringLiteral("class"));
-                if (posClass.match(marker).hasMatch())
-                    base += 20.0;
-                if (negClass.match(marker).hasMatch())
-                    base -= 25.0;
+        const CandidateMetrics &m = memo[i].metrics;
+        const int effectiveChars = qMax(m.proseChars, m.totalChars);
+        if (effectiveChars < 60)
+            continue;
 
-                double contentScore = m.paragraphScore;
-                if (m.paragraphs == 0 && m.totalChars >= 120)
-                    contentScore += qMin(m.totalChars / 95.0, 12.0);
-                contentScore += qMin(m.proseChars / 220.0, 18.0);
+        double base = 0.0;
+        if (n->tag == QLatin1String("article"))
+            base = 30.0;
+        else if (n->tag == QLatin1String("main") || role == QLatin1String("main"))
+            base = 26.0;
+        else if (n->tag == QLatin1String("section"))
+            base = 8.0;
+        else if (n->tag == QLatin1String("div"))
+            base = 5.0;
 
-                const double linkDensity = m.totalChars > 0 ? double(m.linkChars) / double(m.totalChars) : 1.0;
-                double finalScore = (base + contentScore) * (1.0 - qMin(linkDensity, 0.95));
-                if (n->tag == QLatin1String("body"))
-                    finalScore *= 0.78;
-                // Slightly reward deeper focused containers when they capture the same prose.
-                finalScore += qMin(depth, 10) * 0.4;
+        const QString marker = n->attr(QStringLiteral("id")) + QLatin1Char(' ') + n->attr(QStringLiteral("class"));
+        if (posClass.match(marker).hasMatch())
+            base += 20.0;
+        if (negClass.match(marker).hasMatch())
+            base -= 25.0;
 
-                candidates.append({n, finalScore, effectiveChars, depth});
-            }
-        }
+        double contentScore = m.paragraphScore;
+        if (m.paragraphs == 0 && m.totalChars >= 120)
+            contentScore += qMin(m.totalChars / 95.0, 12.0);
+        contentScore += qMin(m.proseChars / 220.0, 18.0);
 
-        for (auto it = n->children.rbegin(); it != n->children.rend(); ++it)
-            stack.push_back({it->get(), depth + 1});
+        const double linkDensity = m.totalChars > 0 ? double(m.linkChars) / double(m.totalChars) : 1.0;
+        double finalScore = (base + contentScore) * (1.0 - qMin(linkDensity, 0.95));
+        if (n->tag == QLatin1String("body"))
+            finalScore *= 0.78;
+        // Slightly reward deeper focused containers when they capture the same prose.
+        finalScore += qMin(depth, 10) * 0.4;
+
+        candidates.append({n, finalScore, effectiveChars, depth});
     }
 
     if (candidates.isEmpty())

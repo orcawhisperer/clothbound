@@ -792,6 +792,11 @@ OpdsFeed OpdsParser::parseAtom(const QByteArray &xmlData, const QUrl &baseUrl) {
     feed.format = OpdsFormat::Opds1Atom;
 
     QXmlStreamReader xml(xmlData);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 12, 0)
+    xml.setEntityExpansionLimit(1);
+#else
+    xml.setEntityExpansionLimit(0);
+#endif
     bool foundRoot = false;
     bool rootIsHtml = false;
 
@@ -978,6 +983,16 @@ OpdsFeed OpdsParser::parseAtom(const QByteArray &xmlData, const QUrl &baseUrl) {
 
     while (!xml.atEnd()) {
         const auto token = xml.readNext();
+        if (token == QXmlStreamReader::DTD) {
+            feed.format = OpdsFormat::Unknown;
+            if (xml.dtdName().compare(QLatin1String("html"), Qt::CaseInsensitive) == 0 &&
+                xml.entityDeclarations().isEmpty() && xml.dtdSystemId().isEmpty()) {
+                feed.error = QStringLiteral("This URL returned a web page rather than an OPDS catalog.");
+            } else {
+                feed.error = QStringLiteral("OPDS XML feed contains a disallowed DOCTYPE declaration.");
+            }
+            return feed;
+        }
         if (token != QXmlStreamReader::StartElement)
             continue;
 
@@ -1271,11 +1286,19 @@ OpdsFeed OpdsParser::parseOpds2(const QByteArray &jsonData, const QUrl &baseUrl)
 
 QString OpdsParser::parseOpenSearchTemplate(const QByteArray &xmlData, const QUrl &baseUrl) {
     QXmlStreamReader xml(xmlData);
+#if QT_VERSION >= QT_VERSION_CHECK(6, 12, 0)
+    xml.setEntityExpansionLimit(1);
+#else
+    xml.setEntityExpansionLimit(0);
+#endif
     QString bestTemplate;
     int bestRank = -1;
 
     while (!xml.atEnd()) {
-        if (xml.readNext() != QXmlStreamReader::StartElement)
+        const auto token = xml.readNext();
+        if (token == QXmlStreamReader::DTD)
+            return {};
+        if (token != QXmlStreamReader::StartElement)
             continue;
         if (xml.name().toString().compare(QLatin1String("Url"), Qt::CaseInsensitive) != 0)
             continue;
