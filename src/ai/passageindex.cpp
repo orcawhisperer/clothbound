@@ -16,8 +16,10 @@
 #include <QUrl>
 #include <QUuid>
 #include <QtConcurrentRun>
+#include <QtEndian>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
 #include <queue>
 #include <vector>
@@ -120,18 +122,68 @@ QList<double> bm25Scores(const QList<PassageIndex::Passage> &passages, const QSt
     return scores;
 }
 
-QByteArray pack(const QList<float> &vector) {
+constexpr char kQ8Magic[4] = {'Q', '8', '\0', '\1'};
+constexpr qsizetype kQ8HeaderBytes = PassageIndex::kQuantizedHeaderBytes;
+static_assert(kQ8HeaderBytes == 8);
+
+inline void writeLeFloat(char *dst, float value) {
+    quint32 bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    qToLittleEndian<quint32>(bits, dst);
+}
+
+inline float readLeFloat(const char *src) {
+    const quint32 bits = qFromLittleEndian<quint32>(src);
+    float value = 0.0f;
+    std::memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+inline bool hasQ8Magic(const char *data, qsizetype bytes) {
+    return data && bytes >= kQ8HeaderBytes &&
+           data[0] == kQ8Magic[0] && data[1] == kQ8Magic[1] &&
+           data[2] == kQ8Magic[2] && data[3] == kQ8Magic[3];
+}
+
+QByteArray packFloat32(const QList<float> &vector) {
     return QByteArray(reinterpret_cast<const char *>(vector.constData()), vector.size() * qsizetype(sizeof(float)));
 }
 
-QList<float> unpack(const QByteArray &blob) {
-    QList<float> vector(blob.size() / qsizetype(sizeof(float)));
-    if (!vector.isEmpty())
-        std::memcpy(vector.data(), blob.constData(), size_t(vector.size()) * sizeof(float));
-    return vector;
+QByteArray packForStorage(const QList<float> &vector) {
+    if (vector.size() >= PassageIndex::kMinQuantizeDims)
+        return PassageIndex::quantize(vector);
+    return packFloat32(PassageIndex::normalize(vector));
 }
 
-// 8-wide float32 SLP-vectorizable dot product + normB^2 kernel.
+// 16-wide int8 -> int32 SIMD-vectorizable dot product block (n <= 32768 guarantees zero int32 overflow).
+// On ARM64 GCC -O2 this auto-vectorizes cleanly to NEON smull/smull2 + 4 independent saddw/saddw2
+// accumulator vectors with zero stack spills; on x86_64 it auto-vectorizes to SSE2/AVX2.
+inline int64_t dotInt8Block16(const qint8 *a, const qint8 *b, qsizetype n) {
+    alignas(32) int32_t acc[16] = {};
+    qsizetype i = 0;
+    for (; i + 16 <= n; i += 16) {
+        for (int k = 0; k < 16; ++k)
+            acc[k] += int32_t(a[i + k]) * int32_t(b[i + k]);
+    }
+    int32_t tail = 0;
+    for (; i < n; ++i)
+        tail += int32_t(a[i]) * int32_t(b[i]);
+    const int64_t lo = int64_t(((acc[0] + acc[1]) + (acc[2] + acc[3])) + ((acc[4] + acc[5]) + (acc[6] + acc[7])));
+    const int64_t hi = int64_t(((acc[8] + acc[9]) + (acc[10] + acc[11])) + ((acc[12] + acc[13]) + (acc[14] + acc[15])));
+    return lo + hi + int64_t(tail);
+}
+
+inline int64_t dotInt8_16(const qint8 *a, const qint8 *b, qsizetype n) {
+    constexpr qsizetype kBlock = 32768;
+    if (n <= kBlock)
+        return dotInt8Block16(a, b, n);
+    int64_t total = 0;
+    for (qsizetype off = 0; off < n; off += kBlock)
+        total += dotInt8Block16(a + off, b + off, qMin(kBlock, n - off));
+    return total;
+}
+
+// 8-wide float32 SLP-vectorizable dot product + normB^2 kernel (used for legacy fp32 BLOBs).
 // Explicit 8-lane accumulation lets GCC auto-vectorize to NEON fmla.4s / SSE mulps+addps
 // even at -O2 without -ffast-math, preserving strict IEEE-754 semantics.
 inline void accumulateDotAndNormB8(const float *a, const float *b, qsizetype n, float d[8], float nb[8],
@@ -156,12 +208,110 @@ inline float reduce8(const float v[8], float tail) {
 }
 
 inline double finalizeUnitQueryCosine(float dot, float normBSq) {
-    if (!std::isfinite(normBSq) || normBSq <= 0.0f)
+    if (!std::isfinite(dot) || !std::isfinite(normBSq) || normBSq <= 0.0f)
         return 0.0;
     // Pre-normalized unit vectors skip std::sqrt(); legacy unnormalized BLOBs divide cleanly.
     if (std::abs(normBSq - 1.0f) <= 1e-5f)
         return std::clamp(double(dot), -1.0, 1.0);
     return std::clamp(double(dot) / std::sqrt(double(normBSq)), -1.0, 1.0);
+}
+
+struct PreparedQuery {
+    QList<float> unitFloat;  // unit-normalized float32 query (for legacy fp32 BLOBs)
+    QByteArray q8Data;       // pre-quantized int8 query (for tagged Q8 BLOBs)
+    qsizetype dim = 0;
+    float q8Scale = 0.0f;    // 1 / ||q8Data|| (exact unit scale for Q8 dot product)
+    bool valid = false;
+};
+
+PreparedQuery prepareQuery(const QList<float> &asked) {
+    PreparedQuery out;
+    const qsizetype n = asked.size();
+    if (n <= 0)
+        return out;
+    const float *src = asked.constData();
+    double maxAbs = 0.0;
+    for (qsizetype i = 0; i < n; ++i) {
+        const float v = src[i];
+        if (!std::isfinite(v))
+            return out;
+        const double a = std::abs(double(v));
+        if (a > maxAbs)
+            maxAbs = a;
+    }
+    if (!std::isfinite(maxAbs) || maxAbs <= 1e-30)
+        return out;
+
+    const double invMax = 1.0 / maxAbs;
+    double scaledNormSq = 0.0;
+    for (qsizetype i = 0; i < n; ++i) {
+        const double s = double(src[i]) * invMax;
+        scaledNormSq += s * s;
+    }
+    if (!std::isfinite(scaledNormSq) || scaledNormSq <= 0.0)
+        return out;
+
+    const double invNorm = invMax / std::sqrt(scaledNormSq);
+    const double invQuant = 127.0 * invMax;
+    out.unitFloat.resize(n);
+    out.q8Data.resize(n);
+    float *unitDst = out.unitFloat.data();
+    auto *qDst = reinterpret_cast<qint8 *>(out.q8Data.data());
+    int64_t sumQ2 = 0;
+    for (qsizetype i = 0; i < n; ++i) {
+        const double v = double(src[i]);
+        unitDst[i] = float(v * invNorm);
+        const int qv = std::clamp(int(std::lrint(v * invQuant)), -127, 127);
+        qDst[i] = static_cast<qint8>(qv);
+        sumQ2 += int64_t(qv) * int64_t(qv);
+    }
+    if (sumQ2 <= 0)
+        return out;
+    out.dim = n;
+    out.q8Scale = float(1.0 / std::sqrt(double(sumQ2)));
+    out.valid = std::isfinite(out.q8Scale) && out.q8Scale > 0.0f;
+    return out;
+}
+
+double scoreRawBlob(const PreparedQuery &q, const char *blobData, qsizetype blobBytes) {
+    if (!q.valid || !blobData || blobBytes <= 0)
+        return 0.0;
+
+    // Fast path 1: tagged symmetric int8 unit vector (8-byte header + dim int8 values).
+    if (blobBytes == kQ8HeaderBytes + q.dim && hasQ8Magic(blobData, blobBytes)) {
+        const float rowScale = readLeFloat(blobData + 4);
+        if (!std::isfinite(rowScale) || rowScale <= 0.0f)
+            return 0.0;
+        const auto *askQ = reinterpret_cast<const qint8 *>(q.q8Data.constData());
+        const auto *rowQ = reinterpret_cast<const qint8 *>(blobData + kQ8HeaderBytes);
+        const int64_t dot = dotInt8_16(askQ, rowQ, q.dim);
+        return std::clamp(double(dot) * (double(q.q8Scale) * double(rowScale)), -1.0, 1.0);
+    }
+
+    // Never misinterpret a truncated or dimension-mismatched Q8 BLOB as legacy float32.
+    if (hasQ8Magic(blobData, blobBytes))
+        return 0.0;
+
+    // Fast path 2 (backward-compatible): legacy raw float32 BLOB (dim * 4 bytes).
+    if (blobBytes == q.dim * qsizetype(sizeof(float))) {
+        alignas(32) float d[8] = {};
+        alignas(32) float nb[8] = {};
+        float td = 0.0f;
+        float tnb = 0.0f;
+        constexpr qsizetype kBlock = 256;
+        alignas(32) float buf[kBlock];
+        const float *unitAsked = q.unitFloat.constData();
+        qsizetype i = 0;
+        while (i < q.dim) {
+            const qsizetype take = qMin(kBlock, q.dim - i);
+            std::memcpy(buf, blobData + i * qsizetype(sizeof(float)), size_t(take) * sizeof(float));
+            accumulateDotAndNormB8(unitAsked + i, buf, take, d, nb, td, tnb);
+            i += take;
+        }
+        return finalizeUnitQueryCosine(reduce8(d, td), reduce8(nb, tnb));
+    }
+
+    return 0.0;
 }
 
 bool openPassageDbReadOnly(const QString &dbPath, const QString &connName, QSqlDatabase *outDb) {
@@ -482,6 +632,81 @@ QList<float> PassageIndex::normalize(const QList<float> &vector) {
     return out;
 }
 
+QByteArray PassageIndex::quantize(const QList<float> &vector) {
+    const qsizetype n = vector.size();
+    if (n <= 0)
+        return {};
+    const float *src = vector.constData();
+    double maxAbs = 0.0;
+    bool allFinite = true;
+    for (qsizetype i = 0; i < n; ++i) {
+        const float v = src[i];
+        if (!std::isfinite(v)) {
+            allFinite = false;
+            break;
+        }
+        const double a = std::abs(double(v));
+        if (a > maxAbs)
+            maxAbs = a;
+    }
+
+    QByteArray blob(kQ8HeaderBytes + n, Qt::Uninitialized);
+    char *raw = blob.data();
+    std::memcpy(raw, kQ8Magic, sizeof(kQ8Magic));
+    if (!allFinite || !std::isfinite(maxAbs) || maxAbs <= 1e-30) {
+        writeLeFloat(raw + 4, 0.0f);
+        std::memset(raw + kQ8HeaderBytes, 0, size_t(n));
+        return blob;
+    }
+
+    const double invQuant = 127.0 / maxAbs;
+    auto *qDst = reinterpret_cast<qint8 *>(raw + kQ8HeaderBytes);
+    int64_t sumQ2 = 0;
+    for (qsizetype i = 0; i < n; ++i) {
+        const int qv = std::clamp(int(std::lrint(double(src[i]) * invQuant)), -127, 127);
+        qDst[i] = static_cast<qint8>(qv);
+        sumQ2 += int64_t(qv) * int64_t(qv);
+    }
+    const float scale = (sumQ2 > 0) ? float(1.0 / std::sqrt(double(sumQ2))) : 0.0f;
+    writeLeFloat(raw + 4, scale);
+    return blob;
+}
+
+QList<float> PassageIndex::dequantize(const QByteArray &blob) {
+    if (blob.isEmpty())
+        return {};
+    if (hasQ8Magic(blob.constData(), blob.size())) {
+        if (blob.size() <= kQ8HeaderBytes)
+            return {};
+        const float scale = readLeFloat(blob.constData() + 4);
+        if (!std::isfinite(scale) || scale < 0.0f)
+            return {};
+        const qsizetype dims = blob.size() - kQ8HeaderBytes;
+        QList<float> out(dims);
+        if (scale == 0.0f) {
+            out.fill(0.0f);
+            return out;
+        }
+        const auto *qSrc = reinterpret_cast<const qint8 *>(blob.constData() + kQ8HeaderBytes);
+        float *dst = out.data();
+        for (qsizetype i = 0; i < dims; ++i)
+            dst[i] = float(qSrc[i]) * scale;
+        return out;
+    }
+    if ((blob.size() % qsizetype(sizeof(float))) != 0)
+        return {};
+    QList<float> vector(blob.size() / qsizetype(sizeof(float)));
+    std::memcpy(vector.data(), blob.constData(), size_t(vector.size()) * sizeof(float));
+    return vector;
+}
+
+bool PassageIndex::isQuantizedBlob(const QByteArray &blob) {
+    if (blob.size() <= kQ8HeaderBytes || !hasQ8Magic(blob.constData(), blob.size()))
+        return false;
+    const float scale = readLeFloat(blob.constData() + 4);
+    return std::isfinite(scale) && scale >= 0.0f;
+}
+
 double PassageIndex::cosine(const QList<float> &a, const QList<float> &b) {
     const qsizetype n = a.size();
     if (n != b.size() || n == 0)
@@ -512,7 +737,8 @@ double PassageIndex::cosine(const QList<float> &a, const QList<float> &b) {
     const float dot = reduce8(d, td);
     const float normASq = reduce8(na, tna);
     const float normBSq = reduce8(nb, tnb);
-    if (normASq <= 0.0f || normBSq <= 0.0f)
+    if (!std::isfinite(dot) || !std::isfinite(normASq) || !std::isfinite(normBSq) ||
+        normASq <= 0.0f || normBSq <= 0.0f)
         return 0.0;
     if (std::abs(normASq - 1.0f) <= 1e-5f && std::abs(normBSq - 1.0f) <= 1e-5f)
         return std::clamp(double(dot), -1.0, 1.0);
@@ -538,8 +764,8 @@ QString PassageIndex::keyOf(const Passage &passage) {
         .arg(QString::fromLatin1(digest));
 }
 
-QHash<QString, QList<float>> PassageIndex::load(int bookId, const QString &modelName) const {
-    QHash<QString, QList<float>> out;
+QHash<QString, QByteArray> PassageIndex::load(int bookId, const QString &modelName) const {
+    QHash<QString, QByteArray> out;
     const QString name = modelName.isEmpty() ? model() : modelName;
     if (name.isEmpty())
         return out;
@@ -549,12 +775,12 @@ QHash<QString, QList<float>> PassageIndex::load(int bookId, const QString &model
     query.addBindValue(name);
     query.exec();
     while (query.next())
-        out.insert(query.value(0).toString(), unpack(query.value(1).toByteArray()));
+        out.insert(query.value(0).toString(), query.value(1).toByteArray());
     return out;
 }
 
-QHash<QString, QList<float>> PassageIndex::loadFromFile(const QString &dbPath, int bookId, const QString &modelName) {
-    QHash<QString, QList<float>> out;
+QHash<QString, QByteArray> PassageIndex::loadFromFile(const QString &dbPath, int bookId, const QString &modelName) {
+    QHash<QString, QByteArray> out;
     if (dbPath.isEmpty() || modelName.isEmpty())
         return out;
     const QString connName = QStringLiteral("pi-read-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -567,7 +793,7 @@ QHash<QString, QList<float>> PassageIndex::loadFromFile(const QString &dbPath, i
             query.addBindValue(modelName);
             if (query.exec()) {
                 while (query.next())
-                    out.insert(query.value(0).toString(), unpack(query.value(1).toByteArray()));
+                    out.insert(query.value(0).toString(), query.value(1).toByteArray());
             }
             db.close();
         }
@@ -578,7 +804,7 @@ QHash<QString, QList<float>> PassageIndex::loadFromFile(const QString &dbPath, i
 
 void PassageIndex::loadVectorsAsync(int bookId, const QString &modelName, int expectedCount,
                                     std::function<bool()> stillValid,
-                                    std::function<void(const QHash<QString, QList<float>> &)> then) {
+                                    std::function<void(const QHash<QString, QByteArray> &)> then) {
     if (modelName.isEmpty()) {
         then({});
         return;
@@ -587,7 +813,7 @@ void PassageIndex::loadVectorsAsync(int bookId, const QString &modelName, int ex
         QMutexLocker lock(&m_cache->mutex);
         if (m_cache->loaded && m_cache->bookId == bookId && m_cache->model == modelName &&
             m_cache->vectors.size() == expectedCount) {
-            const QHash<QString, QList<float>> cached = m_cache->vectors;
+            const QHash<QString, QByteArray> cached = m_cache->vectors;
             lock.unlock();
             then(cached);
             return;
@@ -595,7 +821,7 @@ void PassageIndex::loadVectorsAsync(int bookId, const QString &modelName, int ex
     }
     const QString dbPath = databasePath();
     if (dbPath.isEmpty() || dbPath == QLatin1String(":memory:")) {
-        const QHash<QString, QList<float>> loaded = load(bookId, modelName);
+        const QHash<QString, QByteArray> loaded = load(bookId, modelName);
         {
             QMutexLocker lock(&m_cache->mutex);
             m_cache->bookId = bookId;
@@ -610,7 +836,7 @@ void PassageIndex::loadVectorsAsync(int bookId, const QString &modelName, int ex
     auto cache = m_cache;
     (void)QtConcurrent::run([self, cache, dbPath, bookId, modelName, stillValid = std::move(stillValid),
                              then = std::move(then)]() mutable {
-        const QHash<QString, QList<float>> loaded = loadFromFile(dbPath, bookId, modelName);
+        const QHash<QString, QByteArray> loaded = loadFromFile(dbPath, bookId, modelName);
         if (QCoreApplication *app = QCoreApplication::instance()) {
             QMetaObject::invokeMethod(
                 app,
@@ -649,19 +875,19 @@ bool PassageIndex::store(int bookId, const QString &modelName, const Passage &pa
     Q_ASSERT(!m_readOnly);
     if (m_readOnly)
         return false;
-    const QList<float> unitVec = normalize(vector);
+    const QByteArray packed = packForStorage(vector);
     const QString key = keyOf(passage);
     QSqlQuery query(QSqlDatabase::database(m_connection));
     query.prepare(QStringLiteral("INSERT OR REPLACE INTO passage_vectors (book_id, model, passage, vector) VALUES (?, ?, ?, ?)"));
     query.addBindValue(bookId);
     query.addBindValue(modelName);
     query.addBindValue(key);
-    query.addBindValue(pack(unitVec));
+    query.addBindValue(packed);
     if (!query.exec())
         return false;
     QMutexLocker lock(&m_cache->mutex);
     if (m_cache->loaded && m_cache->bookId == bookId && m_cache->model == modelName)
-        m_cache->vectors.insert(key, unitVec);
+        m_cache->vectors.insert(key, packed);
     return true;
 }
 
@@ -690,7 +916,7 @@ void PassageIndex::build(int bookId, const QList<Passage> &passages, std::functi
     const QString buildModel = m_buildModel;
     loadVectorsAsync(
         bookId, buildModel, existingCount, [this, generation] { return generation == m_generation; },
-        [this, bookId, passages, generation, buildModel](const QHash<QString, QList<float>> &have) {
+        [this, bookId, passages, generation, buildModel](const QHash<QString, QByteArray> &have) {
             if (generation != m_generation)
                 return;
             Ai::Provider *activeProvider = m_ai->embedderProvider();
@@ -886,7 +1112,7 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
     }
     loadVectorsAsync(
         bookId, modelName, existingCount, [this, searchGen] { return searchGen == m_searchGeneration; },
-        [this, passages, query, count, done, searchGen, runWordFallback](const QHash<QString, QList<float>> &vectors) {
+        [this, passages, query, count, done, searchGen, runWordFallback](const QHash<QString, QByteArray> &vectors) {
             if (searchGen != m_searchGeneration)
                 return;
             Ai::Provider *activeProvider = m_ai->embedderProvider();
@@ -898,7 +1124,7 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
             // Compute SHA-1 key once per passage and use any available vectors
             // (partial vector coverage still participates in hybrid search instead
             // of discarding all vectors if a single passage is missing).
-            QList<QList<float>> matchedVectors;
+            QList<QByteArray> matchedVectors;
             matchedVectors.reserve(passages.size());
             int matchedCount = 0;
             for (const Passage &passage : passages) {
@@ -907,7 +1133,7 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
                     matchedVectors.append(*it);
                     ++matchedCount;
                 } else {
-                    matchedVectors.append(QList<float>{});
+                    matchedVectors.append(QByteArray{});
                 }
             }
             if (matchedCount == 0) {
@@ -942,26 +1168,15 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
                         const QList<float> asked = reply->vectors().first();
                         QPointer<PassageIndex> self(this);
                         (void)QtConcurrent::run([self, passages, matchedVectors, asked, query, count, done, searchGen] {
-                            const QList<float> unitAsked = PassageIndex::normalize(asked);
-                            const qsizetype dim = unitAsked.size();
-                            const float *askedData = unitAsked.constData();
-                            float askedNormSq = 0.0f;
-                            for (qsizetype i = 0; i < dim; ++i)
-                                askedNormSq += askedData[i] * askedData[i];
-                            const bool validQuery = dim > 0 && std::isfinite(askedNormSq) && askedNormSq > 0.0f;
-
+                            const PreparedQuery pq = prepareQuery(asked);
                             QList<double> cosines;
                             cosines.reserve(passages.size());
-                            for (const QList<float> &vec : matchedVectors) {
-                                if (!validQuery || vec.size() != dim) {
+                            for (const QByteArray &blob : matchedVectors) {
+                                if (!pq.valid || blob.isEmpty()) {
                                     cosines.append(0.0);
                                     continue;
                                 }
-                                alignas(32) float d[8] = {};
-                                alignas(32) float nb[8] = {};
-                                float td = 0.0f, tnb = 0.0f;
-                                accumulateDotAndNormB8(askedData, vec.constData(), dim, d, nb, td, tnb);
-                                cosines.append(finalizeUnitQueryCosine(reduce8(d, td), reduce8(nb, tnb)));
+                                cosines.append(scoreRawBlob(pq, blob.constData(), blob.size()));
                             }
                             const QList<Hit> hits = fuseHybrid(passages, cosines, query, count);
                             if (QCoreApplication *app = QCoreApplication::instance()) {
@@ -982,25 +1197,6 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
 // --- Across the library ---------------------------------------------------------
 
 namespace {
-
-double cosineWithRawBlob(const float *unitAsked, qsizetype dim, const char *blobData, qsizetype blobBytes) {
-    if (dim <= 0 || blobBytes != dim * qsizetype(sizeof(float)))
-        return 0.0;
-    alignas(32) float d[8] = {};
-    alignas(32) float nb[8] = {};
-    float td = 0.0f;
-    float tnb = 0.0f;
-    constexpr qsizetype kBlock = 256;
-    alignas(32) float buf[kBlock];
-    qsizetype i = 0;
-    while (i < dim) {
-        const qsizetype take = qMin(kBlock, dim - i);
-        std::memcpy(buf, blobData + i * qsizetype(sizeof(float)), size_t(take) * sizeof(float));
-        accumulateDotAndNormB8(unitAsked + i, buf, take, d, nb, td, tnb);
-        i += take;
-    }
-    return finalizeUnitQueryCosine(reduce8(d, td), reduce8(nb, tnb));
-}
 
 bool parsePassageKey(const QString &key, int *chapterOut, qint64 *startOut, qint64 *endOut) {
     const qsizetype c1 = key.indexOf(QLatin1Char(':'));
@@ -1029,13 +1225,9 @@ QList<PassageIndex::LibraryHit> rankLibraryInDb(QSqlDatabase &db, const QString 
     if (!db.isOpen() || model.isEmpty() || asked.isEmpty() || count <= 0)
         return best;
 
-    const QList<float> unitAsked = PassageIndex::normalize(asked);
-    const qsizetype dim = unitAsked.size();
-    const float *askedData = unitAsked.constData();
-    float askedNormSq = 0.0f;
-    for (qsizetype i = 0; i < dim; ++i)
-        askedNormSq += askedData[i] * askedData[i];
-    if (!std::isfinite(askedNormSq) || askedNormSq <= 0.0f)
+    // Pre-normalize AND pre-quantize the query vector once before scanning SQLite rows.
+    const PreparedQuery pq = prepareQuery(asked);
+    if (!pq.valid)
         return best;
 
     struct HeapEntry {
@@ -1082,7 +1274,7 @@ QList<PassageIndex::LibraryHit> rankLibraryInDb(QSqlDatabase &db, const QString 
             return;
         while (query.next()) {
             const QByteArray blob = query.value(2).toByteArray();
-            const double score = cosineWithRawBlob(askedData, dim, blob.constData(), blob.size());
+            const double score = scoreRawBlob(pq, blob.constData(), blob.size());
             if (score < minCosine)
                 continue;
             if (int(bestByChapter.size()) >= count && score <= minHeapScore)

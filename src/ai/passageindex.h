@@ -53,6 +53,17 @@ public:
     static double cosine(const QList<float> &a, const QList<float> &b);
     // Normalizes an embedding vector to unit L2 norm (returns input unchanged if norm == 0).
     static QList<float> normalize(const QList<float> &vector);
+    // Minimum dimension at which newly stored vectors use tagged symmetric int8 quantization
+    // (smaller vectors keep raw normalized float32 since the 8-byte header outweighs savings).
+    static constexpr qsizetype kMinQuantizeDims = 16;
+    // Tagged Q8 binary header: 4-byte magic ('Q','8','\0','\1') + 4-byte LE float32 scale.
+    static constexpr qsizetype kQuantizedHeaderBytes = 8;
+    // Encodes a vector as a tagged symmetric int8-quantized unit vector BLOB (8 + dims bytes).
+    static QByteArray quantize(const QList<float> &vector);
+    // Decodes a tagged Q8 BLOB or legacy raw float32 BLOB back to float32 (empty on invalid input).
+    static QList<float> dequantize(const QByteArray &blob);
+    // Returns true iff `blob` carries a valid tagged Q8 header and at least one int8 element.
+    static bool isQuantizedBlob(const QByteArray &blob);
 
     // Embeds what isn't yet (calling `progress` with the share done), then
     // `done` (with an error message, or "").
@@ -93,17 +104,18 @@ private:
         QMutex mutex;
         int bookId = 0;
         QString model;
-        QHash<QString, QList<float>> vectors;
+        // Raw packed BLOBs (tagged Q8 or legacy float32) to keep RAM ~4x smaller and score via SIMD directly.
+        QHash<QString, QByteArray> vectors;
         bool loaded = false;
     };
 
     QString model() const;
     QString databasePath() const;
-    QHash<QString, QList<float>> load(int bookId, const QString &modelName = {}) const;
-    static QHash<QString, QList<float>> loadFromFile(const QString &dbPath, int bookId, const QString &modelName);
+    QHash<QString, QByteArray> load(int bookId, const QString &modelName = {}) const;
+    static QHash<QString, QByteArray> loadFromFile(const QString &dbPath, int bookId, const QString &modelName);
     void loadVectorsAsync(int bookId, const QString &modelName, int expectedCount,
                           std::function<bool()> stillValid,
-                          std::function<void(const QHash<QString, QList<float>> &)> then);
+                          std::function<void(const QHash<QString, QByteArray> &)> then);
     bool store(int bookId, const QString &modelName, const Passage &passage, const QList<float> &vector);
     static QString keyOf(const Passage &passage);
     void embedNext(int bookId);

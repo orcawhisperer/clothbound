@@ -22,6 +22,7 @@
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QImage>
 #include <QPainter>
@@ -793,9 +794,14 @@ void benchPassageIndex10k(const QString &dir) {
             }
         }
         db.commit();
+        {
+            QSqlQuery ckpt(db);
+            ckpt.exec(QStringLiteral("PRAGMA wal_checkpoint(TRUNCATE)"));
+        }
         db.close();
     }
     QSqlDatabase::removeDatabase(connName);
+    const qint64 fp32DbBytes = QFileInfo(dbPath).size();
 
     QSet<int> shelfIds;
     for (int b = 1; b <= 10; ++b)
@@ -838,7 +844,8 @@ void benchPassageIndex10k(const QString &dir) {
         printRow("passageIndex.rank10k shelf(10 books)", median(times), "ms/query", note.constData());
     }
 
-    // 2. Full-library semantic ranking across all 10,000 768-dim vectors.
+    // 2. Full-library semantic ranking across all 10,000 768-dim legacy fp32 vectors.
+    double fp32FullMs = 0.0;
     {
         std::vector<double> times;
         for (int i = 0; i < 5; ++i) {
@@ -848,9 +855,132 @@ void benchPassageIndex10k(const QString &dir) {
             Q_UNUSED(hits);
             times.push_back(double(t.nsecsElapsed()) / 1e6);
         }
+        fp32FullMs = median(times);
         const QByteArray note =
             QStringLiteral("(median of 5, hits=%1, 10k x 768-dim)").arg(warmFull.size()).toUtf8();
-        printRow("passageIndex.rank10k full(10k vecs)", median(times), "ms/query", note.constData());
+        printRow("passageIndex.rank10k full(10k vecs)", fp32FullMs, "ms/query", note.constData());
+    }
+
+    // 3. Seed the exact same 10,000 768-dim vectors as tagged symmetric int8 Q8 BLOBs (776 B vs 3,072 B).
+    const QString q8DbPath = dir + QStringLiteral("/passage_10k_q8.sqlite");
+    std::mt19937 rngQ8(20261125u);
+    (void)makeNormalizedVec(rngQ8, nullptr, 0.0f);  // consume identical `asked` draw
+    const QString q8Conn = QStringLiteral("bench-pi10k-q8-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    {
+        QSqlDatabase db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), q8Conn);
+        db.setDatabaseName(q8DbPath);
+        if (!db.open()) {
+            fprintf(stderr, "Failed to open passage_10k_q8.sqlite\n");
+            QSqlDatabase::removeDatabase(q8Conn);
+            return;
+        }
+        {
+            QSqlQuery pragma(db);
+            pragma.exec(QStringLiteral("PRAGMA journal_mode = WAL"));
+            pragma.exec(QStringLiteral("PRAGMA synchronous = NORMAL"));
+        }
+        PassageIndex schemaInit(nullptr, q8Conn);
+        Q_UNUSED(schemaInit);
+
+        db.transaction();
+        QSqlQuery ins(db);
+        ins.prepare(QStringLiteral(
+            "INSERT INTO passage_vectors (book_id, model, passage, vector) VALUES (?, ?, ?, ?)"));
+        for (int b = 1; b <= numBooks; ++b) {
+            for (int p = 0; p < passagesPerBook; ++p) {
+                const bool boosted = (p % 10 == 0) && (b <= 10 || b % 2 == 0);
+                const float mix = boosted ? (0.35f + float((b * 3 + p) % 10) * 0.055f) : 0.0f;
+                const QList<float> vec = makeNormalizedVec(rngQ8, boosted ? &asked : nullptr, mix);
+                const QByteArray q8Blob = PassageIndex::quantize(vec);
+                const int chapter = p / 5;
+                const qint64 start = qint64(p % 5) * 1100;
+                const qint64 end = start + 1000;
+                const QString key = QStringLiteral("%1:%2:%3:%4")
+                                        .arg(chapter)
+                                        .arg(start)
+                                        .arg(end)
+                                        .arg(b * 100 + p, 8, 16, QLatin1Char('0'));
+                ins.addBindValue(b);
+                ins.addBindValue(model);
+                ins.addBindValue(key);
+                ins.addBindValue(q8Blob);
+                if (!ins.exec()) {
+                    fprintf(stderr, "ins(passage_vectors q8) failed: %s\n", qPrintable(ins.lastError().text()));
+                    db.rollback();
+                    db.close();
+                    QSqlDatabase::removeDatabase(q8Conn);
+                    return;
+                }
+            }
+        }
+        db.commit();
+        {
+            QSqlQuery ckpt(db);
+            ckpt.exec(QStringLiteral("PRAGMA wal_checkpoint(TRUNCATE)"));
+        }
+        db.close();
+    }
+    QSqlDatabase::removeDatabase(q8Conn);
+
+    const qint64 q8DbBytes = QFileInfo(q8DbPath).size();
+    const double fp32Mb = double(fp32DbBytes) / (1024.0 * 1024.0);
+    const double q8Mb = double(q8DbBytes) / (1024.0 * 1024.0);
+    const double ratio = q8DbBytes > 0 ? double(fp32DbBytes) / double(q8DbBytes) : 0.0;
+
+    // Warm Q8 page cache and verify ranking & accuracy against exact fp32.
+    const QList<PassageIndex::LibraryHit> warmQ8Shelf =
+        PassageIndex::rankLibrary(q8DbPath, model, asked, 12, PassageIndex::minSemanticScore, shelfIds);
+    const QList<PassageIndex::LibraryHit> warmQ8Full =
+        PassageIndex::rankLibrary(q8DbPath, model, asked, 12, PassageIndex::minSemanticScore);
+    double maxTopScoreErr = 0.0;
+    const qsizetype cmpCount = qMin(warmFull.size(), warmQ8Full.size());
+    for (qsizetype i = 0; i < cmpCount; ++i)
+        maxTopScoreErr = std::max(maxTopScoreErr, std::abs(warmFull[i].score - warmQ8Full[i].score));
+    if (warmQ8Shelf.size() != 12 || warmQ8Full.size() != 12 || maxTopScoreErr >= 0.005) {
+        fprintf(stderr, "WARNING: unexpected passageIndex10k Q8 hits shelf=%lld full=%lld maxErr=%.5f\n",
+                static_cast<long long>(warmQ8Shelf.size()), static_cast<long long>(warmQ8Full.size()), maxTopScoreErr);
+    }
+
+    {
+        const QByteArray note = QStringLiteral("(vs %1 MB fp32, %2x smaller, maxErr=%3)")
+                                    .arg(fp32Mb, 0, 'f', 2)
+                                    .arg(ratio, 0, 'f', 2)
+                                    .arg(maxTopScoreErr, 0, 'f', 4)
+                                    .toUtf8();
+        printRow("passageIndex.rank10k q8 db size", q8Mb, "MB", note.constData());
+    }
+
+    {
+        std::vector<double> times;
+        for (int i = 0; i < 9; ++i) {
+            QElapsedTimer t;
+            t.start();
+            const auto hits =
+                PassageIndex::rankLibrary(q8DbPath, model, asked, 12, PassageIndex::minSemanticScore, shelfIds);
+            Q_UNUSED(hits);
+            times.push_back(double(t.nsecsElapsed()) / 1e6);
+        }
+        const QByteArray note =
+            QStringLiteral("(median of 9, hits=%1, 768-dim Q8)").arg(warmQ8Shelf.size()).toUtf8();
+        printRow("passageIndex.rank10k q8 shelf(10 bk)", median(times), "ms/query", note.constData());
+    }
+
+    {
+        std::vector<double> times;
+        for (int i = 0; i < 5; ++i) {
+            QElapsedTimer t;
+            t.start();
+            const auto hits = PassageIndex::rankLibrary(q8DbPath, model, asked, 12, PassageIndex::minSemanticScore);
+            Q_UNUSED(hits);
+            times.push_back(double(t.nsecsElapsed()) / 1e6);
+        }
+        const double q8FullMs = median(times);
+        const double speedup = q8FullMs > 0.0 ? fp32FullMs / q8FullMs : 0.0;
+        const QByteArray note = QStringLiteral("(median of 5, hits=%1, %2x vs fp32)")
+                                    .arg(warmQ8Full.size())
+                                    .arg(speedup, 0, 'f', 2)
+                                    .toUtf8();
+        printRow("passageIndex.rank10k q8 full(10k)", q8FullMs, "ms/query", note.constData());
     }
 }
 
