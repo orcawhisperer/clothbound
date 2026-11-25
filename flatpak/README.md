@@ -5,8 +5,16 @@ Universal Linux Flatpak packaging for Ubuntu, Fedora, Debian, Linux Mint, Pop!_O
 ## Install from a GitHub Release bundle
 
 ```sh
-flatpak install --user ./clothbound-<version>-x86_64.flatpak
+flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+flatpak install --user -y flathub org.kde.Platform//6.10
+flatpak install --user -y ./clothbound-<version>-x86_64.flatpak
 flatpak run app.clothbound.Reader
+```
+
+On GNOME Wayland desktops (Ubuntu, Fedora, Debian), install the Adwaita decoration extension for native light/dark titlebars:
+
+```sh
+flatpak install --user -y flathub org.kde.WaylandDecoration.QAdwaitaDecorations//6.10
 ```
 
 ## Run the standalone local MCP server (`clothbound-mcp`)

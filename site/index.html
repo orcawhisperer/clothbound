@@ -3758,8 +3758,8 @@ kbd {
     flatpak: {
       label: "Step 01 · Flatpak (Debian · Ubuntu · Fedora · Mint · SteamOS)",
       title: "Install v0.5.1 via Flatpak (app.clothbound.Reader)",
-      noteHtml: 'Universal sandboxed bundle with Qt 6, WebEngine, PDF, and live desktop light/dark portal support built in (<a href="https://github.com/orcawhisperer/clothbound/tree/master/flatpak" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">Flatpak guide</a> · <a href="https://github.com/orcawhisperer/clothbound/releases/download/v0.5.1/SHA256SUMS" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">SHA256SUMS</a>).',
-      cmd: "curl -LO https://github.com/orcawhisperer/clothbound/releases/download/v0.5.1/clothbound-0.5.1-x86_64.flatpak && flatpak install --user ./clothbound-0.5.1-x86_64.flatpak"
+      noteHtml: 'Universal sandboxed bundle with Qt 6, WebEngine, PDF, and live desktop light/dark portal support built in (<a href="https://github.com/orcawhisperer/clothbound/tree/master/flatpak" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">Flatpak guide</a> · <a href="https://github.com/orcawhisperer/clothbound/releases/download/v0.5.1/SHA256SUMS" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">SHA256SUMS</a>). Adds Flathub and the Qt 6.10 runtime automatically if needed.',
+      cmd: "flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo && flatpak install --user -y flathub org.kde.Platform//6.10 && curl -LO https://github.com/orcawhisperer/clothbound/releases/download/v0.5.1/clothbound-0.5.1-x86_64.flatpak && flatpak install --user -y ./clothbound-0.5.1-x86_64.flatpak"
     },
     arch: {
       label: "Step 01 · Arch Linux / Omarchy (x86_64)",

@@ -94,11 +94,16 @@ main() {
         curl -fsSL -o SHA256SUMS "$base/SHA256SUMS" || die "Could not download SHA256SUMS for Clothbound $version."
         say "Verifying checksum"
         verify_sha256 "$bundle"
-        if [ "$dry" = 1 ]; then say "Dry run: would run flatpak install --user -y ./$bundle"; return; fi
-        say "Ensuring Flathub user remote is configured for runtime dependencies"
+        if [ "$dry" = 1 ]; then say "Dry run: would install org.kde.Platform//6.10 and ./$bundle via flatpak --user"; return; fi
+        say "Ensuring Flathub user remote and Qt 6.10 runtime are ready"
         flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        flatpak remote-modify --user --enable flathub >/dev/null 2>&1 || true
+        flatpak install --user -y --noninteractive flathub org.kde.Platform//6.10
+        if printf '%s' "${XDG_CURRENT_DESKTOP:-}" | grep -qi gnome; then
+          flatpak install --user -y --noninteractive flathub org.kde.WaylandDecoration.QAdwaitaDecorations//6.10 >/dev/null 2>&1 || true
+        fi
         say "Installing Clothbound $version via Flatpak"
-        flatpak install --user -y "./$bundle" </dev/tty
+        flatpak install --user -y --noninteractive "./$bundle"
         say "Clothbound $version is installed. Open it from your app launcher, or run: flatpak run app.clothbound.Reader"
         return
         ;;
