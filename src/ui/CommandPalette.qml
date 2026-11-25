@@ -73,6 +73,8 @@ FocusScope {
         open = false
         searchDebounce.stop()
         meaningDebounce.stop()
+        cachedBooks = []
+        cachedMarks = []
         closed()
     }
 
@@ -158,7 +160,8 @@ FocusScope {
 
     function voiceSubtitle() {
         const name = narration.voiceName !== "" ? narration.voiceName : qsTr("Read aloud")
-        const where = narration.voice.startsWith("local:") ? qsTr("on this computer") : qsTr("Gemini")
+        const isOffline = narration.voice.startsWith("builtin:") || narration.voice.startsWith("studio:")
+        const where = isOffline ? qsTr("on this computer") : qsTr("Gemini")
         return narration.voiceName !== "" ? (name + " · " + where) : name
     }
 
@@ -550,6 +553,10 @@ FocusScope {
     }
 
     visible: opacity > 0
+    onVisibleChanged: {
+        if (!visible && !open)
+            results = []
+    }
     opacity: open ? 1 : 0
     Behavior on opacity { NumberAnimation { duration: 140; easing.type: Easing.OutCubic } }
 

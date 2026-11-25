@@ -125,6 +125,8 @@ FocusScope {
     // WebEngine is only instantiated once an EPUB is opened, so PDF-only
     // sessions don't pay Chromium's memory cost.
     property bool webNeeded: false
+    property bool epubSurfaceOpen: false
+    property bool epubClosing: false
     readonly property var web: webLoader.item
 
     function snapshotAppearance() {
@@ -240,21 +242,55 @@ FocusScope {
             strings: { goToNote: qsTr("Go to note"), listenFromHere: qsTr("Listen from here") },
         }
     }
+    function closeWebSurface() {
+        if (!epubSurfaceOpen && !(surfaceReady && web && !pdf))
+            return
+        epubSurfaceOpen = false
+        if (surfaceReady && web) {
+            epubClosing = true
+            web.updateLifecycleState()
+            web.runJavaScript("clothbound.close()", function() {
+                view.epubClosing = false
+                if (view.web)
+                    view.web.updateLifecycleState()
+            })
+        }
+    }
     function openBook() {
         if (!reader.open)
             return
         clearSurfaceNudge()
         surfaceWatcher.resetSurfaceNudgeCooldown()
-        if (!pdf)
-            webNeeded = true
-        if (!surfaceReady && !pdf)
-            return
+        pendingStartListening = false
+        listenOffer.close()
+        if (pageMenu.opened)
+            pageMenu.close()
+        if (readerMore.opened)
+            readerMore.close()
+        if (citeMenu.opened)
+            citeMenu.close()
+        pageMenu.place = ({})
+        selectionBar.visible = false
+        view.selection = ({})
+        view.lastCompanionTarget = null
         decoratedChapter = -1
         jumpPillVisible = false
         lightbox.close()
         if (pdfSurface) {
             pdfSurface.cancelSnip()
             pdfSurface.closePeek()
+            pdfSurface.clearSelection()
+        }
+        if (pdf) {
+            closeWebSurface()
+        } else {
+            epubClosing = false
+            webNeeded = true
+            if (web)
+                web.updateLifecycleState()
+            if (!surfaceReady)
+                return
+            epubSurfaceOpen = true
         }
         js("clothbound.open(" + JSON.stringify(reader.manifest) + "," + JSON.stringify(reader.startPosition) + ","
            + JSON.stringify(style()) + ")")
@@ -266,21 +302,28 @@ FocusScope {
         refreshLater.stop()
         pendingStartListening = false
         listenOffer.close()
+        if (pageMenu.opened)
+            pageMenu.close()
+        if (readerMore.opened)
+            readerMore.close()
+        if (citeMenu.opened)
+            citeMenu.close()
+        pageMenu.place = ({})
         closePanels()
+        if (searchBar.open)
+            searchBar.close()
         lightbox.close()
         if (pdfSurface) {
             pdfSurface.cancelSnip()
             pdfSurface.closePeek()
+            pdfSurface.clearSelection()
         }
         jumpPillVisible = false
         selectionBar.visible = false
         view.selection = ({})
         view.lastCompanionTarget = null
         decoratedChapter = -1
-        if (pdf && pdfSurface)
-            pdfSurface.clearSelection()
-        else if (surfaceReady && web)
-            js("clothbound.close()")
+        closeWebSurface()
     }
     function toggleSnipMode() {
         if (!pdf || !reader.open || !pdfSurface)
@@ -826,18 +869,20 @@ FocusScope {
                 view.openBook()
         }
         function onBookChanged() {
-            if (reader.open) {
-                if (reader.format === "pdf")
-                    win.tip("pdf", qsTr("PDF pages follow your reading theme. W fits width, 0 fits page, 1 is actual size, and + / − zoom."))
-                else
-                    view.webNeeded = true
-                view.closePanels()
-                // J3 first book: reveal the top bar gently alongside the tips bar.
-                view.chromeShown = onboarding.tips.indexOf("keys") < 0
-                if (view.chromeShown)
-                    chromeTimer.restart()
-                view.openBook()
+            if (!reader.open) {
+                view.closeBook()
+                return
             }
+            if (reader.format === "pdf")
+                win.tip("pdf", qsTr("PDF pages follow your reading theme. W fits width, 0 fits page, 1 is actual size, and + / − zoom."))
+            else
+                view.webNeeded = true
+            view.closePanels()
+            // J3 first book: reveal the top bar gently alongside the tips bar.
+            view.chromeShown = onboarding.tips.indexOf("keys") < 0
+            if (view.chromeShown)
+                chromeTimer.restart()
+            view.openBook()
         }
         function onTap(zone) {
             if (zone === "turn")
@@ -1993,13 +2038,16 @@ FocusScope {
             visible: win.visible && win.visibility !== Window.Minimized
             backgroundColor: view.look.bg
             function updateLifecycleState() {
-                // QtWebEngine refuses Active -> Frozen while the view is still visible
-                // in the scene graph (e.g. during readerLoader's close fade). Freeze
-                // only once the item or one of its ancestors is actually hidden.
+                // Keep WebEngine active whenever an EPUB is open (or draining close()),
+                // without waiting for readerReveal > 0.01. QtWebEngine refuses
+                // Active -> Frozen while visible in the scene graph (e.g. close fade),
+                // so freeze only once hidden and idle.
                 const actuallyVisible = visible && webLoader.visible && view.visible
                                         && (!view.parent || view.parent.visible)
-                const target = (!actuallyVisible && !narration.active && !download.active)
-                    ? WebEngineView.LifecycleState.Frozen : WebEngineView.LifecycleState.Active
+                const wantActive = (reader.open && !view.pdf) || view.epubClosing
+                                   || actuallyVisible || narration.active || download.active
+                const target = wantActive
+                    ? WebEngineView.LifecycleState.Active : WebEngineView.LifecycleState.Frozen
                 if (lifecycleState !== target)
                     lifecycleState = target
             }
@@ -2052,8 +2100,12 @@ FocusScope {
             }
             onNewWindowRequested: (request) => {}
             onNavigationRequested: (request) => {
-                if (!request.url.toString().startsWith("clothbound://"))
-                    request.reject()
+                const u = request.url.toString()
+                if (u.startsWith("clothbound://"))
+                    return
+                if (!request.isMainFrame && (u === "about:blank" || u === "about:srcdoc"))
+                    return
+                request.reject()
             }
             onJavaScriptConsoleMessage: (level, message, line, source) => {
                 if (level === WebEngineView.ErrorMessageLevel || debugMode)

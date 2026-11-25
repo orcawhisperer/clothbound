@@ -37,6 +37,7 @@ T.RadioButton {
         leftPadding: control.indicator && !control.mirrored ? control.indicator.width + control.spacing : 0
         rightPadding: control.indicator && control.mirrored ? control.indicator.width + control.spacing : 0
         text: control.text
+        textFormat: Text.PlainText
         font: control.font
         color: control.palette.windowText
         elide: Text.ElideRight

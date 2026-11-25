@@ -91,6 +91,14 @@ Item {
         prefetchTimer.restart()
     }
 
+    function zoomByWheel(angleDeltaY) {
+        const ay = Number(angleDeltaY) || 0
+        if (ay === 0)
+            return
+        const steps = Math.max(-2.0, Math.min(2.0, ay / 120.0))
+        nudgeZoom(Math.pow(1.1, steps))
+    }
+
     function fitPageWidthFor(pageIndex, pageCount, roomW, roomH, cropRect, secondPage) {
         const idx = pageIndex >= 0 ? pageIndex : 0
         const cw = cropRect && cropRect.width > 0 ? cropRect.width : 1
@@ -586,6 +594,8 @@ Item {
                     asynchronous: true
                     cache: false
                     retainWhileLoading: true
+                    smooth: true
+                    mipmap: true
                     source: pageItem.page >= 0 && reader.pdfSource !== "" ? reader.pdfSource + "/" + pageItem.page + surface.colors : ""
                     // Bucket width to 64 px steps so slight resizes hit the LRU cache.
                     sourceSize.width: Math.max(64, Math.ceil(pageItem.fullWidth * Screen.devicePixelRatio / 64) * 64)
@@ -863,7 +873,7 @@ Item {
             anchors.fill: parent
             hoverEnabled: true
             acceptedButtons: Qt.LeftButton | Qt.RightButton
-            cursorShape: surface.canPanX
+            cursorShape: surface.canPan
                 ? (pressed && panning ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
                 : (hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor)
             preventStealing: true
@@ -900,7 +910,7 @@ Item {
                 skipRelease = false
                 from = Qt.point(pageItem.toPageX(event.x), pageItem.toPageY(event.y))
                 dragged = false
-                panning = surface.canPanX && !(event.modifiers & Qt.ShiftModifier)
+                panning = surface.canPan && !(event.modifiers & Qt.ShiftModifier)
                 if (panning) {
                     panStart = mouse.mapToItem(surface, event.x, event.y)
                     startContentX = surface.scrolling ? pageList.panX : zoomed.contentX
@@ -1245,7 +1255,7 @@ Item {
             WheelHandler {
                 acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
                 acceptedModifiers: Qt.ControlModifier
-                onWheel: (event) => surface.nudgeZoom(event.angleDelta.y > 0 ? 1.1 : 0.9)
+                onWheel: (event) => surface.zoomByWheel(event.angleDelta.y)
             }
         }
 
@@ -1334,7 +1344,7 @@ Item {
         WheelHandler {
             acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
             acceptedModifiers: Qt.ControlModifier
-            onWheel: (event) => surface.nudgeZoom(event.angleDelta.y > 0 ? 1.1 : 0.9)
+            onWheel: (event) => surface.zoomByWheel(event.angleDelta.y)
         }
         WheelHandler {
             enabled: pageList.maxPanX > 2
@@ -2109,9 +2119,9 @@ Item {
             return
         }
         if (event.modifiers & Qt.ControlModifier) {
-            if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) { zoom = Math.min(4, zoom * 1.15); event.accepted = true }
-            else if (event.key === Qt.Key_Minus) { zoom = Math.max(1, zoom / 1.15); event.accepted = true }
-            else if (event.key === Qt.Key_0) { zoom = 1; event.accepted = true }
+            if (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal) { nudgeZoom(1.15); event.accepted = true }
+            else if (event.key === Qt.Key_Minus) { nudgeZoom(1 / 1.15); event.accepted = true }
+            else if (event.key === Qt.Key_0) { setFitMode("page"); event.accepted = true }
         }
     }
 }

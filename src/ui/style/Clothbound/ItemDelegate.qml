@@ -15,6 +15,7 @@ T.ItemDelegate {
 
     contentItem: Text {
         text: control.text
+        textFormat: Text.PlainText
         font: control.font
         color: control.highlighted ? control.palette.highlightedText : control.palette.windowText
         elide: Text.ElideRight

@@ -32,6 +32,7 @@ T.MenuItem {
             anchors.rightMargin: keyText.visible ? 16 : 0
             anchors.verticalCenter: parent.verticalCenter
             text: control.label
+            textFormat: Text.PlainText
             font: control.font
             color: control.highlighted ? control.palette.highlightedText : control.palette.windowText
             elide: Text.ElideRight

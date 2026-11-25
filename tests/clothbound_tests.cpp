@@ -11622,6 +11622,717 @@ Item {
         QVERIFY(mpris.metadata().isEmpty());
     }
     // === end fix-build-qa tests ===
+
+    // === fix-reader-ui tests ===
+    void fixReaderUiReaderJsRecoveryClobberAndPerf() {
+        const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
+        if (node.isEmpty())
+            QSKIP("node executable not available");
+
+        const QString readerJsPath = QFINDTESTDATA("../src/reader/reader.js");
+        QVERIFY(QFileInfo::exists(readerJsPath));
+
+        const QString harness = QStringLiteral(R"JS(
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+
+const source = fs.readFileSync(process.argv[1], 'utf8');
+let domReady = null;
+let fakeNow = 1000;
+let nextTimerId = 1;
+const timers = new Map();
+
+function fakeSetTimeout(fn, delay) {
+    const id = nextTimerId++;
+    timers.set(id, { fn, at: fakeNow + Math.max(0, Number(delay) || 0) });
+    return id;
+}
+function fakeClearTimeout(id) { timers.delete(id); }
+function advanceTimers(ms) {
+    fakeNow += ms;
+    while (true) {
+        let earliestId = null, earliest = null;
+        for (const [id, entry] of timers.entries()) {
+            if (entry.at <= fakeNow && (!earliest || entry.at < earliest.at)) {
+                earliestId = id;
+                earliest = entry;
+            }
+        }
+        if (!earliest) break;
+        timers.delete(earliestId);
+        earliest.fn();
+    }
+}
+
+let autoRaf = true;
+let nextRafId = 1;
+const rafQueue = new Map();
+function fakeRaf(cb) {
+    const id = nextRafId++;
+    rafQueue.set(id, cb);
+    if (autoRaf) {
+        queueMicrotask(() => {
+            const fn = rafQueue.get(id);
+            if (!fn) return;
+            rafQueue.delete(id);
+            fakeNow += 120;
+            fn(fakeNow);
+        });
+    }
+    return id;
+}
+function fakeCancelRaf(id) { rafQueue.delete(id); }
+function stepRaf(deltaMs) {
+    fakeNow += deltaMs;
+    const batch = [...rafQueue.entries()];
+    rafQueue.clear();
+    for (const [, fn] of batch) fn(fakeNow);
+}
+
+function makeStyle() {
+    const props = {};
+    return {
+        props, cssText: '', opacity: '', transform: '', backgroundColor: '',
+        willChange: '', colorScheme: '', left: '', top: '', width: '', height: '',
+        setProperty(k, v, prio) { this[k] = v; props[k] = { value: v, prio: prio || '' }; },
+    };
+}
+function makeClassList() {
+    const s = new Set();
+    return { add(c) { s.add(c); }, remove(c) { s.delete(c); }, contains(c) { return s.has(c); } };
+}
+
+let getImageDataCalls = 0;
+let badgeCreations = 0;
+const frameModes = new Map(); // url -> 'ok' | 'error' | 'hang' | 'nullDoc' | 'clobber' | 'image' | 'multipage'
+const createdDocs = new Map();
+
+function makeDoc(ownerFrame, url, mode) {
+    const listeners = new Map();
+    const headChildren = [];
+    const byId = new Map();
+    if (mode === 'clobber') {
+        byId.set('cb-typography', { localName: 'div', id: 'cb-typography', textContent: 'PRESERVE_TYPO' });
+        byId.set('cb-layout', { localName: 'p', id: 'cb-layout', textContent: 'PRESERVE_LAYOUT' });
+    }
+    const textNode = { nodeType: 3, data: 'Clothbound chapter text for testing recovery and perf.', parentElement: null };
+    const bodyEl = {
+        childNodes: [textNode],
+        lastElementChild: {
+            getClientRects() { return [{ left: 0, right: 200, top: 0, bottom: 24, width: 200, height: 24 }]; },
+            getBoundingClientRect() { return { left: 0, right: 200, top: 0, bottom: 24, width: 200, height: 24 }; },
+        },
+    };
+    textNode.parentElement = bodyEl;
+    const pages = mode === 'multipage' ? 2 : 1;
+    const docEl = {
+        style: makeStyle(),
+        get scrollWidth() { return pages * (parseFloat(ownerFrame.style.width) || 680); },
+        scrollHeight: 692,
+        scrollLeft: 0,
+        scrollTop: 0,
+        scrollTo(opts) {
+            if (opts && typeof opts.left === 'number') this.scrollLeft = opts.left;
+            if (opts && typeof opts.top === 'number') this.scrollTop = opts.top;
+            for (const fn of (listeners.get('scroll') || [])) fn();
+        },
+        appendChild() {},
+    };
+    const imgAttrs = new Map();
+    const mockImg = {
+        complete: true, naturalWidth: 16, naturalHeight: 16,
+        src: 'clothbound://book/1/fig.png', currentSrc: 'clothbound://book/1/fig.png',
+        hasAttribute(k) { return imgAttrs.has(k); },
+        setAttribute(k, v) { imgAttrs.set(k, v); },
+        getAttribute(k) { return imgAttrs.get(k); },
+    };
+    const doc = {
+        URL: url,
+        _headChildren: headChildren,
+        _byId: byId,
+        _mockImg: mockImg,
+        documentElement: docEl,
+        head: {
+            appendChild(el) {
+                headChildren.push(el);
+                if (el.id && !byId.has(el.id)) byId.set(el.id, el);
+            },
+        },
+        body: bodyEl,
+        scrollingElement: docEl,
+        fonts: { ready: Promise.resolve() },
+        images: mode === 'image' ? [mockImg] : [],
+        defaultView: {
+            getComputedStyle() { return { writingMode: 'horizontal-tb', direction: 'ltr', textAlign: 'start', whiteSpace: 'normal' }; },
+            CSS: { highlights: new Map() },
+            Highlight: class { constructor(...r) { this.ranges = r; this.priority = 0; } },
+        },
+        getElementById(id) { return byId.get(id) || null; },
+        createElementNS(_ns, tag) { return { localName: tag, id: '', textContent: '', style: makeStyle() }; },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        addEventListener(type, fn) {
+            if (!listeners.has(type)) listeners.set(type, []);
+            listeners.get(type).push(fn);
+        },
+        removeEventListener() {},
+        createTreeWalker() {
+            let done = false;
+            return { nextNode() { if (done) return null; done = true; return textNode; } };
+        },
+        createRange() {
+            return {
+                selectNodeContents() {},
+                setStart() {},
+                setEnd() {},
+                getClientRects() { return [{ left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }]; },
+                getBoundingClientRect() { return { left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }; },
+            };
+        },
+        getSelection() { return { isCollapsed: true, removeAllRanges() {} }; },
+    };
+    createdDocs.set(url, doc);
+    return doc;
+}
+
+function makeFrame(id) {
+    const f = {
+        id,
+        style: makeStyle(),
+        classList: makeClassList(),
+        contentDocument: null,
+        contentWindow: null,
+        onload: null,
+        onerror: null,
+        _src: 'about:blank',
+        setAttribute() {},
+        removeAttribute() {},
+        getBoundingClientRect() { return { left: 160, top: 54, width: parseFloat(this.style.width) || 680, height: 692 }; },
+    };
+    Object.defineProperty(f, 'src', {
+        get() { return this._src; },
+        set(v) {
+            this._src = v;
+            if (!v || v === 'about:blank') {
+                this.contentDocument = null;
+                this.contentWindow = null;
+                return;
+            }
+            const mode = frameModes.get(v) || 'ok';
+            if (mode === 'hang') {
+                this.contentDocument = null;
+                this.contentWindow = null;
+                return;
+            }
+            if (mode === 'error') {
+                this.contentDocument = null;
+                this.contentWindow = null;
+                const cb = this.onerror;
+                if (typeof cb === 'function') queueMicrotask(() => cb());
+                return;
+            }
+            if (mode === 'nullDoc') {
+                this.contentDocument = null;
+                this.contentWindow = null;
+                const cb = this.onload;
+                if (typeof cb === 'function') queueMicrotask(() => cb());
+                return;
+            }
+            const doc = makeDoc(this, v, mode);
+            this.contentDocument = doc;
+            this.contentWindow = doc.defaultView;
+            const cb = this.onload;
+            if (typeof cb === 'function') queueMicrotask(() => cb());
+        },
+    });
+    return f;
+}
+
+const stageEl = {
+    clientWidth: 1200, clientHeight: 800,
+    addEventListener() {},
+    getBoundingClientRect() { return { left: 0, top: 0, width: 1200, height: 800 }; },
+};
+const viewportEl = { style: makeStyle(), classList: makeClassList() };
+const bookFrame = makeFrame('book');
+const backFrame = makeFrame('book-back');
+const overlayEl = { appendChild() {} };
+const docEl = { style: makeStyle() };
+const documentMock = {
+    documentElement: docEl,
+    body: { appendChild(el) { return el; } },
+    getElementById(id) {
+        if (id === 'stage') return stageEl;
+        if (id === 'viewport') return viewportEl;
+        if (id === 'book') return bookFrame;
+        if (id === 'book-back') return backFrame;
+        if (id === 'overlay') return overlayEl;
+        return null;
+    },
+    createElement(tag) {
+        if (tag === 'canvas') {
+            return {
+                width: 32, height: 32,
+                getContext() {
+                    return {
+                        clearRect() {},
+                        drawImage() {},
+                        getImageData(_x, _y, w, h) {
+                            ++getImageDataCalls;
+                            const data = new Uint8ClampedArray(w * h * 4);
+                            // Half transparent, half dark monochrome pixels -> data-cb-lineart.
+                            for (let i = 0; i < w * h; ++i) {
+                                data[i * 4 + 0] = 20;
+                                data[i * 4 + 1] = 20;
+                                data[i * 4 + 2] = 20;
+                                data[i * 4 + 3] = (i % 2 === 0) ? 0 : 255;
+                            }
+                            return { data };
+                        },
+                    };
+                },
+            };
+        }
+        if (tag === 'button') {
+            ++badgeCreations;
+            return {
+                tagName: 'BUTTON', type: '', className: '', title: '', innerHTML: '',
+                style: makeStyle(),
+                setAttribute() {}, addEventListener() {}, remove() {},
+            };
+        }
+        return { tagName: tag.toUpperCase(), id: '', style: makeStyle(), setAttribute() {}, remove() {} };
+    },
+    addEventListener(type, fn) { if (type === 'DOMContentLoaded') domReady = fn; },
+};
+
+const logs = [];
+let lastLoc = null;
+const bridge = {
+    surfaceLoaded() {},
+    relocated(loc) { lastLoc = loc; },
+    notifyPageTurn() {},
+    log(msg) { logs.push(String(msg)); },
+};
+
+const sandbox = {
+    console, Promise, URL, Uint8ClampedArray,
+    setTimeout: fakeSetTimeout, clearTimeout: fakeClearTimeout,
+    performance: { now: () => fakeNow },
+    requestAnimationFrame: fakeRaf, cancelAnimationFrame: fakeCancelRaf,
+    Node: { TEXT_NODE: 3 },
+    NodeFilter: { SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, FILTER_ACCEPT: 1, FILTER_REJECT: 2 },
+    CSS: { escape: s => s },
+    Hyphenation: { load: async () => false, node() {} },
+    document: documentMock,
+    window: { innerWidth: 1200, innerHeight: 800 },
+    qt: { webChannelTransport: {} },
+    QWebChannel: function(_t, cb) { cb({ objects: { bridge } }); },
+    ResizeObserver: class { observe() {} },
+    matchMedia: () => ({ matches: false }),
+    fetch: async () => ({ ok: true, text: async () => '', headers: { get: () => '' } }),
+};
+sandbox.globalThis = sandbox;
+const ctx = vm.createContext(sandbox);
+const clothbound = vm.runInContext(source + '\n;clothbound;', ctx);
+domReady();
+
+const makeStyleCfg = dark => ({
+    theme: { bg: dark ? '#1e1d1b' : '#fbfaf6', fg: dark ? '#dcd5c8' : '#23221f', link: '#8a6a2a',
+             muted: '#6f6b63', popover: '#fff', border: 'rgba(0,0,0,0.12)', selection: '#cde',
+             search: '#ff0', found: '#fa0', markYellow: '#ff0', markGreen: '#0f0', markBlue: '#00f',
+             markPink: '#f0f', speaking: '#eef', dark },
+    font: 'Literata', fontScale: 1.0, fontWeight: 400, lineHeight: 1.5, paragraphSpacing: 0.0,
+    margin: 0.1, measure: 30, justify: false, hyphenate: false, layout: 'single', singleColumn: false,
+    animate: true, reducedMotion: false, publisher: false, marginTop: 54, marginBottom: 54, radius: 0,
+    listening: false, strings: { goToNote: 'Go', listenFromHere: 'Listen' },
+});
+const makeBook = (session, href) => ({
+    session, base: `clothbound://book/${session}/`, language: 'en', rtl: false,
+    spine: [{ href, linear: true }], pageTargets: [],
+});
+
+(async () => {
+    // 1. onerror recovery: state.queue does NOT deadlock; next open() succeeds.
+    frameModes.set('clothbound://book/1/bad.xhtml', 'error');
+    frameModes.set('clothbound://book/2/good.xhtml', 'ok');
+    await clothbound.open(makeBook(1, 'bad.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    assert.ok(logs.some(m => m.includes('Failed to load chapter')), 'onerror should log error');
+    await clothbound.open(makeBook(2, 'good.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    assert.strictEqual(lastLoc.session, 2, 'queue recovered after onerror');
+
+    // 2. 10s safety timeout recovery: hanging iframe times out and unblocks state.queue.
+    logs.length = 0;
+    frameModes.set('clothbound://book/3/hang.xhtml', 'hang');
+    frameModes.set('clothbound://book/4/after-timeout.xhtml', 'ok');
+    const pHang = clothbound.open(makeBook(3, 'hang.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    await Promise.resolve();
+    advanceTimers(10001);
+    await pHang;
+    assert.ok(logs.some(m => m.includes('Timed out loading chapter')), 'timeout should log error');
+    await clothbound.open(makeBook(4, 'after-timeout.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    assert.strictEqual(lastLoc.session, 4, 'queue recovered after timeout');
+
+    // 3. contentDocument null check recovery.
+    logs.length = 0;
+    frameModes.set('clothbound://book/5/null.xhtml', 'nullDoc');
+    frameModes.set('clothbound://book/6/after-null.xhtml', 'ok');
+    await clothbound.open(makeBook(5, 'null.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    assert.ok(logs.some(m => m.includes('has no document')), 'null contentDocument should log error');
+    await clothbound.open(makeBook(6, 'after-null.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    assert.strictEqual(lastLoc.session, 6, 'queue recovered after null contentDocument');
+
+    // 4. Generation/session cancellation: opening Book B cancels hanging Book A immediately with ZERO error log.
+    logs.length = 0;
+    frameModes.set('clothbound://book/7/hang-cancel.xhtml', 'hang');
+    frameModes.set('clothbound://book/8/fresh.xhtml', 'ok');
+    const pCancelled = clothbound.open(makeBook(7, 'hang-cancel.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    await Promise.resolve();
+    const pFresh = clothbound.open(makeBook(8, 'fresh.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    await Promise.all([pCancelled, pFresh]);
+    assert.strictEqual(lastLoc.session, 8, 'book 8 opened cleanly without waiting for timeout');
+    assert.strictEqual(logs.length, 0, 'cancelled superseded load must not log an error');
+
+    // 5. styleElement() DOM clobbering protection: non-<style> elements with cb-typography/cb-layout stay untouched.
+    frameModes.set('clothbound://book/9/clobber.xhtml', 'clobber');
+    await clothbound.open(makeBook(9, 'clobber.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    const clobDoc = createdDocs.get('clothbound://book/9/clobber.xhtml');
+    assert.strictEqual(clobDoc.getElementById('cb-typography').textContent, 'PRESERVE_TYPO');
+    assert.strictEqual(clobDoc.getElementById('cb-layout').textContent, 'PRESERVE_LAYOUT');
+    const stylesAfterOpen = clobDoc._headChildren.filter(e => e.localName === 'style');
+    assert.strictEqual(stylesAfterOpen.length, 2, 'two real <style> elements injected into head');
+    await clothbound.setStyle(makeStyleCfg(true));
+    assert.strictEqual(clobDoc.getElementById('cb-typography').textContent, 'PRESERVE_TYPO');
+    assert.strictEqual(clobDoc._headChildren.filter(e => e.localName === 'style').length, 2, 'style updates reuse elements');
+
+    // 6. classifyImages() skipped in light theme and runs when switching to dark theme.
+    getImageDataCalls = 0;
+    frameModes.set('clothbound://book/10/img.xhtml', 'image');
+    await clothbound.open(makeBook(10, 'img.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    assert.strictEqual(getImageDataCalls, 0, 'light mode must skip synchronous getImageData()');
+    await clothbound.setStyle(makeStyleCfg(true));
+    assert.strictEqual(getImageDataCalls, 1, 'dark mode switch classifies raster images once');
+    const imgDoc = createdDocs.get('clothbound://book/10/img.xhtml');
+    assert.strictEqual(imgDoc._mockImg.hasAttribute('data-cb-lineart'), true);
+
+    // 7. layoutMarginNotes() paused during turnTo() RAF animation, runs once on settle.
+    frameModes.set('clothbound://book/11/notes.xhtml', 'multipage');
+    await clothbound.open(makeBook(11, 'notes.xhtml'), { chapter: 0, offset: 0 }, makeStyleCfg(false));
+    clothbound.marks([{ id: 1, start: 0, end: 10, color: 'yellow', noted: true, note: 'Margin note' }]);
+    await Promise.resolve();
+    badgeCreations = 0;
+    autoRaf = false;
+    const pTurn = clothbound.next();
+    await Promise.resolve();
+    // Step 3 intermediate RAF frames mid-turn: scroll fires every frame, but 0 badges created mid-turn!
+    stepRaf(40);
+    stepRaf(40);
+    stepRaf(40);
+    assert.strictEqual(badgeCreations, 0, 'layoutMarginNotes must pause during turnTo RAF animation');
+    // Finish turn and flush the settled scheduleMarginNotes RAF once.
+    stepRaf(140);
+    await pTurn;
+    stepRaf(16);
+    assert.strictEqual(badgeCreations, 1, 'layoutMarginNotes runs once after turnTo settles');
+
+    process.exit(0);
+})().catch(err => { console.error(err); process.exit(1); });
+)JS");
+
+        QProcess proc;
+        proc.start(node, {QStringLiteral("-e"), harness, readerJsPath});
+        QVERIFY2(proc.waitForFinished(10000), "node fix-reader-ui reader.js harness timed out");
+        const QByteArray stderrOut = proc.readAllStandardError();
+        QVERIFY2(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
+                 stderrOut.isEmpty() ? "node fix-reader-ui reader.js harness failed" : stderrOut.constData());
+    }
+
+    void fixReaderUiQmlSafetyLifecyclePanningAndPerf() {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString dataDir = dir.filePath(QStringLiteral("data"));
+        const QString cacheDir = dir.filePath(QStringLiteral("cache"));
+        const QString pdfPath = dir.filePath(QStringLiteral("pan.pdf"));
+        QVERIFY(TestBooks::write(pdfPath, TestBooks::pdf("<b>Injected Title</b>", "Ada Marsh")));
+
+        Library library(dataDir, cacheDir);
+        QVERIFY(library.open());
+        const int pdfId = library.addBookFile(pdfPath);
+        QVERIFY(pdfId > 0);
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(pdfId));
+        Marks marks(&library);
+        BookSearch bookSearch(&reader);
+        LibraryIndex libraryIndex(cacheDir + QStringLiteral("/index.sqlite"));
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices ai(&gemini, &keys, library.database().connectionName());
+        AudioCache audioCache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        Narration narration(&ai, &audioCache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        Companion companion(&ai, &reader, library.database().connectionName());
+        Illustrator illustrator(&ai, &reader, library.database().connectionName(), dir.filePath(QStringLiteral("pictures")));
+        LocalSetup localSetup(&ai);
+        Theme theme(dir.filePath(QStringLiteral("no-omarchy")));
+        Translator translator;
+
+        QQmlEngine engine;
+        engine.addImageProvider(QStringLiteral("pdf"), new PdfPages);
+        const QString srcRoot = QFINDTESTDATA("../src");
+        QVERIFY(QFileInfo::exists(srcRoot));
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("translator"), &translator);
+        engine.rootContext()->setContextProperty(QStringLiteral("library"), &library);
+        engine.rootContext()->setContextProperty(QStringLiteral("libraryIndex"), &libraryIndex);
+        engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+        engine.rootContext()->setContextProperty(QStringLiteral("marks"), &marks);
+        engine.rootContext()->setContextProperty(QStringLiteral("bookSearch"), &bookSearch);
+        engine.rootContext()->setContextProperty(QStringLiteral("ai"), &ai);
+        engine.rootContext()->setContextProperty(QStringLiteral("narration"), &narration);
+        engine.rootContext()->setContextProperty(QStringLiteral("companion"), &companion);
+        engine.rootContext()->setContextProperty(QStringLiteral("illustrator"), &illustrator);
+        engine.rootContext()->setContextProperty(QStringLiteral("localSetup"), &localSetup);
+        engine.rootContext()->setContextProperty(QStringLiteral("settingsUrl"),
+                                                 QUrl::fromLocalFile(dir.filePath(QStringLiteral("settings.ini"))).toString());
+
+        QList<QQmlError> warnings;
+        QObject::connect(&engine, &QQmlEngine::warnings, &engine,
+                         [&](const QList<QQmlError> &errs) { warnings.append(errs); });
+
+        // 1. Safe-by-default Text.PlainText on Label, ToolTip, Toast.
+        {
+            QQmlComponent styleComp(&engine);
+            styleComp.setData(QByteArrayLiteral(R"QML(
+import QtQuick
+import QtQuick.Controls
+import "ui/components"
+Item {
+    property alias lbl: lbl
+    property alias tip: tip
+    property alias toast: toast
+    Label { id: lbl; text: "<img src=x>hello" }
+    ToolTip { id: tip; text: "<img src=x>tip" }
+    Toast { id: toast }
+}
+)QML"),
+                              QUrl::fromLocalFile(srcRoot + QStringLiteral("/PlainTextCheck.qml")));
+            QVERIFY2(styleComp.status() == QQmlComponent::Ready, qPrintable(styleComp.errorString()));
+            std::unique_ptr<QObject> obj(styleComp.create());
+            QVERIFY(obj != nullptr);
+            QObject *lbl = obj->property("lbl").value<QObject *>();
+            QObject *tip = obj->property("tip").value<QObject *>();
+            QVERIFY(lbl && tip);
+            QCOMPARE(lbl->property("textFormat").toInt(), int(Qt::PlainText));
+            QObject *tipContent = tip->property("contentItem").value<QObject *>();
+            QVERIFY(tipContent != nullptr);
+            QCOMPARE(tipContent->property("textFormat").toInt(), int(Qt::PlainText));
+        }
+
+        // 2. SmoothWheel coast distance clamped to slope-matched cap (zero 3.67x velocity surge).
+        {
+            QQmlComponent swComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/components/SmoothWheel.qml")));
+            QVERIFY2(swComp.status() == QQmlComponent::Ready, qPrintable(swComp.errorString()));
+            std::unique_ptr<QObject> swObj(swComp.create());
+            QVERIFY(swObj != nullptr);
+            QVariant ret;
+            QVERIFY(QMetaObject::invokeMethod(swObj.get(), "computeCoastPlan", Q_RETURN_ARG(QVariant, ret),
+                                              Q_ARG(QVariant, 0.0), Q_ARG(QVariant, 9000.0),
+                                              Q_ARG(QVariant, 0.0), Q_ARG(QVariant, 50000.0)));
+            const QVariantMap maxPlan = ret.toMap();
+            const double dist = maxPlan.value(QStringLiteral("distance")).toDouble();
+            const double durSec = maxPlan.value(QStringLiteral("duration")).toDouble() / 1000.0;
+            QVERIFY(durSec > 0.0);
+            const double initVel = (3.0 * dist) / durSec;
+            QVERIFY2(initVel <= 9050.0, qPrintable(QStringLiteral("initial velocity surged to %1 px/s").arg(initVel)));
+        }
+
+        // 3. CoverImage gates effectiveSource on visible (real QQuickWindow visibility).
+        {
+            QQmlComponent covComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/CoverImage.qml")));
+            QVERIFY2(covComp.status() == QQmlComponent::Ready, qPrintable(covComp.errorString()));
+            std::unique_ptr<QQuickWindow> covWin(new QQuickWindow);
+            covWin->resize(200, 240);
+            std::unique_ptr<QObject> covObj(covComp.createWithInitialProperties({
+                {QStringLiteral("visible"), false},
+                {QStringLiteral("width"), 120.0},
+                {QStringLiteral("height"), 180.0},
+                {QStringLiteral("source"), QStringLiteral("file:///tmp/nonexistent-cover.png")},
+            }));
+            QVERIFY(covObj != nullptr);
+            auto *covItem = qobject_cast<QQuickItem *>(covObj.get());
+            QVERIFY(covItem != nullptr);
+            covItem->setParentItem(covWin->contentItem());
+            covWin->show();
+            QVERIFY(QTest::qWaitForWindowExposed(covWin.get()));
+            QCOMPARE(covObj->property("effectiveSource").toString(), QString());
+            covItem->setVisible(true);
+            QVERIFY(!covObj->property("effectiveSource").toString().isEmpty());
+            covItem->setParentItem(nullptr);
+        }
+
+        // 4. BookDetails does not flash visible when window widens while closed.
+        {
+            QQmlComponent detComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/library/BookDetails.qml")));
+            QVERIFY2(detComp.status() == QQmlComponent::Ready, qPrintable(detComp.errorString()));
+            std::unique_ptr<QObject> detObj(detComp.createWithInitialProperties({
+                {QStringLiteral("width"), 1000.0},
+                {QStringLiteral("height"), 760.0},
+            }));
+            QVERIFY(detObj != nullptr);
+            QCOMPARE(detObj->property("visible").toBool(), false);
+            detObj->setProperty("width", 1360.0);
+            QCoreApplication::processEvents();
+            QCOMPARE(detObj->property("visible").toBool(), false);
+            QCOMPARE(detObj->property("slideProgress").toDouble(), 0.0);
+        }
+
+        // 5. NoteEditor bounds long notes inside Flickable so buttons stay on-screen.
+        {
+            const int hlId = marks.addHighlight(0, 0, 12, QStringLiteral("Short quote"), QStringLiteral("yellow"), QStringLiteral("P1"));
+            QString longNote;
+            for (int i = 0; i < 60; ++i)
+                longNote += QStringLiteral("Line %1 of a very long margin note that must scroll.\n").arg(i);
+            marks.setNote(hlId, longNote);
+
+            QQmlComponent noteHostComp(&engine);
+            noteHostComp.setData(QByteArrayLiteral(R"QML(
+import QtQuick
+import "ui/reader"
+Item {
+    width: 720; height: 520
+    property alias editor: ed
+    NoteEditor {
+        id: ed
+        look: ({ dark: false, bg: "#fff", fg: "#111", muted: "#666", popover: "#fff", line: "#ddd", link: "#00f" })
+    }
+}
+)QML"),
+                                 QUrl::fromLocalFile(srcRoot + QStringLiteral("/NoteEditorHost.qml")));
+            QVERIFY2(noteHostComp.status() == QQmlComponent::Ready, qPrintable(noteHostComp.errorString()));
+            std::unique_ptr<QObject> hostObj(noteHostComp.create());
+            QVERIFY(hostObj != nullptr);
+            QObject *ed = hostObj->property("editor").value<QObject *>();
+            QVERIFY(ed != nullptr);
+            QMetaObject::invokeMethod(ed, "show", Q_ARG(QVariant, hlId));
+            QCoreApplication::processEvents();
+            QVERIFY2(ed->property("height").toDouble() <= 472.5,
+                     qPrintable(QString::number(ed->property("height").toDouble())));
+        }
+
+        // 6. PdfSurface proportional Ctrl+Wheel zoom & Fit-to-Width canPan.
+        {
+            const QVariantMap look{
+                {QStringLiteral("bg"), QStringLiteral("#FAF6EE")},
+                {QStringLiteral("fg"), QStringLiteral("#26221D")},
+                {QStringLiteral("muted"), QStringLiteral("#787066")},
+                {QStringLiteral("line"), QStringLiteral("#E2DCD0")},
+                {QStringLiteral("popover"), QStringLiteral("#FDFAF3")},
+                {QStringLiteral("link"), QStringLiteral("#8A5A12")},
+                {QStringLiteral("dark"), false},
+            };
+            QQmlComponent surfComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/PdfSurface.qml")));
+            QVERIFY2(surfComp.status() == QQmlComponent::Ready, qPrintable(surfComp.errorString()));
+            std::unique_ptr<QObject> surfObj(surfComp.createWithInitialProperties({
+                {QStringLiteral("width"), 1000.0},
+                {QStringLiteral("height"), 760.0},
+                {QStringLiteral("look"), look},
+            }));
+            QVERIFY(surfObj != nullptr);
+            QVariantMap styleMap{
+                {QStringLiteral("layout"), QStringLiteral("single")},
+                {QStringLiteral("pdfCrop"), false},
+                {QStringLiteral("pdfOriginalColors"), false},
+                {QStringLiteral("pdfFit"), QStringLiteral("width")},
+                {QStringLiteral("marginTop"), 60.0},
+                {QStringLiteral("marginBottom"), 76.0},
+                {QStringLiteral("animate"), false},
+            };
+            const QVariantMap posMap{{QStringLiteral("chapter"), 0}};
+            QMetaObject::invokeMethod(surfObj.get(), "open",
+                                      Q_ARG(QVariant, reader.manifest()),
+                                      Q_ARG(QVariant, posMap),
+                                      Q_ARG(QVariant, styleMap));
+            QCoreApplication::processEvents();
+            QCOMPARE(surfObj->property("canPanX").toBool(), false);
+            QCOMPARE(surfObj->property("canPanY").toBool(), true);
+            QCOMPARE(surfObj->property("canPan").toBool(), true);
+            const double z0 = surfObj->property("effectiveZoom").toDouble();
+            QMetaObject::invokeMethod(surfObj.get(), "zoomByWheel", Q_ARG(QVariant, 15.0));
+            const double zSmall = surfObj->property("effectiveZoom").toDouble();
+            QVERIFY2(zSmall > z0 && zSmall < z0 * 1.03,
+                     qPrintable(QStringLiteral("z0=%1 zSmall=%2").arg(z0).arg(zSmall)));
+        }
+
+        // 7. CommandPalette classifies builtin:/studio: offline voices & clears cachedBooks on close().
+        {
+            QQmlComponent cpComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/CommandPalette.qml")));
+            QVERIFY2(cpComp.status() == QQmlComponent::Ready, qPrintable(cpComp.errorString()));
+            std::unique_ptr<QObject> cpObj(cpComp.createWithInitialProperties({
+                {QStringLiteral("width"), 1000.0},
+                {QStringLiteral("height"), 760.0},
+            }));
+            QVERIFY(cpObj != nullptr);
+            QVariant sub;
+            narration.setVoice(QStringLiteral("builtin:kokoro:af_heart"), QStringLiteral("Heart"));
+            QVERIFY(QMetaObject::invokeMethod(cpObj.get(), "voiceSubtitle", Q_RETURN_ARG(QVariant, sub)));
+            QVERIFY2(sub.toString().contains(QStringLiteral("on this computer")), qPrintable(sub.toString()));
+            narration.setVoice(QStringLiteral("studio:kokoro"), QStringLiteral("Studio Voice"));
+            QVERIFY(QMetaObject::invokeMethod(cpObj.get(), "voiceSubtitle", Q_RETURN_ARG(QVariant, sub)));
+            QVERIFY2(sub.toString().contains(QStringLiteral("on this computer")), qPrintable(sub.toString()));
+            QMetaObject::invokeMethod(cpObj.get(), "show");
+            QVERIFY(!cpObj->property("cachedBooks").toList().isEmpty());
+            QMetaObject::invokeMethod(cpObj.get(), "close");
+            QVERIFY(cpObj->property("cachedBooks").toList().isEmpty());
+        }
+
+        // 8. CompanionPanel instantiates cleanly with virtualized ListView, throttled stream, and zero QML warnings.
+        {
+            QQmlComponent compComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/companion/CompanionPanel.qml")));
+            QVERIFY2(compComp.status() == QQmlComponent::Ready, qPrintable(compComp.errorString()));
+            std::unique_ptr<QObject> compObj(compComp.createWithInitialProperties({
+                {QStringLiteral("height"), 760.0},
+                {QStringLiteral("look"), QVariantMap{{QStringLiteral("dark"), false}}},
+            }));
+            QVERIFY(compObj != nullptr);
+            QCoreApplication::processEvents();
+        }
+
+        // 9. Wiring checks for Main.qml defaultSleep, EpubReader.qml teardown/subframes/lifecycle,
+        //    VoicePanel.qml lazy Loader, PdfSurface.qml mipmap/canPan, LibraryView.qml dialog MouseArea.
+        auto readSrc = [&](const QString &rel) -> QString {
+            QFile f(srcRoot + QLatin1Char('/') + rel);
+            return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll()) : QString();
+        };
+        const QString mainQml = readSrc(QStringLiteral("ui/Main.qml"));
+        QVERIFY(mainQml.contains(QStringLiteral("id: listenSettings")));
+        QVERIFY(mainQml.contains(QStringLiteral("property string defaultSleep: \"off\"")));
+        QVERIFY(mainQml.contains(QStringLiteral("win.applyDefaultSleep()")));
+
+        const QString erQml = readSrc(QStringLiteral("ui/reader/EpubReader.qml"));
+        QVERIFY(erQml.contains(QStringLiteral("!request.isMainFrame && (u === \"about:blank\" || u === \"about:srcdoc\")")));
+        QVERIFY(erQml.contains(QStringLiteral("(reader.open && !view.pdf)")));
+        QVERIFY(erQml.contains(QStringLiteral("closeWebSurface()")));
+
+        const QString pdfQml = readSrc(QStringLiteral("ui/reader/PdfSurface.qml"));
+        QVERIFY(pdfQml.contains(QStringLiteral("mipmap: true")));
+        QVERIFY(pdfQml.contains(QStringLiteral("panning = surface.canPan &&")));
+
+        const QString vpQml = readSrc(QStringLiteral("ui/audio/VoicePanel.qml"));
+        QVERIFY(vpQml.contains(QStringLiteral("id: designLoader")));
+        QVERIFY(vpQml.contains(QStringLiteral("active: delWrap.isDesign")));
+
+        const QString cpQml = readSrc(QStringLiteral("ui/companion/CompanionPanel.qml"));
+        QVERIFY(cpQml.contains(QStringLiteral("id: talkModel")));
+        QVERIFY(cpQml.contains(QStringLiteral("id: streamThrottle")));
+        QVERIFY(cpQml.contains(QStringLiteral("onClosed: item = null")));
+
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+    }
+    // === end fix-reader-ui tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

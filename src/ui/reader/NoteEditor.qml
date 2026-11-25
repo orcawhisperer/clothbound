@@ -24,6 +24,7 @@ FocusScope {
         markId = id
         quote = mark.text
         input.text = mark.note
+        inputScroll.contentY = 0
         open = true
         input.forceActiveFocus()
         input.cursorPosition = input.length
@@ -41,7 +42,7 @@ FocusScope {
 
     visible: open
     width: Math.min(parent ? parent.width - 48 : 520, 520)
-    height: column.implicitHeight + 36
+    height: Math.min(parent ? Math.max(220, parent.height - 48) : 520, column.implicitHeight + 36)
 
     // Soft elevation shadow.
     Rectangle {
@@ -99,34 +100,54 @@ FocusScope {
         }
         Rectangle {
             Layout.fillWidth: true
-            implicitHeight: Math.max(108, input.implicitHeight + 20)
+            readonly property real maxEditorHeight: Math.max(120, Math.min(320, (editor.parent ? editor.parent.height : 640) - 240))
+            implicitHeight: Math.min(maxEditorHeight, Math.max(108, input.implicitHeight + 20))
             radius: Ui.radius(7, theme.radius)
             color: Ui.tint(editor.look.fg, 0.05)
             border.width: input.activeFocus ? 1.5 : 1
             border.color: input.activeFocus ? editor.look.link : editor.look.line
-            TextEdit {
-                id: input
+            clip: true
+
+            Flickable {
+                id: inputScroll
                 anchors.fill: parent
                 anchors.margins: 10
-                color: editor.look.fg
-                selectionColor: Ui.tint(editor.look.link, 0.4)
-                selectedTextColor: editor.look.fg
-                font.pixelSize: 13
-                wrapMode: TextEdit.Wrap
-                Keys.onPressed: (event) => {
-                    if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
-                        editor.save()
-                        event.accepted = true
-                    } else if (event.key === Qt.Key_Escape) {
-                        editor.close()
-                        event.accepted = true
-                    }
-                }
-                Label {
-                    visible: !parent.text
-                    text: qsTr("What you thought…")
-                    color: editor.look.muted
+                clip: true
+                contentWidth: width
+                contentHeight: input.implicitHeight
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                TextEdit {
+                    id: input
+                    width: inputScroll.width
+                    height: Math.max(inputScroll.height, implicitHeight)
+                    color: editor.look.fg
+                    selectionColor: Ui.tint(editor.look.link, 0.4)
+                    selectedTextColor: editor.look.fg
                     font.pixelSize: 13
+                    wrapMode: TextEdit.Wrap
+                    onCursorRectangleChanged: {
+                        if (cursorRectangle.y < inputScroll.contentY)
+                            inputScroll.contentY = cursorRectangle.y
+                        else if (cursorRectangle.y + cursorRectangle.height > inputScroll.contentY + inputScroll.height)
+                            inputScroll.contentY = cursorRectangle.y + cursorRectangle.height - inputScroll.height
+                    }
+                    Keys.onPressed: (event) => {
+                        if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter) && (event.modifiers & Qt.ControlModifier)) {
+                            editor.save()
+                            event.accepted = true
+                        } else if (event.key === Qt.Key_Escape) {
+                            editor.close()
+                            event.accepted = true
+                        }
+                    }
+                    Label {
+                        visible: !parent.text
+                        text: qsTr("What you thought…")
+                        color: editor.look.muted
+                        font.pixelSize: 13
+                    }
                 }
             }
         }

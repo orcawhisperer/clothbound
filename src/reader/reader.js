@@ -42,10 +42,27 @@ const clothbound = (() => {
         warm: null,
         warmGen: 0,
         warmTimer: 0,
+        loadGen: 0,
         lastTurnAt: 0,
         queue: Promise.resolve(),
         hyphenation: false,
         note: null,
+    }
+    const FRAME_LOAD_TIMEOUT_MS = 10000
+    const pendingFrameLoads = new Map()
+    const docStyles = new WeakMap()
+
+    function cancelFrameLoad(targetFrame) {
+        if (!targetFrame)
+            return
+        const cancel = pendingFrameLoads.get(targetFrame)
+        if (cancel)
+            cancel()
+    }
+
+    function cancelAllFrameLoads() {
+        for (const cancel of [...pendingFrameLoads.values()])
+            cancel()
     }
 
     let activeFrameEl = null
@@ -121,7 +138,11 @@ const clothbound = (() => {
     // Navigation runs one step at a time, so a burst of key presses never
     // loads two chapters over each other.
     function run(step) {
-        state.queue = state.queue.then(step).catch(error => log(error && error.stack || error))
+        state.queue = state.queue.then(step).catch(error => {
+            if (error && error.cancelled)
+                return
+            log(error && error.stack || error)
+        })
         return state.queue
     }
 
@@ -324,13 +345,23 @@ ${literaryIndent}
     }
 
     function styleElement(doc, id) {
-        let element = doc.getElementById(id)
+        let map = docStyles.get(doc)
+        if (map && map[id] && map[id].localName === 'style')
+            return map[id]
+        const existing = doc.getElementById(id)
+        let element = existing && existing.localName === 'style' ? existing : null
         if (!element) {
             element = doc.createElementNS('http://www.w3.org/1999/xhtml', 'style')
-            element.id = id
+            if (!existing)
+                element.id = id
             const head = doc.head || doc.querySelector('head') || doc.documentElement
             head.appendChild(element)
         }
+        if (!map) {
+            map = Object.create(null)
+            docStyles.set(doc, map)
+        }
+        map[id] = element
         return element
     }
 
@@ -444,9 +475,12 @@ ${literaryIndent}
 
     // Inspect decoded raster images once so transparent monochrome line-art /
     // math equations invert cleanly in dark mode instead of disappearing.
+    // Skipped in light themes where data-cb-lineart/data-cb-matte rules are inactive.
     let probeCanvas = null
     function classifyImages(doc) {
         if (!doc || !doc.images || !doc.images.length)
+            return
+        if (!state.style || !state.style.theme || !state.style.theme.dark)
             return
         try {
             if (!probeCanvas) {
@@ -1113,6 +1147,8 @@ ${literaryIndent}
             if (chapterAnim.newFrame && chapterAnim.newFrame.classList)
                 chapterAnim.newFrame.classList.add('shown')
             chapterAnim.finish()
+            if (marginNotesDirty)
+                scheduleMarginNotes()
         }
         const animation = state.animation
         if (!animation)
@@ -1126,6 +1162,8 @@ ${literaryIndent}
             scroller().scrollTo({ [horizontal ? 'left' : 'top']: animation.target, behavior: 'instant' })
         }
         animation.finish(!keepCurrentScroll)
+        if (!keepCurrentScroll && marginNotesDirty)
+            scheduleMarginNotes()
     }
 
     function turnTo(page, animate) {
@@ -1156,6 +1194,10 @@ ${literaryIndent}
         const duration = rapid ? 145 : 210
         if (horizontal)
             setTurningMask(true)
+        if (marginNotesFrame && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(marginNotesFrame)
+            marginNotesFrame = 0
+        }
         return new Promise(resolve => {
             const startTime = performance.now()
             const anim = { target, raf: 0, finish: resolve }
@@ -1171,6 +1213,8 @@ ${literaryIndent}
                     state.animation = null
                     setTurningMask(false)
                     el.scrollTo({ [axis]: target, behavior: 'instant' })
+                    if (marginNotesDirty || (state.marks && state.marks.length))
+                        scheduleMarginNotes()
                     resolve(true)
                 }
             }
@@ -1218,20 +1262,78 @@ ${literaryIndent}
         clearTimeout(state.warmTimer)
         state.warmTimer = 0
         state.warm = null
+        if (standbyFrameEl && standbyFrameEl !== activeFrameEl)
+            cancelFrameLoad(standbyFrameEl)
     }
 
     async function prepareIntoFrame(targetFrame, chapter) {
+        if (!targetFrame || !state.book || !state.book.spine || !state.book.spine[chapter])
+            throw new Error('Cannot load chapter: missing frame or spine entry')
+        const sid = sessionId()
+        const gen = state.loadGen
         const url = state.book.base + state.book.spine[chapter].href
-        await new Promise(resolve => {
-            targetFrame.onload = () => resolve()
-            targetFrame.src = url
+        cancelFrameLoad(targetFrame)
+        await new Promise((resolve, reject) => {
+            let settled = false
+            let timer = 0
+            const cleanup = () => {
+                if (timer) {
+                    clearTimeout(timer)
+                    timer = 0
+                }
+                if (pendingFrameLoads.get(targetFrame) === abort)
+                    pendingFrameLoads.delete(targetFrame)
+                targetFrame.onload = null
+                targetFrame.onerror = null
+            }
+            const finish = err => {
+                if (settled)
+                    return
+                settled = true
+                cleanup()
+                if (err)
+                    reject(err)
+                else
+                    resolve()
+            }
+            const abort = () => {
+                const err = new Error('Chapter load cancelled')
+                err.cancelled = true
+                finish(err)
+            }
+            pendingFrameLoads.set(targetFrame, abort)
+            targetFrame.onload = () => finish(null)
+            targetFrame.onerror = () => finish(new Error('Failed to load chapter: ' + url))
+            timer = setTimeout(() => finish(new Error('Timed out loading chapter: ' + url)), FRAME_LOAD_TIMEOUT_MS)
+            try {
+                targetFrame.src = url
+            } catch (err) {
+                finish(err)
+            }
         })
+        if (gen !== state.loadGen || sid !== sessionId() || !state.book) {
+            const err = new Error('Chapter load superseded')
+            err.cancelled = true
+            throw err
+        }
         const doc = targetFrame.contentDocument
+        if (!doc || !(doc.body || doc.documentElement))
+            throw new Error('Chapter frame has no document: ' + url)
         const prep = await prepareDocument(doc)
+        if (gen !== state.loadGen || sid !== sessionId() || !state.book) {
+            const err = new Error('Chapter preparation superseded')
+            err.cancelled = true
+            throw err
+        }
         const size = effectiveStageSize()
         const g = computeGeometry(prep.vertical)
         applyLayoutTo(targetFrame, doc, g, prep.rtl)
         await settle(doc)
+        if (gen !== state.loadGen || sid !== sessionId() || !state.book) {
+            const err = new Error('Chapter settle superseded')
+            err.cancelled = true
+            throw err
+        }
         classifyImages(doc)
         fitBlocks(doc, g)
         const index = buildIndex(doc)
@@ -1240,7 +1342,7 @@ ${literaryIndent}
             frame: targetFrame,
             doc,
             chapter,
-            session: sessionId(),
+            session: sid,
             sig: styleSignature(),
             stageWidth: size.width,
             stageHeight: size.height,
@@ -1424,6 +1526,8 @@ ${literaryIndent}
                         hideFrameImmediately(oldFrame)
                         clearFrameVisual(newFrame)
                         newFrame.classList.add('shown')
+                        if (marginNotesDirty)
+                            scheduleMarginNotes()
                         resolve()
                     }
                 }
@@ -1461,6 +1565,8 @@ ${literaryIndent}
                         hideFrameImmediately(oldFrame)
                         clearFrameVisual(newFrame)
                         newFrame.classList.add('shown')
+                        if (marginNotesDirty)
+                            scheduleMarginNotes()
                         resolve()
                     }
                 }
@@ -1500,6 +1606,8 @@ ${literaryIndent}
                     hideFrameImmediately(oldFrame)
                     clearFrameVisual(newFrame)
                     newFrame.classList.add('shown')
+                    if (marginNotesDirty)
+                        scheduleMarginNotes()
                     resolve()
                 }
             }
@@ -1552,13 +1660,33 @@ ${literaryIndent}
     // side stack downwards rather than overlap.
     const marginNoteMinimum = 34
     let marginNotesFrame = 0
+    let marginNotesDirty = false
     function scheduleMarginNotes() {
+        if (state.animation || state.chapterAnim) {
+            marginNotesDirty = true
+            return
+        }
         if (marginNotesFrame)
             return
+        marginNotesDirty = false
         marginNotesFrame = requestAnimationFrame(() => {
             marginNotesFrame = 0
+            if (state.animation || state.chapterAnim) {
+                marginNotesDirty = true
+                return
+            }
             layoutMarginNotes()
         })
+    }
+    function clearMarginNotes() {
+        marginNotesDirty = false
+        if (marginNotesFrame && typeof cancelAnimationFrame === 'function') {
+            cancelAnimationFrame(marginNotesFrame)
+            marginNotesFrame = 0
+        }
+        for (const old of marginCards)
+            old.remove()
+        marginCards = []
     }
     let marginCards = []
     function layoutMarginNotes() {
@@ -2300,11 +2428,14 @@ ${literaryIndent}
 
     const api = {
         open(book, position, style) {
+            ++state.loadGen
+            cancelAllFrameLoads()
             cancelAnimation()
             invalidateWarm()
             return run(async () => {
                 cancelAnimation()
                 invalidateWarm()
+                clearMarginNotes()
                 closeNote()
                 hideFromHere(0)
                 activeFrameEl = document.getElementById('book')
@@ -2312,6 +2443,7 @@ ${literaryIndent}
                 if (standbyFrameEl) {
                     hideFrameImmediately(standbyFrameEl)
                     standbyFrameEl.onload = null
+                    standbyFrameEl.onerror = null
                     standbyFrameEl.src = 'about:blank'
                 }
                 state.book = book
@@ -2341,11 +2473,14 @@ ${literaryIndent}
         },
 
         close() {
+            ++state.loadGen
+            cancelAllFrameLoads()
             cancelAnimation()
             invalidateWarm()
             return run(async () => {
                 cancelAnimation()
                 invalidateWarm()
+                clearMarginNotes()
                 closeNote()
                 hideFromHere(0)
                 clearTimeout(selectionTimer)
@@ -2376,6 +2511,7 @@ ${literaryIndent}
                         continue
                     hideFrameImmediately(f)
                     f.onload = null
+                    f.onerror = null
                     f.src = 'about:blank'
                 }
                 activeFrameEl = document.getElementById('book')
@@ -2400,6 +2536,7 @@ ${literaryIndent}
                     markDropCap(doc)
                 if (!layoutChanged) {
                     applyTypography(doc)
+                    classifyImages(doc)
                     scheduleWarm(1, 200)
                     return
                 }
@@ -2423,6 +2560,7 @@ ${literaryIndent}
                         doc.documentElement.removeAttribute('data-cb-nowrap-checked')
                 }
                 applyTypography(doc)
+                classifyImages(doc)
                 if (!prev || prev.font !== style.font || prev.publisher !== style.publisher) {
                     try { await doc.fonts.ready } catch (e) { }
                 }

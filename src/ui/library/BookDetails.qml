@@ -31,6 +31,7 @@ FocusScope {
     function show(id, key) {
         bookId = id
         workKey = key
+        revision++
         addingShelf = false
         newShelfInput.text = ""
         flick.contentY = 0
@@ -75,13 +76,19 @@ FocusScope {
 
     Connections {
         target: library
+        enabled: details.open
         function onBooksChanged() { details.revision++ }
         function onBookChanged(id) { if (id === details.bookId) details.revision++ }
         function onCollectionsChanged() { details.revision++ }
         function onReadingStatsChanged() { details.revision++ }
     }
 
-    visible: open || panel.x < width
+    property real slideProgress: open ? 1 : 0
+    Behavior on slideProgress {
+        enabled: !theme.reducedMotion
+        NumberAnimation { duration: 350; easing.type: Easing.OutQuart }
+    }
+    visible: open || slideProgress > 0.005
     Keys.onEscapePressed: {
         if (addingShelf) {
             addingShelf = false
@@ -101,30 +108,38 @@ FocusScope {
     Keys.onUpPressed: if (!addingShelf) step(-1)
     Keys.onDownPressed: if (!addingShelf) step(1)
 
-    // A scrim over the grid; clicking it closes the panel.
+    // A scrim over the grid; clicking it closes the panel and wheel events stay absorbed.
     Rectangle {
         anchors.fill: parent
         color: theme.scrim
         opacity: details.open ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: 180 } }
-        TapHandler { onTapped: details.close() }
+        Behavior on opacity {
+            enabled: !theme.reducedMotion
+            NumberAnimation { duration: 180 }
+        }
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onPressed: details.close()
+            onWheel: (wheel) => wheel.accepted = true
+        }
     }
 
     Rectangle {
         id: panel
         width: Math.min(480, details.width - 40)
         height: details.height
-        x: details.open ? details.width - width : details.width
-        Behavior on x {
-            enabled: !theme.reducedMotion
-            NumberAnimation { duration: 350; easing.type: Easing.OutQuart }
-        }
+        x: details.width - width * details.slideProgress
         color: theme.raised
         border.width: 1
         border.color: theme.hairline
 
-        // Clicks inside the panel stay inside it.
-        TapHandler {}
+        // Clicks and wheel events inside the panel stay inside it.
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.AllButtons
+            onWheel: (wheel) => wheel.accepted = true
+        }
 
         // Pinned top header so the close button never collides with scrolled text.
         Rectangle {

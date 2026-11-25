@@ -151,14 +151,18 @@ Item {
             return { targetY: cur, duration: 0, distance: 0 }
 
         const sign = vRaw >= 0 ? 1 : -1
-        const unclampedDist = (speed * speed) / (2.0 * coastDeceleration)
+        // Cap distance alongside max coast duration so OutCubic's initial slope
+        // (3 * D / T) never exceeds the launch speed at finger lift.
+        const maxCoastMs = 1300
+        const maxSlopeDist = (speed * (maxCoastMs / 1000.0)) / 3.0
+        const unclampedDist = Math.min((speed * speed) / (2.0 * coastDeceleration), maxSlopeDist)
         const rawTarget = cur + sign * unclampedDist
         const targetY = Math.max(lo, Math.min(hi, rawTarget))
         const clampedDist = Math.abs(targetY - cur)
         if (clampedDist < 2.0)
             return { targetY: cur, duration: 0, distance: 0 }
 
-        let duration = Math.min(1150, Math.max(220, Math.round((3000.0 * unclampedDist) / speed)))
+        let duration = Math.min(maxCoastMs, Math.max(220, Math.round((3000.0 * unclampedDist) / speed)))
         if (clampedDist < unclampedDist) {
             const ratio = clampedDist / unclampedDist
             const hitFrac = 1.0 - Math.pow(Math.max(0.0, 1.0 - ratio), 1.0 / 3.0)

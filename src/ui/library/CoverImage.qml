@@ -28,7 +28,7 @@ Item {
                                        && (cover.source.startsWith("file://") || cover.source.startsWith("/"))
     readonly property bool useCoverProvider: typeof hasCoverProvider !== "undefined" && hasCoverProvider && localCover
     readonly property string effectiveSource: {
-        if (cover.width <= 0 || cover.height <= 0 || cover.source === "")
+        if (!cover.visible || cover.width <= 0 || cover.height <= 0 || cover.source === "")
             return ""
         if (useCoverProvider)
             return "image://cover/" + encodeURIComponent(cover.source)

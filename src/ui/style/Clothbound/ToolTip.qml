@@ -22,6 +22,7 @@ T.ToolTip {
 
     contentItem: Text {
         text: control.text
+        textFormat: Text.PlainText
         font: control.font
         wrapMode: Text.Wrap
         color: control.palette.toolTipText

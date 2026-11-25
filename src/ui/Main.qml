@@ -114,10 +114,24 @@ ApplicationWindow {
         target: desktop
         function onClicked(token) { instance.bringBack(token) }
     }
+    property bool wasNarrationActive: false
+    function applyDefaultSleep() {
+        const pref = listenSettings.defaultSleep
+        if (pref === "chapter")
+            narration.sleepAtEndOfChapter()
+        else if (pref === "15" || pref === "30" || pref === "60")
+            narration.sleepIn(parseInt(pref, 10))
+    }
     Connections {
         target: narration
         function onStateChanged() {
-            if (!narration.active && !win.visible)
+            const active = narration.active
+            if (active && !win.wasNarrationActive && listenSettings.defaultSleep !== "off"
+                && narration.sleepSecondsLeft <= 0 && !narration.sleepAtChapterEnd) {
+                win.applyDefaultSleep()
+            }
+            win.wasNarrationActive = active
+            if (!active && !win.visible)
                 Qt.quit()
         }
     }
@@ -164,6 +178,8 @@ ApplicationWindow {
             toast.show(qsTr("“%1” can't be opened: %2").arg(book.title).arg(book.problem))
             return
         }
+        if (pendingJump && pendingJump.bookId !== bookId)
+            pendingJump = null
         if (!reader.openBook(bookId)) {
             toast.show(reader.errorString())
             return
@@ -852,6 +868,15 @@ ApplicationWindow {
         running: !debugMode || Qt.application.arguments.indexOf("--greet") >= 0
         interval: 700
         onTriggered: win.greet()
+    }
+
+    // Default listening preferences kept alive from startup so sleep timers arm
+    // even before Settings › Voices is ever opened.
+    Settings {
+        id: listenSettings
+        location: settingsUrl
+        category: "listen"
+        property string defaultSleep: "off"
     }
 
     // How pages look, kept between sessions in ~/.config/clothbound/settings.ini.

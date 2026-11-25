@@ -1602,29 +1602,48 @@ FocusScope {
                             }
                         }
 
+                        Component {
+                            id: designNarratorComp
+                            DesignNarratorEntry {}
+                        }
+
                         delegate: Item {
                             id: delWrap
                             required property var modelData
                             required property int index
+                            readonly property bool isDesign: !!modelData.designEntry
                             readonly property bool kbHighlight: panel.keyboardActive && voiceList.currentIndex === index
                             width: voiceList.width
-                            height: modelData.designEntry ? designItem.implicitHeight : voiceItem.implicitHeight
+                            height: isDesign ? designLoader.implicitHeight : voiceItem.implicitHeight
 
                             VoiceRow {
                                 id: voiceItem
-                                visible: !delWrap.modelData.designEntry
+                                visible: !delWrap.isDesign
                                 x: 14
                                 width: parent.width - 28
                                 voice: delWrap.modelData.voice
                                 badgeSuggested: !!delWrap.modelData.badgeSuggested
                                 keyboardHighlighted: delWrap.kbHighlight
                             }
-                            DesignNarratorEntry {
-                                id: designItem
-                                visible: !!delWrap.modelData.designEntry
+                            Loader {
+                                id: designLoader
+                                active: delWrap.isDesign
+                                visible: active
                                 x: 14
                                 width: parent.width - 28
-                                keyboardHighlighted: delWrap.kbHighlight
+                                sourceComponent: designNarratorComp
+                                Binding {
+                                    when: designLoader.status === Loader.Ready
+                                    target: designLoader.item
+                                    property: "width"
+                                    value: designLoader.width
+                                }
+                                Binding {
+                                    when: designLoader.status === Loader.Ready
+                                    target: designLoader.item
+                                    property: "keyboardHighlighted"
+                                    value: delWrap.kbHighlight
+                                }
                             }
                         }
 

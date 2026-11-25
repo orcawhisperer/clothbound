@@ -1903,6 +1903,12 @@ FocusScope {
             color: theme.raised
             border.color: Ui.tint(theme.ink1, 0.10)
 
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onWheel: (wheel) => wheel.accepted = true
+            }
+
             ColumnLayout {
                 id: dialogCol
                 anchors.fill: parent

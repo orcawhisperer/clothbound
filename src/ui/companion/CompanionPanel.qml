@@ -3,6 +3,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Effects
 import QtQuick.Layouts
+import QtQuick.Window
 import "../components"
 
 import "../components/Icons.js" as Icons
@@ -22,6 +23,9 @@ FocusScope {
     property bool clearConfirmOpen: false
     property bool recapCopied: false
     property bool selectionCopied: false
+    property string throttledAnswer: ""
+    property string throttledRendered: ""
+    property int throttledFormat: TextEdit.MarkdownText
 
     readonly property int defaultWidth: 384
     readonly property int minWidth: 320
@@ -145,6 +149,54 @@ FocusScope {
     }
     function proseFormat(text) {
         return text && companion.hasMath(text) ? TextEdit.RichText : TextEdit.MarkdownText
+    }
+    function flushStreamRender(force) {
+        streamThrottle.stop()
+        const raw = companion.answer || ""
+        if (!force && raw === throttledAnswer)
+            return
+        throttledAnswer = raw
+        if (raw === "") {
+            throttledFormat = TextEdit.MarkdownText
+            throttledRendered = ""
+        } else {
+            const hasM = companion.hasMath(raw)
+            throttledFormat = hasM ? TextEdit.RichText : TextEdit.MarkdownText
+            throttledRendered = hasM ? companion.formatDisplayHtml(raw, theme.fill) : companion.sanitizeMarkdown(raw)
+        }
+    }
+    function syncConversation() {
+        const turns = companion.conversation || []
+        let prefixMatch = talkModel.count <= turns.length
+        if (prefixMatch) {
+            for (let i = 0; i < talkModel.count; ++i) {
+                const existing = talkModel.get(i)
+                const next = turns[i]
+                const nextSnip = next && next.snipUrl ? String(next.snipUrl) : ""
+                if (!next || existing.fromUser !== !!next.fromUser || existing.text !== String(next.text || "")
+                    || existing.snipUrl !== nextSnip) {
+                    prefixMatch = false
+                    break
+                }
+            }
+        }
+        if (!prefixMatch)
+            talkModel.clear()
+        for (let i = talkModel.count; i < turns.length; ++i) {
+            const t = turns[i]
+            talkModel.append({
+                fromUser: !!t.fromUser,
+                text: String(t.text || ""),
+                snipUrl: String(t.snipUrl || ""),
+                local: !!t.local,
+                provenance: String(t.provenance || ""),
+                sourcesJson: t.sources && t.sources.length > 0 ? JSON.stringify(t.sources) : ""
+            })
+        }
+    }
+    Component.onCompleted: {
+        syncConversation()
+        flushStreamRender(true)
     }
     function jumpOrOpenCitation(cite) {
         if (!cite)
@@ -396,13 +448,42 @@ FocusScope {
         }
     }
 
+    ListModel {
+        id: talkModel
+    }
+    Timer {
+        id: streamThrottle
+        interval: 60
+        repeat: false
+        onTriggered: panel.flushStreamRender(false)
+    }
+    Connections {
+        target: theme
+        function onChanged() {
+            if (panel.throttledAnswer !== "")
+                panel.flushStreamRender(true)
+        }
+    }
+
     Connections {
         target: companion
         function onConversationChanged() {
+            panel.syncConversation()
             if (talk.stickToBottom)
                 Qt.callLater(talk.scrollToBottom)
         }
+        function onAnswerChanged() {
+            if (!companion.busy || companion.answer === "") {
+                panel.flushStreamRender(false)
+                return
+            }
+            if (panel.throttledAnswer === "")
+                panel.flushStreamRender(false)
+            else if (!streamThrottle.running)
+                streamThrottle.start()
+        }
         function onBusyChanged() {
+            panel.flushStreamRender(false)
             if (!companion.busy && companion.feature === "ask" && talk.stickToBottom)
                 Qt.callLater(talk.scrollToBottom)
         }
@@ -1157,21 +1238,26 @@ FocusScope {
             Layout.fillWidth: true
             Layout.fillHeight: true
 
-            Flickable {
+            ListView {
                 id: talk
                 property bool stickToBottom: true
                 property bool autoScrolling: false
                 property real lastContentY: 0
                 function scrollToBottom() {
                     autoScrolling = true
-                    const targetY = Math.max(0, contentHeight - height)
+                    const minY = originY - topMargin
+                    const targetY = Math.max(minY, originY + contentHeight + bottomMargin - height)
                     contentY = targetY
                     lastContentY = targetY
                     autoScrolling = false
                 }
                 anchors.fill: parent
                 clip: true
-                contentHeight: Math.max(height, talkColumn.implicitHeight + 36)
+                topMargin: 18
+                bottomMargin: 18
+                spacing: 16
+                cacheBuffer: 600
+                model: talkModel
                 boundsBehavior: Flickable.StopAtBounds
                 maximumFlickVelocity: 4500
                 flickDeceleration: 2200
@@ -1182,7 +1268,8 @@ FocusScope {
                 // Respect manual upward wheel, drag, or scrollbar scrolling during streaming.
                 onContentYChanged: {
                     if (!autoScrolling) {
-                        const nearBottom = (contentY + height >= contentHeight - 28)
+                        const maxY = Math.max(originY - topMargin, originY + contentHeight + bottomMargin - height)
+                        const nearBottom = (contentY >= maxY - 28)
                         if (nearBottom)
                             stickToBottom = true
                         else if (contentY < lastContentY - 2)
@@ -1191,288 +1278,333 @@ FocusScope {
                     lastContentY = contentY
                 }
                 onContentHeightChanged: {
-                    if (stickToBottom && (companion.conversation.length > 0 || (companion.feature === "ask" && companion.busy)))
+                    if (stickToBottom && (talkModel.count > 0 || (companion.feature === "ask" && companion.busy)))
                         Qt.callLater(scrollToBottom)
                 }
 
-                ColumnLayout {
-                    id: talkColumn
-                    x: 16
-                    y: 18
-                    width: talk.width - 32
-                    height: Math.max(implicitHeight, talk.height - 36)
-                    spacing: 16
+                header: Item {
+                    width: ListView.view ? ListView.view.width : 0
+                    visible: talkModel.count === 0
+                    implicitHeight: visible ? headerCol.implicitHeight : 0
+                    height: implicitHeight
 
-                    // Re-entry card if the reader chose "Not now" earlier and still has no model.
-                    UnconfiguredCard {
-                        visible: companionChoice.notNow && !ai.hasKey && !ai.hasLocal && companion.conversation.length === 0
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        visible: !(companionChoice.notNow && !ai.hasKey && !ai.hasLocal)
-                                 && companion.conversation.length === 0 && !(companion.feature === "ask" && companion.busy)
-                        text: companion.scope === "shelf"
-                              ? qsTr("Synthesize ideas, compare methods, and trace citations across documents on this shelf.")
-                              : companion.scope === "book"
-                              ? (companion.studyMode
-                                 ? qsTr("Ask about equations, proofs, methods, or findings anywhere in this document — or snip any figure or formula.")
-                                 : qsTr("Ask anything across the entire book, including later chapters and appendices."))
-                              : qsTr("Ask anything about the book so far: who someone is, why something happened, or what a phrase means. Nothing past your page is read.")
-                        color: theme.ink3
-                        font.pixelSize: 13
-                        wrapMode: Text.Wrap
-                        lineHeight: 1.5
-                    }
-
-                    Repeater {
-                        model: companion.conversation
-                        delegate: ColumnLayout {
-                            id: turnBox
-                            required property var modelData
-                            required property int index
-                            property bool copied: false
-                            readonly property bool hasUserSnip: !!turnBox.modelData.fromUser && !!turnBox.modelData.snipUrl && turnBox.modelData.snipUrl !== ""
-                            Layout.fillWidth: true
-                            spacing: 10
-
-                            Timer {
-                                id: copyReset
-                                interval: 1500
-                                onTriggered: turnBox.copied = false
-                            }
-
-                            // User bubble (neutral 8%, right-aligned, max 280px, optional local snip thumbnail)
-                            // or Assistant reply (Inter 13px with offline math support).
-                            Item {
-                                Layout.fillWidth: true
-                                implicitHeight: bubbleRect.implicitHeight
-
-                                TextMetrics {
-                                    id: userMetrics
-                                    font: said.font
-                                    text: turnBox.modelData.fromUser ? turnBox.modelData.text : ""
-                                }
-
-                                Rectangle {
-                                    id: bubbleRect
-                                    readonly property real maxBubbleW: Math.min(Math.max(280, parent.width * 0.78), parent.width * 0.88)
-                                    width: turnBox.modelData.fromUser
-                                           ? (turnBox.hasUserSnip
-                                              ? maxBubbleW
-                                              : Math.min(maxBubbleW, Math.max(48, Math.ceil(userMetrics.advanceWidth) + 26)))
-                                           : parent.width
-                                    x: turnBox.modelData.fromUser ? Math.max(0, parent.width - width) : 0
-                                    implicitHeight: bubbleContent.implicitHeight + (turnBox.modelData.fromUser ? 18 : 0)
-                                    height: implicitHeight
-                                    radius: Ui.radius(12, theme.radius)
-                                    color: turnBox.modelData.fromUser ? Ui.tint(theme.ink1, 0.08) : "transparent"
-
-                                    Column {
-                                        id: bubbleContent
-                                        x: turnBox.modelData.fromUser ? 12 : 0
-                                        y: turnBox.modelData.fromUser ? 9 : 0
-                                        width: parent.width - (turnBox.modelData.fromUser ? 24 : 0)
-                                        spacing: 8
-
-                                        // Trusted local user-snipped thumbnail (strictly from local snip attachment, never LLM Markdown).
-                                        Rectangle {
-                                            visible: turnBox.hasUserSnip
-                                            width: parent.width
-                                            height: visible
-                                                    ? (snipThumb.implicitWidth > 0 && snipThumb.implicitHeight > 0
-                                                       ? Math.min(136, Math.max(56, Math.round((width - 8) * snipThumb.implicitHeight / snipThumb.implicitWidth) + 8))
-                                                       : 84)
-                                                    : 0
-                                            radius: Ui.radius(8, theme.radius)
-                                            color: theme.drawer
-                                            border.width: 1
-                                            border.color: theme.hairline
-                                            clip: true
-
-                                            Image {
-                                                id: snipThumb
-                                                anchors.fill: parent
-                                                anchors.margins: 4
-                                                source: turnBox.hasUserSnip ? turnBox.modelData.snipUrl : ""
-                                                fillMode: Image.PreserveAspectFit
-                                                smooth: true
-                                            }
-                                        }
-
-                                        TextEdit {
-                                            id: said
-                                            width: parent.width
-                                            text: turnBox.modelData.fromUser
-                                                  ? turnBox.modelData.text
-                                                  : panel.renderProse(turnBox.modelData.text)
-                                            readOnly: true
-                                            selectByMouse: true
-                                            wrapMode: Text.Wrap
-                                            textFormat: turnBox.modelData.fromUser
-                                                        ? TextEdit.PlainText
-                                                        : panel.proseFormat(turnBox.modelData.text)
-                                            color: turnBox.modelData.fromUser ? theme.ink1 : theme.ink2
-                                            selectionColor: theme.accentSoft
-                                            font.pixelSize: 13
-                                        }
-                                    }
-                                }
-                            }
-
-                            Flow {
-                                Layout.fillWidth: true
-                                visible: !turnBox.modelData.fromUser && !!turnBox.modelData.sources && turnBox.modelData.sources.length > 0
-                                spacing: 6
-                                Repeater {
-                                    model: (!turnBox.modelData.fromUser && turnBox.modelData.sources) ? turnBox.modelData.sources : []
-                                    delegate: JumpChip {
-                                        required property var modelData
-                                        text: modelData.label || panel.placeLabel(modelData.chapter)
-                                        tipText: modelData.bookTitle
-                                                 ? (modelData.bookTitle + (modelData.excerpt ? " — " + modelData.excerpt : ""))
-                                                 : (modelData.excerpt || "")
-                                        onClicked: panel.jumpOrOpenCitation(modelData)
-                                    }
-                                }
-                            }
-
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                visible: !turnBox.modelData.fromUser && turnBox.modelData.text !== ""
-                                spacing: 4
-
-                                ProvenanceRow {
-                                    local: !!turnBox.modelData.local
-                                    text: turnBox.modelData.provenance || ""
-                                }
-
-                                RowLayout {
-                                    spacing: 4
-                                    SmallAction {
-                                        positive: turnBox.copied
-                                        text: turnBox.copied ? qsTr("Copied ✓") : qsTr("Copy")
-                                        onClicked: {
-                                            reader.copyText(turnBox.modelData.text)
-                                            turnBox.copied = true
-                                            copyReset.restart()
-                                            toast.show(qsTr("Copied"))
-                                        }
-                                    }
-                                    SpeakButton {
-                                        inlineMode: true
-                                        itemId: "ask-" + turnBox.index
-                                        responseText: turnBox.modelData.text
-                                    }
-                                    SmallAction {
-                                        text: qsTr("Save as note")
-                                        onClicked: {
-                                            const turns = companion.conversation
-                                            const prev = turnBox.index > 0 ? turns[turnBox.index - 1] : null
-                                            const quote = prev && prev.fromUser ? prev.text : panel.placeLabel(reader.chapter)
-                                            panel.saveAsNote(quote, turnBox.modelData.text)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Crisp thinking skeleton while waiting for first streamed token.
-                    ProseSkeleton {
-                        compact: true
-                        visible: companion.feature === "ask" && companion.busy && companion.answer === ""
-                    }
-
-                    // Live streaming reply (matches committed assistant turn typography identically).
-                    TextEdit {
-                        Layout.fillWidth: true
-                        visible: companion.feature === "ask" && companion.busy && companion.answer !== ""
-                        readOnly: true
-                        selectByMouse: true
-                        wrapMode: Text.Wrap
-                        textFormat: panel.proseFormat(companion.answer)
-                        text: panel.renderProse(companion.answer)
-                        color: theme.ink2
-                        selectionColor: theme.accentSoft
-                        font.pixelSize: 13
-                    }
-                    Flow {
-                        Layout.fillWidth: true
-                        visible: companion.feature === "ask" && companion.busy && companion.currentSources.length > 0
-                        spacing: 6
-                        Repeater {
-                            model: companion.currentSources
-                            delegate: JumpChip {
-                                required property var modelData
-                                text: modelData.label || panel.placeLabel(modelData.chapter)
-                                tipText: modelData.bookTitle
-                                         ? (modelData.bookTitle + (modelData.excerpt ? " — " + modelData.excerpt : ""))
-                                         : (modelData.excerpt || "")
-                                onClicked: panel.jumpOrOpenCitation(modelData)
-                            }
-                        }
-                    }
-                    Working { active: panel.tab === "ask" && companion.feature === "ask" }
-                    ErrorCard {
-                        message: panel.tab === "ask" && companion.feature === "ask" ? companion.problem : ""
-                        showRetry: companion.canRetry
-                        showSettings: companion.problemIsConfig
-                        onRetryClicked: companion.retry()
-                        onDismissClicked: companion.clearProblem()
-                    }
-
-                    Item { Layout.fillHeight: true }
-
-                    // Suggested starter / follow-up prompts ("Try").
                     ColumnLayout {
-                        Layout.fillWidth: true
-                        visible: !companion.busy && (ai.hasKey || ai.hasLocal) && panel.tryPrompts.length > 0
-                        spacing: 6
-                        Label {
-                            text: qsTr("Try")
-                            color: theme.ink4
-                            font.pixelSize: 11
-                            font.weight: Font.DemiBold
+                        id: headerCol
+                        x: 16
+                        width: parent.width - 32
+                        spacing: 16
+
+                        // Re-entry card if the reader chose "Not now" earlier and still has no model.
+                        UnconfiguredCard {
+                            visible: companionChoice.notNow && !ai.hasKey && !ai.hasLocal && talkModel.count === 0
                         }
-                        Repeater {
-                            model: panel.tryPrompts
-                            delegate: AbstractButton {
-                                id: tryBtn
-                                required property string modelData
-                                Layout.fillWidth: true
-                                implicitHeight: tryLabel.implicitHeight + 16
-                                hoverEnabled: true
-                                focusPolicy: Qt.TabFocus
-                                onClicked: panel.sendText(modelData)
-                                HoverHandler { cursorShape: Qt.PointingHandCursor }
-                                background: Rectangle {
-                                    radius: Ui.radius(7, theme.radius)
-                                    color: tryBtn.pressed ? theme.fillPressed
-                                         : tryBtn.hovered ? theme.fill : "transparent"
-                                    border.width: 1
-                                    border.color: theme.hairline
-                                    Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 90 } }
+
+                        Label {
+                            Layout.fillWidth: true
+                            visible: !(companionChoice.notNow && !ai.hasKey && !ai.hasLocal)
+                                     && talkModel.count === 0 && !(companion.feature === "ask" && companion.busy)
+                            text: companion.scope === "shelf"
+                                  ? qsTr("Synthesize ideas, compare methods, and trace citations across documents on this shelf.")
+                                  : companion.scope === "book"
+                                  ? (companion.studyMode
+                                     ? qsTr("Ask about equations, proofs, methods, or findings anywhere in this document — or snip any figure or formula.")
+                                     : qsTr("Ask anything across the entire book, including later chapters and appendices."))
+                                  : qsTr("Ask anything about the book so far: who someone is, why something happened, or what a phrase means. Nothing past your page is read.")
+                            color: theme.ink3
+                            font.pixelSize: 13
+                            wrapMode: Text.Wrap
+                            lineHeight: 1.5
+                        }
+                    }
+                }
+
+                delegate: Item {
+                    id: turnWrap
+                    required property int index
+                    required property bool fromUser
+                    required property string text
+                    required property string snipUrl
+                    required property bool local
+                    required property string provenance
+                    required property string sourcesJson
+                    width: ListView.view ? ListView.view.width : 0
+                    implicitHeight: turnBox.implicitHeight
+                    height: implicitHeight
+
+                    ColumnLayout {
+                        id: turnBox
+                        x: 16
+                        width: parent.width - 32
+                        property bool copied: false
+                        readonly property bool hasUserSnip: turnWrap.fromUser && turnWrap.snipUrl !== ""
+                        readonly property var turnSources: turnWrap.sourcesJson !== "" ? JSON.parse(turnWrap.sourcesJson) : []
+                        readonly property bool turnHasMath: !turnWrap.fromUser && turnWrap.text !== "" && companion.hasMath(turnWrap.text)
+                        spacing: 10
+
+                        Timer {
+                            id: copyReset
+                            interval: 1500
+                            onTriggered: turnBox.copied = false
+                        }
+
+                        // User bubble (neutral 8%, right-aligned, max 280px, optional local snip thumbnail)
+                        // or Assistant reply (Inter 13px with offline math support).
+                        Item {
+                            Layout.fillWidth: true
+                            implicitHeight: bubbleRect.implicitHeight
+
+                            TextMetrics {
+                                id: userMetrics
+                                font: said.font
+                                text: turnWrap.fromUser ? turnWrap.text : ""
+                            }
+
+                            Rectangle {
+                                id: bubbleRect
+                                readonly property real maxBubbleW: Math.min(Math.max(280, parent.width * 0.78), parent.width * 0.88)
+                                width: turnWrap.fromUser
+                                       ? (turnBox.hasUserSnip
+                                          ? maxBubbleW
+                                          : Math.min(maxBubbleW, Math.max(48, Math.ceil(userMetrics.advanceWidth) + 26)))
+                                       : parent.width
+                                x: turnWrap.fromUser ? Math.max(0, parent.width - width) : 0
+                                implicitHeight: bubbleContent.implicitHeight + (turnWrap.fromUser ? 18 : 0)
+                                height: implicitHeight
+                                radius: Ui.radius(12, theme.radius)
+                                color: turnWrap.fromUser ? Ui.tint(theme.ink1, 0.08) : "transparent"
+
+                                Column {
+                                    id: bubbleContent
+                                    x: turnWrap.fromUser ? 12 : 0
+                                    y: turnWrap.fromUser ? 9 : 0
+                                    width: parent.width - (turnWrap.fromUser ? 24 : 0)
+                                    spacing: 8
+
+                                    // Trusted local user-snipped thumbnail (strictly from local snip attachment, never LLM Markdown).
                                     Rectangle {
-                                        anchors.fill: parent
-                                        anchors.margins: -3
-                                        visible: tryBtn.visualFocus
-                                        radius: Ui.radius(10, theme.radius)
-                                        color: "transparent"
-                                        border.width: 2
-                                        border.color: theme.accent
+                                        visible: turnBox.hasUserSnip
+                                        width: parent.width
+                                        height: visible
+                                                ? (snipThumb.implicitWidth > 0 && snipThumb.implicitHeight > 0
+                                                   ? Math.min(136, Math.max(56, Math.round((width - 8) * snipThumb.implicitHeight / snipThumb.implicitWidth) + 8))
+                                                   : 84)
+                                                : 0
+                                        radius: Ui.radius(8, theme.radius)
+                                        color: theme.drawer
+                                        border.width: 1
+                                        border.color: theme.hairline
+                                        clip: true
+
+                                        Image {
+                                            id: snipThumb
+                                            anchors.fill: parent
+                                            anchors.margins: 4
+                                            source: turnBox.hasUserSnip ? turnWrap.snipUrl : ""
+                                            fillMode: Image.PreserveAspectFit
+                                            asynchronous: true
+                                            sourceSize.width: 512
+                                            sourceSize.height: 272
+                                            mipmap: true
+                                            smooth: true
+                                        }
+                                    }
+
+                                    TextEdit {
+                                        id: said
+                                        width: parent.width
+                                        text: turnWrap.fromUser
+                                              ? turnWrap.text
+                                              : (turnWrap.text === "" ? ""
+                                                 : (turnBox.turnHasMath
+                                                    ? companion.formatDisplayHtml(turnWrap.text, theme.fill)
+                                                    : companion.sanitizeMarkdown(turnWrap.text)))
+                                        readOnly: true
+                                        selectByMouse: true
+                                        wrapMode: Text.Wrap
+                                        textFormat: turnWrap.fromUser
+                                                    ? TextEdit.PlainText
+                                                    : (turnBox.turnHasMath ? TextEdit.RichText : TextEdit.MarkdownText)
+                                        color: turnWrap.fromUser ? theme.ink1 : theme.ink2
+                                        selectionColor: theme.accentSoft
+                                        font.pixelSize: 13
                                     }
                                 }
-                                contentItem: Label {
-                                    id: tryLabel
-                                    text: tryBtn.modelData
-                                    color: tryBtn.hovered ? theme.ink1 : theme.ink2
-                                    font.pixelSize: 13
-                                    wrapMode: Text.Wrap
-                                    leftPadding: 10
-                                    rightPadding: 10
-                                    topPadding: 8
-                                    bottomPadding: 8
+                            }
+                        }
+
+                        Flow {
+                            Layout.fillWidth: true
+                            visible: !turnWrap.fromUser && turnBox.turnSources.length > 0
+                            spacing: 6
+                            Repeater {
+                                model: !turnWrap.fromUser ? turnBox.turnSources : []
+                                delegate: JumpChip {
+                                    required property var modelData
+                                    text: modelData.label || panel.placeLabel(modelData.chapter)
+                                    tipText: modelData.bookTitle
+                                             ? (modelData.bookTitle + (modelData.excerpt ? " — " + modelData.excerpt : ""))
+                                             : (modelData.excerpt || "")
+                                    onClicked: panel.jumpOrOpenCitation(modelData)
+                                }
+                            }
+                        }
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: !turnWrap.fromUser && turnWrap.text !== ""
+                            spacing: 4
+
+                            ProvenanceRow {
+                                local: turnWrap.local
+                                text: turnWrap.provenance
+                            }
+
+                            RowLayout {
+                                spacing: 4
+                                SmallAction {
+                                    positive: turnBox.copied
+                                    text: turnBox.copied ? qsTr("Copied ✓") : qsTr("Copy")
+                                    onClicked: {
+                                        reader.copyText(turnWrap.text)
+                                        turnBox.copied = true
+                                        copyReset.restart()
+                                        toast.show(qsTr("Copied"))
+                                    }
+                                }
+                                SpeakButton {
+                                    inlineMode: true
+                                    itemId: "ask-" + turnWrap.index
+                                    responseText: turnWrap.text
+                                }
+                                SmallAction {
+                                    text: qsTr("Save as note")
+                                    onClicked: {
+                                        const prev = turnWrap.index > 0 ? talkModel.get(turnWrap.index - 1) : null
+                                        const quote = prev && prev.fromUser ? prev.text : panel.placeLabel(reader.chapter)
+                                        panel.saveAsNote(quote, turnWrap.text)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                footer: Item {
+                    width: ListView.view ? ListView.view.width : 0
+                    readonly property real topGap: talkModel.count > 0 ? 16 : 0
+                    readonly property real minEmptyH: talkModel.count === 0
+                        ? Math.max(0, talk.height - 36 - (talk.headerItem ? talk.headerItem.height : 0))
+                        : 0
+                    implicitHeight: Math.max(footerCol.implicitHeight + topGap, minEmptyH)
+                    height: implicitHeight
+
+                    ColumnLayout {
+                        id: footerCol
+                        x: 16
+                        y: parent.topGap
+                        width: parent.width - 32
+                        height: parent.height - parent.topGap
+                        spacing: 16
+
+                        // Crisp thinking skeleton while waiting for first streamed token.
+                        ProseSkeleton {
+                            compact: true
+                            visible: companion.feature === "ask" && companion.busy && panel.throttledAnswer === ""
+                        }
+
+                        // Live streaming reply (throttled ~60 ms; matches committed assistant turn typography).
+                        TextEdit {
+                            Layout.fillWidth: true
+                            visible: companion.feature === "ask" && companion.busy && panel.throttledAnswer !== ""
+                            readOnly: true
+                            selectByMouse: true
+                            wrapMode: Text.Wrap
+                            textFormat: panel.throttledFormat
+                            text: panel.throttledRendered
+                            color: theme.ink2
+                            selectionColor: theme.accentSoft
+                            font.pixelSize: 13
+                        }
+                        Flow {
+                            Layout.fillWidth: true
+                            visible: companion.feature === "ask" && companion.busy && companion.currentSources.length > 0
+                            spacing: 6
+                            Repeater {
+                                model: companion.currentSources
+                                delegate: JumpChip {
+                                    required property var modelData
+                                    text: modelData.label || panel.placeLabel(modelData.chapter)
+                                    tipText: modelData.bookTitle
+                                             ? (modelData.bookTitle + (modelData.excerpt ? " — " + modelData.excerpt : ""))
+                                             : (modelData.excerpt || "")
+                                    onClicked: panel.jumpOrOpenCitation(modelData)
+                                }
+                            }
+                        }
+                        Working { active: panel.tab === "ask" && companion.feature === "ask" }
+                        ErrorCard {
+                            message: panel.tab === "ask" && companion.feature === "ask" ? companion.problem : ""
+                            showRetry: companion.canRetry
+                            showSettings: companion.problemIsConfig
+                            onRetryClicked: companion.retry()
+                            onDismissClicked: companion.clearProblem()
+                        }
+
+                        Item {
+                            Layout.fillHeight: true
+                            visible: talkModel.count === 0
+                        }
+
+                        // Suggested starter / follow-up prompts ("Try").
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            visible: !companion.busy && (ai.hasKey || ai.hasLocal) && panel.tryPrompts.length > 0
+                            spacing: 6
+                            Label {
+                                text: qsTr("Try")
+                                color: theme.ink4
+                                font.pixelSize: 11
+                                font.weight: Font.DemiBold
+                            }
+                            Repeater {
+                                model: panel.tryPrompts
+                                delegate: AbstractButton {
+                                    id: tryBtn
+                                    required property string modelData
+                                    Layout.fillWidth: true
+                                    implicitHeight: tryLabel.implicitHeight + 16
+                                    hoverEnabled: true
+                                    focusPolicy: Qt.TabFocus
+                                    onClicked: panel.sendText(modelData)
+                                    HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                    background: Rectangle {
+                                        radius: Ui.radius(7, theme.radius)
+                                        color: tryBtn.pressed ? theme.fillPressed
+                                             : tryBtn.hovered ? theme.fill : "transparent"
+                                        border.width: 1
+                                        border.color: theme.hairline
+                                        Behavior on color { enabled: !theme.reducedMotion; ColorAnimation { duration: 90 } }
+                                        Rectangle {
+                                            anchors.fill: parent
+                                            anchors.margins: -3
+                                            visible: tryBtn.visualFocus
+                                            radius: Ui.radius(10, theme.radius)
+                                            color: "transparent"
+                                            border.width: 2
+                                            border.color: theme.accent
+                                        }
+                                    }
+                                    contentItem: Label {
+                                        id: tryLabel
+                                        text: tryBtn.modelData
+                                        color: tryBtn.hovered ? theme.ink1 : theme.ink2
+                                        font.pixelSize: 13
+                                        wrapMode: Text.Wrap
+                                        leftPadding: 10
+                                        rightPadding: 10
+                                        topPadding: 8
+                                        bottomPadding: 8
+                                    }
                                 }
                             }
                         }
@@ -1487,8 +1619,8 @@ FocusScope {
                 anchors.rightMargin: 16
                 anchors.bottom: parent.bottom
                 anchors.bottomMargin: 12
-                readonly property bool wanted: !talk.stickToBottom && talk.contentHeight > talk.height + 40
-                                               && (companion.conversation.length > 0 || (companion.feature === "ask" && companion.busy))
+                readonly property bool wanted: !talk.stickToBottom && (talk.contentHeight + talk.topMargin + talk.bottomMargin) > talk.height + 40
+                                               && (talkModel.count > 0 || (companion.feature === "ask" && companion.busy))
                 opacity: wanted ? 1 : 0
                 visible: opacity > 0.01
                 Behavior on opacity { enabled: !theme.reducedMotion; NumberAnimation { duration: 140 } }
@@ -1684,13 +1816,19 @@ FocusScope {
 
                 // Crisp shimmering skeleton while waiting for first streamed prose token.
                 ProseSkeleton {
-                    visible: proseColumn.tabBusy && proseColumn.displayAnswer === ""
+                    visible: proseColumn.tabBusy && panel.throttledAnswer === ""
                 }
 
                 Prose {
-                    visible: proseColumn.displayAnswer !== ""
-                    textFormat: panel.proseFormat(proseColumn.displayAnswer)
-                    text: panel.renderProse(proseColumn.displayAnswer)
+                    readonly property bool streaming: proseColumn.tabBusy
+                    readonly property string staticRaw: streaming ? "" : proseColumn.displayAnswer
+                    readonly property bool staticMath: staticRaw !== "" && companion.hasMath(staticRaw)
+                    visible: streaming ? (panel.throttledAnswer !== "") : (staticRaw !== "")
+                    textFormat: streaming ? panel.throttledFormat : (staticMath ? TextEdit.RichText : TextEdit.MarkdownText)
+                    text: streaming ? panel.throttledRendered
+                          : (staticRaw === "" ? ""
+                             : (staticMath ? companion.formatDisplayHtml(staticRaw, theme.fill)
+                                           : companion.sanitizeMarkdown(staticRaw)))
                 }
                 Working { active: proseColumn.tabBusy }
                 ErrorCard {
@@ -2469,6 +2607,10 @@ FocusScope {
                             anchors.margins: 2
                             source: companion.pendingSnipUrl
                             fillMode: Image.PreserveAspectFit
+                            asynchronous: true
+                            sourceSize.width: 96
+                            sourceSize.height: 72
+                            mipmap: true
                             smooth: true
                         }
                     }
@@ -2572,6 +2714,7 @@ FocusScope {
                             Text {
                                 anchors.fill: parent
                                 visible: question.text === ""
+                                textFormat: Text.PlainText
                                 text: (!ai.hasKey && !ai.hasLocal)
                                       ? qsTr("Set up a model to ask about the book…")
                                       : companion.hasPendingSnip
@@ -2658,6 +2801,7 @@ FocusScope {
             item = modelData
             open()
         }
+        onClosed: item = null
         parent: Overlay.overlay
         x: 0
         y: 0
@@ -2733,9 +2877,11 @@ FocusScope {
                     Image {
                         id: fullPreviewImage
                         anchors.fill: parent
-                        source: picturePreview.item ? picturePreview.item.url : ""
+                        source: picturePreview.opened && picturePreview.item ? picturePreview.item.url : ""
                         fillMode: Image.PreserveAspectFit
                         asynchronous: true
+                        sourceSize.width: Math.max(256, Math.min(2048, Math.round(width * (Screen.devicePixelRatio || 1))))
+                        sourceSize.height: Math.max(256, Math.min(2048, Math.round(height * (Screen.devicePixelRatio || 1))))
                         mipmap: true
                         smooth: true
                     }

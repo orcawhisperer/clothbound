@@ -89,6 +89,7 @@ Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             width: Math.min(implicitWidth, toast.parent.width - 200)
             text: toast.message
+            textFormat: Text.PlainText
             color: theme.ink1
             font.pixelSize: 13
             elide: Text.ElideMiddle

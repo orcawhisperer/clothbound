@@ -22,11 +22,12 @@ ColumnLayout {
         category: "listen"
         property string voice: ""
         property string voiceName: ""
-        property string defaultSleep: "off"
     }
 
     property int packsVersion: 0
-    property bool wasNarrationActive: false
+    property string fallbackDefaultSleep: "off"
+    readonly property bool hasMainListenSettings: typeof listenSettings !== "undefined" && listenSettings !== null
+    readonly property string currentDefaultSleep: hasMainListenSettings ? listenSettings.defaultSleep : fallbackDefaultSleep
 
     function prepare() {
         audioCache.refreshStats()
@@ -89,8 +90,19 @@ ColumnLayout {
         return m + ":" + (rem < 10 ? "0" : "") + rem
     }
 
+    function setDefaultSleep(value) {
+        if (hasMainListenSettings)
+            listenSettings.defaultSleep = value
+        else
+            fallbackDefaultSleep = value
+    }
+
     function applyDefaultSleep() {
-        const pref = listenPrefs.defaultSleep
+        if (typeof win !== "undefined" && win && typeof win.applyDefaultSleep === "function") {
+            win.applyDefaultSleep()
+            return
+        }
+        const pref = currentDefaultSleep
         if (pref === "chapter")
             narration.sleepAtEndOfChapter()
         else if (pref === "15" || pref === "30" || pref === "60")
@@ -108,14 +120,6 @@ ColumnLayout {
                 listenPrefs.voice = narration.voice
                 listenPrefs.voiceName = narration.voiceName
             }
-        }
-        function onStateChanged() {
-            const active = narration.active
-            if (active && !page.wasNarrationActive && listenPrefs.defaultSleep !== "off"
-                && narration.sleepSecondsLeft <= 0 && !narration.sleepAtChapterEnd) {
-                page.applyDefaultSleep()
-            }
-            page.wasNarrationActive = active
         }
     }
 
@@ -259,10 +263,10 @@ ColumnLayout {
             ComboBox {
                 width: 170
                 model: page.sleepOptions.map(o => o.label)
-                currentIndex: Math.max(0, page.sleepOptions.findIndex(o => o.value === listenPrefs.defaultSleep))
+                currentIndex: Math.max(0, page.sleepOptions.findIndex(o => o.value === page.currentDefaultSleep))
                 onActivated: (index) => {
                     const picked = page.sleepOptions[index].value
-                    listenPrefs.defaultSleep = picked
+                    page.setDefaultSleep(picked)
                     if (narration.active) {
                         if (picked === "off")
                             narration.sleepIn(0)
