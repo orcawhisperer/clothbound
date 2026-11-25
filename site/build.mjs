@@ -101,7 +101,8 @@ fs.writeFileSync(
 - Website: https://clothbound.app
 - Interactive 18-board UI Prototype: https://clothbound.app/prototype
 - Source & Releases: https://github.com/orcawhisperer/clothbound
-- One-line Arch / Omarchy Installer: \`curl -fsSL https://clothbound.app/install | bash\` (inspect at https://clothbound.app/install.sh)
+- One-line Linux Installer (Arch / Omarchy & Flatpak): \`curl -fsSL https://clothbound.app/install | bash\` (inspect at https://clothbound.app/install.sh)
+- Flatpak App ID: \`app.clothbound.Reader\` (manifest & AppStream metainfo in \`flatpak/\`)
 
 ## Core Capabilities
 - **Library & Instant Search (\`Ctrl+K\`)**: Local watched folders (files never modified), edition grouping, collections, local SQLite FTS5 full-text search, optional \`int8\`-quantized SIMD semantic search, off-UI-thread Command Palette, W3C text-quote anchored highlights/notes, Obsidian/Readwise Markdown export.
@@ -110,7 +111,7 @@ fs.writeFileSync(
 - **Read-Aloud (\`P\`)**: Built-in offline neural voices (Kokoro, Pocket TTS, Piper across 42 languages), optional Gemini/Studio voices, 44px/86px floating player with continuous Library mini-player, sleep timer, and M4B audiobook export.
 - **Story & Study Companion (\`C\`)**: Spoiler-free Story mode and Study mode (Brief, Glossary, Smart Scope, offline LaTeX math) with smooth GPU-lockstep docking via local Ollama or your own Gemini key.
 - **Standalone Local MCP Server (\`clothbound-mcp\`)**: WebEngine-free read-only stdio JSON-RPC 2.0 server (~31 ms startup) exposing \`list_books\`, \`search_library\`, \`search_passages\`, \`get_book_outline\`, \`read_passage\`, and \`list_marks\`.
-- **Desktop Integration**: Follows Omarchy palettes, 50 fully translated interface languages, and Hyprland corner rounding live (plus in-app Light/Dark and Rounded/Sharp overrides).
+- **Desktop Integration**: Follows Omarchy palettes and Hyprland corner rounding live, matches GNOME / KDE / COSMIC / Flatpak desktop light & dark mode via XDG Desktop Portal, and ships in 50 fully translated interface languages.
 `
 );
 

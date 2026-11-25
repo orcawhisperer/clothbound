@@ -74,19 +74,76 @@ jobs:
           i18n_count=$(find /tmp/pkg-check/usr/share/clothbound/i18n -maxdepth 1 -name '*.json' | wc -l)
           echo "Packaged i18n catalogs: $i18n_count"
           test "$i18n_count" -eq 50
-          (cd /tmp/pkg-out && sha256sum "$(basename "$pkg")" > SHA256SUMS)
+
+      - name: Upload Arch package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: clothbound-arch-package
+          path: /tmp/pkg-out/clothbound-[0-9]*.pkg.tar.zst
+
+  flatpak-bundle:
+    name: Build Flatpak Bundle (x86_64)
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:kde-6.10
+      options: --privileged
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Validate AppStream metainfo
+        run: appstreamcli validate --pedantic --no-net flatpak/app.clothbound.Reader.metainfo.xml
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: clothbound.flatpak
+          manifest-path: flatpak/app.clothbound.Reader.yml
+          cache: true
+
+      - name: Name versioned Flatpak bundle
+        run: |
+          ver=$(sed -n 's/^project(clothbound VERSION \([0-9][^ ]*\).*/\1/p' CMakeLists.txt | head -n 1)
           if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
             ver="${GITHUB_REF_NAME#v}"
-            src_tar="clothbound-${ver}.tar.gz"
-            curl -fsSL -o "/tmp/pkg-out/${src_tar}" "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-            (cd /tmp/pkg-out && sha256sum "${src_tar}" >> SHA256SUMS)
-            rm -f "/tmp/pkg-out/${src_tar}"
           fi
-          cat /tmp/pkg-out/SHA256SUMS
+          mv clothbound.flatpak "clothbound-${ver}-x86_64.flatpak"
+          ls -lh "clothbound-${ver}-x86_64.flatpak"
 
-      - name: Extract release notes from CHANGELOG.md
-        if: startsWith(github.ref, 'refs/tags/v')
+      - name: Upload Flatpak bundle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: clothbound-flatpak-bundle
+          path: clothbound-*-x86_64.flatpak
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [arch-package, flatpak-bundle]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download release artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/release-files
+          merge-multiple: true
+
+      - name: Compute unified SHA256SUMS and extract release notes
         run: |
+          ver="${GITHUB_REF_NAME#v}"
+          ls -lh /tmp/release-files
+          (
+            cd /tmp/release-files
+            sha256sum clothbound-*.pkg.tar.zst clothbound-*-x86_64.flatpak > SHA256SUMS
+            src_tar="clothbound-${ver}.tar.gz"
+            curl -fsSL -o "${src_tar}" "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+            sha256sum "${src_tar}" >> SHA256SUMS
+            rm -f "${src_tar}"
+            cat SHA256SUMS
+          )
           python3 -c '
           import os, re
           ver = os.environ["GITHUB_REF_NAME"].lstrip("v")
@@ -94,25 +151,17 @@ jobs:
           m = re.search(rf"^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
           body = m.group(1).strip() if m else ""
           if body:
-              body += f"\n\n---\n\n### Install on Arch Linux / Omarchy\nOne-line installer (x86_64 prebuilt package or aarch64 verified source build):\n```sh\ncurl -fsSL https://clothbound.app/install | bash\n```\n\nOr download the x86_64 package manually:\n```sh\ncurl -LO https://github.com/orcawhisperer/clothbound/releases/download/v{ver}/clothbound-{ver}-1-x86_64.pkg.tar.zst\nsudo pacman -U ./clothbound-{ver}-1-x86_64.pkg.tar.zst\n```\n"
+              body += f"\n\n---\n\n### Install on Linux\nOne-line installer (Arch / Omarchy native package, or verified Flatpak bundle on Ubuntu, Fedora, Debian, Mint, SteamOS):\n```sh\ncurl -fsSL https://clothbound.app/install | bash\n```\n\nOr install directly:\n- **Flatpak (any Linux distro, x86_64):**\n  ```sh\n  curl -LO https://github.com/orcawhisperer/clothbound/releases/download/v{ver}/clothbound-{ver}-x86_64.flatpak\n  flatpak install --user ./clothbound-{ver}-x86_64.flatpak\n  ```\n- **Arch Linux / Omarchy (x86_64):**\n  ```sh\n  curl -LO https://github.com/orcawhisperer/clothbound/releases/download/v{ver}/clothbound-{ver}-1-x86_64.pkg.tar.zst\n  sudo pacman -U ./clothbound-{ver}-1-x86_64.pkg.tar.zst\n  ```\n"
           open("/tmp/release-notes.md", "w", encoding="utf-8").write(body)
           print("Release notes bytes:", len(body))
           '
 
-      - name: Upload Arch package artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: clothbound-arch-package
-          path: |
-            /tmp/pkg-out/clothbound-[0-9]*.pkg.tar.zst
-            /tmp/pkg-out/SHA256SUMS
-
       - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v3
         with:
           body_path: /tmp/release-notes.md
           generate_release_notes: true
           files: |
-            /tmp/pkg-out/clothbound-[0-9]*.pkg.tar.zst
-            /tmp/pkg-out/SHA256SUMS
+            /tmp/release-files/clothbound-*.pkg.tar.zst
+            /tmp/release-files/clothbound-*-x86_64.flatpak
+            /tmp/release-files/SHA256SUMS

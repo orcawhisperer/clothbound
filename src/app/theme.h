@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QDBusVariant>
 #include <QFileSystemWatcher>
 #include <QHash>
 #include <QLocalSocket>
@@ -72,8 +73,14 @@ class Theme : public QObject {
     Q_PROPERTY(bool reducedMotion READ reducedMotion WRITE setReducedMotion NOTIFY changed)
 
 public:
+    enum class SystemColorScheme { Unknown, Dark, Light };
+
     explicit Theme(const QString &currentDirectory = {}, QObject *parent = nullptr, const QString &hyprSocketDir = {});
     ~Theme() override;
+
+    SystemColorScheme systemColorScheme() const { return m_systemColorScheme; }
+    void setSystemColorScheme(SystemColorScheme scheme);
+    static SystemColorScheme parsePortalColorScheme(const QVariant &value);
 
     QString accent() const { return color("accent"); }
     QString accentForeground() const;
@@ -151,8 +158,12 @@ public:
 signals:
     void changed();
 
+private slots:
+    void onPortalSettingChanged(const QString &namespaceName, const QString &key, const QDBusVariant &value);
+
 private:
     void reload();
+    void connectSystemColorScheme();
     void connectHyprEvents();
     void refreshRounding();
 
@@ -161,6 +172,7 @@ private:
     QHash<QString, QString> m_tokens;
     QString m_appearance = QStringLiteral("match");
     QString m_corners = QStringLiteral("match");
+    SystemColorScheme m_systemColorScheme = SystemColorScheme::Unknown;
     bool m_light = false;
     bool m_omarchy = false;
     bool m_reducedMotion = false;

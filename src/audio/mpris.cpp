@@ -77,7 +77,9 @@ void Mpris::update() {
     if (m_narration->active() && !m_registered) {
         if (!bus.registerObject(path, this, QDBusConnection::ExportAdaptors))
             return;
-        m_service = QStringLiteral("org.mpris.MediaPlayer2.clothbound");
+        const QString flatpakId = qEnvironmentVariable("FLATPAK_ID").trimmed();
+        m_service = QStringLiteral("org.mpris.MediaPlayer2.") +
+                    (flatpakId.isEmpty() ? QStringLiteral("clothbound") : flatpakId);
         // A second Clothbound takes a name of its own.
         bool registered = bus.registerService(m_service);
         if (!registered) {
@@ -134,6 +136,11 @@ void Mpris::announce(const QVariantMap &changed) {
 }
 
 MprisRoot::MprisRoot(Mpris *mpris) : QDBusAbstractAdaptor(mpris), m_mpris(mpris) {}
+
+QString MprisRoot::desktopEntry() const {
+    const QString flatpakId = qEnvironmentVariable("FLATPAK_ID").trimmed();
+    return flatpakId.isEmpty() ? QStringLiteral("clothbound") : flatpakId;
+}
 
 void MprisRoot::Raise() { emit m_mpris->raiseRequested(); }
 

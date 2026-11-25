@@ -7,6 +7,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QGuiApplication>
 #include <QProcess>
 #include <QRegularExpression>
 #include <QStandardPaths>
@@ -19,6 +20,23 @@ namespace {
 QString readFile(const QString &path) {
     QFile file(path);
     return file.open(QIODevice::ReadOnly) ? QString::fromUtf8(file.readAll()) : QString();
+}
+
+QString prettyOsName() {
+    if (!qEnvironmentVariable("FLATPAK_ID").trimmed().isEmpty()) {
+        const QString hostRelease = readFile(QStringLiteral("/run/host/os-release"));
+        static const QRegularExpression prettyRx(QStringLiteral("^PRETTY_NAME=(?:\"([^\"]+)\"|'([^']+)'|([^\\r\\n]+))$"),
+                                                 QRegularExpression::MultilineOption);
+        const auto match = prettyRx.match(hostRelease);
+        if (match.hasMatch()) {
+            const QString name = !match.captured(1).isEmpty() ? match.captured(1)
+                               : !match.captured(2).isEmpty() ? match.captured(2)
+                                                              : match.captured(3).trimmed();
+            if (!name.isEmpty())
+                return name;
+        }
+    }
+    return QSysInfo::prettyProductName();
 }
 
 double meminfoGb(const QString &meminfo, const QString &field) {
@@ -307,7 +325,12 @@ QVariantMap SystemCheck::machine() const {
             {QStringLiteral("features"), m_machine.features},
             {QStringLiteral("graphics"), m_machine.graphics},
             {QStringLiteral("graphicsMemoryGb"), m_machine.graphicsMemoryGb},
-            {QStringLiteral("discreteGraphics"), m_machine.discreteGraphics}};
+            {QStringLiteral("discreteGraphics"), m_machine.discreteGraphics},
+            {QStringLiteral("os"), prettyOsName()},
+            {QStringLiteral("qtVersion"), QString::fromLatin1(qVersion())},
+            {QStringLiteral("displayPlatform"),
+             QGuiApplication::instance() ? QGuiApplication::platformName() : QString()},
+            {QStringLiteral("sandbox"), qEnvironmentVariable("FLATPAK_ID").trimmed()}};
 }
 
 void SystemCheck::run() {

@@ -1,0 +1,39 @@
+id: app.clothbound.Reader
+runtime: org.kde.Platform
+runtime-version: '6.10'
+sdk: org.kde.Sdk
+base: io.qt.qtwebengine.BaseApp
+base-version: '6.10'
+command: clothbound
+
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --env=QTWEBENGINEPROCESS_PATH=/app/bin/QtWebEngineProcess
+  - --env=QTWEBENGINE_DICTIONARIES_PATH=/app/qtwebengine_dictionaries
+
+cleanup-commands:
+  - /app/cleanup-BaseApp.sh
+
+modules:
+  - name: clothbound
+    buildsystem: cmake-ninja
+    builddir: true
+    build-options:
+      arch:
+        x86_64:
+          prepend-pkg-config-path: /app/lib/x86_64-linux-gnu/pkgconfig
+        aarch64:
+          prepend-pkg-config-path: /app/lib/aarch64-linux-gnu/pkgconfig
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DCLOTHBOUND_APP_ID=app.clothbound.Reader
+    sources:
+      - type: dir
+        path: ..

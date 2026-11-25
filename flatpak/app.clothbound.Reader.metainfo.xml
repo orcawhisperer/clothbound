@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>app.clothbound.Reader</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Clothbound</name>
+  <summary>Calm, local-first EPUB and PDF reader</summary>
+  <developer id="app.clothbound">
+    <name>Clothbound Contributors</name>
+  </developer>
+  <description>
+    <p>
+      Clothbound is a calm, local-first EPUB and PDF reader for Linux. Keep your books,
+      academic papers, and saved web articles in one library without modifying your files,
+      read on a quiet page, listen with built-in offline neural voices, and study with an
+      optional local or cloud Companion.
+    </p>
+    <p>Highlights:</p>
+    <ul>
+      <li>Local-first library with watched folders, edition grouping, collections, full-text FTS5 search, and a fast Command Palette</li>
+      <li>Zero-flash EPUB spreads and theme-recolored academic PDF reading with Fit page, Fit width, Actual size, Visual Snip &amp; Explain, and citation peek cards</li>
+      <li>Add from URL to archive web articles offline as EPUBs, plus OPDS 1.2 and 2.0 catalog browsing</li>
+      <li>Built-in offline read-aloud voices (Kokoro, Pocket TTS, Piper) with continuous background playback, sleep timer, and M4B audiobook export</li>
+      <li>Adaptive Story and Study Companion with offline LaTeX math, plus a standalone local stdio MCP server (clothbound-mcp)</li>
+      <li>Matches desktop light and dark mode automatically and ships in 50 interface languages</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">app.clothbound.Reader.desktop</launchable>
+  <url type="homepage">https://clothbound.app</url>
+  <url type="bugtracker">https://github.com/orcawhisperer/clothbound/issues</url>
+  <url type="vcs-browser">https://github.com/orcawhisperer/clothbound</url>
+  <url type="help">https://github.com/orcawhisperer/clothbound#readme</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>Reading an EPUB with calm typography and zero-flash spreads</caption>
+      <image width="1440" height="900">https://raw.githubusercontent.com/orcawhisperer/clothbound/v0.5.0/screenshot.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Local-first library with shelves, collections, and Continue reading</caption>
+      <image width="1280" height="840">https://raw.githubusercontent.com/orcawhisperer/clothbound/v0.5.0/screenshot-library.png</image>
+    </screenshot>
+  </screenshots>
+  <categories>
+    <category>Office</category>
+    <category>Viewer</category>
+  </categories>
+  <keywords>
+    <keyword>ebook</keyword>
+    <keyword>epub</keyword>
+    <keyword>pdf</keyword>
+    <keyword>reader</keyword>
+    <keyword>library</keyword>
+    <keyword>tts</keyword>
+    <keyword>mcp</keyword>
+  </keywords>
+  <recommends>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </recommends>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <branding>
+    <color type="primary" scheme_preference="light">#FAF8F4</color>
+    <color type="primary" scheme_preference="dark">#1C1B19</color>
+  </branding>
+  <provides>
+    <binary>clothbound</binary>
+    <binary>clothbound-mcp</binary>
+    <mediatype>application/epub+zip</mediatype>
+    <mediatype>application/pdf</mediatype>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.5.0" date="2026-11-25">
+      <url type="details">https://github.com/orcawhisperer/clothbound/releases/tag/v0.5.0</url>
+      <description>
+        <p>Architecture, reading craft, and reliability release with standalone WebEngine-free clothbound-mcp, continuous background Library audio playback, PDF viewport tiling and cursor-focal zoom, intentional desktop page turns, and 100% translation coverage across 50 languages.</p>
+      </description>
+    </release>
+    <release version="0.4.1" date="2026-11-25">
+      <url type="details">https://github.com/orcawhisperer/clothbound/releases/tag/v0.4.1</url>
+      <description>
+        <p>Faster cold startup, kinetic trackpad scrolling, dedicated high-priority audio thread, native Wayland tray integration, and heavy PDF rendering optimizations.</p>
+      </description>
+    </release>
+    <release version="0.4.0" date="2026-11-24">
+      <url type="details">https://github.com/orcawhisperer/clothbound/releases/tag/v0.4.0</url>
+      <description>
+        <p>Initial public release with save-from-URL offline articles, OPDS 1.2/2.0 catalogs, academic PDF Snip &amp; Explain, Story &amp; Study Companion, and local MCP server.</p>
+      </description>
+    </release>
+  </releases>
+</component>

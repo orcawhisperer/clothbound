@@ -87,7 +87,10 @@ public:
     QString title() const { return QStringLiteral("Clothbound"); }
     QString status() const { return m_owner->visible() ? QStringLiteral("Active") : QStringLiteral("Passive"); }
     uint windowId() const { return 0; }
-    QString iconName() const { return QStringLiteral("clothbound"); }
+    QString iconName() const {
+        const QString flatpakId = qEnvironmentVariable("FLATPAK_ID").trimmed();
+        return flatpakId.isEmpty() ? QStringLiteral("clothbound") : flatpakId;
+    }
     TrayPixmapList iconPixmap() const { return m_owner->iconPixmaps(); }
     QString overlayIconName() const { return {}; }
     TrayPixmapList overlayIconPixmap() const { return {}; }
@@ -422,9 +425,15 @@ void TrayIcon::registerItem() {
     if (!bus.isConnected())
         return;
     if (!m_registered) {
-        m_serviceName = QStringLiteral("org.kde.StatusNotifierItem-%1-%2")
-                            .arg(QCoreApplication::applicationPid())
-                            .arg(++s_traySeq);
+        const QString flatpakId = qEnvironmentVariable("FLATPAK_ID").trimmed();
+        m_serviceName = flatpakId.isEmpty()
+                            ? QStringLiteral("org.kde.StatusNotifierItem-%1-%2")
+                                  .arg(QCoreApplication::applicationPid())
+                                  .arg(++s_traySeq)
+                            : QStringLiteral("%1.StatusNotifierItem_%2_%3")
+                                  .arg(flatpakId)
+                                  .arg(QCoreApplication::applicationPid())
+                                  .arg(++s_traySeq);
         m_itemObject = new QObject(this);
         new StatusNotifierItemAdaptor(this, m_itemObject);
         m_menuObject = new QObject(this);

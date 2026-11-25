@@ -2,12 +2,18 @@
 #include "app/theme.h"
 
 #include <QColor>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDBusPendingCallWatcher>
+#include <QDBusPendingReply>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
+#include <QStyleHints>
 #include <algorithm>
 #include <cmath>
 #include <memory>
@@ -60,6 +66,8 @@ Theme::Theme(const QString &directory, QObject *parent, const QString &hyprSocke
     });
     if (!m_hyprSocketDir.isEmpty())
         connectHyprEvents();
+    if (directory.isEmpty())
+        connectSystemColorScheme();
     reload();
 }
 
@@ -67,6 +75,78 @@ Theme::~Theme() {
     m_eventSocket.abort();
     if (m_roundingSocket)
         m_roundingSocket->abort();
+}
+
+Theme::SystemColorScheme Theme::parsePortalColorScheme(const QVariant &raw) {
+    QVariant v = raw;
+    for (int depth = 0; depth < 3 && v.canConvert<QDBusVariant>(); ++depth)
+        v = v.value<QDBusVariant>().variant();
+    bool ok = false;
+    const uint code = v.toUInt(&ok);
+    if (!ok)
+        return SystemColorScheme::Unknown;
+    if (code == 1u)
+        return SystemColorScheme::Dark;
+    if (code == 2u)
+        return SystemColorScheme::Light;
+    return SystemColorScheme::Unknown;
+}
+
+void Theme::setSystemColorScheme(SystemColorScheme scheme) {
+    if (scheme == m_systemColorScheme)
+        return;
+    m_systemColorScheme = scheme;
+    reload();
+}
+
+void Theme::onPortalSettingChanged(const QString &namespaceName, const QString &key, const QDBusVariant &value) {
+    if (namespaceName == QLatin1String("org.freedesktop.appearance") && key == QLatin1String("color-scheme"))
+        setSystemColorScheme(parsePortalColorScheme(value.variant()));
+}
+
+void Theme::connectSystemColorScheme() {
+    auto mapQtScheme = [](Qt::ColorScheme cs) {
+        if (cs == Qt::ColorScheme::Light)
+            return SystemColorScheme::Light;
+        if (cs == Qt::ColorScheme::Dark)
+            return SystemColorScheme::Dark;
+        return SystemColorScheme::Unknown;
+    };
+
+    if (QGuiApplication::instance()) {
+        if (auto *hints = QGuiApplication::styleHints()) {
+            const SystemColorScheme initial = mapQtScheme(hints->colorScheme());
+            if (initial != SystemColorScheme::Unknown)
+                m_systemColorScheme = initial;
+            connect(hints, &QStyleHints::colorSchemeChanged, this, [this, mapQtScheme](Qt::ColorScheme cs) {
+                const SystemColorScheme mapped = mapQtScheme(cs);
+                if (mapped != SystemColorScheme::Unknown)
+                    setSystemColorScheme(mapped);
+            });
+        }
+    }
+
+    QDBusConnection bus = QDBusConnection::sessionBus();
+    if (!bus.isConnected())
+        return;
+    bus.connect(QStringLiteral("org.freedesktop.portal.Desktop"), QStringLiteral("/org/freedesktop/portal/desktop"),
+                QStringLiteral("org.freedesktop.portal.Settings"), QStringLiteral("SettingChanged"), this,
+                SLOT(onPortalSettingChanged(QString, QString, QDBusVariant)));
+    auto call = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.portal.Desktop"),
+                                               QStringLiteral("/org/freedesktop/portal/desktop"),
+                                               QStringLiteral("org.freedesktop.portal.Settings"),
+                                               QStringLiteral("ReadOne"));
+    call.setArguments({QStringLiteral("org.freedesktop.appearance"), QStringLiteral("color-scheme")});
+    auto *watcher = new QDBusPendingCallWatcher(bus.asyncCall(call), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *pending) {
+        const QDBusPendingReply<QDBusVariant> reply = *pending;
+        pending->deleteLater();
+        if (!reply.isValid())
+            return;
+        const SystemColorScheme parsed = parsePortalColorScheme(reply.value().variant());
+        if (parsed != SystemColorScheme::Unknown)
+            setSystemColorScheme(parsed);
+    });
 }
 
 void Theme::connectHyprEvents() {
@@ -400,7 +480,8 @@ void Theme::reload() {
     // dark), so partial light themes keep high-contrast secondary text.
     const auto read = readPalette(m_directory + "/theme/colors.toml");
     const bool desktop = read.contains("background") && read.contains("foreground");
-    const bool desktopLight = desktop && read.value("mode") == "light";
+    const bool desktopLight = desktop ? (read.value("mode") == "light")
+                                      : (m_systemColorScheme == SystemColorScheme::Light);
     // Forcing the other mode than the desktop's sets the theme's palette
     // aside for the design's neutrals, keeping only its accent.
     const bool light = m_appearance == "match" ? desktopLight : m_appearance == "light";

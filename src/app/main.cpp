@@ -193,7 +193,7 @@ static void registerBookScheme() {
 
 static void configureParser(QCommandLineParser &args, QCommandLineOption &runOption, QCommandLineOption &delayOption,
                             QCommandLineOption &stepOption) {
-    args.setApplicationDescription(QStringLiteral("An ebook reader for Omarchy.\n\n") + cliSummary());
+    args.setApplicationDescription(QStringLiteral("A calm, local-first EPUB and PDF reader for Linux.\n\n") + cliSummary());
     args.addHelpOption();
     args.addVersionOption();
     args.addPositionalArgument(QStringLiteral("book"), QStringLiteral("One or more EPUB or PDF books to open"),
@@ -322,12 +322,17 @@ int main(int argc, char *argv[]) {
     app.setOrganizationDomain(QStringLiteral("clothbound.app"));
     app.setApplicationVersion(CLOTHBOUND_VERSION);
     Migration::runIfNeeded();
-    // Matches the window to clothbound.desktop, so the compositor (Wayland app_id)
-    // and the launcher pick up the installed icon.
-    app.setDesktopFileName(QStringLiteral("clothbound"));
+    // Inside Flatpak, match the reverse-DNS Flatpak ID (app.clothbound.Reader)
+    // so Wayland app_id, portals, and desktop icons resolve cleanly; on native
+    // installs, keep clothbound.desktop for existing launchers and window rules.
+    const QString flatpakId = qEnvironmentVariable("FLATPAK_ID").trimmed();
+    const QString desktopId = flatpakId.isEmpty() ? QStringLiteral("clothbound") : flatpakId;
+    app.setDesktopFileName(desktopId);
     // The name people see, in the bar's tray among others.
     app.setApplicationDisplayName(QStringLiteral("Clothbound"));
-    app.setWindowIcon(QIcon::fromTheme(QStringLiteral("clothbound")));
+    app.setWindowIcon(flatpakId.isEmpty()
+                          ? QIcon::fromTheme(QStringLiteral("clothbound"))
+                          : QIcon::fromTheme(flatpakId, QIcon::fromTheme(QStringLiteral("clothbound"))));
     prof.mark("qguiapp");
 
     QCommandLineParser args;

@@ -38,7 +38,7 @@ Clothbound follows your Omarchy theme, language, and window corner rounding (wit
 - **Standalone Local MCP Server (`clothbound-mcp`)**:
   - WebEngine-free read-only stdio JSON-RPC 2.0 server (~31 ms startup, zero Qt WebEngine/QML/Multimedia linkage; also available via `clothbound mcp`) so your local coding and research agents (Antigravity, Claude Code, Cursor, Codex) can query `list_books`, `search_library`, `search_passages`, `get_book_outline`, `read_passage`, and `list_marks` privately — one-click **Copy MCP config** in **Settings › Intelligence**.
 - **Desktop craft & 50 languages**:
-  - Live Omarchy theme matching, **Corners (`Match desktop | Rounded | Sharp`)** and **Reduce motion** in **Settings › General**, native Wayland D-Bus tray integration, and 50 fully translated interface languages.
+  - Live Omarchy theme & Hyprland rounding matching, automatic GNOME / KDE / COSMIC / Flatpak desktop light & dark mode via XDG Desktop Portal, **Corners (`Match desktop | Rounded | Sharp`)** and **Reduce motion** in **Settings › General**, native Wayland D-Bus tray integration, one-click **Report issue** diagnostics in **Settings › About**, and 50 fully translated interface languages.
 
 ## Intelligence: where it runs
 
@@ -66,15 +66,26 @@ Clothbound never bundles a language model or sends book text without consent. Cl
 
 ## Install
 
-### Arch Linux & Omarchy
+### Arch Linux, Omarchy, and Flatpak Linux desktops
 
-One line, on `x86_64` or `aarch64`:
+One line on Arch / Omarchy (`x86_64` or `aarch64`) or Flatpak-enabled Linux distros (Ubuntu, Fedora, Debian, Mint, Pop!_OS, openSUSE, SteamOS):
 
 ```sh
 curl -fsSL https://clothbound.app/install | bash
 ```
 
-On `x86_64` it downloads the [release package](https://github.com/orcawhisperer/clothbound/releases), verifies its checksum against `SHA256SUMS`, and installs it with `pacman`; on `aarch64` (for example Asahi Linux) it downloads and verifies the tagged release archive and builds from source with `makepkg`. [Read the script](site/install.sh) first if you like.
+On Arch `x86_64` it downloads the [release package](https://github.com/orcawhisperer/clothbound/releases), verifies its checksum against `SHA256SUMS`, and installs it with `pacman`; on Arch `aarch64` (for example Asahi Linux) it downloads and verifies the tagged release archive and builds from source with `makepkg`. On non-Arch distros with `flatpak`, it downloads and verifies the `x86_64` `.flatpak` release bundle and installs `app.clothbound.Reader` for your user. [Read the script](site/install.sh) first if you like.
+
+### Flatpak (`app.clothbound.Reader`)
+
+See [flatpak/README.md](flatpak/README.md) for building locally with `flatpak-builder`, installing a `.flatpak` bundle, and running `clothbound-mcp` inside Flatpak:
+
+```sh
+flatpak run app.clothbound.Reader
+flatpak run --command=clothbound-mcp app.clothbound.Reader
+```
+
+### Build and install from source
 
 Or build and install from a clone (both `clothbound` and `clothbound-mcp`, externalized i18n catalogs, `.desktop` entry, and icon):
 

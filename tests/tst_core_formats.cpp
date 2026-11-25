@@ -33,6 +33,7 @@
 #include <QFile>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QXmlStreamReader>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -123,6 +124,126 @@ void ClothboundTests::themeAppearanceCanOverrideTheDesktop() {
     theme.setAppearance("bogus");
     QCOMPARE(theme.appearance(), QString("match"));
     QCOMPARE(theme.ground(), QString("#1a1b26"));
+}
+
+void ClothboundTests::themeFollowsSystemColorSchemeWithoutOmarchy() {
+    // Portal uint32 decoding (including nested QDBusVariant).
+    QCOMPARE(Theme::parsePortalColorScheme(QVariant(0u)), Theme::SystemColorScheme::Unknown);
+    QCOMPARE(Theme::parsePortalColorScheme(QVariant(1u)), Theme::SystemColorScheme::Dark);
+    QCOMPARE(Theme::parsePortalColorScheme(QVariant(2u)), Theme::SystemColorScheme::Light);
+    QCOMPARE(Theme::parsePortalColorScheme(QVariant::fromValue(QDBusVariant(QVariant(2u)))),
+             Theme::SystemColorScheme::Light);
+    QCOMPARE(Theme::parsePortalColorScheme(QVariant(QStringLiteral("invalid"))),
+             Theme::SystemColorScheme::Unknown);
+
+    // Without Omarchy, Match desktop follows the system light/dark preference.
+    QTemporaryDir emptyDir;
+    Theme standalone(emptyDir.path());
+    QVERIFY(!standalone.omarchy());
+    QVERIFY(!standalone.light());
+    QCOMPARE(standalone.ground(), QStringLiteral("#121214"));
+
+    QSignalSpy changed(&standalone, &Theme::changed);
+    standalone.setSystemColorScheme(Theme::SystemColorScheme::Light);
+    QVERIFY(changed.count() >= 1);
+    QVERIFY(!standalone.omarchy());
+    QVERIFY(standalone.light());
+    QCOMPARE(standalone.ground(), QStringLiteral("#fbfbfc"));
+
+    // Explicit appearance override wins over system preference.
+    standalone.setAppearance(QStringLiteral("dark"));
+    QVERIFY(!standalone.light());
+    QCOMPARE(standalone.ground(), QStringLiteral("#121214"));
+    standalone.setAppearance(QStringLiteral("match"));
+    QVERIFY(standalone.light());
+
+    // Switching system preference back to dark returns to dark neutrals.
+    standalone.setSystemColorScheme(Theme::SystemColorScheme::Dark);
+    QVERIFY(!standalone.light());
+    QCOMPARE(standalone.ground(), QStringLiteral("#121214"));
+
+    // When an Omarchy palette is present, Omarchy takes precedence over system scheme.
+    QTemporaryDir omarchyDir;
+    QDir(omarchyDir.path()).mkpath(QStringLiteral("theme"));
+    write(omarchyDir.path() + QStringLiteral("/theme/colors.toml"),
+          "mode = \"dark\"\naccent = \"#7aa2f7\"\nbackground = \"#1a1b26\"\nforeground = \"#a9b1d6\"\n");
+    Theme omarchy(omarchyDir.path());
+    omarchy.setSystemColorScheme(Theme::SystemColorScheme::Light);
+    QVERIFY(omarchy.omarchy());
+    QVERIFY(!omarchy.light());
+    QCOMPARE(omarchy.ground(), QStringLiteral("#1a1b26"));
+}
+
+void ClothboundTests::flatpakMetadataAndDiagnosticsAreValid() {
+    // SystemCheck::machine() exposes OS, Qt version, display platform, and sandbox ID.
+    const QByteArray prevFlatpak = qgetenv("FLATPAK_ID");
+    qunsetenv("FLATPAK_ID");
+    SystemCheck check(nullptr, nullptr);
+    const QVariantMap nativeInfo = check.machine();
+    QVERIFY(!nativeInfo.value(QStringLiteral("os")).toString().isEmpty());
+    QVERIFY(!nativeInfo.value(QStringLiteral("qtVersion")).toString().isEmpty());
+    QVERIFY(!nativeInfo.value(QStringLiteral("displayPlatform")).toString().isEmpty());
+    QVERIFY(nativeInfo.value(QStringLiteral("sandbox")).toString().isEmpty());
+
+    qputenv("FLATPAK_ID", "app.clothbound.Reader");
+    const QVariantMap sandboxInfo = check.machine();
+    QCOMPARE(sandboxInfo.value(QStringLiteral("sandbox")).toString(), QStringLiteral("app.clothbound.Reader"));
+    if (prevFlatpak.isEmpty())
+        qunsetenv("FLATPAK_ID");
+    else
+        qputenv("FLATPAK_ID", prevFlatpak);
+
+    // Validate AppStream metainfo XML well-formedness and key Flathub fields.
+    const QString root = QFileInfo(QStringLiteral(CLOTHBOUND_SOURCE_I18N_DIR)).dir().absoluteFilePath(QStringLiteral(".."));
+    QFile metainfo(root + QStringLiteral("/flatpak/app.clothbound.Reader.metainfo.xml"));
+    QVERIFY2(metainfo.open(QIODevice::ReadOnly), qPrintable(metainfo.fileName()));
+    QXmlStreamReader xml(&metainfo);
+    QString id;
+    QString launchable;
+    bool hasDeveloper = false;
+    bool hasContentRating = false;
+    bool hasMcpBinary = false;
+    bool hasRelease = false;
+    while (!xml.atEnd()) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            const auto name = xml.name();
+            if (name == QLatin1String("id"))
+                id = xml.readElementText().trimmed();
+            else if (name == QLatin1String("launchable"))
+                launchable = xml.readElementText().trimmed();
+            else if (name == QLatin1String("developer"))
+                hasDeveloper = !xml.attributes().value(QLatin1String("id")).isEmpty();
+            else if (name == QLatin1String("content_rating"))
+                hasContentRating = true;
+            else if (name == QLatin1String("binary") && xml.readElementText().trimmed() == QLatin1String("clothbound-mcp"))
+                hasMcpBinary = true;
+            else if (name == QLatin1String("release"))
+                hasRelease = true;
+        }
+    }
+    QVERIFY2(!xml.hasError(), qPrintable(xml.errorString()));
+    QCOMPARE(id, QStringLiteral("app.clothbound.Reader"));
+    QCOMPARE(launchable, QStringLiteral("app.clothbound.Reader.desktop"));
+    QVERIFY(hasDeveloper);
+    QVERIFY(hasContentRating);
+    QVERIFY(hasMcpBinary);
+    QVERIFY(hasRelease);
+
+    // Verify Flatpak manifest and Report Issue diagnostics UI wiring exist.
+    QFile manifest(root + QStringLiteral("/flatpak/app.clothbound.Reader.yml"));
+    QVERIFY(manifest.open(QIODevice::ReadOnly));
+    const QString manifestText = QString::fromUtf8(manifest.readAll());
+    QVERIFY(manifestText.contains(QStringLiteral("id: app.clothbound.Reader")));
+    QVERIFY(manifestText.contains(QStringLiteral("base: io.qt.qtwebengine.BaseApp")));
+    QVERIFY(manifestText.contains(QStringLiteral("-DCLOTHBOUND_APP_ID=app.clothbound.Reader")));
+
+    QFile aboutQml(root + QStringLiteral("/src/ui/settings/SettingsAbout.qml"));
+    QVERIFY(aboutQml.open(QIODevice::ReadOnly));
+    const QString aboutText = QString::fromUtf8(aboutQml.readAll());
+    QVERIFY(aboutText.contains(QStringLiteral("reportIssueUrl()")));
+    QVERIFY(aboutText.contains(QStringLiteral("template=bug_report.yml")));
+    QVERIFY(aboutText.contains(QStringLiteral("qsTr(\"Report issue\")")));
 }
 
 void ClothboundTests::themeReadsThePalette() {

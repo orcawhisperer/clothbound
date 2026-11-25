@@ -25,6 +25,7 @@ include(GNUInstallDirs)
 option(CLOTHBOUND_BUILD_TESTS "Build the Clothbound unit and QML smoke test suite" OFF)
 option(CLOTHBOUND_BUILD_BENCH "Build the Clothbound C++ micro-benchmark suite" OFF)
 option(CLOTHBOUND_FORCE_ASSERTS "Force Q_ASSERT checks on across Clothbound targets" OFF)
+set(CLOTHBOUND_APP_ID "clothbound" CACHE STRING "Desktop entry and icon ID ('clothbound' for native Linux, 'app.clothbound.Reader' for Flatpak)")
 set(CLOTHBOUND_SANITIZER "" CACHE STRING "Optional sanitizer mode: empty, asan, or tsan")
 set_property(CACHE CLOTHBOUND_SANITIZER PROPERTY STRINGS "" asan tsan)
 
@@ -476,12 +477,32 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/i18n/"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/clothbound/i18n"
     FILES_MATCHING PATTERN "*.json"
 )
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.desktop"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
-)
-install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.svg"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
-)
+if(CLOTHBOUND_APP_ID STREQUAL "clothbound")
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.desktop"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+    )
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.svg"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
+    )
+else()
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.desktop" _clothbound_desktop_in)
+    string(REPLACE "Icon=clothbound" "Icon=${CLOTHBOUND_APP_ID}" _clothbound_desktop_out "${_clothbound_desktop_in}")
+    string(REPLACE "StartupWMClass=clothbound" "StartupWMClass=${CLOTHBOUND_APP_ID}" _clothbound_desktop_out "${_clothbound_desktop_out}")
+    set(_clothbound_desktop_gen "${CMAKE_CURRENT_BINARY_DIR}/${CLOTHBOUND_APP_ID}.desktop")
+    file(WRITE "${_clothbound_desktop_gen}" "${_clothbound_desktop_out}")
+    install(FILES "${_clothbound_desktop_gen}"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+    )
+    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.svg"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
+        RENAME "${CLOTHBOUND_APP_ID}.svg"
+    )
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/flatpak/${CLOTHBOUND_APP_ID}.metainfo.xml")
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/flatpak/${CLOTHBOUND_APP_ID}.metainfo.xml"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo"
+        )
+    endif()
+endif()
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/clothbound"
 )
