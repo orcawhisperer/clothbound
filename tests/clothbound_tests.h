@@ -49,6 +49,8 @@ private slots:
     void themeFallsBack();
     void themeTokensKeepTextReadableInEveryOmarchyTheme();
     void themeAppearanceCanOverrideTheDesktop();
+    void themeFollowsSystemColorSchemeWithoutOmarchy();
+    void flatpakMetadataAndDiagnosticsAreValid();
     void themeReadsThePalette();
     void themeFollowsChanges();
     void themeFollowsHyprlandRounding();

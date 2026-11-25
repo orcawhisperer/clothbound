@@ -32,7 +32,22 @@ ColumnLayout {
     readonly property bool twoColumns: width >= 760
     readonly property bool budgetOpen: budgetSheet.open
     readonly property string mcpCommandPath: "clothbound-mcp"
+    readonly property string flatpakId: (systemCheck.machine && systemCheck.machine.sandbox)
+                                      ? String(systemCheck.machine.sandbox) : ""
+    readonly property string mcpDisplayCommand: flatpakId.length > 0
+                                              ? "flatpak run --command=clothbound-mcp " + flatpakId
+                                              : mcpCommandPath
     function mcpConfigJson() {
+        if (flatpakId.length > 0) {
+            return JSON.stringify({
+                mcpServers: {
+                    clothbound: {
+                        command: "flatpak",
+                        args: ["run", "--command=clothbound-mcp", flatpakId]
+                    }
+                }
+            }, null, 2)
+        }
         return JSON.stringify({
             mcpServers: {
                 clothbound: {
@@ -970,7 +985,7 @@ ColumnLayout {
                         anchors.verticalCenter: parent.verticalCenter
                         anchors.leftMargin: 10
                         anchors.rightMargin: 10
-                        text: page.mcpCommandPath
+                        text: page.mcpDisplayCommand
                         color: theme.ink2
                         font.family: "monospace"
                         font.pixelSize: 12

@@ -60,7 +60,7 @@ public:
     bool yes() const { return true; }
     bool no() const { return false; }
     QString identity() const { return QStringLiteral("Clothbound"); }
-    QString desktopEntry() const { return QStringLiteral("clothbound"); }
+    QString desktopEntry() const;
     QStringList none() const { return {}; }
 
 public slots:

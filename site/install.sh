@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Clothbound installer for Arch Linux and Omarchy.
+# Clothbound universal Linux installer (Arch / Omarchy & Flatpak distros).
 #
 #   curl -fsSL https://clothbound.app/install | bash
 #
-# x86_64:  downloads the release package, verifies it against the release's
-#          SHA256SUMS, and installs it with pacman.
-# aarch64: downloads the tagged source archive, verifies it against the
-#          release's SHA256SUMS, and builds from source with makepkg.
+# Arch / Omarchy (pacman):
+#   x86_64:  downloads the release package, verifies it against SHA256SUMS,
+#            and installs it with pacman.
+#   aarch64: downloads the tagged source archive, verifies it against
+#            SHA256SUMS, and builds from source with makepkg.
+#
+# Ubuntu, Fedora, Debian, Mint, SteamOS, openSUSE, NixOS (flatpak):
+#   x86_64:  downloads the verified .flatpak release bundle and installs it
+#            for the current user with flatpak.
 #
 # Environment:
 #   CLOTHBOUND_VERSION=0.5.0   install a specific release instead of the latest
+#   CLOTHBOUND_METHOD=pacman|flatpak  force a specific install method
 #   CLOTHBOUND_DRY_RUN=1       download and verify, but install nothing
 #
 # Everything is wrapped in main() so a partially downloaded script never runs.
@@ -39,10 +45,24 @@ main() {
     printf '%s  %s\n' "$expected" "$file" | sha256sum -c - >/dev/null || die "Checksum mismatch for $file."
   }
 
-  command -v pacman >/dev/null 2>&1 ||
-    die "Clothbound currently ships for Arch Linux and Arch-based systems (like Omarchy). See https://github.com/$repo for building elsewhere."
+  local method="${CLOTHBOUND_METHOD:-}"
+  if [ -z "$method" ]; then
+    if command -v pacman >/dev/null 2>&1; then
+      method="pacman"
+    elif command -v flatpak >/dev/null 2>&1; then
+      method="flatpak"
+    else
+      die "Neither pacman nor flatpak was found. Install Flatpak (https://flatpak.org/setup/) or build from source: https://github.com/$repo"
+    fi
+  fi
+
+  case "$method" in
+    pacman)  need pacman ;;
+    flatpak) need flatpak ;;
+    *)       die "Unsupported CLOTHBOUND_METHOD: $method (expected pacman or flatpak)." ;;
+  esac
+
   need curl
-  need tar
   need sha256sum
   need awk
 
@@ -64,6 +84,34 @@ main() {
 
   local base="https://github.com/$repo/releases/download/v$version"
 
+  if [ "$method" = "flatpak" ]; then
+    case "$arch" in
+      x86_64)
+        local bundle="clothbound-$version-x86_64.flatpak"
+        say "Downloading Clothbound $version Flatpak bundle for x86_64"
+        curl -fL --progress-bar -o "$bundle" "$base/$bundle" ||
+          die "Clothbound $version does not include a prebuilt x86_64 Flatpak bundle yet. See https://github.com/$repo/tree/master/flatpak to build locally."
+        curl -fsSL -o SHA256SUMS "$base/SHA256SUMS" || die "Could not download SHA256SUMS for Clothbound $version."
+        say "Verifying checksum"
+        verify_sha256 "$bundle"
+        if [ "$dry" = 1 ]; then say "Dry run: would run flatpak install --user -y ./$bundle"; return; fi
+        say "Ensuring Flathub user remote is configured for runtime dependencies"
+        flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+        say "Installing Clothbound $version via Flatpak"
+        flatpak install --user -y "./$bundle" </dev/tty
+        say "Clothbound $version is installed. Open it from your app launcher, or run: flatpak run app.clothbound.Reader"
+        return
+        ;;
+      aarch64)
+        die "No prebuilt aarch64 Flatpak bundle yet. Build locally with flatpak-builder: https://github.com/$repo/tree/master/flatpak"
+        ;;
+      *)
+        die "Unsupported architecture: $arch (x86_64 and aarch64 are supported)."
+        ;;
+    esac
+  fi
+
+  need tar
   case "$arch" in
     x86_64)
       local pkg="clothbound-$version-1-x86_64.pkg.tar.zst"

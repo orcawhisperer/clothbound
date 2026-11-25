@@ -56,9 +56,24 @@ ColumnLayout {
     }
 
     function diagnosticsText() {
+        const osName = machineInfo.os || Qt.platform.os
+        const platformBits = []
+        if (machineInfo.architecture)
+            platformBits.push(machineInfo.architecture)
+        if (machineInfo.sandbox)
+            platformBits.push("Flatpak: " + machineInfo.sandbox)
+        const qtParts = []
+        if (machineInfo.qtVersion)
+            qtParts.push("Qt " + machineInfo.qtVersion)
+        if (machineInfo.displayPlatform)
+            qtParts.push(machineInfo.displayPlatform)
         const lines = [
             "Clothbound " + Qt.application.version,
-            "Platform: " + Qt.platform.os + (machineInfo.architecture ? " (" + machineInfo.architecture + ")" : ""),
+            "Platform: " + osName + (platformBits.length > 0 ? " (" + platformBits.join(", ") + ")" : "")
+        ]
+        if (qtParts.length > 0)
+            lines.push("Runtime: " + qtParts.join(" · "))
+        lines.push(
             "Hardware: " + hardwareSummary,
             "Language: " + translator.language,
             "Appearance: " + theme.appearance + (theme.omarchy ? " (Omarchy)" : " (standalone)")
@@ -69,8 +84,13 @@ ColumnLayout {
             "Built-in speech: " + speechSummary,
             "Audio cache: " + Format.size(audioCache.megabytes * 1024 * 1024, Qt.locale())
                 + " (" + audioCache.clipCount + " clips)"
-        ]
+        )
         return lines.join("\n")
+    }
+
+    function reportIssueUrl() {
+        return "https://github.com/orcawhisperer/clothbound/issues/new?template=bug_report.yml&environment="
+               + encodeURIComponent(diagnosticsText())
     }
 
     SettingsCard {
@@ -148,13 +168,27 @@ ColumnLayout {
         title: qsTr("Diagnostics")
         glyph: Icons.info
         description: qsTr("Environment summary for bug reports. Never includes API keys or book titles.")
-        headerExtra: TextButton {
-            size: "compact"
-            glyph: Icons.copy
-            text: qsTr("Copy")
-            onClicked: {
-                reader.copyText(page.diagnosticsText())
-                toast.show(qsTr("Diagnostics copied"))
+        headerExtra: RowLayout {
+            spacing: 8
+            TextButton {
+                size: "compact"
+                ghost: true
+                glyph: Icons.external
+                text: qsTr("Report issue")
+                onClicked: {
+                    reader.copyText(page.diagnosticsText())
+                    Qt.openUrlExternally(page.reportIssueUrl())
+                    toast.show(qsTr("Diagnostics copied"))
+                }
+            }
+            TextButton {
+                size: "compact"
+                glyph: Icons.copy
+                text: qsTr("Copy")
+                onClicked: {
+                    reader.copyText(page.diagnosticsText())
+                    toast.show(qsTr("Diagnostics copied"))
+                }
             }
         }
 
@@ -177,7 +211,9 @@ ColumnLayout {
             Label { text: qsTr("System"); color: theme.ink3; font.pixelSize: 12 }
             Label {
                 Layout.fillWidth: true
-                text: page.hardwareSummary
+                text: (machineInfo.os ? machineInfo.os + " · " : "")
+                      + page.hardwareSummary
+                      + (machineInfo.qtVersion ? " · Qt " + machineInfo.qtVersion : "")
                 color: theme.ink1
                 font.pixelSize: 12
                 wrapMode: Text.Wrap

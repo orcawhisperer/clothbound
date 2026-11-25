@@ -2023,6 +2023,73 @@ html[data-theme="dusk"] .arxiv-badge {
   font-size: 11.8px;
   color: var(--ink-soft);
 }
+.install-platform-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.install-tabs {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+}
+.install-tab {
+  height: 31px;
+  padding: 0 13px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 12.5px;
+  font-weight: 540;
+  transition: background-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+.install-tab:hover {
+  color: var(--ink);
+}
+.install-tab[aria-selected="true"] {
+  background: var(--bg-subtle);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.install-os-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--border);
+  background: var(--surface-warm);
+  color: var(--ink-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+.install-os-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--local-dot);
+}
+.install-os-pill[data-state="upcoming"] .install-os-dot {
+  background: var(--gold);
+}
+.install-upcoming-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .install-foot {
   margin-top: 22px;
   padding: 16px 20px;
@@ -2345,7 +2412,7 @@ kbd {
       <h1>Read deeply. Think clearly.</h1>
       <p class="hero-sub">A calm, fast EPUB and PDF reader for Linux — zero-flash page turns, smart PDF fit presets, save-from-URL articles &amp; OPDS catalogs, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server.</p>
       <div class="hero-ctas">
-        <a class="btn btn-primary" href="#install">Install on Arch / Omarchy</a>
+        <a class="btn btn-primary" id="heroInstallCta" href="#install">Install for Linux</a>
         <a class="btn btn-secondary" href="../docs/clothbound-prototype.html">Explore Interactive Prototype</a>
         <a class="btn btn-quiet" href="#mcp">Local MCP Config</a>
       </div>
@@ -3042,21 +3109,38 @@ kbd {
     <div class="section-head reveal">
       <div class="chapter-kicker-label"><span>06</span> Install &amp; Quickstart</div>
       <h2>Up and reading in under a minute.</h2>
-      <p>Native <code class="mono" style="font-size:14px">x86_64</code> and <code class="mono" style="font-size:14px">aarch64</code> Arch package for Omarchy and Linux desktops. Every CLI command works headless with <code class="mono" style="font-size:14px">--json</code>.</p>
+      <p>Native <code class="mono" style="font-size:14px">x86_64</code> and <code class="mono" style="font-size:14px">aarch64</code> packages for Arch / Omarchy and universal Linux Flatpak (Ubuntu, Fedora, Debian, Mint, SteamOS). Every CLI command works headless with <code class="mono" style="font-size:14px">--json</code>.</p>
+    </div>
+
+    <div class="install-platform-bar reveal">
+      <div class="install-tabs" id="installPlatformTabs" role="tablist" aria-label="Choose your platform">
+        <button type="button" class="install-tab" role="tab" aria-selected="true" data-platform="arch">Arch / Omarchy</button>
+        <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="flatpak">Flatpak (Ubuntu · Fedora · Linux)</button>
+        <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="source">Build from source</button>
+        <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="upcoming">macOS &amp; Windows</button>
+      </div>
+      <div class="install-os-pill" id="installOsPill" data-state="ready">
+        <span class="install-os-dot" aria-hidden="true"></span>
+        <span id="installOsText">Linux · Arch &amp; Flatpak ready</span>
+      </div>
     </div>
 
     <div class="install-grid reveal">
-      <div class="install-card">
+      <div class="install-card" id="installPrimaryCard">
         <div class="install-meta">
           <div class="install-step">
-            <span class="install-step-num">Step 01 · Arch / Omarchy</span>
+            <span class="install-step-num" id="installStepLabel">Step 01 · Arch / Omarchy</span>
           </div>
-          <h3>Install v0.5.0</h3>
-          <p class="install-note">Installs the verified release package on x86_64, or builds the same release from source on aarch64 (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>). Prefer building it yourself? <code>git clone</code> the <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">repo</a> and run <code>./bin/install</code>.</p>
+          <h3 id="installStepTitle">Install v0.5.0</h3>
+          <p class="install-note" id="installStepNote">Installs the verified release package on x86_64, or builds the same release from source on aarch64 (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>). Prefer building it yourself? <code>git clone</code> the <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">repo</a> and run <code>./bin/install</code>.</p>
         </div>
-        <div class="cmd-bar">
-          <code><span class="cmd-prompt">$</span>curl -fsSL https://clothbound.app/install | bash</code>
-          <button type="button" class="copy-btn" data-copy-text="curl -fsSL https://clothbound.app/install | bash">Copy</button>
+        <div class="cmd-bar" id="installCmdBar">
+          <code><span class="cmd-prompt">$</span><span id="installCmdCode">curl -fsSL https://clothbound.app/install | bash</span></code>
+          <button type="button" class="copy-btn" id="installCopyBtn" data-copy-text="curl -fsSL https://clothbound.app/install | bash">Copy</button>
+        </div>
+        <div class="install-upcoming-actions" id="installUpcomingActions" style="display:none">
+          <a class="btn btn-primary" style="height:36px;padding:0 15px;font-size:13px" href="https://github.com/orcawhisperer/clothbound/releases" rel="noopener noreferrer">Follow GitHub Releases →</a>
+          <a class="btn btn-secondary" style="height:36px;padding:0 15px;font-size:13px" href="../docs/clothbound-prototype.html">Try Interactive Prototype</a>
         </div>
       </div>
 
@@ -3066,7 +3150,7 @@ kbd {
             <span class="install-step-num">Step 02 · AI Agents</span>
           </div>
           <h3>Start the local MCP server</h3>
-          <p class="install-note">Standalone WebEngine-free read-only JSON-RPC 2.0 server over stdio (~31 ms startup) for Antigravity, Claude Code, Cursor, and Codex.</p>
+          <p class="install-note">Standalone WebEngine-free read-only JSON-RPC 2.0 server over stdio (~31 ms startup) for Antigravity, Claude Code, Cursor, and Codex. On Flatpak, run <code>flatpak run --command=clothbound-mcp app.clothbound.Reader</code>.</p>
         </div>
         <div class="cmd-bar">
           <code><span class="cmd-prompt">$</span>clothbound-mcp</code>
@@ -3090,7 +3174,7 @@ kbd {
     </div>
 
     <div class="install-foot reveal">
-      <span><strong>Dependencies:</strong> Qt6 (<code class="mono" style="font-size:12px">qt6-base</code>, <code class="mono" style="font-size:12px">qt6-declarative</code>, <code class="mono" style="font-size:12px">qt6-wayland</code>, <code class="mono" style="font-size:12px">qt6-webengine</code>). Optional: <code class="mono" style="font-size:12px">ffmpeg</code>, <code class="mono" style="font-size:12px">sdcv</code>, <code class="mono" style="font-size:12px">ollama</code>.</span>
+      <span><strong>Dependencies:</strong> Qt6 (<code class="mono" style="font-size:12px">qt6-base</code>, <code class="mono" style="font-size:12px">qt6-declarative</code>, <code class="mono" style="font-size:12px">qt6-wayland</code>, <code class="mono" style="font-size:12px">qt6-webengine</code>) — bundled automatically in Flatpak. Optional: <code class="mono" style="font-size:12px">ffmpeg</code>, <code class="mono" style="font-size:12px">sdcv</code>, <code class="mono" style="font-size:12px">ollama</code>.</span>
       <a class="btn btn-secondary" style="height:34px;padding:0 14px;font-size:13px" href="../docs/clothbound-prototype.html">Open Full Interactive Prototype →</a>
     </div>
   </div>
@@ -3131,6 +3215,7 @@ kbd {
           <a href="#mcp">Local MCP</a>
           <a href="#install">Install</a>
           <a href="../docs/clothbound-prototype.html">Interactive Prototype</a>
+          <a href="https://github.com/orcawhisperer/clothbound/issues/new?template=bug_report.yml" rel="noopener noreferrer">Report Issue</a>
           <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer">GitHub</a>
         </div>
         <div>MIT License · Bundled Literata &amp; Inter under SIL OFL-1.1</div>
@@ -3645,6 +3730,100 @@ kbd {
     apaBtn.addEventListener("click", function () {
       writeClipboard(apaSample, this, "Copy APA", "APA Copied ✓");
     });
+  }
+
+  /* -----------------------------------------------------------------------
+     8b. OS-Aware Install Platform Selector (Zero Tracking)
+     ----------------------------------------------------------------------- */
+  var installTabs = document.getElementById("installPlatformTabs");
+  var installStepLabel = document.getElementById("installStepLabel");
+  var installStepTitle = document.getElementById("installStepTitle");
+  var installStepNote = document.getElementById("installStepNote");
+  var installCmdBar = document.getElementById("installCmdBar");
+  var installCmdCode = document.getElementById("installCmdCode");
+  var installCopyBtn = document.getElementById("installCopyBtn");
+  var installUpcomingActions = document.getElementById("installUpcomingActions");
+  var installOsPill = document.getElementById("installOsPill");
+  var installOsText = document.getElementById("installOsText");
+  var heroInstallCta = document.getElementById("heroInstallCta");
+
+  var installProfiles = {
+    arch: {
+      label: "Step 01 · Arch / Omarchy",
+      title: "Install v0.5.0",
+      noteHtml: 'Installs the verified release package on x86_64, or builds the same release from source on aarch64 (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>). Prefer building it yourself? <code>git clone</code> the <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">repo</a> and run <code>./bin/install</code>.',
+      cmd: "curl -fsSL https://clothbound.app/install | bash"
+    },
+    flatpak: {
+      label: "Step 01 · Flatpak (Ubuntu · Fedora · Debian · Mint · SteamOS)",
+      title: "Install via Flatpak (app.clothbound.Reader)",
+      noteHtml: 'Universal Linux sandbox with Qt 6, WebEngine, PDF, and desktop light/dark portal support built in (<a href="https://github.com/orcawhisperer/clothbound/tree/master/flatpak" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">Flatpak guide</a>). Works via <code>install.sh</code> on releases with a <code>.flatpak</code> bundle, or build locally from the repo manifest.',
+      cmd: "curl -fsSL https://clothbound.app/install | bash"
+    },
+    source: {
+      label: "Step 01 · Build from source (CMake 3.24+ · Qt 6)",
+      title: "Compile & install locally",
+      noteHtml: 'Builds both <code>clothbound</code> and the standalone WebEngine-free <code>clothbound-mcp</code> binary, plus all 50 language catalogs and desktop entry.',
+      cmd: "git clone https://github.com/orcawhisperer/clothbound.git && cd clothbound && ./bin/install"
+    },
+    upcoming: {
+      label: "Roadmap · Native Desktop Expansion",
+      title: "macOS & Windows builds are up next",
+      noteHtml: 'Clothbound is built on pure C++20 + Qt 6 with clean platform boundaries. Native Apple Silicon (<code>.dmg</code> / Homebrew) and Windows 11 (<code>winget</code> / MSIX) builds follow our universal Linux Flatpak milestone.',
+      cmd: ""
+    }
+  };
+
+  function selectInstallPlatform(key) {
+    var profile = installProfiles[key] || installProfiles.arch;
+    if (installTabs) {
+      var btns = installTabs.querySelectorAll("button[data-platform]");
+      for (var i = 0; i < btns.length; i++) {
+        btns[i].setAttribute("aria-selected", btns[i].getAttribute("data-platform") === key ? "true" : "false");
+      }
+    }
+    if (installStepLabel) installStepLabel.textContent = profile.label;
+    if (installStepTitle) installStepTitle.textContent = profile.title;
+    if (installStepNote) installStepNote.innerHTML = profile.noteHtml;
+    var hasCmd = profile.cmd.length > 0;
+    if (installCmdBar) installCmdBar.style.display = hasCmd ? "" : "none";
+    if (installUpcomingActions) installUpcomingActions.style.display = hasCmd ? "none" : "";
+    if (hasCmd && installCmdCode && installCopyBtn) {
+      installCmdCode.textContent = profile.cmd;
+      installCopyBtn.setAttribute("data-copy-text", profile.cmd);
+    }
+  }
+
+  if (installTabs) {
+    installTabs.addEventListener("click", function (ev) {
+      var btn = ev.target.closest("button[data-platform]");
+      if (!btn) return;
+      selectInstallPlatform(btn.getAttribute("data-platform"));
+    });
+
+    var ua = (navigator.userAgent || "").toLowerCase();
+    var plat = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "").toLowerCase();
+    var detected = "arch";
+    if (plat.indexOf("mac") !== -1 || ua.indexOf("macintosh") !== -1) {
+      detected = "upcoming";
+      if (installOsPill) installOsPill.setAttribute("data-state", "upcoming");
+      if (installOsText) installOsText.textContent = "Detected macOS · Native .dmg coming next";
+      if (heroInstallCta) heroInstallCta.textContent = "Get Clothbound";
+    } else if (plat.indexOf("win") !== -1 || ua.indexOf("windows") !== -1) {
+      detected = "upcoming";
+      if (installOsPill) installOsPill.setAttribute("data-state", "upcoming");
+      if (installOsText) installOsText.textContent = "Detected Windows · Native build coming next";
+      if (heroInstallCta) heroInstallCta.textContent = "Get Clothbound";
+    } else if (ua.indexOf("ubuntu") !== -1 || ua.indexOf("fedora") !== -1 || ua.indexOf("debian") !== -1 || ua.indexOf("mint") !== -1 || ua.indexOf("suse") !== -1) {
+      detected = "flatpak";
+      if (installOsPill) installOsPill.setAttribute("data-state", "ready");
+      if (installOsText) installOsText.textContent = "Detected Linux · Flatpak ready";
+    } else if (plat.indexOf("linux") !== -1 || ua.indexOf("linux") !== -1) {
+      detected = "arch";
+      if (installOsPill) installOsPill.setAttribute("data-state", "ready");
+      if (installOsText) installOsText.textContent = "Detected Linux · Arch & Flatpak ready";
+    }
+    selectInstallPlatform(detected);
   }
 
   /* -----------------------------------------------------------------------

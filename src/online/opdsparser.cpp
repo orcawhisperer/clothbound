@@ -261,7 +261,7 @@ QString localizedJsonString(const QJsonValue &val) {
                     return s;
             }
         }
-        for (auto it = obj.cbegin(); it != obj.cend(); ++it) {
+        for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
             if (it.value().isString()) {
                 const QString s = it.value().toString().trimmed();
                 if (!s.isEmpty())
