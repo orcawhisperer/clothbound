@@ -3114,9 +3114,10 @@ kbd {
 
     <div class="install-platform-bar reveal">
       <div class="install-tabs" id="installPlatformTabs" role="tablist" aria-label="Choose your platform">
-        <button type="button" class="install-tab" role="tab" aria-selected="true" data-platform="arch">Arch / Omarchy</button>
-        <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="flatpak">Flatpak (Ubuntu · Fedora · Linux)</button>
-        <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="source">Build from source</button>
+        <button type="button" class="install-tab" role="tab" aria-selected="true" data-platform="linux">Linux (Auto)</button>
+        <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="flatpak">Flatpak</button>
+        <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="arch">Arch / Omarchy</button>
+        <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="source">Source</button>
         <button type="button" class="install-tab" role="tab" aria-selected="false" data-platform="upcoming">macOS &amp; Windows</button>
       </div>
       <div class="install-os-pill" id="installOsPill" data-state="ready">
@@ -3129,10 +3130,10 @@ kbd {
       <div class="install-card" id="installPrimaryCard">
         <div class="install-meta">
           <div class="install-step">
-            <span class="install-step-num" id="installStepLabel">Step 01 · Arch / Omarchy</span>
+            <span class="install-step-num" id="installStepLabel">Step 01 · Linux (Auto-detect: Arch / Omarchy · Flatpak)</span>
           </div>
           <h3 id="installStepTitle">Install v0.5.1</h3>
-          <p class="install-note" id="installStepNote">Installs the verified release package on x86_64, or builds the same release from source on aarch64 (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>). Prefer building it yourself? <code>git clone</code> the <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">repo</a> and run <code>./bin/install</code>.</p>
+          <p class="install-note" id="installStepNote">One command for any Linux desktop — auto-detects <code>pacman</code> on Arch / Omarchy (verified package on x86_64, source build on aarch64) or <code>flatpak</code> on Debian, Ubuntu, Fedora, Mint, and SteamOS (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>).</p>
         </div>
         <div class="cmd-bar" id="installCmdBar">
           <code><span class="cmd-prompt">$</span><span id="installCmdCode">curl -fsSL https://clothbound.app/install | bash</span></code>
@@ -3748,17 +3749,23 @@ kbd {
   var heroInstallCta = document.getElementById("heroInstallCta");
 
   var installProfiles = {
-    arch: {
-      label: "Step 01 · Arch / Omarchy",
+    linux: {
+      label: "Step 01 · Linux (Auto-detect: Arch / Omarchy · Flatpak)",
       title: "Install v0.5.1",
-      noteHtml: 'Installs the verified release package on x86_64, or builds the same release from source on aarch64 (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>). Prefer building it yourself? <code>git clone</code> the <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">repo</a> and run <code>./bin/install</code>.',
+      noteHtml: 'One command for any Linux desktop — auto-detects <code>pacman</code> on Arch / Omarchy (verified package on x86_64, source build on aarch64) or <code>flatpak</code> on Debian, Ubuntu, Fedora, Mint, and SteamOS (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>).',
       cmd: "curl -fsSL https://clothbound.app/install | bash"
     },
     flatpak: {
-      label: "Step 01 · Flatpak (Ubuntu · Fedora · Debian · Mint · SteamOS)",
+      label: "Step 01 · Flatpak (Debian · Ubuntu · Fedora · Mint · SteamOS)",
       title: "Install v0.5.1 via Flatpak (app.clothbound.Reader)",
-      noteHtml: 'Universal Linux sandbox with Qt 6, WebEngine, PDF, and live desktop light/dark portal support built in (<a href="https://github.com/orcawhisperer/clothbound/tree/master/flatpak" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">Flatpak guide</a>). Downloads and verifies the official <code>.flatpak</code> bundle from GitHub Releases.',
-      cmd: "curl -fsSL https://clothbound.app/install | bash"
+      noteHtml: 'Universal sandboxed bundle with Qt 6, WebEngine, PDF, and live desktop light/dark portal support built in (<a href="https://github.com/orcawhisperer/clothbound/tree/master/flatpak" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">Flatpak guide</a> · <a href="https://github.com/orcawhisperer/clothbound/releases/download/v0.5.1/SHA256SUMS" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">SHA256SUMS</a>).',
+      cmd: "curl -LO https://github.com/orcawhisperer/clothbound/releases/download/v0.5.1/clothbound-0.5.1-x86_64.flatpak && flatpak install --user ./clothbound-0.5.1-x86_64.flatpak"
+    },
+    arch: {
+      label: "Step 01 · Arch Linux / Omarchy (x86_64)",
+      title: "Install v0.5.1 package directly",
+      noteHtml: 'Direct native Arch package (on <code>aarch64</code>, use <strong>Linux (Auto)</strong> or <code>./bin/install</code>). Verify against <a href="https://github.com/orcawhisperer/clothbound/releases/download/v0.5.1/SHA256SUMS" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">SHA256SUMS</a>.',
+      cmd: "curl -LO https://github.com/orcawhisperer/clothbound/releases/download/v0.5.1/clothbound-0.5.1-1-x86_64.pkg.tar.zst && sudo pacman -U ./clothbound-0.5.1-1-x86_64.pkg.tar.zst"
     },
     source: {
       label: "Step 01 · Build from source (CMake 3.24+ · Qt 6)",
@@ -3775,7 +3782,7 @@ kbd {
   };
 
   function selectInstallPlatform(key) {
-    var profile = installProfiles[key] || installProfiles.arch;
+    var profile = installProfiles[key] || installProfiles.linux;
     if (installTabs) {
       var btns = installTabs.querySelectorAll("button[data-platform]");
       for (var i = 0; i < btns.length; i++) {
@@ -3803,7 +3810,7 @@ kbd {
 
     var ua = (navigator.userAgent || "").toLowerCase();
     var plat = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "").toLowerCase();
-    var detected = "arch";
+    var detected = "linux";
     if (plat.indexOf("mac") !== -1 || ua.indexOf("macintosh") !== -1) {
       detected = "upcoming";
       if (installOsPill) installOsPill.setAttribute("data-state", "upcoming");
@@ -3819,9 +3826,9 @@ kbd {
       if (installOsPill) installOsPill.setAttribute("data-state", "ready");
       if (installOsText) installOsText.textContent = "Detected Linux · Flatpak ready";
     } else if (plat.indexOf("linux") !== -1 || ua.indexOf("linux") !== -1) {
-      detected = "arch";
+      detected = "linux";
       if (installOsPill) installOsPill.setAttribute("data-state", "ready");
-      if (installOsText) installOsText.textContent = "Detected Linux · Arch & Flatpak ready";
+      if (installOsText) installOsText.textContent = "Detected Linux · Auto-detects Arch & Flatpak";
     }
     selectInstallPlatform(detected);
   }
