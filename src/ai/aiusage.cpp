@@ -28,18 +28,102 @@ const QList<AiUsageLedger::Price> &AiUsageLedger::prices() {
     return table;
 }
 
+namespace {
+
+double computeDollars(const AiUsageLedger::Price &price, const Ai::Usage &usage, bool flex) {
+    const qint64 inputTokens = qMax<qint64>(0, usage.inputTokens);
+    const qint64 cached = qBound<qint64>(0, usage.cachedTokens, inputTokens);
+    const qint64 outputTokens = qMax<qint64>(qMax<qint64>(0, usage.outputTokens), qMax<qint64>(0, usage.audioTokens));
+    const qint64 thoughtTokens = qMax<qint64>(0, usage.thoughtTokens);
+    const double dollars = ((inputTokens - cached) * price.input + cached * price.cached +
+                            (outputTokens + thoughtTokens) * price.output) / 1e6;
+    return flex ? dollars / 2.0 : dollars;
+}
+
+bool isKnownCloudModelId(const QString &normalized) {
+    return normalized.startsWith(QLatin1String("gemini-")) || normalized.startsWith(QLatin1String("gemini.")) ||
+           normalized.startsWith(QLatin1String("imagen-")) || normalized.startsWith(QLatin1String("veo-")) ||
+           normalized.startsWith(QLatin1String("text-embedding-"));
+}
+
+AiUsageLedger::Price conservativeCloudFallback(const QString &normalized) {
+    if (normalized.contains(QLatin1String("image")) || normalized.contains(QLatin1String("nano-banana")) ||
+        normalized.startsWith(QLatin1String("imagen-"))) {
+        return {"cloud-image-fallback", QDate(2026, 1, 1), 1.50, 30.00, 0.0};
+    }
+    if (normalized.contains(QLatin1String("tts")) || normalized.contains(QLatin1String("audio"))) {
+        return {"cloud-tts-fallback", QDate(2026, 1, 1), 1.00, 18.00, 0.0};
+    }
+    if (normalized.contains(QLatin1String("embedding"))) {
+        return {"cloud-embed-fallback", QDate(2026, 1, 1), 0.20, 0.0, 0.0};
+    }
+    if (normalized.contains(QLatin1String("lite"))) {
+        return {"cloud-lite-fallback", QDate(2026, 1, 1), 0.50, 3.00, 0.05};
+    }
+    // Flagship conservative tier matching highest standard text pricing so model
+    // rotations can never silently disable monthly budget caps.
+    return {"cloud-flagship-fallback", QDate(2026, 1, 1), 4.00, 20.00, 0.20};
+}
+
+const AiUsageLedger::Price *findPrice(const QString &normalized, const QDate &day) {
+    const AiUsageLedger::Price *exact = nullptr;
+    for (const AiUsageLedger::Price &candidate : AiUsageLedger::prices()) {
+        if (normalized == QLatin1String(candidate.model) && candidate.from <= day &&
+            (!exact || candidate.from > exact->from)) {
+            exact = &candidate;
+        }
+    }
+    if (exact)
+        return exact;
+    // Family/versioned prefix match (e.g. "gemini-4-hydrogen-002" -> "gemini-4-hydrogen").
+    const AiUsageLedger::Price *prefixMatch = nullptr;
+    qsizetype bestLen = 0;
+    for (const AiUsageLedger::Price &candidate : AiUsageLedger::prices()) {
+        const QLatin1String name(candidate.model);
+        if (candidate.from <= day && normalized.startsWith(name) &&
+            (normalized.size() == name.size() || normalized[name.size()] == QLatin1Char('-') ||
+             normalized[name.size()] == QLatin1Char('.') || normalized[name.size()] == QLatin1Char(':'))) {
+            if (name.size() > bestLen ||
+                (name.size() == bestLen && (!prefixMatch || candidate.from > prefixMatch->from))) {
+                prefixMatch = &candidate;
+                bestLen = name.size();
+            }
+        }
+    }
+    return prefixMatch;
+}
+
+QString normalizeModelName(const QString &model) {
+    QString normalized = model.trimmed().toLower();
+    if (normalized.startsWith(QLatin1String("models/")))
+        normalized.remove(0, 7);
+    return normalized;
+}
+
+}  // namespace
+
 double AiUsageLedger::cost(const QString &model, const Ai::Usage &usage, const QDate &day, bool flex) {
-    const Price *price = nullptr;
-    for (const Price &candidate : prices())
-        if (model == QLatin1String(candidate.model) && candidate.from <= day &&
-            (!price || candidate.from > price->from))
-            price = &candidate;
-    if (!price)
+    const QString normalized = normalizeModelName(model);
+    if (normalized.isEmpty())
         return 0;
-    const qint64 cached = qMin(usage.cachedTokens, usage.inputTokens);
-    const double dollars = ((usage.inputTokens - cached) * price->input + cached * price->cached +
-                            (usage.outputTokens + usage.thoughtTokens) * price->output) / 1e6;
-    return flex ? dollars / 2 : dollars;
+    if (const Price *price = findPrice(normalized, day))
+        return computeDollars(*price, usage, flex);
+    if (isKnownCloudModelId(normalized)) {
+        const Price fallback = conservativeCloudFallback(normalized);
+        return computeDollars(fallback, usage, flex);
+    }
+    return 0;
+}
+
+double AiUsageLedger::costForProvider(const QString &provider, const QString &model, const Ai::Usage &usage,
+                                      const QDate &day, bool flex) {
+    if (provider == QLatin1String("local") || provider == QLatin1String("builtin"))
+        return 0;
+    const QString normalized = normalizeModelName(model);
+    if (const Price *price = findPrice(normalized, day))
+        return computeDollars(*price, usage, flex);
+    const Price fallback = conservativeCloudFallback(normalized);
+    return computeDollars(fallback, usage, flex);
 }
 
 double AiUsageLedger::listeningCost(const QString &model, double minutes, const QDate &day, bool flex) {
@@ -69,9 +153,15 @@ void AiUsageLedger::record(const QString &provider, const QString &model, const 
     for (const QVariant &value :
          QVariantList{at.toSecsSinceEpoch(), provider, model, feature.isEmpty() ? QStringLiteral("other") : feature,
                       usage.inputTokens, usage.outputTokens, usage.cachedTokens, usage.thoughtTokens,
-                      usage.audioTokens, flex ? 1 : 0, cost(model, usage, at.date(), flex)})
+                      usage.audioTokens, flex ? 1 : 0, costForProvider(provider, model, usage, at.date(), flex)})
         query.addBindValue(value);
-    query.exec();
+    if (query.exec())
+        ++m_localVersion;
+}
+
+qint64 AiUsageLedger::dataVersion() const {
+    QSqlQuery query(database());
+    return query.exec(QStringLiteral("PRAGMA data_version")) && query.next() ? query.value(0).toLongLong() : -1;
 }
 
 double AiUsageLedger::spentSince(const QDate &day) const {
@@ -101,5 +191,6 @@ void AiUsageLedger::clearMonth(const QDate &today) {
     QSqlQuery query(database());
     query.prepare(QStringLiteral("DELETE FROM ai_usage WHERE at >= ?"));
     query.addBindValue(QDateTime(QDate(today.year(), today.month(), 1), QTime(0, 0)).toSecsSinceEpoch());
-    query.exec();
+    if (query.exec())
+        ++m_localVersion;
 }

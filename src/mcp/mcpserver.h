@@ -5,9 +5,15 @@
 #include <QString>
 #include <QStringList>
 
+#include <cstdio>
+#include <functional>
+#include <memory>
+
 class AiServices;
 class Library;
 class LibraryIndex;
+class LocalModels;
+class PassageIndex;
 
 // Built-in local stdio Model Context Protocol (MCP) server for Clothbound.
 // Exposes strictly read-only, privacy-first tools and resources over JSON-RPC 2.0
@@ -18,6 +24,8 @@ class McpServer : public QObject {
     Q_OBJECT
 
 public:
+    static constexpr qsizetype kMaxStdioFrameBytes = 2 * 1024 * 1024;
+
     struct Options {
         QString settingsPath;
         QString indexPath;
@@ -39,10 +47,19 @@ public:
 
     void setSettingsPath(const QString &path) { m_settingsPath = path; }
     QString settingsPath() const;
+    // Optional strictly loopback local embedder for read-only semantic search
+    // without touching AiServices, cloud providers, or ai_usage tables.
+    void setLocalEmbedder(LocalModels *local) { m_localEmbedder = local; }
 
     // Routes all Qt debug/info/warning/critical/fatal logs to stderr so stdout
     // carries exclusively newline-delimited JSON-RPC 2.0 frames.
     static void installStderrMessageHandler();
+
+    // Runs a bounded, NUL-safe newline-delimited JSON-RPC 2.0 stdio loop.
+    static void runStdioLoop(std::FILE *in,
+                             std::FILE *out,
+                             const std::function<QJsonObject(const QJsonObject &)> &handler,
+                             qsizetype maxFrameBytes = kMaxStdioFrameBytes);
 
     // Runs the headless stdio JSON-RPC 2.0 MCP loop until stdin closes.
     static int runStdio(const QStringList &arguments);
@@ -66,14 +83,14 @@ private:
     QJsonObject buildBookMarksJson(int bookId, const QString &query, int limit, QString *errorOut) const;
     QJsonObject buildBooksListJson(const QString &query, const QString &format, const QString &collection, int limit) const;
 
-    LibraryIndex *ensureIndex();
-    void ensureIndexedForSearch(int bookId);
+    QString resolvedIndexPath() const;
     QString extractPassageText(int bookId, int chapter, qint64 start, qint64 end) const;
 
     Library *m_library = nullptr;
     LibraryIndex *m_index = nullptr;
-    bool m_ownsIndex = false;
     AiServices *m_ai = nullptr;
+    LocalModels *m_localEmbedder = nullptr;
+    std::unique_ptr<PassageIndex> m_passageIndex;
     QString m_settingsPath;
     QString m_indexPath;
 };

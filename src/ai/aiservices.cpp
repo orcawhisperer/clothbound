@@ -87,8 +87,13 @@ QString AiServices::speechModel() const {
 double AiServices::spentThisMonth() const {
     const QDate today = QDate::currentDate();
     const QDate monthStart(today.year(), today.month(), 1);
-    if (m_spentCache < 0 || m_spentMonth != monthStart) {
+    const qint64 dataVer = m_ledger.dataVersion();
+    const qint64 localVer = m_ledger.localVersion();
+    if (m_spentCache < 0 || m_spentMonth != monthStart || dataVer < 0 || dataVer != m_spentDataVersion ||
+        localVer != m_spentLocalVersion) {
         m_spentMonth = monthStart;
+        m_spentDataVersion = dataVer;
+        m_spentLocalVersion = localVer;
         m_spentCache = m_ledger.spentSince(monthStart);
     }
     return m_spentCache;
@@ -124,7 +129,7 @@ bool AiServices::fitsBudget(double cost) const {
         return true;
     if (m_budget <= 0)
         return false;
-    return spentThisMonth() + cost <= m_budget;
+    return spentThisMonth() + m_reservedUsd + qMax(0.0, cost) <= m_budget;
 }
 
 double AiServices::listeningCost(double minutes, bool economy, bool flex) const {
@@ -228,13 +233,55 @@ void AiServices::check() {
     });
 }
 
-void AiServices::track(Ai::Reply *reply, bool flex) {
+void AiServices::track(Ai::Reply *reply, bool flex, double estimatedCost) {
+    if (!reply)
+        return;
     // A reply belongs to the provider that made it (a local one costs nothing).
     const auto *maker = qobject_cast<Ai::Provider *>(reply->parent());
     const QString providerId = maker ? maker->id() : m_provider->id();
-    connect(reply, &Ai::Reply::finished, this, [this, reply, flex, providerId] {
+    const bool isCloud = (providerId != QLatin1String("local") && providerId != QLatin1String("builtin"));
+
+    quint64 reservationId = 0;
+    if (isCloud && !reply->isFinished()) {
+        double reserve = estimatedCost;
+        if (reserve < 0.0) {
+            const QString feat = reply->feature();
+            if (feat == QLatin1String("illustrate"))
+                reserve = m_provider && m_provider->images() ? m_provider->images()->imageCost() : 0.035;
+            else if (feat == QLatin1String("listen") || feat == QLatin1String("voice design"))
+                reserve = 0.01;
+            else if (feat == QLatin1String("embed"))
+                reserve = 0.001;
+            else
+                reserve = 0.01;
+        }
+        if (reserve > 0.0) {
+            reservationId = m_nextReservationId++;
+            m_reservations.insert(reservationId, reserve);
+            m_reservedUsd += reserve;
+        }
+    }
+
+    auto releaseReservation = [this, reservationId]() {
+        if (reservationId == 0)
+            return;
+        auto it = m_reservations.find(reservationId);
+        if (it == m_reservations.end())
+            return;
+        m_reservedUsd = qMax(0.0, m_reservedUsd - it.value());
+        m_reservations.erase(it);
+        if (m_reservations.isEmpty())
+            m_reservedUsd = 0.0;
+    };
+
+    if (reservationId != 0) {
+        connect(reply, &QObject::destroyed, this, [releaseReservation]() { releaseReservation(); });
+    }
+
+    connect(reply, &Ai::Reply::finished, this, [this, reply, flex, providerId, releaseReservation] {
+        releaseReservation();
         const Ai::Usage usage = reply->usage();
-        if (usage.inputTokens || usage.outputTokens || usage.thoughtTokens) {
+        if (usage.inputTokens || usage.outputTokens || usage.thoughtTokens || usage.audioTokens) {
             m_ledger.record(providerId, reply->model(), reply->feature(), usage, flex);
             m_spentCache = -1;
             emit usageChanged();

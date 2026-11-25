@@ -72,9 +72,18 @@ class ServerReply : public Ai::Reply {
 public:
     enum Mode { Chat, Embed, Speech, Models };
 
+    static constexpr qsizetype kMaxTextBodyBytes = 16 * 1024 * 1024;
+    static constexpr qsizetype kMaxSpeechBodyBytes = 64 * 1024 * 1024;
+
     ServerReply(QNetworkReply *reply, Mode mode, LocalModels::Kind kind, const QString &model, const QString &feature,
-                bool json, QObject *parent, bool hasImage = false)
-        : Ai::Reply(parent), m_reply(reply), m_mode(mode), m_kind(kind), m_json(json), m_hasImage(hasImage) {
+                bool json, QObject *parent, bool hasImage = false, bool requestStream = false)
+        : Ai::Reply(parent),
+          m_reply(reply),
+          m_mode(mode),
+          m_kind(kind),
+          m_json(json),
+          m_hasImage(hasImage),
+          m_requestStream(requestStream) {
         m_model = model;
         m_feature = feature;
         reply->setParent(this);
@@ -83,6 +92,7 @@ public:
     }
 
     void abort() override {
+        m_aborted = true;
         if (m_reply && m_reply->isRunning())
             m_reply->abort();
         finish({Ai::Error::Cancelled, {}});
@@ -94,36 +104,83 @@ private:
         return status >= 200 && status < 300;
     }
 
-    void read() {
-        if (m_mode != Chat || !ok()) {
-            m_body += m_reply->readAll();
-            return;
+    qsizetype maxBodyBytes() const { return m_mode == Speech ? kMaxSpeechBodyBytes : kMaxTextBodyBytes; }
+
+    bool appendBodyBounded(const QByteArray &chunk) {
+        const qsizetype unread = m_body.size() - m_ndjsonPos;
+        if (unread + chunk.size() > maxBodyBytes()) {
+            if (m_reply && m_reply->isRunning())
+                m_reply->abort();
+            finish({Ai::Error::Server, QStringLiteral("The model server response exceeded the size limit.")});
+            return false;
         }
-        const QByteArray chunk = m_reply->readAll();
-        const QByteArray type = m_reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
-        if (type.contains("event-stream")) {
-            for (const SseParser::Event &event : m_sse.feed(chunk))
-                chatEvent(event.data);
-        } else if (type.contains("ndjson") || (m_kind == LocalModels::Ollama && !m_hasImage)) {
-            // Ollama native /api/chat streams a JSON object per line.
-            m_body += chunk;
-            qsizetype end;
-            while ((end = m_body.indexOf('\n')) >= 0) {
-                const QByteArray line = m_body.left(end).trimmed();
-                m_body.remove(0, end + 1);
+        m_body += chunk;
+        return true;
+    }
+
+    void drainNdjsonLines(bool flushTail) {
+        while (m_ndjsonPos < m_body.size()) {
+            const qsizetype end = m_body.indexOf('\n', m_ndjsonPos);
+            if (end < 0) {
+                if (!flushTail)
+                    break;
+                const QByteArray line = m_body.mid(m_ndjsonPos).trimmed();
+                m_ndjsonPos = m_body.size();
                 if (!line.isEmpty())
                     chatEvent(line);
+                break;
             }
+            const QByteArray line = m_body.mid(m_ndjsonPos, end - m_ndjsonPos).trimmed();
+            m_ndjsonPos = end + 1;
+            if (!line.isEmpty())
+                chatEvent(line);
+        }
+        if (m_ndjsonPos >= m_body.size()) {
+            m_body.clear();
+            m_ndjsonPos = 0;
+        } else if (m_ndjsonPos >= 65536) {
+            m_body.remove(0, m_ndjsonPos);
+            m_ndjsonPos = 0;
+        }
+    }
+
+    void read() {
+        if (m_aborted || isFinished() || !m_reply)
+            return;
+        const QByteArray chunk = m_reply->readAll();
+        if (chunk.isEmpty())
+            return;
+        if (m_mode != Chat || !ok()) {
+            (void)appendBodyBounded(chunk);
+            return;
+        }
+        const QByteArray type = m_reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
+        if (type.contains("event-stream")) {
+            m_streamingSse = true;
+            for (const SseParser::Event &event : m_sse.feed(chunk))
+                chatEvent(event.data);
+            if (m_sse.overflowed()) {
+                m_reply->abort();
+                finish({Ai::Error::Server, QStringLiteral("The model server stream exceeded the frame size limit.")});
+            }
+        } else if (type.contains("ndjson") || (m_kind == LocalModels::Ollama && !m_hasImage && m_requestStream)) {
+            // Ollama native /api/chat streams a JSON object per line.
+            m_streamingNdjson = true;
+            if (!appendBodyBounded(chunk))
+                return;
+            drainNdjsonLines(false);
         } else {
-            m_body += chunk;
+            (void)appendBodyBounded(chunk);
         }
     }
 
     // A piece of a chat: an SSE "data:" or one of Ollama's lines, or the
     // whole answer when it didn't stream.
     void chatEvent(const QByteArray &data) {
-        if (data.trimmed() == "[DONE]")
+        if (data.trimmed() == "[DONE]") {
+            m_streamDone = true;
             return;
+        }
         const QJsonObject json = QJsonDocument::fromJson(data).object();
         if (json.isEmpty())
             return;
@@ -131,6 +188,7 @@ private:
         if (json.contains(QStringLiteral("message"))) {  // Ollama
             delta = json.value(QStringLiteral("message")).toObject().value(QStringLiteral("content")).toString();
             if (json.value(QStringLiteral("done")).toBool()) {
+                m_streamDone = true;
                 m_usage.inputTokens = json.value(QStringLiteral("prompt_eval_count")).toInteger();
                 m_usage.outputTokens = json.value(QStringLiteral("eval_count")).toInteger();
                 m_usage.promptEvalNs = json.value(QStringLiteral("prompt_eval_duration")).toInteger();
@@ -150,6 +208,12 @@ private:
         }
         if (delta.isEmpty())
             return;
+        if (m_raw.size() + delta.size() > kMaxTextBodyBytes) {
+            if (m_reply && m_reply->isRunning())
+                m_reply->abort();
+            finish({Ai::Error::Server, QStringLiteral("The model server response exceeded the size limit.")});
+            return;
+        }
         m_raw += delta;
         emitFiltered(delta);
     }
@@ -215,25 +279,67 @@ private:
     void done() {
         if (isFinished())
             return;
-        if (!ok() || m_reply->error() != QNetworkReply::NoError) {
-            finish(errorFor(m_reply, m_body + m_reply->readAll(), m_hasImage));
+        if (m_aborted || !m_reply) {
+            finish({Ai::Error::Cancelled, {}});
             return;
         }
-        m_body += m_reply->readAll();
+        const QByteArray tail = m_reply->readAll();
+        if (!ok() || m_reply->error() != QNetworkReply::NoError) {
+            finish(errorFor(m_reply, m_body + tail.left(4096), m_hasImage));
+            return;
+        }
         switch (m_mode) {
         case Chat: {
-            if (!m_body.trimmed().isEmpty()) {
-                // A single whole JSON response (including pretty-printed multi-line JSON),
-                // or line-delimited SSE/NDJSON tail lines.
-                if (QJsonDocument::fromJson(m_body).isObject()) {
-                    chatEvent(m_body);
-                } else {
-                    for (const QByteArray &line : m_body.split('\n'))
-                        chatEvent(line.trimmed().startsWith("data:") ? line.trimmed().mid(5) : line);
+            const QByteArray type = m_reply->header(QNetworkRequest::ContentTypeHeader).toByteArray();
+            const bool isSse = m_streamingSse || type.contains("event-stream");
+            const bool isNdjson =
+                !isSse && (m_streamingNdjson || type.contains("ndjson") ||
+                           (m_kind == LocalModels::Ollama && !m_hasImage && m_requestStream));
+            if (isSse) {
+                if (!tail.isEmpty()) {
+                    for (const SseParser::Event &event : m_sse.feed(tail))
+                        chatEvent(event.data);
                 }
+                if (isFinished())
+                    return;
+                if (!m_sse.overflowed()) {
+                    for (const SseParser::Event &event : m_sse.finish())
+                        chatEvent(event.data);
+                }
+                if (isFinished())
+                    return;
+                if (m_sse.overflowed()) {
+                    finish({Ai::Error::Server, QStringLiteral("The model server stream exceeded the frame size limit.")});
+                    return;
+                }
+                if (!m_streamDone) {
+                    finish({Ai::Error::Offline, QStringLiteral("The connection ended before the answer finished.")});
+                    return;
+                }
+            } else if (isNdjson) {
+                if (!tail.isEmpty() && !appendBodyBounded(tail))
+                    return;
+                drainNdjsonLines(true);
+                if (isFinished())
+                    return;
+                if (!m_streamDone) {
+                    finish({Ai::Error::Offline, QStringLiteral("The connection ended before the answer finished.")});
+                    return;
+                }
+            } else {
+                if (!tail.isEmpty() && !appendBodyBounded(tail))
+                    return;
+                if (!m_body.trimmed().isEmpty()) {
+                    if (QJsonDocument::fromJson(m_body).isObject()) {
+                        chatEvent(m_body);
+                    } else {
+                        for (const QByteArray &line : m_body.split('\n'))
+                            chatEvent(line.trimmed().startsWith("data:") ? line.trimmed().mid(5) : line);
+                    }
+                }
+                if (isFinished())
+                    return;
             }
-            for (const SseParser::Event &event : m_sse.finish())
-                chatEvent(event.data);
             if (m_thinkState == ThinkPending && !m_thinkBuf.trimmed().isEmpty()) {
                 m_thinkState = ThinkDone;
                 addText(m_thinkBuf.trimmed());
@@ -252,6 +358,8 @@ private:
             return;
         }
         case Embed: {
+            if (!tail.isEmpty() && !appendBodyBounded(tail))
+                return;
             const QJsonObject json = QJsonDocument::fromJson(m_body).object();
             const auto vector = [](const QJsonArray &values) {
                 QList<float> out;
@@ -279,8 +387,10 @@ private:
             return;
         }
         case Speech: {
+            if (!tail.isEmpty() && !appendBodyBounded(tail))
+                return;
             int rate = 24000;
-            QByteArray pcm = GeminiProvider::pcmFromWav(m_body, &rate);
+            QByteArray pcm = GeminiProvider::pcmFromWav(m_body, &rate, true);
             // The player's rate: servers speak at 22.05, 24 or 44.1 kHz.
             if (rate != 24000 && rate > 0 && !pcm.isEmpty()) {
                 QVector<float> samples(pcm.size() / 2);
@@ -295,6 +405,8 @@ private:
             return;
         }
         case Models: {
+            if (!tail.isEmpty() && !appendBodyBounded(tail))
+                return;
             const QJsonObject json = QJsonDocument::fromJson(m_body).object();
             QJsonArray names;
             for (const QJsonValue &model : json.value(QStringLiteral("models")).toArray())
@@ -321,7 +433,13 @@ private:
     LocalModels::Kind m_kind;
     bool m_json;
     bool m_hasImage = false;
+    bool m_requestStream = false;
+    bool m_aborted = false;
+    bool m_streamingSse = false;
+    bool m_streamingNdjson = false;
+    bool m_streamDone = false;
     QByteArray m_body;
+    qsizetype m_ndjsonPos = 0;
     SseParser m_sse;
     QString m_raw;
     QString m_thinkBuf;
@@ -689,7 +807,7 @@ Ai::Reply *LocalModels::generate(const Ai::TextRequest &request) {
         (m_server.kind == Ollama && !hasImage) ? QStringLiteral("/api/chat") : QStringLiteral("/v1/chat/completions");
     return new ServerReply(send("POST", path, chatBody(m_server.kind, request, m_textModel, m_contextWindow)),
                            ServerReply::Chat, m_server.kind, m_textModel, request.feature, !request.schema.isEmpty(),
-                           this, hasImage);
+                           this, hasImage, request.stream);
 }
 
 Ai::Reply *LocalModels::embed(const QStringList &texts, bool query) {

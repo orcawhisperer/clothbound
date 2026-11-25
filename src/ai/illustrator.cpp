@@ -376,7 +376,7 @@ void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
                 self->m_status = tr("Imagining the picture…");
                 emit self->changed();
                 Ai::Reply *reply = writer->generate(request);
-                self->m_ai->track(reply);
+                self->m_ai->track(reply, false, 0.002);
                 self->m_reply = reply;
                 QPointer<Ai::Provider> providerGuard(writerProvider);
                 connect(reply, &Ai::Reply::finished, self,
@@ -421,12 +421,17 @@ void Illustrator::draw(const QString &prompt, const QString &caption, int chapte
         fail(tr("Pictures are made with Gemini: add your key in Intelligence settings."), true);
         return;
     }
+    const double imgCost = images->imageCost();
+    if (!m_ai->fitsBudget(imgCost)) {
+        fail(m_ai->describe(int(Ai::Error::Budget)), true);
+        return;
+    }
     m_status = tr("Drawing…");
     emit changed();
     Ai::ImageRequest request;
     request.prompt = prompt;
     Ai::Reply *reply = images->generateImage(request);
-    m_ai->track(reply);
+    m_ai->track(reply, false, imgCost);
     m_reply = reply;
     const int generation = m_generation;
     const int bookId = m_reader->bookId();

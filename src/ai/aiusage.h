@@ -29,15 +29,23 @@ public:
     QVariantList monthByFeature(const QDate &today = QDate::currentDate()) const;
     // Clears this month's local usage estimate rows (does not affect provider billing).
     void clearMonth(const QDate &today = QDate::currentDate());
+    // SQLite PRAGMA data_version to detect commits from sibling CLI/MCP processes,
+    // paired with a local write counter for same-connection ledger mutations.
+    qint64 dataVersion() const;
+    qint64 localVersion() const { return m_localVersion; }
 
     static const QList<Price> &prices();
-    // What a request costs on a given day (local models, and models without
-    // a price, cost nothing here). Flex and batch work costs half.
+    // What a request costs on a given day (local models cost nothing; unrecognized
+    // cloud models use a conservative non-zero fallback so model rotations can't
+    // bypass budget caps). Flex and batch work costs half.
     static double cost(const QString &model, const Ai::Usage &usage, const QDate &day, bool flex);
+    static double costForProvider(const QString &provider, const QString &model, const Ai::Usage &usage,
+                                  const QDate &day, bool flex);
     // Listening: Gemini speech uses 25 audio tokens a second.
     static double listeningCost(const QString &model, double minutes, const QDate &day, bool flex);
 
 private:
     QSqlDatabase database() const { return QSqlDatabase::database(m_connection); }
     QString m_connection;
+    qint64 m_localVersion = 0;
 };

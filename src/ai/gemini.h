@@ -65,8 +65,10 @@ public:
     static Ai::Error parseError(int status, const QByteArray &body, int networkError);
     static QList<Ai::Voice> parseVoices(const QJsonArray &voices);
     static Ai::Voice parseVoice(const QJsonObject &voice);
-    // The samples of a WAV file (or the bytes as they are, if not WAV).
-    static QByteArray pcmFromWav(const QByteArray &wav, int *sampleRate = nullptr);
+    // The 16-bit mono PCM samples of a WAV payload (downmixing stereo to mono).
+    // When `strict` is true, requires a valid RIFF/WAVE header, PCM format
+    // (audioFormat==1, 16-bit, 1-2 channels), and data chunk.
+    static QByteArray pcmFromWav(const QByteArray &wav, int *sampleRate = nullptr, bool strict = false);
 
 private:
     QNetworkReply *send(const QByteArray &method, const QString &path, const QJsonObject &body = {});

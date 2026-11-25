@@ -8,14 +8,20 @@
 #include "ai/keystore.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QThreadPool>
 #include <QtConcurrent>
 
 namespace {
 QThreadPool *keyringPool() {
-    // A pool of its own that quitting never waits for: a keyring that doesn't
-    // answer mustn't keep Clothbound running after it's closed.
-    static QThreadPool *pool = new QThreadPool;
+    // A single-threaded pool of its own that quitting never waits for: a keyring
+    // that doesn't answer mustn't keep Clothbound running after it's closed, and
+    // maxThreadCount(1) keeps saveLater/removeLater/loadLater strictly FIFO.
+    static QThreadPool *pool = [] {
+        auto *p = new QThreadPool;
+        p->setMaxThreadCount(1);
+        return p;
+    }();
     return pool;
 }
 
@@ -45,8 +51,10 @@ QString lookupIn(const SecretSchema *target, const QString &provider) {
     GError *error = nullptr;
     gchar *secret = secret_password_lookup_sync(target, nullptr, &error, "provider",
                                                 provider.toUtf8().constData(), nullptr);
-    if (error)
-        g_error_free(error);
+    if (error) {
+        qWarning("KeyStore: lookup for '%s' failed: %s", qPrintable(provider), error->message);
+        g_clear_error(&error);
+    }
     if (!secret)
         return {};
     const QString key = QString::fromUtf8(secret);
@@ -58,8 +66,10 @@ bool clearIn(const SecretSchema *target, const QString &provider) {
     GError *error = nullptr;
     const gboolean ok = secret_password_clear_sync(target, nullptr, &error, "provider",
                                                    provider.toUtf8().constData(), nullptr);
-    if (error)
-        g_error_free(error);
+    if (error) {
+        qWarning("KeyStore: clear for '%s' failed: %s", qPrintable(provider), error->message);
+        g_clear_error(&error);
+    }
     return bool(ok);
 }
 }  // namespace
@@ -91,7 +101,8 @@ QPair<bool, QString> SecretKeyStore::store(const QString &provider, const QStrin
     QString message;
     if (error) {
         message = QString::fromUtf8(error->message);
-        g_error_free(error);
+        qWarning("KeyStore: store for '%s' failed: %s", qPrintable(provider), error->message);
+        g_clear_error(&error);
     }
     if (!ok && message.isEmpty())
         message = QCoreApplication::translate("KeyStore", "keyring unavailable");

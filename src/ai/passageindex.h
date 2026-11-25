@@ -38,8 +38,10 @@ public:
         QString matchKind;  // "hybrid", "semantic", or "lexical"
     };
 
-    PassageIndex(AiServices *ai, const QString &databaseConnection, QObject *parent = nullptr);
+    PassageIndex(AiServices *ai, const QString &databaseConnection, QObject *parent = nullptr, bool readOnly = false);
     ~PassageIndex() override { cancel(); }
+    // Removes passage_vectors rows whose book_id no longer exists in `books`.
+    int pruneOrphans();
 
     // Paragraph-aligned passages of about `size` characters.
     static QList<Passage> split(int chapter, const QString &text, int size = 1100);

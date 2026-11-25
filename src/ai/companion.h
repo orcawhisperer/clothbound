@@ -96,6 +96,8 @@ public:
         QString provenance;
         bool local = false;
         QString snipDataUrl;
+        int chapter = -1;
+        qint64 offset = -1;
     };
 
     Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent = nullptr);
@@ -233,6 +235,8 @@ private:
     void refreshShelfLabel();
     void saveConversation(int bookId);
     void loadConversation(int bookId);
+    bool isTurnVisibleAtCurrentPlace(const Turn &turn) const;
+    void pruneFutureTurnsIfSpoilerFree();
     bool loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qint64 pageStart, bool requireSameChapter);
     void saveWhosWhoSnapshot(int bookId, int chapter, qint64 offset, qint64 pageStart, const QString &whereLabel,
                              bool isLocal, const QVariantList &people);
@@ -314,6 +318,7 @@ private:
     int m_requestChapter = -1;
     qint64 m_requestStart = -1;
     qint64 m_requestOffset = -1;
+    double m_lastCheckedCost = -1.0;
     QTimer m_streamFlush;
     bool m_streamDirty = false;
     bool m_streamNotifiedFirst = false;

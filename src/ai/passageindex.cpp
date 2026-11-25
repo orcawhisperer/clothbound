@@ -16,6 +16,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <queue>
+#include <vector>
 
 namespace {
 
@@ -128,11 +130,48 @@ QList<float> unpack(const QByteArray &blob) {
 
 }  // namespace
 
-PassageIndex::PassageIndex(AiServices *ai, const QString &databaseConnection, QObject *parent)
+PassageIndex::PassageIndex(AiServices *ai, const QString &databaseConnection, QObject *parent, bool readOnly)
     : QObject(parent), m_ai(ai), m_connection(databaseConnection), m_cache(std::make_shared<VectorCache>()) {
-    QSqlQuery query(QSqlDatabase::database(m_connection));
+    if (readOnly)
+        return;
+    QSqlDatabase db = QSqlDatabase::database(m_connection);
+    if (!db.isOpen())
+        return;
+    QSqlQuery query(db);
     query.exec(QStringLiteral("CREATE TABLE IF NOT EXISTS passage_vectors (book_id INTEGER NOT NULL, model TEXT NOT NULL, "
                               "passage TEXT NOT NULL, vector BLOB NOT NULL, PRIMARY KEY (book_id, model, passage))"));
+    query.exec(QStringLiteral(
+        "CREATE INDEX IF NOT EXISTS idx_passage_vectors_model_book ON passage_vectors(model, book_id)"));
+    QSqlQuery hasBooks(db);
+    if (hasBooks.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name='books'")) &&
+        hasBooks.next()) {
+        query.exec(QStringLiteral(
+            "CREATE TRIGGER IF NOT EXISTS passage_vectors_cleanup_book AFTER DELETE ON books BEGIN "
+            "DELETE FROM passage_vectors WHERE book_id = OLD.id; "
+            "END"));
+        pruneOrphans();
+    }
+}
+
+int PassageIndex::pruneOrphans() {
+    QSqlDatabase db = QSqlDatabase::database(m_connection, false);
+    if (!db.isOpen())
+        return 0;
+    QSqlQuery hasBooks(db);
+    if (!hasBooks.exec(QStringLiteral("SELECT 1 FROM sqlite_master WHERE type='table' AND name='books'")) ||
+        !hasBooks.next()) {
+        return 0;
+    }
+    QSqlQuery del(db);
+    if (!del.exec(QStringLiteral("DELETE FROM passage_vectors WHERE book_id NOT IN (SELECT id FROM books)")))
+        return 0;
+    const int removed = qMax(0, del.numRowsAffected());
+    if (removed > 0) {
+        QMutexLocker lock(&m_cache->mutex);
+        m_cache->loaded = false;
+        m_cache->vectors.clear();
+    }
+    return removed;
 }
 
 QList<PassageIndex::Passage> PassageIndex::split(int chapter, const QString &text, int size) {
@@ -441,19 +480,19 @@ void PassageIndex::loadVectorsAsync(int bookId, const QString &modelName, int ex
     (void)QtConcurrent::run([self, cache, dbPath, bookId, modelName, stillValid = std::move(stillValid),
                              then = std::move(then)]() mutable {
         const QHash<QString, QList<float>> loaded = loadFromFile(dbPath, bookId, modelName);
-        {
-            QMutexLocker lock(&cache->mutex);
-            cache->bookId = bookId;
-            cache->model = modelName;
-            cache->vectors = loaded;
-            cache->loaded = true;
-        }
         if (QCoreApplication *app = QCoreApplication::instance()) {
             QMetaObject::invokeMethod(
                 app,
-                [self, loaded, stillValid = std::move(stillValid), then = std::move(then)] {
+                [self, cache, bookId, modelName, loaded, stillValid = std::move(stillValid), then = std::move(then)] {
                     if (!self || (stillValid && !stillValid()))
                         return;
+                    {
+                        QMutexLocker lock(&cache->mutex);
+                        cache->bookId = bookId;
+                        cache->model = modelName;
+                        cache->vectors = loaded;
+                        cache->loaded = true;
+                    }
                     then(loaded);
                 },
                 Qt::QueuedConnection);
@@ -529,8 +568,8 @@ void PassageIndex::build(int bookId, const QList<Passage> &passages, std::functi
             if (!m_todo.isEmpty() && activeProvider->id() != QLatin1String("local")) {
                 Ai::Usage est;
                 est.inputTokens = qMax<qint64>(1, todoChars / 4);
-                const double cost =
-                    AiUsageLedger::cost(activeEmbedder->embeddingModelName(), est, QDate::currentDate(), false);
+                const double cost = AiUsageLedger::costForProvider(
+                    activeProvider->id(), activeEmbedder->embeddingModelName(), est, QDate::currentDate(), false);
                 if (!m_ai->fitsBudget(cost)) {
                     m_todo.clear();
                     auto cb = std::exchange(m_done, nullptr);
@@ -568,14 +607,32 @@ void PassageIndex::embedNext(int bookId) {
             done(tr("The embedding model changed while reading the book. Try again."));
         return;
     }
+    const QList<Passage> batch = m_todo.mid(0, 32);
+    double batchCost = 0.0;
+    if (provider->id() != QLatin1String("local")) {
+        qint64 batchChars = 0;
+        for (const Passage &passage : batch)
+            batchChars += passage.text.size();
+        Ai::Usage est;
+        est.inputTokens = qMax<qint64>(1, batchChars / 4);
+        batchCost = AiUsageLedger::costForProvider(provider->id(), embedder->embeddingModelName(), est,
+                                                   QDate::currentDate(), false);
+        if (!m_ai->fitsBudget(batchCost)) {
+            m_todo.clear();
+            auto done = std::exchange(m_done, nullptr);
+            if (done)
+                done(m_ai->describe(int(Ai::Error::Budget)));
+            return;
+        }
+    }
     if (m_progress && m_total > 0)
         m_progress(1.0 - double(m_todo.size()) / m_total);
-    const QList<Passage> batch = m_todo.mid(0, 32);
     QStringList texts;
+    texts.reserve(batch.size());
     for (const Passage &passage : batch)
         texts.append(passage.text);
     Ai::Reply *reply = embedder->embed(texts, false);
-    m_ai->track(reply);
+    m_ai->track(reply, false, batchCost);
     m_reply = reply;
     const int generation = m_generation;
     const QString modelName = m_buildModel;
@@ -661,16 +718,22 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
         runWordFallback();
         return;
     }
+    double queryCost = 0.0;
     if (provider->id() != QLatin1String("local")) {
         Ai::Usage est;
         est.inputTokens = qMax<qint64>(1, query.size() / 4);
-        const double cost = AiUsageLedger::cost(embedder->embeddingModelName(), est, QDate::currentDate(), false);
-        if (!m_ai->fitsBudget(cost)) {
+        queryCost = AiUsageLedger::costForProvider(provider->id(), embedder->embeddingModelName(), est,
+                                                   QDate::currentDate(), false);
+        if (!m_ai->fitsBudget(queryCost)) {
             runWordFallback();
             return;
         }
     }
     const int existingCount = indexed(bookId);
+    if (existingCount <= 0) {
+        runWordFallback();
+        return;
+    }
     loadVectorsAsync(
         bookId, modelName, existingCount, [this, searchGen] { return searchGen == m_searchGeneration; },
         [this, passages, query, count, done, searchGen, runWordFallback](const QHash<QString, QList<float>> &vectors) {
@@ -678,24 +741,47 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
                 return;
             Ai::Provider *activeProvider = m_ai->embedderProvider();
             Ai::Embedder *activeEmbedder = m_ai->embedder();
-            bool complete = activeProvider && activeEmbedder && !passages.isEmpty();
-            if (complete) {
-                for (const Passage &passage : passages) {
-                    if (!vectors.contains(keyOf(passage))) {
-                        complete = false;
-                        break;
-                    }
-                }
-            }
-            if (!complete) {
+            if (!activeProvider || !activeEmbedder || passages.isEmpty() || vectors.isEmpty()) {
                 runWordFallback();
                 return;
             }
+            // Compute SHA-1 key once per passage and use any available vectors
+            // (partial vector coverage still participates in hybrid search instead
+            // of discarding all vectors if a single passage is missing).
+            QList<QList<float>> matchedVectors;
+            matchedVectors.reserve(passages.size());
+            int matchedCount = 0;
+            for (const Passage &passage : passages) {
+                const auto it = vectors.constFind(keyOf(passage));
+                if (it != vectors.cend() && !it->isEmpty()) {
+                    matchedVectors.append(*it);
+                    ++matchedCount;
+                } else {
+                    matchedVectors.append(QList<float>{});
+                }
+            }
+            if (matchedCount == 0) {
+                runWordFallback();
+                return;
+            }
+            double activeQueryCost = 0.0;
+            if (activeProvider->id() != QLatin1String("local")) {
+                Ai::Usage est;
+                est.inputTokens = qMax<qint64>(1, query.size() / 4);
+                activeQueryCost = AiUsageLedger::costForProvider(activeProvider->id(),
+                                                                 activeEmbedder->embeddingModelName(), est,
+                                                                 QDate::currentDate(), false);
+                if (!m_ai->fitsBudget(activeQueryCost)) {
+                    runWordFallback();
+                    return;
+                }
+            }
             Ai::Reply *reply = activeEmbedder->embed({query}, true);
-            m_ai->track(reply);
+            m_ai->track(reply, false, activeQueryCost);
             m_searchReply = reply;
             connect(reply, &Ai::Reply::finished, this,
-                    [this, reply, passages, vectors, query, count, done, searchGen, runWordFallback] {
+                    [this, reply, passages, matchedVectors = std::move(matchedVectors), query, count, done, searchGen,
+                     runWordFallback] {
                         reply->deleteLater();
                         if (searchGen != m_searchGeneration)
                             return;
@@ -705,11 +791,31 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
                         }
                         const QList<float> asked = reply->vectors().first();
                         QPointer<PassageIndex> self(this);
-                        (void)QtConcurrent::run([self, passages, vectors, asked, query, count, done, searchGen] {
+                        (void)QtConcurrent::run([self, passages, matchedVectors, asked, query, count, done, searchGen] {
+                            const qsizetype dim = asked.size();
+                            const float *askedData = asked.constData();
+                            double askedNormSq = 0.0;
+                            for (qsizetype i = 0; i < dim; ++i)
+                                askedNormSq += double(askedData[i]) * double(askedData[i]);
+                            const double invAskedNorm = askedNormSq > 0.0 ? 1.0 / std::sqrt(askedNormSq) : 0.0;
+
                             QList<double> cosines;
                             cosines.reserve(passages.size());
-                            for (const Passage &passage : passages)
-                                cosines.append(cosine(asked, vectors.value(keyOf(passage))));
+                            for (const QList<float> &vec : matchedVectors) {
+                                if (invAskedNorm <= 0.0 || vec.size() != dim || dim == 0) {
+                                    cosines.append(0.0);
+                                    continue;
+                                }
+                                double dot = 0.0;
+                                double vecNormSq = 0.0;
+                                const float *vData = vec.constData();
+                                for (qsizetype i = 0; i < dim; ++i) {
+                                    const double v = double(vData[i]);
+                                    dot += double(askedData[i]) * v;
+                                    vecNormSq += v * v;
+                                }
+                                cosines.append(vecNormSq > 0.0 ? (dot * invAskedNorm) / std::sqrt(vecNormSq) : 0.0);
+                            }
                             const QList<Hit> hits = fuseHybrid(passages, cosines, query, count);
                             if (QCoreApplication *app = QCoreApplication::instance()) {
                                 QMetaObject::invokeMethod(
@@ -729,42 +835,191 @@ void PassageIndex::search(int bookId, const QList<Passage> &passages, const QStr
 // --- Across the library ---------------------------------------------------------
 
 namespace {
+
+double cosineWithRawBlob(const float *asked, qsizetype dim, double invAskedNorm, const char *blobData,
+                         qsizetype blobBytes) {
+    if (dim <= 0 || blobBytes != dim * qsizetype(sizeof(float)))
+        return 0.0;
+    double dot = 0.0;
+    double rowNormSq = 0.0;
+    constexpr qsizetype kBlock = 64;
+    float buf[kBlock];
+    qsizetype i = 0;
+    while (i < dim) {
+        const qsizetype take = qMin(kBlock, dim - i);
+        std::memcpy(buf, blobData + i * qsizetype(sizeof(float)), size_t(take) * sizeof(float));
+        for (qsizetype j = 0; j < take; ++j) {
+            const double v = double(buf[j]);
+            dot += double(asked[i + j]) * v;
+            rowNormSq += v * v;
+        }
+        i += take;
+    }
+    return rowNormSq > 0.0 ? (dot * invAskedNorm) / std::sqrt(rowNormSq) : 0.0;
+}
+
+bool parsePassageKey(const QString &key, int *chapterOut, qint64 *startOut, qint64 *endOut) {
+    const qsizetype c1 = key.indexOf(QLatin1Char(':'));
+    if (c1 <= 0)
+        return false;
+    const qsizetype c2 = key.indexOf(QLatin1Char(':'), c1 + 1);
+    if (c2 <= c1 + 1)
+        return false;
+    const qsizetype c3 = key.indexOf(QLatin1Char(':'), c2 + 1);
+    const QStringView v = key;
+    bool ok0 = false, ok1 = false, ok2 = false;
+    const int ch = v.sliced(0, c1).toInt(&ok0);
+    const qint64 st = v.sliced(c1 + 1, c2 - c1 - 1).toLongLong(&ok1);
+    const qint64 en = (c3 < 0 ? v.sliced(c2 + 1) : v.sliced(c2 + 1, c3 - c2 - 1)).toLongLong(&ok2);
+    if (!ok0 || !ok1 || !ok2)
+        return false;
+    *chapterOut = ch;
+    *startOut = st;
+    *endOut = en;
+    return true;
+}
+
 QList<PassageIndex::LibraryHit> rankLibraryInDb(QSqlDatabase &db, const QString &model, const QList<float> &asked,
                                                 int count, double minCosine, const QSet<int> &bookIds) {
-    QList<PassageIndex::LibraryHit> hits;
-    if (!db.isOpen() || model.isEmpty() || asked.isEmpty() || count <= 0)
-        return hits;
-    QSqlQuery query(db);
-    query.prepare(QStringLiteral("SELECT book_id, passage, vector FROM passage_vectors WHERE model = ?"));
-    query.addBindValue(model);
-    if (!query.exec())
-        return hits;
-    while (query.next()) {
-        const int bookId = query.value(0).toInt();
-        if (!bookIds.isEmpty() && !bookIds.contains(bookId))
-            continue;
-        const double score = PassageIndex::cosine(asked, unpack(query.value(2).toByteArray()));
-        if (score < minCosine)
-            continue;
-        // The key is chapter:start:end:digest.
-        const QStringList parts = query.value(1).toString().split(QLatin1Char(':'));
-        if (parts.size() < 3)
-            continue;
-        hits.append({bookId, parts[0].toInt(), parts[1].toLongLong(), parts[2].toLongLong(), score});
-    }
-    std::sort(hits.begin(), hits.end(),
-              [](const PassageIndex::LibraryHit &a, const PassageIndex::LibraryHit &b) { return a.score > b.score; });
-    // One passage per chapter of a book, so a single chapter can't fill the list.
     QList<PassageIndex::LibraryHit> best;
-    QSet<QPair<int, int>> seen;
-    for (const PassageIndex::LibraryHit &hit : std::as_const(hits)) {
-        if (seen.contains({hit.bookId, hit.chapter}))
-            continue;
-        seen.insert({hit.bookId, hit.chapter});
-        best.append(hit);
-        if (best.size() >= count)
-            break;
+    if (!db.isOpen() || model.isEmpty() || asked.isEmpty() || count <= 0)
+        return best;
+
+    const qsizetype dim = asked.size();
+    const float *askedData = asked.constData();
+    double askedNormSq = 0.0;
+    for (qsizetype i = 0; i < dim; ++i)
+        askedNormSq += double(askedData[i]) * double(askedData[i]);
+    if (askedNormSq <= 0.0)
+        return best;
+    const double invAskedNorm = 1.0 / std::sqrt(askedNormSq);
+
+    struct HeapEntry {
+        double score = 0.0;
+        int bookId = 0;
+        int chapter = 0;
+    };
+    struct MinScoreCmp {
+        bool operator()(const HeapEntry &a, const HeapEntry &b) const { return a.score > b.score; }
+    };
+
+    // Keep at most `count` distinct (bookId, chapter) winners in a bounded min-heap
+    // so large libraries never allocate O(M) hits or full-sort every row.
+    QHash<QPair<int, int>, PassageIndex::LibraryHit> bestByChapter;
+    bestByChapter.reserve(count + 1);
+    std::priority_queue<HeapEntry, std::vector<HeapEntry>, MinScoreCmp> minHeap;
+    double minHeapScore = -1.0;
+
+    auto pruneStaleHeapTop = [&] {
+        while (!minHeap.empty()) {
+            const HeapEntry &top = minHeap.top();
+            const auto it = bestByChapter.constFind({top.bookId, top.chapter});
+            if (it == bestByChapter.cend() || it->score != top.score)
+                minHeap.pop();
+            else
+                break;
+        }
+    };
+    auto rebuildHeapIfBloated = [&] {
+        if (minHeap.size() <= size_t(count) * 4 + 64)
+            return;
+        std::priority_queue<HeapEntry, std::vector<HeapEntry>, MinScoreCmp> fresh;
+        for (auto it = bestByChapter.cbegin(); it != bestByChapter.cend(); ++it)
+            fresh.push({it->score, it->bookId, it->chapter});
+        minHeap.swap(fresh);
+    };
+    auto refreshFloor = [&] {
+        pruneStaleHeapTop();
+        minHeapScore = (int(bestByChapter.size()) >= count && !minHeap.empty()) ? minHeap.top().score : -1.0;
+    };
+
+    auto scanQuery = [&](QSqlQuery &query) {
+        if (!query.exec())
+            return;
+        while (query.next()) {
+            const QByteArray blob = query.value(2).toByteArray();
+            const double score = cosineWithRawBlob(askedData, dim, invAskedNorm, blob.constData(), blob.size());
+            if (score < minCosine)
+                continue;
+            if (int(bestByChapter.size()) >= count && score <= minHeapScore)
+                continue;
+
+            int chapter = 0;
+            qint64 start = 0;
+            qint64 end = 0;
+            if (!parsePassageKey(query.value(1).toString(), &chapter, &start, &end))
+                continue;
+
+            const int bookId = query.value(0).toInt();
+            const QPair<int, int> key{bookId, chapter};
+            auto it = bestByChapter.find(key);
+            if (it != bestByChapter.end()) {
+                if (score > it->score) {
+                    it->start = start;
+                    it->end = end;
+                    it->score = score;
+                    minHeap.push({score, bookId, chapter});
+                    rebuildHeapIfBloated();
+                    refreshFloor();
+                }
+                continue;
+            }
+            if (int(bestByChapter.size()) >= count) {
+                pruneStaleHeapTop();
+                if (!minHeap.empty() && score <= minHeap.top().score) {
+                    minHeapScore = minHeap.top().score;
+                    continue;
+                }
+                if (!minHeap.empty()) {
+                    const HeapEntry worst = minHeap.top();
+                    minHeap.pop();
+                    bestByChapter.remove({worst.bookId, worst.chapter});
+                }
+            }
+            bestByChapter.insert(key, {bookId, chapter, start, end, score});
+            minHeap.push({score, bookId, chapter});
+            rebuildHeapIfBloated();
+            refreshFloor();
+        }
+    };
+
+    if (bookIds.isEmpty()) {
+        QSqlQuery query(db);
+        query.setForwardOnly(true);
+        query.prepare(QStringLiteral("SELECT book_id, passage, vector FROM passage_vectors WHERE model = ?"));
+        query.addBindValue(model);
+        scanQuery(query);
+    } else {
+        QList<int> idList(bookIds.cbegin(), bookIds.cend());
+        std::sort(idList.begin(), idList.end());
+        constexpr qsizetype kChunkSize = 500;
+        for (qsizetype off = 0; off < idList.size(); off += kChunkSize) {
+            const qsizetype take = qMin(kChunkSize, idList.size() - off);
+            QString sql;
+            sql.reserve(80 + take * 2);
+            sql += QStringLiteral("SELECT book_id, passage, vector FROM passage_vectors WHERE model = ? AND book_id IN (");
+            for (qsizetype i = 0; i < take; ++i) {
+                if (i > 0)
+                    sql += QLatin1Char(',');
+                sql += QLatin1Char('?');
+            }
+            sql += QLatin1Char(')');
+            QSqlQuery query(db);
+            query.setForwardOnly(true);
+            query.prepare(sql);
+            query.addBindValue(model);
+            for (qsizetype i = 0; i < take; ++i)
+                query.addBindValue(idList[off + i]);
+            scanQuery(query);
+        }
     }
+
+    best.reserve(bestByChapter.size());
+    for (auto it = bestByChapter.cbegin(); it != bestByChapter.cend(); ++it)
+        best.append(it.value());
+    std::sort(best.begin(), best.end(), [](const PassageIndex::LibraryHit &a, const PassageIndex::LibraryHit &b) {
+        return a.score > b.score;
+    });
     return best;
 }
 }  // namespace
@@ -814,17 +1069,19 @@ void PassageIndex::searchLibrary(const QString &query, int count, std::function<
         done({});
         return;
     }
+    double queryCost = 0.0;
     if (provider->id() != QLatin1String("local")) {
         Ai::Usage est;
         est.inputTokens = qMax<qint64>(1, query.size() / 4);
-        const double cost = AiUsageLedger::cost(embedder->embeddingModelName(), est, QDate::currentDate(), false);
-        if (!m_ai->fitsBudget(cost)) {
+        queryCost = AiUsageLedger::costForProvider(provider->id(), embedder->embeddingModelName(), est,
+                                                   QDate::currentDate(), false);
+        if (!m_ai->fitsBudget(queryCost)) {
             done({});
             return;
         }
     }
     Ai::Reply *reply = embedder->embed({query}, true);
-    m_ai->track(reply);
+    m_ai->track(reply, false, queryCost);
     m_libraryReply = reply;
     const QString path = databasePath();
     QPointer<PassageIndex> self(this);

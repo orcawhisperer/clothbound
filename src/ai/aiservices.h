@@ -168,9 +168,11 @@ public:
     QString describeFor(const Ai::Provider *provider, int errorKind, const QString &detail = {}) const;
     Q_INVOKABLE double listeningCost(double minutes, bool economy = false, bool flex = false) const;
     Q_INVOKABLE bool fitsBudget(double cost) const;
+    double reservedBudget() const { return m_reservedUsd; }
 
-    // Every request goes through here, so its use is counted when it ends.
-    void track(Ai::Reply *reply, bool flex = false);
+    // Every request goes through here, so its use is counted when it ends and
+    // its estimated cloud spend is reserved while in flight.
+    void track(Ai::Reply *reply, bool flex = false, double estimatedCost = -1.0);
     AiUsageLedger &ledger() { return m_ledger; }
 
 signals:
@@ -209,8 +211,13 @@ private:
     QString m_status;
     double m_budget = 10;
     bool m_unlimitedBudget = false;
+    double m_reservedUsd = 0.0;
+    QHash<quint64, double> m_reservations;
+    quint64 m_nextReservationId = 1;
     mutable double m_spentCache = -1;
     mutable QDate m_spentMonth;
+    mutable qint64 m_spentDataVersion = -1;
+    mutable qint64 m_spentLocalVersion = -1;
     QString m_preset;
     QHash<QString, QString> m_overrides;
 };

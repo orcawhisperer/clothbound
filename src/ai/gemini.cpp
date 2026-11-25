@@ -10,10 +10,40 @@
 #include <QNetworkRequest>
 #include <QPointer>
 #include <QUrlQuery>
+#include <cstring>
 
 namespace {
+constexpr qsizetype kMaxTextBodyBytes = 16 * 1024 * 1024;
+constexpr qsizetype kMaxMediaBodyBytes = 64 * 1024 * 1024;
+
+quint16 le16(const char *p) {
+    return quint16(quint8(p[0])) | quint16(quint8(p[1])) << 8;
+}
+
 quint32 le32(const char *p) {
     return quint32(quint8(p[0])) | quint32(quint8(p[1])) << 8 | quint32(quint8(p[2])) << 16 | quint32(quint8(p[3])) << 24;
+}
+
+bool looksLikeNonPcmContainerOrText(const QByteArray &bytes) {
+    if (bytes.isEmpty())
+        return true;
+    const QByteArray trimmed = bytes.left(64).trimmed();
+    if (trimmed.isEmpty())
+        return false;
+    const char first = trimmed[0];
+    if (first == '<' || first == '{' || first == '[')
+        return true;
+    if (bytes.startsWith("RIFF") || bytes.startsWith("ID3") || bytes.startsWith("OggS") || bytes.startsWith("fLaC") ||
+        bytes.startsWith("HTTP/") || bytes.startsWith("\x89PNG") || bytes.startsWith("\xFF\xD8\xFF") ||
+        bytes.startsWith("%PDF-")) {
+        return true;
+    }
+    // Raw MPEG / MP3 frame sync header (11 set bits: 0xFF 0xE0..0xFF, valid layer != 0).
+    if (bytes.size() >= 2 && quint8(bytes[0]) == 0xFF && (quint8(bytes[1]) & 0xE0) == 0xE0 &&
+        (quint8(bytes[1]) & 0x06) != 0) {
+        return true;
+    }
+    return false;
 }
 
 // One Gemini request, turning the response (streamed or whole) into the
@@ -54,8 +84,19 @@ private:
         // Errors arrive as a JSON body, read whole at the end.
         if (status() >= 400 || !streaming())
             return;
-        for (const auto &event : m_sse.feed(m_reply->readAll()))
+        const QByteArray chunk = m_reply->readAll();
+        m_streamBytes += chunk.size();
+        if (m_streamBytes > kMaxMediaBodyBytes) {
+            m_reply->abort();
+            finish({Ai::Error::Server, QStringLiteral("Gemini response exceeded size limit."), 0});
+            return;
+        }
+        for (const auto &event : m_sse.feed(chunk))
             handle(event);
+        if (m_sse.overflowed()) {
+            m_reply->abort();
+            finish({Ai::Error::Server, QStringLiteral("Gemini stream frame exceeded size limit."), 0});
+        }
     }
 
     void handle(const SseParser::Event &event) {
@@ -75,8 +116,9 @@ private:
                     m_sampleRate = delta.value("sample_rate").toInt(m_sampleRate);
                 QByteArray bytes = QByteArray::fromBase64(delta.value("data").toString().toLatin1());
                 if (delta.value("mime_type").toString() == "audio/wav")
-                    bytes = GeminiProvider::pcmFromWav(bytes, &m_sampleRate);
-                addAudio(bytes);
+                    bytes = GeminiProvider::pcmFromWav(bytes, &m_sampleRate, true);
+                if (!bytes.isEmpty())
+                    addAudio(bytes);
             }
         } else if (name == "interaction.completed") {
             m_streamDone = true;
@@ -119,8 +161,11 @@ private:
                     addText(content.value("text").toString());
                 } else if (type == "audio") {
                     const QByteArray bytes = QByteArray::fromBase64(content.value("data").toString().toLatin1());
-                    addAudio(content.value("mime_type").toString() == "audio/wav"
-                                 ? GeminiProvider::pcmFromWav(bytes, &m_sampleRate) : bytes);
+                    const QByteArray pcm = content.value("mime_type").toString() == "audio/wav"
+                                               ? GeminiProvider::pcmFromWav(bytes, &m_sampleRate, true)
+                                               : bytes;
+                    if (!pcm.isEmpty())
+                        addAudio(pcm);
                 } else if (type == "image") {
                     m_result.insert("image", content);
                 }
@@ -138,11 +183,21 @@ private:
         const int code = status();
         const bool isStream = streaming();
         if (isStream && code > 0 && code < 400) {
-            for (const auto &event : m_sse.feed(m_reply->readAll()))
+            const QByteArray tail = m_reply->readAll();
+            m_streamBytes += tail.size();
+            if (m_streamBytes > kMaxMediaBodyBytes) {
+                finish({Ai::Error::Server, QStringLiteral("Gemini response exceeded size limit."), 0});
+                return;
+            }
+            for (const auto &event : m_sse.feed(tail))
                 handle(event);
-            if (m_reply->error() == QNetworkReply::NoError) {
+            if (m_reply->error() == QNetworkReply::NoError && !m_sse.overflowed()) {
                 for (const auto &event : m_sse.finish())
                     handle(event);
+            }
+            if (m_sse.overflowed()) {
+                finish({Ai::Error::Server, QStringLiteral("Gemini stream frame exceeded size limit."), 0});
+                return;
             }
             if (m_streamError) {
                 finish(m_streamError);
@@ -160,6 +215,13 @@ private:
             return;
         }
         const QByteArray body = m_reply->readAll();
+        const qsizetype bodyCap = (m_kind == Image || m_kind == VoiceDesign || m_kind == Interaction)
+                                      ? kMaxMediaBodyBytes
+                                      : kMaxTextBodyBytes;
+        if (body.size() > bodyCap) {
+            finish({Ai::Error::Server, QStringLiteral("Gemini response exceeded size limit."), 0});
+            return;
+        }
         if (code >= 400 || m_reply->error() != QNetworkReply::NoError) {
             Ai::Error err = GeminiProvider::parseError(code >= 400 ? code : 0, body, int(m_reply->error()));
             if (code == 429) {
@@ -197,8 +259,11 @@ private:
             m_usage = GeminiProvider::parseUsage(json.value("usage").toObject());
             const QJsonObject sample = json.value("sample_audio").toObject();
             const QByteArray bytes = QByteArray::fromBase64(sample.value("data").toString().toLatin1());
-            if (!bytes.isEmpty())
-                addAudio(GeminiProvider::pcmFromWav(bytes, &m_sampleRate));
+            if (!bytes.isEmpty()) {
+                const QByteArray pcm = GeminiProvider::pcmFromWav(bytes, &m_sampleRate, true);
+                if (!pcm.isEmpty())
+                    addAudio(pcm);
+            }
             break;
         }
         case Models: {
@@ -265,6 +330,7 @@ private:
     bool m_aborted = false;
     bool m_streamDone = false;
     qint64 m_estimatedInputTokens = 0;
+    qsizetype m_streamBytes = 0;
     int m_pages = 0;
 };
 }
@@ -558,28 +624,82 @@ QList<Ai::Voice> GeminiProvider::parseVoices(const QJsonArray &voices) {
     return result;
 }
 
-QByteArray GeminiProvider::pcmFromWav(const QByteArray &wav, int *sampleRate) {
-    if (wav.size() < 12 || !wav.startsWith("RIFF") || wav.mid(8, 4) != "WAVE")
+QByteArray GeminiProvider::pcmFromWav(const QByteArray &wav, int *sampleRate, bool strict) {
+    if (wav.size() < 12 || !wav.startsWith("RIFF") || wav.mid(8, 4) != "WAVE") {
+        if (strict || looksLikeNonPcmContainerOrText(wav))
+            return {};
         return wav;
+    }
     qint64 at = 12;
     const qint64 total = wav.size();
+    bool hasFmt = false;
+    int fmtChannels = 1;
+    int fmtRate = 0;
+    bool hasData = false;
+    qint64 dataOffset = 0;
+    qint64 dataLen = 0;
     while (at + 8 <= total) {
         const QByteArray id = wav.mid(qsizetype(at), 4);
         const qint64 size = qint64(le32(wav.constData() + at + 4));
         const qint64 available = total - (at + 8);
-        if (id == "fmt " && sampleRate && at + 16 <= total) {
-            const int rate = int(le32(wav.constData() + at + 12));
-            if (rate > 0)
-                *sampleRate = rate;
+        if (id == "fmt ") {
+            if (size < 16 || available < 16)
+                return {};
+            const char *fmt = wav.constData() + at + 8;
+            const quint16 audioFormat = le16(fmt);
+            const quint16 channels = le16(fmt + 2);
+            const quint32 rate = le32(fmt + 4);
+            const quint16 bitsPerSample = le16(fmt + 14);
+            bool isPcm = (audioFormat == 1);
+            if (audioFormat == 0xFFFE && size >= 40 && available >= 40) {
+                static constexpr char kPcmSubFormat[16] = {
+                    '\x01', '\x00', '\x00', '\x00', '\x00', '\x00', '\x10', '\x00',
+                    '\x80', '\x00', '\x00', '\xAA', '\x00', '\x38', '\x9B', '\x71'};
+                isPcm = (std::memcmp(fmt + 24, kPcmSubFormat, 16) == 0);
+            }
+            if (!isPcm || bitsPerSample != 16 || (channels != 1 && channels != 2) || rate == 0 || rate > 384000)
+                return {};
+            hasFmt = true;
+            fmtChannels = int(channels);
+            fmtRate = int(rate);
+            if (hasData)
+                break;
+        } else if (id == "data") {
+            hasData = true;
+            dataOffset = at + 8;
+            dataLen = qMin(size, available);
+            if (hasFmt)
+                break;
         }
-        if (id == "data")
-            return wav.mid(qsizetype(at + 8), qsizetype(qMin(size, available)));
         const qint64 step = 8 + size + (size & 1);
         if (step <= 0 || at > total - step)
             break;
         at += step;
     }
-    return {};
+    if (!hasData || (strict && !hasFmt))
+        return {};
+    if (hasFmt && sampleRate && fmtRate > 0)
+        *sampleRate = fmtRate;
+    const qsizetype frameBytes = (hasFmt ? fmtChannels : 1) * 2;
+    const qsizetype alignedLen = (qsizetype(dataLen) / frameBytes) * frameBytes;
+    if (alignedLen <= 0)
+        return {};
+    QByteArray pcm = wav.mid(qsizetype(dataOffset), alignedLen);
+    if (hasFmt && fmtChannels == 2) {
+        const qsizetype frames = pcm.size() / 4;
+        QByteArray mono(frames * 2, Qt::Uninitialized);
+        const char *src = pcm.constData();
+        char *dst = mono.data();
+        for (qsizetype i = 0; i < frames; ++i) {
+            const qint16 left = qint16(le16(src + i * 4));
+            const qint16 right = qint16(le16(src + i * 4 + 2));
+            const qint16 avg = qint16((int(left) + int(right)) / 2);
+            dst[i * 2] = char(avg & 0xff);
+            dst[i * 2 + 1] = char((avg >> 8) & 0xff);
+        }
+        return mono;
+    }
+    return pcm;
 }
 
 QJsonObject GeminiProvider::embedBody(const QStringList &texts, bool query, const QString &model) {

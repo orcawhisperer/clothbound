@@ -13297,6 +13297,725 @@ private slots:
         QCOMPARE(player.trackSamples(7), qint64(2000));
         QVERIFY(player.trackComplete(7));
     }
+    // === fix-ai-mcp tests ===
+
+    void fixAiMcpCompanionSanitizerAndSpoilerGuards() {
+        QTemporaryDir dir;
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        Companion companion(&services, &reader, library.database().connectionName());
+
+        // 1. Forged <div class="math-block"> and <span class="math-inline"> MUST NEVER bypass sanitization.
+        const QString forgedBlock = QStringLiteral(
+            "<div class=\"math-block\"><a href=\"http://evil.invalid/phish\">Click</a>"
+            "<img src=\"http://evil.invalid/beacon.png\"></div>"
+            "<span class=\"math-inline\"><a href=\"http://evil.invalid/in\">Link</a></span>"
+            " Real math: $x + 1$");
+        const QString html = companion.formatDisplayHtml(forgedBlock, QStringLiteral("#1f2430"));
+        QVERIFY2(!html.contains(QStringLiteral("<img"), Qt::CaseInsensitive), qPrintable(html));
+        QVERIFY2(!html.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(html));
+        QVERIFY2(!html.contains(QStringLiteral("href="), Qt::CaseInsensitive), qPrintable(html));
+        QVERIFY2(!html.contains(QStringLiteral("beacon.png")), qPrintable(html));
+        QVERIFY2(!html.contains(QStringLiteral("<div class=\"math-block\"")), qPrintable(html));
+        QVERIFY2(html.contains(QStringLiteral("&lt;div")), qPrintable(html));
+        QVERIFY2(html.contains(QStringLiteral("x")), qPrintable(html));
+
+        // Forged math wrapper with currency ($5 to $10) must NOT trick hasMath().
+        QVERIFY(!companion.hasMath(QStringLiteral("<div class=\"math-block\">fake</div> $5 to $10")));
+
+        // 2. Doubly/triply nested malformed <img> tags and unclosed backtick desyncs are neutralized.
+        const QString nestedImg =
+            QStringLiteral("Hello <i<i<i<img >mg >mg >mg src=\"http://evil.invalid/nested.png\"> world");
+        const QString cleanedNested = Companion::cleanMarkdown(nestedImg);
+        QVERIFY2(!cleanedNested.contains(QStringLiteral("<img"), Qt::CaseInsensitive), qPrintable(cleanedNested));
+        QVERIFY2(!cleanedNested.contains(QStringLiteral("evil.invalid")), qPrintable(cleanedNested));
+
+        const QString loneTick = QStringLiteral("Odd ` <a href=\"http://evil.invalid/x\">phish</a>");
+        const QString cleanedTick = Companion::cleanMarkdown(loneTick);
+        QVERIFY2(!cleanedTick.contains(QStringLiteral("<a "), Qt::CaseInsensitive), qPrintable(cleanedTick));
+        QVERIFY2(cleanedTick.contains(QStringLiteral("&lt;a ")), qPrintable(cleanedTick));
+
+        // 3. Companion::textUpTo() treats offset <= 0 on PDFs as full current page (never left(0)).
+        const QString pdfPath = dir.filePath(QStringLiteral("pages.pdf"));
+        {
+            QPdfWriter writer(pdfPath);
+            writer.setPageSize(QPageSize(QPageSize::A4));
+            writer.setResolution(72);
+            QPainter p(&writer);
+            p.drawText(QRect(20, 60, 550, 120), QStringLiteral("Page zero has the brass astrolabe theorem."));
+            writer.newPage();
+            p.drawText(QRect(20, 60, 550, 120), QStringLiteral("Page one hides the secret spoiler epilogue."));
+            p.end();
+        }
+        const QList<Companion::Chapter> pdfPage0Unlimited = Companion::textUpTo(pdfPath, QStringLiteral("pdf"), 0, 0, -1);
+        QCOMPARE(pdfPage0Unlimited.size(), 1);
+        QVERIFY2(pdfPage0Unlimited.first().text.contains(QStringLiteral("brass astrolabe")),
+                 qPrintable(pdfPage0Unlimited.first().text));
+        QVERIFY(!pdfPage0Unlimited.first().text.contains(QStringLiteral("secret spoiler")));
+
+        const QList<Companion::Chapter> pdfPage0Limited = Companion::textUpTo(pdfPath, QStringLiteral("pdf"), 0, 0, 4000);
+        QCOMPARE(pdfPage0Limited.size(), 1);
+        QVERIFY(pdfPage0Limited.first().text.contains(QStringLiteral("brass astrolabe")));
+
+        // Explicit positive offset on PDF still slices cleanly.
+        const QList<Companion::Chapter> pdfSliced = Companion::textUpTo(pdfPath, QStringLiteral("pdf"), 0, 9, -1);
+        QCOMPARE(pdfSliced.size(), 1);
+        QCOMPARE(pdfSliced.first().text.size(), qsizetype(9));
+
+        // 4. Backward chapter jump hides future-chapter Ask turns, keeps them out of prompts,
+        //    and cancels in-flight Ask requests.
+        const QString settingsPath =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restorePreset = qScopeGuard([&] {
+            QSettings(settingsPath, QSettings::IniFormat).remove(QStringLiteral("ai"));
+        });
+        const QString epubPath = dir.filePath(QStringLiteral("spoiler-thread.epub"));
+        const QByteArray opf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            "    <dc:title>Fog Harbor</dc:title><dc:creator>A. Writer</dc:creator><dc:language>en</dc:language>\n"
+            "  </metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "    <item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/></spine>\n"
+            "</package>";
+        QVERIFY(TestBooks::write(
+            epubPath,
+            TestBooks::epub({
+                {"OEBPS/content.opf", opf},
+                {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>Opening chapter about the brass lantern on the pier.</p>")},
+                {"OEBPS/c2.xhtml", TestBooks::chapter("Ch 2", "<p>Chapter two reveals the SECRET_KILLER_IDENTITY at midnight.</p>")},
+            })));
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        QVERIFY(reader.openBook(bookId));
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+
+        FakeServer localSrv;
+        LocalModels local;
+        LocalModels::Server cfg;
+        cfg.kind = LocalModels::Ollama;
+        cfg.url = QUrl(localSrv.origin());
+        local.configure(cfg, QStringLiteral("qwen3.5:4b"));
+        services.setLocalModels(&local);
+        services.setPreset(QStringLiteral("local"));
+
+        Companion comp(&services, &reader, library.database().connectionName());
+        localSrv.responses.append({200, "application/x-ndjson",
+                                   "{\"message\":{\"content\":\"The brass lantern sits on the pier.\"},\"done\":true}\n"});
+        comp.ask(QStringLiteral("What is on the pier?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!comp.busy(), 5000);
+        QCOMPARE(comp.conversation().size(), 2);
+
+        // Advance to chapter 1 and ask a chapter-1 question.
+        reader.relocated({{"chapter", 1}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+        localSrv.responses.append({200, "application/x-ndjson",
+                                   "{\"message\":{\"content\":\"It reveals SECRET_KILLER_IDENTITY.\"},\"done\":true}\n"});
+        comp.ask(QStringLiteral("What is revealed in chapter two?"));
+        QTRY_VERIFY_WITH_TIMEOUT(!comp.busy(), 5000);
+        QCOMPARE(comp.conversation().size(), 4);
+
+        // Jump backward to chapter 0 -> chapter-1 turns vanish from visible conversation and next prompt!
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+        QCOMPARE(comp.conversation().size(), 2);
+
+        localSrv.requests.clear();
+        localSrv.responses.append({200, "application/x-ndjson",
+                                   "{\"message\":{\"content\":\"Only the brass lantern so far.\"},\"done\":true}\n"});
+        comp.ask(QStringLiteral("Remind me what we know."));
+        QTRY_VERIFY_WITH_TIMEOUT(!comp.busy(), 5000);
+        QVERIFY(!localSrv.requests.isEmpty());
+        QVERIFY2(!localSrv.requests.last().body.contains("SECRET_KILLER_IDENTITY"),
+                 localSrv.requests.last().body.constData());
+
+        // In-flight ask() is cancelled when jumping backward to an earlier chapter.
+        QTcpServer hangSrv;
+        QVERIFY(hangSrv.listen(QHostAddress::LocalHost));
+        QList<QPointer<QTcpSocket>> held;
+        connect(&hangSrv, &QTcpServer::newConnection, &hangSrv, [&hangSrv, &held] {
+            while (QTcpSocket *s = hangSrv.nextPendingConnection())
+                held.append(s);
+        });
+        LocalModels::Server hangCfg;
+        hangCfg.kind = LocalModels::Ollama;
+        hangCfg.url = QUrl(QStringLiteral("http://127.0.0.1:%1").arg(hangSrv.serverPort()));
+        local.configure(hangCfg, QStringLiteral("qwen3.5:4b"));
+        reader.relocated({{"chapter", 1}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+        comp.ask(QStringLiteral("Hanging chapter-two question"));
+        QVERIFY(comp.busy());
+        reader.relocated({{"chapter", 0}, {"offset", 0}, {"end", 80}, {"page", 0}, {"pages", 1}});
+        QVERIFY(!comp.busy());
+        for (const QPointer<QTcpSocket> &s : std::as_const(held))
+            if (s)
+                s->close();
+        hangSrv.close();
+    }
+
+    void fixAiMcpServerLockdownAndFraming() {
+        QTemporaryDir dir;
+        const QByteArray origEnvKey = qgetenv("GEMINI_API_KEY");
+        const QString appSettings =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restoreEnv = qScopeGuard([&] {
+            if (origEnvKey.isEmpty())
+                qunsetenv("GEMINI_API_KEY");
+            else
+                qputenv("GEMINI_API_KEY", origEnvKey);
+            QSettings(appSettings, QSettings::IniFormat).remove(QStringLiteral("ai"));
+        });
+
+        // Build two EPUBs (one with hostile %3/%4 placeholders in its title).
+        auto makeBook = [&](const QString &fileName, const QString &title, const QString &bodyText) {
+            const QString path = dir.filePath(fileName);
+            const QByteArray opf =
+                QStringLiteral(
+                    "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                    "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+                    "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                    "    <dc:title>%1</dc:title><dc:creator>Author Name</dc:creator><dc:language>en</dc:language>\n"
+                    "  </metadata>\n"
+                    "  <manifest><item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/></manifest>\n"
+                    "  <spine><itemref idref=\"c1\"/></spine>\n"
+                    "</package>")
+                    .arg(title)
+                    .toUtf8();
+            const bool ok = TestBooks::write(
+                path, TestBooks::epub({{"OEBPS/content.opf", opf},
+                                       {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>" + bodyText.toUtf8() + "</p>")}}));
+            return ok ? path : QString();
+        };
+
+        const QString book1Path = makeBook(QStringLiteral("b1.epub"), QStringLiteral("Report %3 %4 Title"),
+                                           QStringLiteral("Quantum decoherence limits qubit coherence time."));
+        const QString book2Path = makeBook(QStringLiteral("b2.epub"), QStringLiteral("Second Book"),
+                                           QStringLiteral("Stellar nucleosynthesis forges heavy elements."));
+        QVERIFY(!book1Path.isEmpty() && !book2Path.isEmpty());
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int b1 = library.addBookFile(book1Path);
+        const int b2 = library.addBookFile(book2Path);
+        QVERIFY(b1 > 0 && b2 > 0);
+
+        const QString settingsIni = dir.filePath(QStringLiteral("mcp.ini"));
+        const QString indexDb = dir.filePath(QStringLiteral("index.sqlite"));
+        LibraryIndex libIndex(indexDb);
+        QVERIFY(libIndex.available());
+
+        // 1. resources/list is gated by isEnabled() (blocks with -32001 when disabled).
+        {
+            QSettings s(settingsIni, QSettings::IniFormat);
+            s.setValue(QStringLiteral("ai/mcpEnabled"), false);
+            s.sync();
+        }
+        McpServer gatedServer(&library, &libIndex, nullptr, {settingsIni, indexDb});
+        const QJsonObject resListBlocked = gatedServer.handleRequest({
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), 1},
+            {QStringLiteral("method"), QStringLiteral("resources/list")},
+        });
+        QCOMPARE(resListBlocked.value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32001);
+        {
+            QSettings s(settingsIni, QSettings::IniFormat);
+            s.setValue(QStringLiteral("ai/mcpEnabled"), true);
+            s.sync();
+        }
+
+        // 2. Read-only guarantee: search_library finds unindexed books via lexical fallback
+        //    WITHOUT writing any rows to index.sqlite.
+        const QJsonObject searchRes = gatedServer.handleRequest({
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), 2},
+            {QStringLiteral("method"), QStringLiteral("tools/call")},
+            {QStringLiteral("params"), QJsonObject{
+                {QStringLiteral("name"), QStringLiteral("search_library")},
+                {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("query"), QStringLiteral("decoherence")}}},
+            }},
+        }).value(QStringLiteral("result")).toObject();
+        QCOMPARE(searchRes.value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("count")).toInt(), 1);
+        QCOMPARE(libIndex.bookCount(), 0);  // ZERO writes to index.sqlite!
+
+        // 3. Chained .arg() immunity + untrusted-data boundary markers in read_passage.
+        const QJsonObject readRes = gatedServer.handleRequest({
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), 3},
+            {QStringLiteral("method"), QStringLiteral("tools/call")},
+            {QStringLiteral("params"), QJsonObject{
+                {QStringLiteral("name"), QStringLiteral("read_passage")},
+                {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("book_id"), b1}, {QStringLiteral("chapter"), 0}}},
+            }},
+        }).value(QStringLiteral("result")).toObject();
+        const QString citation = readRes.value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("citation")).toString();
+        QVERIFY2(citation.contains(QStringLiteral("Report %3 %4 Title")), qPrintable(citation));
+        const QString displayText = readRes.value(QStringLiteral("content")).toArray()[0].toObject().value(QStringLiteral("text")).toString();
+        QVERIFY(displayText.contains(QStringLiteral("<<<UNTRUSTED_BOOK_CONTENT>>>")));
+        QVERIFY(displayText.contains(QStringLiteral("<<<END_UNTRUSTED_BOOK_CONTENT>>>")));
+
+        // 4. Local-only guarantee: even with GEMINI_API_KEY set in env and passage_vectors present,
+        //    MCP search_passages NEVER sends queries to Gemini cloud or writes ai_usage.
+        qputenv("GEMINI_API_KEY", "test-env-cloud-key");
+        FakeServer cloudSrv;
+        GeminiProvider gemini(nullptr, cloudSrv.endpoint());
+        MemoryKeyStore keys;
+        AiServices cloudAi(&gemini, &keys, library.database().connectionName());
+        cloudAi.setPreset(QStringLiteral("cloud"));
+        {
+            QSqlQuery q(library.database());
+            QVERIFY(q.exec(QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS passage_vectors (book_id INTEGER NOT NULL, model TEXT NOT NULL, "
+                "passage TEXT NOT NULL, vector BLOB NOT NULL, PRIMARY KEY (book_id, model, passage))")));
+            const QList<float> v{1.0f, 0.0f, 0.0f};
+            q.prepare(QStringLiteral("INSERT OR REPLACE INTO passage_vectors VALUES (?, ?, ?, ?)"));
+            q.addBindValue(b1);
+            q.addBindValue(QStringLiteral("gemini/gemini-embedding-2"));
+            q.addBindValue(QStringLiteral("0:0:45:aa"));
+            q.addBindValue(QByteArray(reinterpret_cast<const char *>(v.constData()), v.size() * qsizetype(sizeof(float))));
+            QVERIFY(q.exec());
+        }
+        McpServer cloudGuardServer(&library, &libIndex, &cloudAi, {settingsIni, indexDb});
+        const QJsonObject noCloudRes = cloudGuardServer.handleRequest({
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), 4},
+            {QStringLiteral("method"), QStringLiteral("tools/call")},
+            {QStringLiteral("params"), QJsonObject{
+                {QStringLiteral("name"), QStringLiteral("search_passages")},
+                {QStringLiteral("arguments"), QJsonObject{{QStringLiteral("query"), QStringLiteral("decoherence")}}},
+            }},
+        }).value(QStringLiteral("result")).toObject();
+        QCOMPARE(cloudSrv.requests.size(), 0);
+        QCOMPARE(noCloudRes.value(QStringLiteral("structuredContent")).toObject().value(QStringLiteral("mode")).toString(),
+                 QStringLiteral("lexical"));
+        QCOMPARE(cloudAi.spentThisMonth(), 0.0);
+
+        // 5. allowedBooks is passed directly to PassageIndex::searchLibrary() in toolSearchPassages().
+        FakeServer localEmbedSrv;
+        localEmbedSrv.routes.insert("/api/embed", {200, "application/json", "{\"embeddings\":[[1.0,0.0,0.0]]}"});
+        LocalModels localEmbed;
+        LocalModels::Server lcfg;
+        lcfg.kind = LocalModels::Ollama;
+        lcfg.url = QUrl(localEmbedSrv.origin());
+        localEmbed.configure(lcfg, {}, QStringLiteral("nomic-embed-text"));
+        {
+            // Seed 15 decoy chapters in b1 with score 1.0 and 1 chapter in b2 with score 0.6.
+            QSqlQuery q(library.database());
+            const QList<float> highV{1.0f, 0.0f, 0.0f};
+            const QList<float> midV{0.6f, 0.8f, 0.0f};
+            for (int ch = 0; ch < 15; ++ch) {
+                q.prepare(QStringLiteral("INSERT OR REPLACE INTO passage_vectors VALUES (?, ?, ?, ?)"));
+                q.addBindValue(b1);
+                q.addBindValue(QStringLiteral("local/nomic-embed-text"));
+                q.addBindValue(QStringLiteral("%1:0:40:aa").arg(ch));
+                q.addBindValue(QByteArray(reinterpret_cast<const char *>(highV.constData()), highV.size() * qsizetype(sizeof(float))));
+                QVERIFY(q.exec());
+            }
+            q.prepare(QStringLiteral("INSERT OR REPLACE INTO passage_vectors VALUES (?, ?, ?, ?)"));
+            q.addBindValue(b2);
+            q.addBindValue(QStringLiteral("local/nomic-embed-text"));
+            q.addBindValue(QStringLiteral("0:0:45:bb"));
+            q.addBindValue(QByteArray(reinterpret_cast<const char *>(midV.constData()), midV.size() * qsizetype(sizeof(float))));
+            QVERIFY(q.exec());
+        }
+        McpServer localSemServer(&library, &libIndex, nullptr, {settingsIni, indexDb});
+        localSemServer.setLocalEmbedder(&localEmbed);
+        const QJsonObject scopedSem = localSemServer.handleRequest({
+            {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+            {QStringLiteral("id"), 5},
+            {QStringLiteral("method"), QStringLiteral("tools/call")},
+            {QStringLiteral("params"), QJsonObject{
+                {QStringLiteral("name"), QStringLiteral("search_passages")},
+                {QStringLiteral("arguments"), QJsonObject{
+                    {QStringLiteral("query"), QStringLiteral("elements")},
+                    {QStringLiteral("book_id"), b2},
+                    {QStringLiteral("limit"), 1},
+                }},
+            }},
+        }).value(QStringLiteral("result")).toObject().value(QStringLiteral("structuredContent")).toObject();
+        QCOMPARE(scopedSem.value(QStringLiteral("mode")).toString(), QStringLiteral("semantic"));
+        QCOMPARE(scopedSem.value(QStringLiteral("count")).toInt(), 1);
+        QCOMPARE(scopedSem.value(QStringLiteral("passages")).toArray()[0].toObject().value(QStringLiteral("book_id")).toInt(), b2);
+
+        // 6. Bounded fread() framing: rejects embedded NUL bytes and oversized frames without corrupting subsequent frames.
+        QByteArray frames;
+        frames += "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n";
+        frames += QByteArray("{\"jsonrpc\":\"2.0\",") + '\0' + QByteArray("\"id\":2,\"method\":\"ping\"}\n");
+        frames += QByteArray(300, 'x') + '\n';  // exceeds test cap of 128 bytes
+        frames += "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"ping\"}\n";
+
+        std::FILE *inFile = std::tmpfile();
+        std::FILE *outFile = std::tmpfile();
+        QVERIFY(inFile && outFile);
+        QCOMPARE(std::fwrite(frames.constData(), 1, size_t(frames.size()), inFile), size_t(frames.size()));
+        std::rewind(inFile);
+
+        McpServer::runStdioLoop(
+            inFile, outFile,
+            [&gatedServer](const QJsonObject &req) { return gatedServer.handleRequest(req); },
+            128);
+
+        std::rewind(outFile);
+        QByteArray outBytes;
+        char buf[1024];
+        while (const size_t n = std::fread(buf, 1, sizeof(buf), outFile))
+            outBytes.append(buf, qsizetype(n));
+        std::fclose(inFile);
+        std::fclose(outFile);
+
+        QList<QJsonObject> replies;
+        for (const QByteArray &line : outBytes.split('\n')) {
+            if (line.trimmed().isEmpty())
+                continue;
+            const QJsonDocument d = QJsonDocument::fromJson(line);
+            QVERIFY2(d.isObject(), line.constData());
+            replies.append(d.object());
+        }
+        QCOMPARE(replies.size(), 4);
+        QCOMPARE(replies[0].value(QStringLiteral("id")).toInt(), 1);
+        QVERIFY(replies[0].contains(QStringLiteral("result")));
+        QCOMPARE(replies[1].value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32700);
+        QCOMPARE(replies[2].value(QStringLiteral("error")).toObject().value(QStringLiteral("code")).toInt(), -32600);
+        QCOMPARE(replies[3].value(QStringLiteral("id")).toInt(), 4);
+        QVERIFY(replies[3].contains(QStringLiteral("result")));
+    }
+
+    void fixAiMcpBudgetReservationPricingAndPassageIndex() {
+        QTemporaryDir dir;
+        const QByteArray origEnvKey = qgetenv("GEMINI_API_KEY");
+        const QString appSettings =
+            QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+        auto restore = qScopeGuard([&] {
+            if (origEnvKey.isEmpty())
+                qunsetenv("GEMINI_API_KEY");
+            else
+                qputenv("GEMINI_API_KEY", origEnvKey);
+            QSettings(appSettings, QSettings::IniFormat).remove(QStringLiteral("ai"));
+        });
+        qunsetenv("GEMINI_API_KEY");
+
+        // 1. Unknown cloud model fallback pricing (non-zero for rotated Gemini models, $0 for local).
+        Ai::Usage u;
+        u.inputTokens = 100000;
+        u.outputTokens = 10000;
+        const QDate today(2026, 11, 25);
+        QVERIFY(AiUsageLedger::cost(QStringLiteral("gemini-9-future-pro"), u, today, false) > 0.0);
+        QVERIFY(AiUsageLedger::cost(QStringLiteral("gemini-5-flash-tts-preview"), u, today, false) > 0.0);
+        QVERIFY(AiUsageLedger::cost(QStringLiteral("gemini-embedding-9"), u, today, false) > 0.0);
+        QCOMPARE(AiUsageLedger::cost(QStringLiteral("a-local-model"), u, today, false), 0.0);
+        QVERIFY(AiUsageLedger::costForProvider(QStringLiteral("gemini"), QStringLiteral("unrecognized-cloud-id"), u, today, false) > 0.0);
+        QCOMPARE(AiUsageLedger::costForProvider(QStringLiteral("local"), QStringLiteral("gemini-4-hydrogen"), u, today, false), 0.0);
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+
+        // 2. In-flight spend reservation blocks concurrent budget overshoot & releases on cancel/finish.
+        QTcpServer hangSrv;
+        QVERIFY(hangSrv.listen(QHostAddress::LocalHost));
+        QList<QPointer<QTcpSocket>> held;
+        connect(&hangSrv, &QTcpServer::newConnection, &hangSrv, [&hangSrv, &held] {
+            while (QTcpSocket *s = hangSrv.nextPendingConnection())
+                held.append(s);
+        });
+        GeminiProvider gemini(nullptr, QStringLiteral("http://127.0.0.1:%1/v1beta").arg(hangSrv.serverPort()));
+        gemini.setKey(QStringLiteral("k"));
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        services.setUnlimitedBudget(false);
+        services.setBudget(1.00);
+        QVERIFY(services.fitsBudget(0.70));
+
+        Ai::TextRequest req;
+        req.feature = QStringLiteral("ask");
+        req.messages = {{true, QStringLiteral("hi")}};
+        std::unique_ptr<Ai::Reply> inFlight(gemini.generate(req));
+        services.track(inFlight.get(), false, 0.70);
+        QVERIFY(qAbs(services.reservedBudget() - 0.70) < 1e-6);
+        QVERIFY(!services.fitsBudget(0.50));  // 0.70 reserved + 0.50 > $1.00 cap!
+        QVERIFY(services.fitsBudget(0.25));   // 0.70 reserved + 0.25 <= $1.00
+
+        inFlight->abort();
+        QTRY_VERIFY(inFlight->isFinished());
+        QCOMPARE(services.reservedBudget(), 0.0);
+        QVERIFY(services.fitsBudget(0.50));  // released after cancel!
+        for (const QPointer<QTcpSocket> &s : std::as_const(held))
+            if (s)
+                s->close();
+        hangSrv.close();
+
+        // 3. Audio-only usage rows are recorded and billed (not dropped when input/output/thought == 0).
+        class AudioOnlyReply : public Ai::Reply {
+        public:
+            explicit AudioOnlyReply(QObject *parent) : Ai::Reply(parent) {
+                m_model = QStringLiteral("gemini-3.8-flash-tts");
+                m_feature = QStringLiteral("listen");
+                m_usage.audioTokens = 50000;
+            }
+            void abort() override { finish({Ai::Error::Cancelled, {}}); }
+            void emitDone() { finish(); }
+        };
+        AudioOnlyReply audioReply(&gemini);
+        services.track(&audioReply, false, 0.01);
+        audioReply.emitDone();
+        QVERIFY(services.spentThisMonth() > 0.40);  // 50k audio tokens @ $9/1M = $0.45
+
+        // 4. PRAGMA data_version invalidates m_spentCache when a sibling DB connection writes ai_usage.
+        const double beforeSibling = services.spentThisMonth();
+        {
+            const QString extConn = QStringLiteral("sibling-cli-usage-") + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            {
+                QSqlDatabase extDb = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), extConn);
+                extDb.setDatabaseName(library.database().databaseName());
+                QVERIFY(extDb.open());
+                QSqlQuery ins(extDb);
+                ins.prepare(QStringLiteral(
+                    "INSERT INTO ai_usage (at, provider, model, feature, input, output, cached, thought, audio, flex, cost) "
+                    "VALUES (?, 'gemini', 'gemini-4-hydrogen', 'ask', 100, 100, 0, 0, 0, 0, 2.50)"));
+                ins.addBindValue(QDateTime::currentSecsSinceEpoch());
+                QVERIFY(ins.exec());
+                extDb.close();
+            }
+            QSqlDatabase::removeDatabase(extConn);
+        }
+        QVERIFY(services.spentThisMonth() >= beforeSibling + 2.49);
+
+        // 5. PassageIndex schema index, book_id IN (>500 chunking), partial vectors, and orphan cleanup.
+        const QString epubPath = dir.filePath(QStringLiteral("idx.epub"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(16, 16))));
+        const int realBookId = library.addBookFile(epubPath);
+        QVERIFY(realBookId > 0);
+
+        FakeServer localSrv;
+        LocalModels local;
+        LocalModels::Server lcfg;
+        lcfg.kind = LocalModels::Ollama;
+        lcfg.url = QUrl(localSrv.origin());
+        local.configure(lcfg, QStringLiteral("qwen3.5:4b"), QStringLiteral("nomic-embed-text"));
+        services.setLocalModels(&local);
+        services.setPreset(QStringLiteral("local"));
+
+        PassageIndex pIndex(&services, library.database().connectionName());
+        {
+            QSqlQuery idxCheck(library.database());
+            QVERIFY(idxCheck.exec(QStringLiteral(
+                "SELECT 1 FROM sqlite_master WHERE type='index' AND name='idx_passage_vectors_model_book'")));
+            QVERIFY(idxCheck.next());
+        }
+
+        // Embed only passage 0 of a 2-passage book -> search() still runs semantic/hybrid (no all-or-nothing drop!).
+        const QList<PassageIndex::Passage> twoPassages{
+            {0, 0, 20, QStringLiteral("Orbital mechanics.")},
+            {0, 25, 48, QStringLiteral("Unembedded passage.")},
+        };
+        localSrv.responses.append({200, "application/json", "{\"embeddings\":[[1.0,0.0,0.0]]}"});
+        QString buildErr = QStringLiteral("unset");
+        pIndex.build(realBookId, {twoPassages[0]}, nullptr, [&](const QString &e) { buildErr = e; });
+        QTRY_COMPARE(buildErr, QString());
+        QCOMPARE(pIndex.indexed(realBookId), 1);
+
+        localSrv.responses.append({200, "application/json", "{\"embeddings\":[[1.0,0.0,0.0]]}"});
+        QList<PassageIndex::Hit> partialHits;
+        bool usedMeaning = false;
+        bool searchDone = false;
+        pIndex.search(realBookId, twoPassages, QStringLiteral("spaceflight"), 2,
+                      [&](const QList<PassageIndex::Hit> &hits, bool byMeaning) {
+                          partialHits = hits;
+                          usedMeaning = byMeaning;
+                          searchDone = true;
+                      });
+        QTRY_VERIFY_WITH_TIMEOUT(searchDone, 5000);
+        QVERIFY(usedMeaning);
+        QVERIFY(!partialHits.isEmpty());
+        QCOMPARE(partialHits.first().passage.text, QStringLiteral("Orbital mechanics."));
+
+        // book_id IN chunking handles > 500 IDs cleanly.
+        QSet<int> hugeBookSet;
+        for (int id = 1000; id < 1560; ++id)
+            hugeBookSet.insert(id);
+        hugeBookSet.insert(realBookId);
+        const QList<PassageIndex::LibraryHit> chunkedHits = PassageIndex::rankLibrary(
+            library.database().databaseName(), QStringLiteral("local/nomic-embed-text"),
+            {1.0f, 0.0f, 0.0f}, 5, 0.25, hugeBookSet);
+        QCOMPARE(chunkedHits.size(), 1);
+        QCOMPARE(chunkedHits.first().bookId, realBookId);
+
+        // Orphan vector pruning + AFTER DELETE ON books trigger.
+        {
+            QSqlQuery insOrphan(library.database());
+            const QList<float> v{1.0f, 0.0f, 0.0f};
+            insOrphan.prepare(QStringLiteral("INSERT INTO passage_vectors VALUES (?, ?, ?, ?)"));
+            insOrphan.addBindValue(99999);
+            insOrphan.addBindValue(QStringLiteral("local/nomic-embed-text"));
+            insOrphan.addBindValue(QStringLiteral("0:0:10:zz"));
+            insOrphan.addBindValue(QByteArray(reinterpret_cast<const char *>(v.constData()), v.size() * qsizetype(sizeof(float))));
+            QVERIFY(insOrphan.exec());
+        }
+        QCOMPARE(pIndex.pruneOrphans(), 1);
+        {
+            QSqlQuery delBook(library.database());
+            delBook.prepare(QStringLiteral("DELETE FROM books WHERE id = ?"));
+            delBook.addBindValue(realBookId);
+            QVERIFY(delBook.exec());
+            QCOMPARE(pIndex.indexed(realBookId), 0);
+        }
+
+        // 6. PassageIndex::embedNext() re-checks budget before each cloud batch.
+        {
+            FakeServer cloudEmbedSrv;
+            QJsonArray batchVecs;
+            for (int i = 0; i < 32; ++i)
+                batchVecs.append(QJsonObject{{QStringLiteral("values"), QJsonArray{1.0, 0.0, 0.0}}});
+            cloudEmbedSrv.responses.append(
+                {200, "application/json", QJsonDocument(QJsonObject{{QStringLiteral("embeddings"), batchVecs}}).toJson(QJsonDocument::Compact)});
+            cloudEmbedSrv.responses.append(
+                {200, "application/json", QJsonDocument(QJsonObject{{QStringLiteral("embeddings"), batchVecs}}).toJson(QJsonDocument::Compact)});
+
+            GeminiProvider batchGemini(nullptr, cloudEmbedSrv.endpoint());
+            MemoryKeyStore batchKeys;
+            batchKeys.save(QStringLiteral("gemini"), QStringLiteral("k"));
+            Library batchLib(dir.filePath(QStringLiteral("data_batch")), dir.filePath(QStringLiteral("cache_batch")));
+            QVERIFY(batchLib.open());
+            const int batchBookId = batchLib.addBookFile(epubPath);
+            QVERIFY(batchBookId > 0);
+            AiServices batchAi(&batchGemini, &batchKeys, batchLib.database().connectionName());
+            batchAi.setPreset(QStringLiteral("cloud"));
+            batchAi.setUnlimitedBudget(false);
+
+            // 40 passages = 2 batches (32 + 8). Initial budget ($0.01) passes upfront build() check;
+            // lowering budget while batch 1 is in flight must halt batch 2 via embedNext() re-check.
+            QList<PassageIndex::Passage> many;
+            const QString filler(2000, QLatin1Char('a'));  // ~500 tokens each -> 32 * 500 = 16000 tokens ($0.0032), 8 * 500 = 4000 ($0.0008)
+            for (int i = 0; i < 40; ++i)
+                many.append({0, i * 2100, i * 2100 + 2000, QStringLiteral("P%1 %2").arg(i).arg(filler)});
+            batchAi.setBudget(0.01);
+
+            PassageIndex batchIndex(&batchAi, batchLib.database().connectionName());
+            QString batchErr = QStringLiteral("unset");
+            batchIndex.build(
+                batchBookId, many,
+                [&](double) { batchAi.setBudget(0.0036); },  // tightened mid-flight before batch 2
+                [&](const QString &err) { batchErr = err; });
+            QTRY_VERIFY_WITH_TIMEOUT(batchErr != QLatin1String("unset"), 5000);
+            QVERIFY2(batchErr.contains(QStringLiteral("budget"), Qt::CaseInsensitive), qPrintable(batchErr));
+            QCOMPARE(cloudEmbedSrv.requests.size(), 1);
+            QCOMPARE(batchIndex.indexed(batchBookId), 32);
+        }
+    }
+
+    void fixAiMcpSseLocalModelsAndWavValidation() {
+        // 1. SseParser strips UTF-8 BOM split across 1-byte chunks and caps oversized frames.
+        {
+            SseParser sse;
+            QVERIFY(sse.feed(QByteArray("\xEF", 1)).isEmpty());
+            QVERIFY(sse.feed(QByteArray("\xBB", 1)).isEmpty());
+            QVERIFY(sse.feed(QByteArray("\xBF", 1)).isEmpty());
+            const auto ev = sse.feed("event: delta\ndata: split-bom\n\n");
+            QCOMPARE(ev.size(), 1);
+            QCOMPARE(ev[0].name, QByteArray("delta"));
+            QCOMPARE(ev[0].data, QByteArray("split-bom"));
+            QVERIFY(!sse.overflowed());
+
+            SseParser capped;
+            const QByteArray bigChunk(SseParser::kMaxBufferBytes + 16, 'a');
+            QVERIFY(capped.feed(bigChunk).isEmpty());
+            QVERIFY(capped.overflowed());
+        }
+
+        // 2. LocalModels ServerReply: rejects premature clean EOF without [DONE] / "done":true,
+        //    and flushes split-tail SSE delivered right before EOF.
+        {
+            FakeServer server;
+            LocalModels local;
+            LocalModels::Server cfg;
+            cfg.kind = LocalModels::LlamaCpp;
+            cfg.url = QUrl(server.origin());
+            local.configure(cfg, QStringLiteral("qwen"));
+
+            // Truncated SSE stream without [DONE] -> Offline error (not silent truncation!).
+            server.responses.append({200, "text/event-stream",
+                                     "data: {\"choices\":[{\"delta\":{\"content\":\"Halfway\"}}]}\n\n"});
+            Ai::TextRequest req;
+            req.stream = true;
+            req.messages = {{true, QStringLiteral("Hi")}};
+            std::unique_ptr<Ai::Reply> truncSse(local.generate(req));
+            QTRY_VERIFY_WITH_TIMEOUT(truncSse->isFinished(), 5000);
+            QCOMPARE(truncSse->error().kind, Ai::Error::Offline);
+
+            // Split-tail SSE stream where final event + [DONE] arrive cleanly at EOF.
+            server.responses.append({200, "text/event-stream",
+                                     "data: {\"choices\":[{\"delta\":{\"content\":\"Complete\"}}]}\n\n"
+                                     "data: [DONE]"});
+            std::unique_ptr<Ai::Reply> tailSse(local.generate(req));
+            QTRY_VERIFY_WITH_TIMEOUT(tailSse->isFinished(), 5000);
+            QVERIFY2(!tailSse->error(), qPrintable(tailSse->error().message));
+            QCOMPARE(tailSse->text(), QStringLiteral("Complete"));
+
+            // Truncated Ollama NDJSON without "done":true -> Offline error.
+            cfg.kind = LocalModels::Ollama;
+            local.configure(cfg, QStringLiteral("qwen3.5:4b"));
+            server.responses.append({200, "application/x-ndjson",
+                                     "{\"message\":{\"content\":\"Cut off\"},\"done\":false}\n"});
+            std::unique_ptr<Ai::Reply> truncNd(local.generate(req));
+            QTRY_VERIFY_WITH_TIMEOUT(truncNd->isFinished(), 5000);
+            QCOMPARE(truncNd->error().kind, Ai::Error::Offline);
+        }
+
+        // 3. GeminiProvider::pcmFromWav() validates RIFF/WAVE + PCM 16-bit and downmixes stereo.
+        {
+            auto le32 = [](quint32 v) {
+                QByteArray b(4, Qt::Uninitialized);
+                b[0] = char(v & 0xff);
+                b[1] = char((v >> 8) & 0xff);
+                b[2] = char((v >> 16) & 0xff);
+                b[3] = char((v >> 24) & 0xff);
+                return b;
+            };
+            auto le16 = [](quint16 v) {
+                QByteArray b(2, Qt::Uninitialized);
+                b[0] = char(v & 0xff);
+                b[1] = char((v >> 8) & 0xff);
+                return b;
+            };
+
+            // Reject HTML, JSON, MP3, Ogg, and non-WAV in strict mode.
+            QVERIFY(GeminiProvider::pcmFromWav("<html><body>502 Bad Gateway</body></html>").isEmpty());
+            QVERIFY(GeminiProvider::pcmFromWav("{\"error\":\"upstream\"}").isEmpty());
+            QVERIFY(GeminiProvider::pcmFromWav("ID3\x03\x00\x00\x00\x00\x00\x00").isEmpty());
+            QVERIFY(GeminiProvider::pcmFromWav(QByteArray("\xFF\xFB\x90\x00\x00\x00", 6)).isEmpty());
+            QVERIFY(GeminiProvider::pcmFromWav("OggS\x00\x02").isEmpty());
+            QVERIFY(GeminiProvider::pcmFromWav("raw bytes", nullptr, true).isEmpty());
+
+            // Reject non-PCM WAV (audioFormat=3 float) and 24-bit WAV.
+            const QByteArray floatWav = "RIFF" + le32(44) + "WAVE" + "fmt " + le32(16) + le16(3) + le16(1) +
+                                        le32(24000) + le32(96000) + le16(4) + le16(32) + "data" + le32(8) + QByteArray(8, '\0');
+            QVERIFY(GeminiProvider::pcmFromWav(floatWav).isEmpty());
+
+            const QByteArray bit24Wav = "RIFF" + le32(42) + "WAVE" + "fmt " + le32(16) + le16(1) + le16(1) +
+                                        le32(24000) + le32(72000) + le16(3) + le16(24) + "data" + le32(6) + QByteArray(6, '\0');
+            QVERIFY(GeminiProvider::pcmFromWav(bit24Wav).isEmpty());
+
+            // Valid 16-bit stereo WAV downmixes cleanly to mono: (1000 + 3000) / 2 = 2000.
+            QByteArray stereoData;
+            stereoData += le16(1000) + le16(3000);
+            stereoData += le16(quint16(qint16(-400))) + le16(quint16(qint16(-200)));
+            const QByteArray stereoWav = "RIFF" + le32(36 + quint32(stereoData.size())) + "WAVE" + "fmt " + le32(16) +
+                                         le16(1) + le16(2) + le32(48000) + le32(192000) + le16(4) + le16(16) +
+                                         "data" + le32(quint32(stereoData.size())) + stereoData;
+            int rate = 0;
+            const QByteArray mono = GeminiProvider::pcmFromWav(stereoWav, &rate, true);
+            QCOMPARE(rate, 48000);
+            QCOMPARE(mono.size(), qsizetype(4));
+            const qint16 s0 = qint16(quint8(mono[0]) | (quint8(mono[1]) << 8));
+            const qint16 s1 = qint16(quint8(mono[2]) | (quint8(mono[3]) << 8));
+            QCOMPARE(s0, qint16(2000));
+            QCOMPARE(s1, qint16(-300));
+        }
+    }
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

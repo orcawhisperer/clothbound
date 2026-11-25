@@ -19,6 +19,7 @@
 #include <QPdfDocument>
 #include <QPdfSelection>
 #include <QProcess>
+#include <QRandomGenerator>
 #include <QRegularExpression>
 #include <QSet>
 #include <QSettings>
@@ -930,21 +931,6 @@ private:
     bool m_display = false;
 };
 
-QString renderLatexHtml(const QString &latex, bool display) {
-    const QString inner = LatexParser(latex.trimmed(), display).parseAll().trimmed();
-    if (inner.isEmpty())
-        return {};
-    if (display) {
-        return QStringLiteral(
-                   "<div class=\"math-block\" style=\"font-family:'Literata',Georgia,serif;font-style:italic;"
-                   "background-color:rgba(128,128,128,0.12);padding:8px 12px;margin:6px 0;text-align:center;\">") +
-               inner + QStringLiteral("</div>");
-    }
-    return QStringLiteral(
-               "<span class=\"math-inline\" style=\"font-family:'Literata',Georgia,serif;font-style:italic;\">") +
-           inner + QStringLiteral("</span>");
-}
-
 bool looksLikeCurrencySpan(const QString &inner) {
     if (inner.isEmpty())
         return true;
@@ -957,7 +943,176 @@ bool looksLikeCurrencySpan(const QString &inner) {
     return false;
 }
 
-QString formatLatexInMarkdown(const QString &text) {
+QString generateMathNonce(const QString &avoid) {
+    QString nonce;
+    do {
+        const quint64 a = QRandomGenerator::global()->generate64();
+        const quint64 b = QRandomGenerator::global()->generate64();
+        nonce = QStringLiteral("CBMATH%1%2")
+                    .arg(a, 16, 16, QLatin1Char('0'))
+                    .arg(b, 16, 16, QLatin1Char('0'));
+    } while (avoid.contains(nonce));
+    return nonce;
+}
+
+QString stripDangerousMarkup(const QString &text) {
+    if (text.isEmpty())
+        return text;
+    static const QRegularExpression htmlImg(QStringLiteral("<img\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression htmlScriptStyleBlock(
+        QStringLiteral("<(?:script|style)\\b[^>]*>[\\s\\S]*?</(?:script|style)\\s*>"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression htmlDangerousTag(
+        QStringLiteral("</?(?:script|style|iframe|object|embed|link|meta|base|svg|audio|video|source|form|input|button|"
+                       "textarea|select)\\b[^>]*>"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression inlineImg(QStringLiteral("!\\[([^\\]]*)\\]\\([^)]*\\)"));
+    static const QRegularExpression refImg(QStringLiteral("!\\[([^\\]]*)\\]\\[[^\\]]*\\]"));
+
+    QString out = text;
+    // Iterate until fixed point so doubly/triply nested malformed tags like
+    // "<i<i<img >mg >mg src=...>" can never reconstruct an active tag.
+    for (int pass = 0; pass < 64; ++pass) {
+        const QString before = out;
+        out.remove(htmlImg);
+        out.remove(htmlScriptStyleBlock);
+        out.remove(htmlDangerousTag);
+        out.replace(inlineImg, QStringLiteral("\\1"));
+        out.replace(refImg, QStringLiteral("\\1"));
+        if (out == before)
+            break;
+    }
+    out.replace(QStringLiteral("!["), QStringLiteral("!\u200B["));
+    return out;
+}
+
+bool isFenceStartAt(const QString &text, qsizetype pos) {
+    if (pos + 2 >= text.size() || text[pos] != QLatin1Char('`') || text[pos + 1] != QLatin1Char('`') ||
+        text[pos + 2] != QLatin1Char('`')) {
+        return false;
+    }
+    // CommonMark fenced code blocks begin at line start with at most 3 leading spaces.
+    qsizetype lineStart = pos;
+    while (lineStart > 0 && text[lineStart - 1] != QLatin1Char('\n'))
+        --lineStart;
+    if (pos - lineStart > 3)
+        return false;
+    for (qsizetype k = lineStart; k < pos; ++k)
+        if (text[k] != QLatin1Char(' '))
+            return false;
+    return true;
+}
+
+// Returns the index right after the matching closing backtick run of exact length
+// `ticks` before a paragraph break (\n\n) or EOF, or -1 if unclosed.
+qsizetype findMatchingInlineCodeEnd(const QString &text, qsizetype openPos, qsizetype ticks) {
+    const qsizetype n = text.size();
+    qsizetype j = openPos + ticks;
+    while (j < n) {
+        if (text[j] == QLatin1Char('\n') && j + 1 < n && text[j + 1] == QLatin1Char('\n'))
+            return -1;
+        if (text[j] == QLatin1Char('`')) {
+            qsizetype run = 0;
+            while (j + run < n && text[j + run] == QLatin1Char('`'))
+                ++run;
+            if (run == ticks)
+                return j + run;
+            j += run;
+            continue;
+        }
+        ++j;
+    }
+    return -1;
+}
+
+QString escapeRawHtmlOutsideCode(const QString &text) {
+    if (!text.contains(QLatin1Char('<')) && !text.contains(QLatin1Char('>')))
+        return text;
+    QString out;
+    out.reserve(text.size() + 32);
+    const qsizetype n = text.size();
+    qsizetype i = 0;
+    bool inFence = false;
+    bool atLineStart = true;
+    int lineIndent = 0;
+    bool inBlockquotePrefix = true;
+
+    while (i < n) {
+        if (isFenceStartAt(text, i)) {
+            inFence = !inFence;
+            qsizetype run = 0;
+            while (i + run < n && text[i + run] == QLatin1Char('`'))
+                ++run;
+            out += text.mid(i, run);
+            i += run;
+            atLineStart = false;
+            inBlockquotePrefix = false;
+            continue;
+        }
+        if (inFence) {
+            out += text[i++];
+            continue;
+        }
+        if (text[i] == QLatin1Char('`')) {
+            qsizetype ticks = 0;
+            while (i + ticks < n && text[i + ticks] == QLatin1Char('`'))
+                ++ticks;
+            const qsizetype closeEnd = findMatchingInlineCodeEnd(text, i, ticks);
+            if (closeEnd > i) {
+                out += text.mid(i, closeEnd - i);
+                i = closeEnd;
+                atLineStart = false;
+                inBlockquotePrefix = false;
+                continue;
+            }
+            out += text.mid(i, ticks);
+            i += ticks;
+            atLineStart = false;
+            inBlockquotePrefix = false;
+            continue;
+        }
+        const QChar c = text[i++];
+        if (c == QLatin1Char('\n')) {
+            out += c;
+            atLineStart = true;
+            lineIndent = 0;
+            inBlockquotePrefix = true;
+            continue;
+        }
+        if (c == QLatin1Char('<')) {
+            out += QStringLiteral("&lt;");
+            atLineStart = false;
+            inBlockquotePrefix = false;
+            continue;
+        }
+        if (c == QLatin1Char('>')) {
+            if (inBlockquotePrefix && lineIndent <= 3) {
+                out += c;
+                lineIndent = 0;
+                atLineStart = false;
+            } else {
+                out += QStringLiteral("&gt;");
+                atLineStart = false;
+                inBlockquotePrefix = false;
+            }
+            continue;
+        }
+        if (inBlockquotePrefix && c == QLatin1Char(' ')) {
+            ++lineIndent;
+            if (lineIndent > 3)
+                inBlockquotePrefix = false;
+        } else {
+            atLineStart = false;
+            inBlockquotePrefix = false;
+        }
+        Q_UNUSED(atLineStart);
+        out += c;
+    }
+    return out;
+}
+
+QString extractLatexWithNonces(const QString &text, const QString &nonce, QStringList &mathInnersOut,
+                               QList<bool> &mathIsBlockOut, bool padBlocks) {
     if (!text.contains(QLatin1Char('$')) && !text.contains(QStringLiteral("\\(")) &&
         !text.contains(QStringLiteral("\\[")))
         return text;
@@ -967,29 +1122,51 @@ QString formatLatexInMarkdown(const QString &text) {
     const qsizetype n = text.size();
     qsizetype i = 0;
     bool inFence = false;
-    bool inInlineCode = false;
+
+    auto emitMath = [&](const QString &expr, bool display) -> bool {
+        const QString inner = LatexParser(expr.trimmed(), display).parseAll().trimmed();
+        if (inner.isEmpty())
+            return false;
+        const int idx = int(mathInnersOut.size());
+        mathInnersOut.append(inner);
+        mathIsBlockOut.append(display);
+        const QString token =
+            QStringLiteral("%1%2%3Z").arg(nonce, display ? QStringLiteral("B") : QStringLiteral("I"), QString::number(idx));
+        if (display && padBlocks)
+            out += QStringLiteral("\n\n") + token + QStringLiteral("\n\n");
+        else
+            out += token;
+        return true;
+    };
 
     while (i < n) {
         // Preserve fenced code blocks (``` ... ```) verbatim (e.g. copyable LaTeX output).
-        if (!inInlineCode && i + 2 < n && text[i] == QLatin1Char('`') && text[i + 1] == QLatin1Char('`') &&
-            text[i + 2] == QLatin1Char('`')) {
+        if (isFenceStartAt(text, i)) {
             inFence = !inFence;
-            out += QStringLiteral("```");
-            i += 3;
+            qsizetype run = 0;
+            while (i + run < n && text[i + run] == QLatin1Char('`'))
+                ++run;
+            out += text.mid(i, run);
+            i += run;
             continue;
         }
         if (inFence) {
             out += text[i++];
             continue;
         }
-        // Preserve inline code spans (`...`) verbatim.
+        // Preserve matched inline code spans (`...`) verbatim.
         if (text[i] == QLatin1Char('`')) {
-            inInlineCode = !inInlineCode;
-            out += text[i++];
-            continue;
-        }
-        if (inInlineCode) {
-            out += text[i++];
+            qsizetype ticks = 0;
+            while (i + ticks < n && text[i + ticks] == QLatin1Char('`'))
+                ++ticks;
+            const qsizetype closeEnd = findMatchingInlineCodeEnd(text, i, ticks);
+            if (closeEnd > i) {
+                out += text.mid(i, closeEnd - i);
+                i = closeEnd;
+                continue;
+            }
+            out += text.mid(i, ticks);
+            i += ticks;
             continue;
         }
         const bool escaped = (i > 0 && text[i - 1] == QLatin1Char('\\'));
@@ -997,40 +1174,25 @@ QString formatLatexInMarkdown(const QString &text) {
         // Display math: $$...$$
         if (!escaped && i + 1 < n && text[i] == QLatin1Char('$') && text[i + 1] == QLatin1Char('$')) {
             const qsizetype close = text.indexOf(QStringLiteral("$$"), i + 2);
-            if (close > i + 2) {
-                const QString expr = text.mid(i + 2, close - (i + 2));
-                const QString rendered = renderLatexHtml(expr, true);
-                if (!rendered.isEmpty()) {
-                    out += rendered;
-                    i = close + 2;
-                    continue;
-                }
+            if (close > i + 2 && emitMath(text.mid(i + 2, close - (i + 2)), true)) {
+                i = close + 2;
+                continue;
             }
         }
         // Display math: \[...\]
         if (!escaped && i + 1 < n && text[i] == QLatin1Char('\\') && text[i + 1] == QLatin1Char('[')) {
             const qsizetype close = text.indexOf(QStringLiteral("\\]"), i + 2);
-            if (close > i + 2) {
-                const QString expr = text.mid(i + 2, close - (i + 2));
-                const QString rendered = renderLatexHtml(expr, true);
-                if (!rendered.isEmpty()) {
-                    out += rendered;
-                    i = close + 2;
-                    continue;
-                }
+            if (close > i + 2 && emitMath(text.mid(i + 2, close - (i + 2)), true)) {
+                i = close + 2;
+                continue;
             }
         }
         // Inline math: \(...\)
         if (!escaped && i + 1 < n && text[i] == QLatin1Char('\\') && text[i + 1] == QLatin1Char('(')) {
             const qsizetype close = text.indexOf(QStringLiteral("\\)"), i + 2);
-            if (close > i + 2) {
-                const QString expr = text.mid(i + 2, close - (i + 2));
-                const QString rendered = renderLatexHtml(expr, false);
-                if (!rendered.isEmpty()) {
-                    out += rendered;
-                    i = close + 2;
-                    continue;
-                }
+            if (close > i + 2 && emitMath(text.mid(i + 2, close - (i + 2)), false)) {
+                i = close + 2;
+                continue;
             }
         }
         // Inline math: $...$ (with strict Pandoc/KaTeX currency guards)
@@ -1044,7 +1206,8 @@ QString formatLatexInMarkdown(const QString &text) {
                 if (text[j] == QLatin1Char('`'))
                     break;
                 if (text[j] == QLatin1Char('$') && text[j - 1] != QLatin1Char('\\')) {
-                    if (!text[j - 1].isSpace() && (j + 1 >= n || (!text[j + 1].isDigit() && text[j + 1] != QLatin1Char('$')))) {
+                    if (!text[j - 1].isSpace() &&
+                        (j + 1 >= n || (!text[j + 1].isDigit() && text[j + 1] != QLatin1Char('$')))) {
                         close = j;
                         break;
                     }
@@ -1054,19 +1217,23 @@ QString formatLatexInMarkdown(const QString &text) {
             }
             if (close > i + 1) {
                 const QString expr = text.mid(i + 1, close - (i + 1));
-                if (!looksLikeCurrencySpan(expr)) {
-                    const QString rendered = renderLatexHtml(expr, false);
-                    if (!rendered.isEmpty()) {
-                        out += rendered;
-                        i = close + 1;
-                        continue;
-                    }
+                if (!looksLikeCurrencySpan(expr) && emitMath(expr, false)) {
+                    i = close + 1;
+                    continue;
                 }
             }
         }
         out += text[i++];
     }
     return out;
+}
+
+QString sanitizeMathBgColor(const QString &mathBlockBg) {
+    const QString trimmed = mathBlockBg.trimmed();
+    static const QRegularExpression safeColorRx(QStringLiteral("^[#a-zA-Z0-9(),.%\\s-]+$"));
+    if (trimmed.isEmpty() || trimmed.size() > 64 || !safeColorRx.match(trimmed).hasMatch())
+        return QStringLiteral("rgba(128,128,128,0.12)");
+    return escapeHtmlText(trimmed);
 }
 
 QString joinedStudyDocument(const QList<Companion::Chapter> &chapters, qint64 limit, int currentChapter = 0) {
@@ -1242,15 +1409,29 @@ Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConn
         const int ch = m_reader->chapter();
         const qint64 end = m_reader->pageEnd();
         const qint64 start = m_reader->pageStart();
-        // Cancel an in-flight chapter-scoped request only if the reader truly navigated
-        // backward (not when pageEnd shrinks during a 2-column -> 1-column dock resize).
-        if (m_busy && (m_feature == QLatin1String("whoswho") || m_feature == QLatin1String("recap")) &&
+        // Cancel an in-flight chapter-scoped request (including Ask) only if the reader truly
+        // navigated backward (not when pageEnd shrinks during a 2-column -> 1-column dock resize).
+        if (m_busy &&
+            (m_feature == QLatin1String("whoswho") || m_feature == QLatin1String("recap") ||
+             m_feature == QLatin1String("ask")) &&
             m_requestChapter >= 0) {
             const bool movedBack =
                 ch < m_requestChapter || (ch == m_requestChapter && m_requestStart > 0 && start < m_requestStart);
-            if (movedBack)
+            if (movedBack) {
+                if (m_feature == QLatin1String("ask"))
+                    m_answer.clear();  // never commit a spoiler-tainted partial stream
                 stop();
+            }
         }
+        bool hasStampedTurn = false;
+        for (const Turn &turn : std::as_const(m_conversation)) {
+            if (turn.chapter >= 0) {
+                hasStampedTurn = true;
+                break;
+            }
+        }
+        if (hasStampedTurn)
+            emit conversationChanged();
         bool changedAny = false;
         bool recapUpdated = false;
         if (m_peopleLoaded) {
@@ -1340,10 +1521,14 @@ void Companion::ensureTables() {
         " provenance TEXT NOT NULL DEFAULT '',"
         " is_local INTEGER NOT NULL DEFAULT 0,"
         " snip_url TEXT NOT NULL DEFAULT '',"
+        " chapter INTEGER NOT NULL DEFAULT -1,"
+        " offset INTEGER NOT NULL DEFAULT -1,"
         " created_at INTEGER NOT NULL)"));
     bool hasProvenance = false;
     bool hasIsLocal = false;
     bool hasSnipUrl = false;
+    bool hasChapter = false;
+    bool hasOffset = false;
     QSqlQuery info(db);
     if (info.exec(QStringLiteral("PRAGMA table_info(companion_threads)"))) {
         while (info.next()) {
@@ -1354,6 +1539,10 @@ void Companion::ensureTables() {
                 hasIsLocal = true;
             else if (col == QLatin1String("snip_url"))
                 hasSnipUrl = true;
+            else if (col == QLatin1String("chapter"))
+                hasChapter = true;
+            else if (col == QLatin1String("offset"))
+                hasOffset = true;
         }
     }
     if (!hasProvenance)
@@ -1362,6 +1551,10 @@ void Companion::ensureTables() {
         query.exec(QStringLiteral("ALTER TABLE companion_threads ADD COLUMN is_local INTEGER NOT NULL DEFAULT 0"));
     if (!hasSnipUrl)
         query.exec(QStringLiteral("ALTER TABLE companion_threads ADD COLUMN snip_url TEXT NOT NULL DEFAULT ''"));
+    if (!hasChapter)
+        query.exec(QStringLiteral("ALTER TABLE companion_threads ADD COLUMN chapter INTEGER NOT NULL DEFAULT -1"));
+    if (!hasOffset)
+        query.exec(QStringLiteral("ALTER TABLE companion_threads ADD COLUMN offset INTEGER NOT NULL DEFAULT -1"));
     query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS companion_threads_book ON companion_threads (book_id, seq)"));
 
     query.exec(QStringLiteral(
@@ -1769,6 +1962,7 @@ void Companion::setScope(const QString &scope) {
         emit changed();
     }
     emit scopeChanged();
+    emit conversationChanged();
 }
 
 void Companion::loadBookState(int bookId) {
@@ -1804,8 +1998,8 @@ void Companion::saveConversation(int bookId) {
         QSqlQuery ins(db);
         ins.prepare(QStringLiteral(
             "INSERT INTO companion_threads "
-            "(book_id, seq, from_user, text, sources, provenance, is_local, snip_url, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"));
+            "(book_id, seq, from_user, text, sources, provenance, is_local, snip_url, chapter, offset, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"));
         ins.addBindValue(bookId);
         ins.addBindValue(i);
         ins.addBindValue(turn.fromUser ? 1 : 0);
@@ -1814,6 +2008,8 @@ void Companion::saveConversation(int bookId) {
         ins.addBindValue(turn.provenance.isNull() ? QStringLiteral("") : turn.provenance);
         ins.addBindValue(turn.local ? 1 : 0);
         ins.addBindValue(turn.fromUser && !turn.snipDataUrl.isEmpty() ? turn.snipDataUrl : QStringLiteral(""));
+        ins.addBindValue(turn.chapter);
+        ins.addBindValue(turn.offset);
         ins.addBindValue(now);
         ok = ins.exec();
     }
@@ -1830,7 +2026,7 @@ void Companion::loadConversation(int bookId) {
         return;
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
-        "SELECT from_user, text, sources, provenance, is_local, snip_url FROM companion_threads "
+        "SELECT from_user, text, sources, provenance, is_local, snip_url, chapter, offset FROM companion_threads "
         "WHERE book_id = ? ORDER BY seq ASC, id ASC"));
     query.addBindValue(bookId);
     if (!query.exec())
@@ -1845,8 +2041,36 @@ void Companion::loadConversation(int bookId) {
         const QString savedSnip = query.value(5).toString();
         if (turn.fromUser && savedSnip.startsWith(QLatin1String("data:image/png;base64,")))
             turn.snipDataUrl = savedSnip;
+        turn.chapter = query.value(6).toInt();
+        turn.offset = query.value(7).toLongLong();
         m_conversation.append(std::move(turn));
     }
+}
+
+bool Companion::isTurnVisibleAtCurrentPlace(const Turn &turn) const {
+    if (wholeBookStudyActive() || m_scope != QLatin1String("upto") || !m_reader || turn.chapter < 0)
+        return true;
+    const int ch = m_reader->chapter();
+    if (turn.chapter > ch)
+        return false;
+    if (turn.chapter == ch) {
+        const qint64 end = m_reader->pageEnd();
+        if (end > 0 && turn.offset > 0 && turn.offset > end)
+            return false;
+    }
+    return true;
+}
+
+void Companion::pruneFutureTurnsIfSpoilerFree() {
+    if (wholeBookStudyActive() || m_scope != QLatin1String("upto") || !m_reader)
+        return;
+    QList<Turn> kept;
+    kept.reserve(m_conversation.size());
+    for (const Turn &turn : std::as_const(m_conversation))
+        if (isTurnVisibleAtCurrentPlace(turn))
+            kept.append(turn);
+    if (kept.size() != m_conversation.size())
+        m_conversation = std::move(kept);
 }
 
 bool Companion::loadWhosWhoSnapshot(int bookId, int chapter, qint64 pageEnd, qint64 pageStart, bool requireSameChapter) {
@@ -2099,6 +2323,8 @@ QVariantList Companion::conversation() const {
     QVariantList out;
     out.reserve(m_conversation.size());
     for (const Turn &turn : m_conversation) {
+        if (!isTurnVisibleAtCurrentPlace(turn))
+            continue;
         QVariantMap entry{{QStringLiteral("fromUser"), turn.fromUser},
                           {QStringLiteral("text"), turn.text},
                           {QStringLiteral("sources"), citationsToVariant(turn.sources)},
@@ -2114,7 +2340,7 @@ QVariantList Companion::conversation() const {
 QStringList Companion::suggestions() const {
     QStringList askedLower;
     for (const Turn &turn : m_conversation)
-        if (turn.fromUser)
+        if (turn.fromUser && isTurnVisibleAtCurrentPlace(turn))
             askedLower.append(turn.text.trimmed().toLower());
 
     QStringList out;
@@ -2239,27 +2465,36 @@ QStringList Companion::targetLanguages() const {
 QString Companion::cleanMarkdown(const QString &text) {
     if (text.isEmpty())
         return text;
-    QString out = text;
-    // Strip raw HTML <img> and external-resource/active tags and neutralize all Markdown
-    // image embeds (![alt](url), ![alt][ref], and any stray "![") so QQuickTextImageHandler
-    // can never issue outbound HTTP or local file requests from untrusted prose.
-    static const QRegularExpression htmlImg(QStringLiteral("<img\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
-    static const QRegularExpression htmlDangerous(
-        QStringLiteral("<(?:script|style)\\b[^>]*>[\\s\\S]*?</(?:script|style)\\s*>|<(?:iframe|object|embed|link)\\b[^>]*>"),
-        QRegularExpression::CaseInsensitiveOption);
-    static const QRegularExpression inlineImg(QStringLiteral("!\\[([^\\]]*)\\]\\([^)]*\\)"));
-    static const QRegularExpression refImg(QStringLiteral("!\\[([^\\]]*)\\]\\[[^\\]]*\\]"));
-    out.remove(htmlImg);
-    out.remove(htmlDangerous);
-    out.replace(inlineImg, QStringLiteral("\\1"));
-    out.replace(refImg, QStringLiteral("\\1"));
-    out.replace(QStringLiteral("!["), QStringLiteral("!\u200B["));
+    // 1. Iteratively strip dangerous raw HTML tags and Markdown image embeds to fixed point.
+    const QString pre = stripDangerousMarkup(text);
 
-    // 100%-offline LaTeX math formatting ($...$, \(...\), $$...$$, \[...\]).
-    out = formatLatexInMarkdown(out);
+    // 2. Replace ONLY genuine LaTeX produced by our own math formatter with per-call
+    //    unforgeable random nonce placeholders BEFORE escaping raw HTML.
+    const QString nonce = generateMathNonce(pre);
+    QStringList mathInners;
+    QList<bool> mathIsBlock;
+    QString out = extractLatexWithNonces(pre, nonce, mathInners, mathIsBlock, false);
 
-    // Defense-in-depth: ensure math conversion never re-introduces an image tag or embed.
-    out.remove(htmlImg);
+    // 3. Escape all remaining raw HTML angle brackets outside code fences/spans so
+    //    untrusted prose can never inject raw tags into MarkdownText or RichText.
+    out = escapeRawHtmlOutsideCode(out);
+
+    // 4. Substitute ONLY our own generated math HTML back for the per-call nonce tokens.
+    for (int i = 0; i < mathInners.size(); ++i) {
+        const QString token =
+            QStringLiteral("%1%2%3Z").arg(nonce, mathIsBlock[i] ? QStringLiteral("B") : QStringLiteral("I"), QString::number(i));
+        const QString rendered =
+            mathIsBlock[i]
+                ? (QStringLiteral(
+                       "<div class=\"math-block\" style=\"font-family:'Literata',Georgia,serif;font-style:italic;"
+                       "background-color:rgba(128,128,128,0.12);padding:8px 12px;margin:6px 0;text-align:center;\">") +
+                   mathInners[i] + QStringLiteral("</div>"))
+                : (QStringLiteral(
+                       "<span class=\"math-inline\" style=\"font-family:'Literata',Georgia,serif;font-style:italic;\">") +
+                   mathInners[i] + QStringLiteral("</span>"));
+        out.replace(token, rendered);
+    }
+
     out.replace(QStringLiteral("!["), QStringLiteral("!\u200B["));
     return out;
 }
@@ -2270,101 +2505,31 @@ bool Companion::hasMath(const QString &text) const {
     if (!text.contains(QLatin1Char('$')) && !text.contains(QStringLiteral("\\(")) &&
         !text.contains(QStringLiteral("\\[")))
         return false;
-    const QString cleaned = cleanMarkdown(text);
-    return cleaned.contains(QStringLiteral("class=\"math-inline\"")) ||
-           cleaned.contains(QStringLiteral("class=\"math-block\""));
+    const QString pre = stripDangerousMarkup(text);
+    const QString nonce = generateMathNonce(pre);
+    QStringList mathInners;
+    QList<bool> mathIsBlock;
+    (void)extractLatexWithNonces(pre, nonce, mathInners, mathIsBlock, false);
+    return !mathInners.isEmpty();
 }
 
 QString Companion::formatDisplayHtml(const QString &text, const QString &mathBlockBg) const {
-    const QString cleaned = cleanMarkdown(text);
-    if (cleaned.isEmpty())
+    if (text.isEmpty())
         return {};
 
-    // Extract our verified math HTML spans/blocks with balanced-tag scanning into
-    // pure ASCII placeholders so QTextDocument::setMarkdown renders all surrounding
-    // Markdown cleanly without stripping or truncating nested inline math HTML tags.
-    QStringList snippets;
-    QList<bool> isBlock;
-    QString md = cleaned;
+    // 1. Strip dangerous tags and Markdown images iteratively to fixed point.
+    const QString pre = stripDangerousMarkup(text);
 
-    QString tokenPrefix = QStringLiteral("CLOTHBOUNDMATH");
-    while (md.contains(tokenPrefix))
-        tokenPrefix += QLatin1Char('X');
+    // 2. Generate an unforgeable per-call random nonce and extract ONLY genuine LaTeX
+    //    rendered by Clothbound's own LatexParser — NEVER hoisting literal
+    //    <div class="math-block"> or <span class="math-inline"> from untrusted input.
+    const QString nonce = generateMathNonce(pre);
+    QStringList mathInners;
+    QList<bool> mathIsBlock;
+    QString md = extractLatexWithNonces(pre, nonce, mathInners, mathIsBlock, true);
 
-    const QString bgColor =
-        mathBlockBg.trimmed().isEmpty() ? QStringLiteral("rgba(128,128,128,0.12)") : mathBlockBg.trimmed();
-
-    auto extractBalanced = [&](const QString &openMarker, const QString &tagName, bool block) {
-        const QString openTag = QLatin1Char('<') + tagName;
-        const QString closeTag = QStringLiteral("</") + tagName + QLatin1Char('>');
-        QString replaced;
-        replaced.reserve(md.size());
-        qsizetype pos = 0;
-        while (pos < md.size()) {
-            const qsizetype found = md.indexOf(openMarker, pos);
-            if (found < 0) {
-                replaced += md.mid(pos);
-                break;
-            }
-            const qsizetype openEnd = md.indexOf(QLatin1Char('>'), found);
-            if (openEnd < 0) {
-                replaced += md.mid(pos);
-                break;
-            }
-            int depth = 1;
-            qsizetype scan = openEnd + 1;
-            qsizetype closePos = -1;
-            while (scan < md.size() && depth > 0) {
-                const qsizetype nextOpen = md.indexOf(openTag, scan);
-                const qsizetype nextClose = md.indexOf(closeTag, scan);
-                if (nextClose < 0)
-                    break;
-                if (nextOpen >= 0 && nextOpen < nextClose) {
-                    const qsizetype afterName = nextOpen + openTag.size();
-                    if (afterName < md.size() && (md[afterName].isSpace() || md[afterName] == QLatin1Char('>')))
-                        ++depth;
-                    scan = afterName;
-                } else {
-                    --depth;
-                    if (depth == 0) {
-                        closePos = nextClose;
-                        break;
-                    }
-                    scan = nextClose + closeTag.size();
-                }
-            }
-            if (closePos < 0) {
-                replaced += md.mid(pos);
-                break;
-            }
-            replaced += md.mid(pos, found - pos);
-            const QString inner = md.mid(openEnd + 1, closePos - (openEnd + 1));
-            const int idx = int(snippets.size());
-            if (block) {
-                // Qt's QTextDocument honors table cellpadding & td background-color for crisp tinted blocks.
-                snippets.append(
-                    QStringLiteral(
-                        "<table width=\"100%\" cellspacing=\"0\" cellpadding=\"8\" "
-                        "style=\"margin-top:6px;margin-bottom:6px;\">"
-                        "<tr><td align=\"center\" style=\"background-color:%1;font-family:'Literata',Georgia,serif;"
-                        "font-style:italic;\">%2</td></tr>"
-                        "</table>")
-                        .arg(escapeHtmlText(bgColor), inner));
-                replaced += QStringLiteral("\n\n%1B%2Z\n\n").arg(tokenPrefix).arg(idx);
-            } else {
-                snippets.append(
-                    QStringLiteral("<span style=\"font-family:'Literata',Georgia,serif;font-style:italic;\">%1</span>")
-                        .arg(inner));
-                replaced += QStringLiteral("%1I%2Z").arg(tokenPrefix).arg(idx);
-            }
-            isBlock.append(block);
-            pos = closePos + closeTag.size();
-        }
-        md = std::move(replaced);
-    };
-
-    extractBalanced(QStringLiteral("<div class=\"math-block\""), QStringLiteral("div"), true);
-    extractBalanced(QStringLiteral("<span class=\"math-inline\""), QStringLiteral("span"), false);
+    // 3. Escape all remaining raw HTML in untrusted Markdown BEFORE QTextDocument::setMarkdown().
+    md = escapeRawHtmlOutsideCode(md);
 
     QTextDocument doc;
     doc.setMarkdown(md);
@@ -2378,30 +2543,56 @@ QString Companion::formatDisplayHtml(const QString &text, const QString &mathBlo
         if (bodyStart >= 0 && bodyEnd > bodyStart)
             html = html.mid(bodyStart + 1, bodyEnd - bodyStart - 1).trimmed();
     }
-    // Strip active links and any stray <img> as defense-in-depth.
+    // Defense-in-depth: iteratively strip any <img>, active links <a>, and unsafe resource attributes.
     static const QRegularExpression imgRx(QStringLiteral("<img\\b[^>]*>"), QRegularExpression::CaseInsensitiveOption);
     static const QRegularExpression linkHrefRx(QStringLiteral("<a\\b[^>]*>([\\s\\S]*?)</a>"),
                                                QRegularExpression::CaseInsensitiveOption);
-    html.remove(imgRx);
-    html.replace(linkHrefRx, QStringLiteral("\\1"));
+    static const QRegularExpression strayLinkRx(QStringLiteral("</?a\\b[^>]*>"),
+                                                QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression unsafeAttrRx(
+        QStringLiteral("\\s(?:href|src|background)\\s*=\\s*(?:\"[^\"]*\"|'[^']*'|[^\\s>]+)"),
+        QRegularExpression::CaseInsensitiveOption);
+    for (int pass = 0; pass < 32; ++pass) {
+        const QString before = html;
+        html.remove(imgRx);
+        html.replace(linkHrefRx, QStringLiteral("\\1"));
+        html.remove(strayLinkRx);
+        html.remove(unsafeAttrRx);
+        if (html == before)
+            break;
+    }
 
     // For single-paragraph snippets (e.g. Glossary definitions), remove default 12px paragraph margins.
-    if (html.count(QStringLiteral("<p")) == 1 && !isBlock.contains(true)) {
+    if (html.count(QStringLiteral("<p")) == 1 && !mathIsBlock.contains(true)) {
         static const QRegularExpression singlePMargin(QStringLiteral("margin-top:\\s*\\d+px;\\s*margin-bottom:\\s*\\d+px;"));
         html.replace(singlePMargin, QStringLiteral("margin-top:0px; margin-bottom:0px;"));
     }
 
-    for (int i = 0; i < snippets.size(); ++i) {
-        const QString token = QStringLiteral("%1%2%3Z").arg(tokenPrefix, isBlock[i] ? QStringLiteral("B") : QStringLiteral("I")).arg(i);
-        if (isBlock[i]) {
+    const QString safeBgColor = sanitizeMathBgColor(mathBlockBg);
+    for (int i = 0; i < mathInners.size(); ++i) {
+        const QString token =
+            QStringLiteral("%1%2%3Z").arg(nonce, mathIsBlock[i] ? QStringLiteral("B") : QStringLiteral("I"), QString::number(i));
+        if (mathIsBlock[i]) {
+            // Qt's QTextDocument honors table cellpadding & td background-color for crisp tinted blocks.
+            const QString snippet =
+                QStringLiteral(
+                    "<table width=\"100%\" cellspacing=\"0\" cellpadding=\"8\" "
+                    "style=\"margin-top:6px;margin-bottom:6px;\">"
+                    "<tr><td align=\"center\" style=\"background-color:%1;font-family:'Literata',Georgia,serif;"
+                    "font-style:italic;\">%2</td></tr>"
+                    "</table>")
+                    .arg(safeBgColor, mathInners[i]);
             const QRegularExpression pWrap(QStringLiteral("<p[^>]*>\\s*") + QRegularExpression::escape(token) +
                                            QStringLiteral("\\s*</p>"));
             if (pWrap.match(html).hasMatch())
-                html.replace(pWrap, snippets[i]);
+                html.replace(pWrap, snippet);
             else
-                html.replace(token, snippets[i]);
+                html.replace(token, snippet);
         } else {
-            html.replace(token, snippets[i]);
+            const QString snippet =
+                QStringLiteral("<span style=\"font-family:'Literata',Georgia,serif;font-style:italic;\">%1</span>")
+                    .arg(mathInners[i]);
+            html.replace(token, snippet);
         }
     }
     return html;
@@ -2428,7 +2619,8 @@ QList<Companion::Chapter> Companion::textUpTo(const QString &path, const QString
             qint64 collected = 0;
             for (int page = last; page >= 0 && !cancelled(); --page) {
                 QString text = book.document()->getAllText(page).text();
-                if (page == chapter && offset >= 0)
+                // For PDFs, pageEnd() is 0 (full visible page); only slice on an explicit positive offset.
+                if (page == chapter && offset > 0)
                     text = text.left(offset);
                 out.append({page, QCoreApplication::translate("Companion", "Page %1").arg(page + 1), text});
                 collected += text.trimmed().size();
@@ -2442,7 +2634,7 @@ QList<Companion::Chapter> Companion::textUpTo(const QString &path, const QString
         }
         for (int page = 0; page <= last && !cancelled(); ++page) {
             QString text = book.document()->getAllText(page).text();
-            if (page == chapter && offset >= 0)
+            if (page == chapter && offset > 0)
                 text = text.left(offset);
             out.append({page, QCoreApplication::translate("Companion", "Page %1").arg(page + 1), text});
         }
@@ -2641,19 +2833,24 @@ Ai::TextModel *Companion::modelFor(const QString &feature) {
 }
 
 bool Companion::checkBudget(const QString &feature, qint64 charsEstimate, bool fast, qint64 outputTokens) {
+    m_lastCheckedCost = -1.0;
     if (!cloudFor(feature))
         return true;
-    Ai::TextModel *model = m_ai->textFor(feature);
+    Ai::Provider *provider = m_ai->textProviderFor(feature);
+    Ai::TextModel *model = provider ? provider->text() : nullptr;
     if (!model)
         return false;
     Ai::Usage usage;
     usage.inputTokens = qMax<qint64>(1, charsEstimate / 4);
     usage.outputTokens = outputTokens;
-    const double cost = AiUsageLedger::cost(model->textModelName(fast), usage, QDate::currentDate(), false);
+    usage.thoughtTokens = fast ? qMin<qint64>(outputTokens, 128) : qMin<qint64>(outputTokens, 400);
+    const double cost = AiUsageLedger::costForProvider(provider->id(), model->textModelName(fast), usage,
+                                                       QDate::currentDate(), false);
     if (!m_ai->fitsBudget(cost)) {
         fail(m_ai->describe(int(Ai::Error::Budget)), true);
         return false;
     }
+    m_lastCheckedCost = cost;
     return true;
 }
 
@@ -2721,7 +2918,9 @@ void Companion::rollbackPendingTurn() {
         return;
     m_pendingUserTurn = false;
     if (!m_answer.trimmed().isEmpty()) {
-        m_conversation.append({false, m_answer, m_currentSources, m_where, m_whereLocal, {}});
+        const bool stamp = !wholeBookStudyActive() && m_scope == QLatin1String("upto") && m_requestChapter >= 0;
+        m_conversation.append({false, m_answer, m_currentSources, m_where, m_whereLocal, {},
+                               stamp ? m_requestChapter : -1, stamp ? m_requestOffset : -1});
         m_answer.clear();
         m_currentSources.clear();
         saveConversation(m_reader->bookId());
@@ -2799,6 +2998,7 @@ void Companion::stop() {
     m_requestChapter = -1;
     m_requestStart = -1;
     m_requestOffset = -1;
+    m_lastCheckedCost = -1.0;
     if (m_readCancel) {
         *m_readCancel = true;
         m_readCancel.reset();
@@ -2888,8 +3088,9 @@ void Companion::run(const QString &feature, const Ai::TextRequest &request, std:
     m_where = m_ai->whereFor(feature);
     m_whereLocal = provider->isLocal();
     const bool hasImage = !request.imagePng.isEmpty();
+    const double reserveCost = std::exchange(m_lastCheckedCost, -1.0);
     Ai::Reply *reply = model->generate(request);
-    m_ai->track(reply);
+    m_ai->track(reply, false, reserveCost);
     m_reply = reply;
     const int generation = m_generation;
     QPointer<Ai::Provider> providerGuard(provider);
@@ -2976,9 +3177,15 @@ void Companion::define(const QString &word, int chapter, qint64 offset) {
         if (!checkBudget(m_feature, 1600, true, 120))
             return;
         setStatus(tr("Reading the sentence…"));
-        qint64 end = offset + 400;
-        if (chapter == m_reader->chapter() && m_reader->pageEnd() > 0)
-            end = qMin(end, qMax<qint64>(m_reader->pageEnd(), offset + wanted.size()));
+        const qint64 selectionEnd = qMax<qint64>(0, offset) + wanted.size();
+        qint64 end = selectionEnd;
+        if (wholeBookStudyActive()) {
+            end = selectionEnd + 400;
+        } else if (m_reader && chapter == m_reader->chapter() && m_reader->pageEnd() > 0) {
+            end = qMin<qint64>(selectionEnd + 400, qMax<qint64>(m_reader->pageEnd(), selectionEnd));
+        } else if (m_reader && m_reader->format() == QLatin1String("pdf") && chapter <= m_reader->chapter()) {
+            end = -1;
+        }
         readSoFar(chapter, end, 2000, [this, wanted, generation](const QList<Chapter> &chapters) {
             if (generation != m_generation)
                 return;
@@ -3167,7 +3374,8 @@ QVariantMap Companion::askEstimate() const {
         contextChars = soFarCharsEstimate();
     qint64 historyChars = 0;
     for (const Turn &turn : m_conversation)
-        historyChars += turn.text.size();
+        if (isTurnVisibleAtCurrentPlace(turn))
+            historyChars += turn.text.size();
     const double characters = double(contextChars) + historyChars + (hasPendingSnip() ? 4800.0 : 0.0);
     double cost = 0;
     if (cloud) {
@@ -3294,11 +3502,22 @@ void Companion::sendSnipRequest(const QByteArray &pngBytes, const QString &actio
     if (cloud && !checkBudget(m_feature, 6400 + userPrompt.size(), false, 500))
         return;
 
+    const bool spoilerFree = !wholeBookStudyActive();
+    const int readerChapter = m_reader ? m_reader->chapter() : -1;
+    const qint64 pageEnd = m_reader ? m_reader->pageEnd() : 0;
+    const int safePage =
+        (spoilerFree && m_reader && targetPage > readerChapter) ? readerChapter : targetPage;
+    const int turnChapter = spoilerFree ? safePage : -1;
+    const qint64 turnOffset = (spoilerFree && safePage == readerChapter) ? pageEnd : -1;
+
+    pruneFutureTurnsIfSpoilerFree();
     const QString thumbUrl = makeSnipThumbnailDataUrl(pngBytes);
     Turn userTurn;
     userTurn.fromUser = true;
     userTurn.text = userLabel;
     userTurn.snipDataUrl = thumbUrl;
+    userTurn.chapter = turnChapter;
+    userTurn.offset = turnOffset;
     m_conversation.append(std::move(userTurn));
     m_pendingUserTurn = true;
     emit conversationChanged();
@@ -3310,12 +3529,9 @@ void Companion::sendSnipRequest(const QByteArray &pngBytes, const QString &actio
     const QString path = m_reader ? m_reader->bookPath() : QString();
     const QString format = m_reader ? m_reader->format() : QString();
     const QString bookHeader = m_reader ? bookLine() : QString();
-    const bool spoilerFree = !wholeBookStudyActive();
-    const int safePage =
-        (spoilerFree && m_reader && targetPage > m_reader->chapter()) ? m_reader->chapter() : targetPage;
 
     auto dispatch = [this, bookId, generation, pngBytes, taskSystem, userPrompt, bookHeader, spoilerFree, safePage,
-                     isPdf](const QString &pageContext) {
+                     turnChapter, turnOffset, isPdf](const QString &pageContext) {
         if (generation != m_generation)
             return;
         if (cloudFor(QStringLiteral("ask")) &&
@@ -3346,7 +3562,7 @@ void Companion::sendSnipRequest(const QByteArray &pngBytes, const QString &actio
         msgText += QStringLiteral("\n\nRequest: ") + userPrompt;
         request.messages = {{true, msgText.trimmed()}};
 
-        run(QStringLiteral("ask"), request, [this, bookId, generation](Ai::Reply *) {
+        run(QStringLiteral("ask"), request, [this, bookId, turnChapter, turnOffset, generation](Ai::Reply *) {
             if (generation != m_generation)
                 return;
             if (m_answer.trimmed().isEmpty()) {
@@ -3358,7 +3574,8 @@ void Companion::sendSnipRequest(const QByteArray &pngBytes, const QString &actio
             const QList<Citation> finalSources = m_currentSources;
             m_answer.clear();
             m_currentSources.clear();
-            m_conversation.append({false, completedAnswer, finalSources, m_where, m_whereLocal, {}});
+            m_conversation.append(
+                {false, completedAnswer, finalSources, m_where, m_whereLocal, {}, turnChapter, turnOffset});
             saveConversation(bookId);
             emit conversationChanged();
         });
@@ -3368,20 +3585,21 @@ void Companion::sendSnipRequest(const QByteArray &pngBytes, const QString &actio
         dispatch({});
         return;
     }
+    const qint64 ctxClamp = (spoilerFree && safePage == readerChapter && pageEnd > 0) ? qMin<qint64>(3000, pageEnd) : 3000;
     auto cancel = std::make_shared<std::atomic_bool>(false);
     m_readCancel = cancel;
     QPointer<Companion> self(this);
-    QThreadPool::globalInstance()->start([self, path, format, safePage, cancel, generation, dispatch] {
+    QThreadPool::globalInstance()->start([self, path, format, safePage, ctxClamp, cancel, generation, dispatch] {
         QString ctx;
         if (!cancel->load()) {
             if (format == QLatin1String("pdf")) {
                 PdfBook pdf(path);
                 if (pdf.open() && safePage < pdf.pageCount())
-                    ctx = pdf.pageText(safePage).left(3000);
+                    ctx = pdf.pageText(safePage).left(qsizetype(ctxClamp));
             } else {
                 EpubBook epub(path);
                 if (epub.open() && safePage < int(epub.spine().size()))
-                    ctx = epub.chapterText(safePage).left(3000);
+                    ctx = epub.chapterText(safePage).left(qsizetype(ctxClamp));
             }
         }
         if (cancel->load())
@@ -3454,7 +3672,12 @@ void Companion::ask(const QString &question) {
             return;
         }
     }
-    m_conversation.append({true, asked, {}, {}, false, {}});
+    const int currentChapter = m_reader->chapter();
+    const qint64 currentPageEnd = m_reader->pageEnd();
+    const int turnChapter = spoilerFree ? currentChapter : -1;
+    const qint64 turnOffset = spoilerFree ? currentPageEnd : -1;
+    pruneFutureTurnsIfSpoilerFree();
+    m_conversation.append({true, asked, {}, {}, false, {}, turnChapter, turnOffset});
     m_pendingUserTurn = true;
     emit conversationChanged();
     emit answerChanged();
@@ -3462,32 +3685,41 @@ void Companion::ask(const QString &question) {
                     : tr("Finding the passages that matter…"));
     const int bookId = m_reader->bookId();
     const QString format = m_reader->format();
-    const int currentChapter = m_reader->chapter();
     const int generation = m_generation;
     const qint64 readLimit = cloud ? cloudLimit : -1;
 
-    auto onChapters = [this, asked, bookId, format, currentChapter, wholeBook, spoilerFree,
-                       generation](const QList<Chapter> &chapters) {
+    auto onChapters = [this, asked, bookId, format, currentChapter, currentPageEnd, turnChapter, turnOffset, wholeBook,
+                       spoilerFree, generation](const QList<Chapter> &chapters) {
         if (generation != m_generation)
             return;
+        if (spoilerFree && m_reader &&
+            (currentChapter > m_reader->chapter() ||
+             (currentChapter == m_reader->chapter() && m_reader->pageEnd() > 0 && currentPageEnd > m_reader->pageEnd()))) {
+            m_answer.clear();
+            stop();
+            return;
+        }
         if (chapters.isEmpty()) {
             fail(wholeBook ? tr("There isn't any readable text in this document yet.")
                            : tr("There isn't any readable text up to this page yet."));
             return;
         }
         const bool isCloud = cloudFor(QStringLiteral("ask"));
-        const auto send = [this, isCloud, bookId, format, chapters, spoilerFree, generation](
+        const auto send = [this, isCloud, bookId, format, chapters, spoilerFree, turnChapter, turnOffset, generation](
                               const QString &context, const QString &how, const QList<Citation> &sources) {
             if (generation != m_generation)
                 return;
             m_currentSources = sources;
             emit answerChanged();
-            // Build alternating conversation turns (trimmed to fit local context windows).
+            // Build alternating conversation turns (trimmed to fit local context windows),
+            // strictly filtering out any future-chapter turns in spoiler-free mode.
             const qint64 localTotal = isCloud ? cloudLimit : localCharBudget(QStringLiteral("ask"), false, localLimit);
             qint64 historyBudget = isCloud ? 100000 : qMin<qint64>(8000, qMax<qint64>(1500, localTotal / 3));
             QList<Ai::Message> turns;
             for (qsizetype i = m_conversation.size() - 1; i >= 0; --i) {
                 const Turn &msg = m_conversation[i];
+                if (!isTurnVisibleAtCurrentPlace(msg))
+                    continue;
                 if (!turns.isEmpty() && historyBudget - msg.text.size() < 0)
                     break;
                 historyBudget -= msg.text.size();
@@ -3529,29 +3761,31 @@ void Companion::ask(const QString &question) {
             request.messages = {{true, bookLine() + QStringLiteral("\n\n") + context}};
             request.messages.append({false, QStringLiteral("I've read it. What would you like to know?")});
             request.messages += normalized;
-            run(QStringLiteral("ask"), request, [this, bookId, format, chapters, generation](Ai::Reply *) {
-                if (generation != m_generation)
-                    return;
-                if (m_answer.trimmed().isEmpty()) {
-                    fail(tr("The model returned an empty answer. Try again."));
-                    return;
-                }
-                m_pendingUserTurn = false;
-                QList<Citation> finalSources = m_currentSources;
-                if (finalSources.isEmpty()) {
-                    QList<PassageIndex::Passage> passages;
-                    for (const Chapter &ch : chapters)
-                        passages += PassageIndex::split(ch.index, ch.text);
-                    finalSources =
-                        citationsFromHits(PassageIndex::byWords(passages, m_answer, 3), chapters, format, 3);
-                }
-                const QString completedAnswer = m_answer;
-                m_answer.clear();
-                m_currentSources.clear();
-                m_conversation.append({false, completedAnswer, finalSources, m_where, m_whereLocal, {}});
-                saveConversation(bookId);
-                emit conversationChanged();
-            });
+            run(QStringLiteral("ask"), request,
+                [this, bookId, format, chapters, turnChapter, turnOffset, generation](Ai::Reply *) {
+                    if (generation != m_generation)
+                        return;
+                    if (m_answer.trimmed().isEmpty()) {
+                        fail(tr("The model returned an empty answer. Try again."));
+                        return;
+                    }
+                    m_pendingUserTurn = false;
+                    QList<Citation> finalSources = m_currentSources;
+                    if (finalSources.isEmpty()) {
+                        QList<PassageIndex::Passage> passages;
+                        for (const Chapter &ch : chapters)
+                            passages += PassageIndex::split(ch.index, ch.text);
+                        finalSources =
+                            citationsFromHits(PassageIndex::byWords(passages, m_answer, 3), chapters, format, 3);
+                    }
+                    const QString completedAnswer = m_answer;
+                    m_answer.clear();
+                    m_currentSources.clear();
+                    m_conversation.append(
+                        {false, completedAnswer, finalSources, m_where, m_whereLocal, {}, turnChapter, turnOffset});
+                    saveConversation(bookId);
+                    emit conversationChanged();
+                });
         };
         if (isCloud) {
             QString fallbackQuery;
@@ -3674,7 +3908,7 @@ void Companion::askShelf(const QString &asked) {
     if (cloud && !checkBudget(m_feature, 12000, false, 500))
         return;
 
-    m_conversation.append({true, asked, {}, {}, false, {}});
+    m_conversation.append({true, asked, {}, {}, false, {}, -1, -1});
     m_pendingUserTurn = true;
     emit conversationChanged();
     emit answerChanged();
@@ -3884,7 +4118,7 @@ void Companion::askShelf(const QString &asked) {
                             self->m_answer.clear();
                             self->m_currentSources.clear();
                             self->m_conversation.append(
-                                {false, completedAnswer, finalSources, self->m_where, self->m_whereLocal, {}});
+                                {false, completedAnswer, finalSources, self->m_where, self->m_whereLocal, {}, -1, -1});
                             self->saveConversation(bookId);
                             emit self->conversationChanged();
                         });
