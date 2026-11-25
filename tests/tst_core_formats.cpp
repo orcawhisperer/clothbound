@@ -2858,7 +2858,8 @@ void ClothboundTests::w5ReaderCraftPdfViewportTilingAndCache() {
         // Distinct saturated blue block in top-left quadrant, blank paper in bottom-right.
         p.fillRect(10, 10, writer.width() / 3, writer.height() / 3, QColor(0x20, 0x60, 0xD0));
         p.setPen(Qt::black);
-        p.drawText(30, 60, QStringLiteral("Top Left Ink"));
+        p.setFont(QFont(QStringLiteral("sans-serif"), 9));
+        p.drawText(20, 32, QStringLiteral("Top Left Ink"));
         p.end();
     }
 
@@ -2897,9 +2898,10 @@ void ClothboundTests::w5ReaderCraftPdfViewportTilingAndCache() {
     QVERIFY(!tlImg.isNull());
     QVERIFY(tlImg.width() > 1000);
     QVERIFY(tlImg.sizeInBytes() <= PdfPages::kMaxTileBytes);
-    // Colored blue block survives dark LUT recoloring in top-left quadrant.
-    const QColor tlCenter(tlImg.pixel(tlImg.width() / 2, tlImg.height() / 2));
-    QVERIFY2(tlCenter.blue() > tlCenter.red() + 40, qPrintable(tlCenter.name()));
+    // Colored blue block survives dark LUT recoloring in top-left quadrant
+    // (sample the unobstructed lower-middle of the blue block away from text strokes).
+    const QColor tlBlue(tlImg.pixel(tlImg.width() / 2, (tlImg.height() * 3) / 4));
+    QVERIFY2(tlBlue.blue() > tlBlue.red() + 40, qPrintable(tlBlue.name()));
 
     QImage brImg;
     fetch(brId, QSize(), brImg);

@@ -353,7 +353,8 @@ void ClothboundTests::keyArrivesWhenTheKeyringAnswers() {
 void ClothboundTests::sseParserHandlesChunkedStreams() {
     const QByteArray stream = fixture("text-stream.sse");
     SseParser whole;
-    const QList<SseParser::Event> all = whole.feed(stream) + whole.finish();
+    QList<SseParser::Event> all = whole.feed(stream);
+    all += whole.finish();
     QCOMPARE(all.first().name, QByteArray("interaction.created"));
     QCOMPARE(all.last().data, QByteArray("[DONE]"));
     for (int size : {1, 7, 64}) {
@@ -2541,7 +2542,8 @@ void ClothboundTests::aPlusArchSseParserFuzz() {
         }
 
         SseParser whole;
-        const QList<SseParser::Event> expected = whole.feed(stream) + whole.finish();
+        QList<SseParser::Event> expected = whole.feed(stream);
+        expected += whole.finish();
         QVERIFY(!whole.overflowed());
 
         SseParser chunked;

@@ -131,6 +131,28 @@ struct ReadOnlySqlConnection {
         : name(QStringLiteral("palette-ro-") + QUuid::createUuid().toString(QUuid::WithoutBraces)) {
         if (dbPath.isEmpty() || !QFileInfo::exists(dbPath))
             return;
+        const QFileInfo dbInfo(dbPath);
+        const QFileInfo dirInfo(dbInfo.absolutePath());
+        const QFileInfo walInfo(dbPath + QStringLiteral("-wal"));
+        const bool hasWalData = walInfo.exists() && walInfo.size() > 0;
+        const auto writeBits = QFileDevice::WriteOwner | QFileDevice::WriteGroup | QFileDevice::WriteOther;
+        const bool lockedReadOnly = ((dbInfo.permissions() & writeBits) == 0) ||
+                                    ((dirInfo.permissions() & writeBits) == 0);
+        auto tryImmutable = [&]() -> bool {
+            const QString absPath = dbInfo.absoluteFilePath();
+            const QString uri = QStringLiteral("file:") + QString::fromUtf8(QUrl::toPercentEncoding(absPath, "/:")) +
+                                QStringLiteral("?mode=ro&immutable=1");
+            db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+            db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_URI;QSQLITE_OPEN_READONLY"));
+            db.setDatabaseName(uri);
+            return db.open() && configureReadOnly(db);
+        };
+        if (lockedReadOnly && !hasWalData && tryImmutable()) {
+            open = true;
+            return;
+        }
+        if (lockedReadOnly && !hasWalData)
+            close();
         db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
         db.setDatabaseName(dbPath);
         db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_READONLY"));
@@ -140,16 +162,9 @@ struct ReadOnlySqlConnection {
             QSqlQuery probe(db);
             readable = probe.exec(QStringLiteral("PRAGMA user_version")) && probe.next();
         }
-        const QFileInfo walInfo(dbPath + QStringLiteral("-wal"));
-        if ((!ready || !readable) && (!walInfo.exists() || walInfo.size() == 0)) {
+        if ((!ready || !readable) && !hasWalData) {
             close();
-            const QString absPath = QFileInfo(dbPath).absoluteFilePath();
-            const QString uri = QStringLiteral("file:") + QString::fromUtf8(QUrl::toPercentEncoding(absPath, "/:")) +
-                                QStringLiteral("?mode=ro&immutable=1");
-            db = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
-            db.setConnectOptions(QStringLiteral("QSQLITE_OPEN_URI;QSQLITE_OPEN_READONLY"));
-            db.setDatabaseName(uri);
-            ready = db.open() && configureReadOnly(db);
+            ready = tryImmutable();
             readable = ready;
         }
         open = ready && readable;

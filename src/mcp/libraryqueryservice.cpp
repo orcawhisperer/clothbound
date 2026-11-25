@@ -474,14 +474,31 @@ bool LibraryQueryService::openSqliteReadOnly(const QString &dbPath,
         return true;
     };
 
+    // When the DB file or its directory has no write bits (e.g. 0444/0555) and no
+    // active non-empty -wal sidecar exists, open immutable first so even privileged
+    // root callers (Docker/CI with CAP_DAC_OVERRIDE) never create -wal/-shm sidecars.
+    const QFileInfo dbInfo(dbPath);
+    const QFileInfo dirInfo(dbInfo.absolutePath());
+    const QFileInfo walInfo(dbPath + QStringLiteral("-wal"));
+    const bool hasWalData = walInfo.exists() && walInfo.size() > 0;
+    const auto writeBits = QFileDevice::WriteOwner | QFileDevice::WriteGroup | QFileDevice::WriteOther;
+    const bool lockedReadOnly = ((dbInfo.permissions() & writeBits) == 0) ||
+                                ((dirInfo.permissions() & writeBits) == 0);
+    if (lockedReadOnly && !hasWalData) {
+        const QString uri =
+            QUrl::fromLocalFile(dbInfo.absoluteFilePath()).toString(QUrl::FullyEncoded) + QStringLiteral("?mode=ro&immutable=1");
+        if (tryOpen(uri, QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI")))
+            return true;
+        QSqlDatabase::removeDatabase(connName);
+    }
+
     if (tryOpen(dbPath, QStringLiteral("QSQLITE_OPEN_READONLY")))
         return true;
     QSqlDatabase::removeDatabase(connName);
 
     // Fallback for WAL-mode SQLite files in non-writable directories (no active -wal sidecar).
-    const QFileInfo walInfo(dbPath + QStringLiteral("-wal"));
-    if (QFileInfo(dbPath).isReadable() && (!walInfo.exists() || walInfo.size() == 0)) {
-        const QString absPath = QFileInfo(dbPath).absoluteFilePath();
+    if (dbInfo.isReadable() && !hasWalData) {
+        const QString absPath = dbInfo.absoluteFilePath();
         const QString uri =
             QUrl::fromLocalFile(absPath).toString(QUrl::FullyEncoded) + QStringLiteral("?mode=ro&immutable=1");
         if (tryOpen(uri, QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI")))

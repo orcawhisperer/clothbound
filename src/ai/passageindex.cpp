@@ -336,13 +336,26 @@ bool openPassageDbReadOnly(const QString &dbPath, const QString &connName, QSqlD
             *outDb = db;
         return true;
     };
+    const QFileInfo dbInfo(dbPath);
+    const QFileInfo dirInfo(dbInfo.absolutePath());
+    const QFileInfo walInfo(dbPath + QStringLiteral("-wal"));
+    const bool hasWalData = walInfo.exists() && walInfo.size() > 0;
+    const auto writeBits = QFileDevice::WriteOwner | QFileDevice::WriteGroup | QFileDevice::WriteOther;
+    const bool lockedReadOnly = ((dbInfo.permissions() & writeBits) == 0) ||
+                                ((dirInfo.permissions() & writeBits) == 0);
+    if (lockedReadOnly && !hasWalData) {
+        const QString uri = QUrl::fromLocalFile(dbInfo.absoluteFilePath()).toString(QUrl::FullyEncoded) +
+                            QStringLiteral("?mode=ro&immutable=1");
+        if (tryOpen(uri, QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI")))
+            return true;
+        QSqlDatabase::removeDatabase(connName);
+    }
     if (tryOpen(dbPath, QStringLiteral("QSQLITE_OPEN_READONLY")))
         return true;
     QSqlDatabase::removeDatabase(connName);
 
-    const QFileInfo walInfo(dbPath + QStringLiteral("-wal"));
-    if (QFileInfo(dbPath).isReadable() && (!walInfo.exists() || walInfo.size() == 0)) {
-        const QString uri = QUrl::fromLocalFile(QFileInfo(dbPath).absoluteFilePath()).toString(QUrl::FullyEncoded) +
+    if (dbInfo.isReadable() && !hasWalData) {
+        const QString uri = QUrl::fromLocalFile(dbInfo.absoluteFilePath()).toString(QUrl::FullyEncoded) +
                             QStringLiteral("?mode=ro&immutable=1");
         if (tryOpen(uri, QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_OPEN_URI")))
             return true;
