@@ -3528,6 +3528,15 @@ void ClothboundTests::uxPolishSleepIconSmoothDockTopEdgeAndLibraryMiniPlayer() {
         QVERIFY(pdfQml.contains(QStringLiteral("property int committedPixelWidth: 64")));
         QVERIFY(pdfQml.contains(QStringLiteral("restoreMode: Binding.RestoreNone")));
         QVERIFY(pdfQml.contains(QStringLiteral("if (surface.liveResizing)")));
+        // Plain clicks near left/right edges never turn pages accidentally.
+        QVERIFY(!pdfQml.contains(QStringLiteral("across <= 0.3")));
+        QVERIFY(!pdfQml.contains(QStringLiteral("across < 0.7")));
+
+        const QString chromeQml = readSrc(QStringLiteral("ui/reader/ReaderChrome.qml"));
+        QVERIFY(chromeQml.contains(QStringLiteral("signal prevPageRequested()")));
+        QVERIFY(chromeQml.contains(QStringLiteral("signal nextPageRequested()")));
+        QVERIFY(chromeQml.contains(QStringLiteral("id: folioLeftChevron")));
+        QVERIFY(chromeQml.contains(QStringLiteral("id: folioRightChevron")));
 
         const QString erQml = readSrc(QStringLiteral("ui/reader/EpubReader.qml"));
         QVERIFY(erQml.contains(QStringLiteral("readonly property real companionLiveDockWidth:")));
@@ -3630,6 +3639,65 @@ void ClothboundTests::uxPolishSleepIconSmoothDockTopEdgeAndLibraryMiniPlayer() {
                      qPrintable(QStringLiteral("leftGap=%1 rightGap=%2").arg(leftGap).arg(rightGap)));
         }
         barItem->setParentItem(nullptr);
+
+        // Live QML geometry check for MarksPanel: switching to an empty tab
+        // (e.g. Highlights when only a note/bookmark exists) must keep the
+        // filter tab bar pinned at the top and the footer pinned at the bottom.
+        {
+            const QString epubPath = dir.filePath(QStringLiteral("marks-layout.epub"));
+            QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(20, 30))));
+            const int bid = library.addBookFile(epubPath);
+            QVERIFY(bid > 0);
+            Marks marksModel(&library);
+            marksModel.setBook(bid);
+            const int mid = marksModel.addBookmark(0, 0, QStringLiteral("Saved recap"), QStringLiteral("Part I"));
+            QVERIFY(mid > 0);
+            marksModel.setNote(mid, QStringLiteral("A saved Companion note."));
+
+            engine.rootContext()->setContextProperty(QStringLiteral("marks"), &marksModel);
+            QQmlComponent marksComp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/reader/MarksPanel.qml")));
+            QVERIFY2(marksComp.status() == QQmlComponent::Ready, qPrintable(marksComp.errorString()));
+            const QVariantMap sepiaLook{
+                {QStringLiteral("dark"), false},
+                {QStringLiteral("bg"), QColor(QStringLiteral("#F3E9D2"))},
+                {QStringLiteral("fg"), QColor(QStringLiteral("#3B3123"))},
+                {QStringLiteral("muted"), QColor(QStringLiteral("#7A6D5B"))},
+                {QStringLiteral("line"), QColor(QStringLiteral("#DDD2BA"))},
+                {QStringLiteral("link"), QColor(QStringLiteral("#8B5A2B"))},
+                {QStringLiteral("popover"), QColor(QStringLiteral("#F6EFE0"))},
+            };
+            std::unique_ptr<QObject> mpObj(marksComp.createWithInitialProperties({
+                {QStringLiteral("look"), sepiaLook},
+                {QStringLiteral("open"), true},
+            }));
+            QVERIFY(mpObj != nullptr);
+            auto *mpItem = qobject_cast<QQuickItem *>(mpObj.get());
+            QVERIFY(mpItem != nullptr);
+            win.resize(420, 720);
+            mpItem->setWidth(380);
+            mpItem->setHeight(720);
+            mpItem->setParentItem(win.contentItem());
+            QCoreApplication::processEvents();
+
+            auto *tabsItem = mpItem->findChild<QQuickItem *>(QStringLiteral("marksFilterTabs"));
+            auto *footerItem = mpItem->findChild<QQuickItem *>(QStringLiteral("marksFooterRow"));
+            QVERIFY(tabsItem != nullptr);
+            QVERIFY(footerItem != nullptr);
+            const qreal tabsYAll = tabsItem->y();
+            const qreal footerYAll = footerItem->y();
+
+            mpObj->setProperty("filter", QStringLiteral("highlights"));
+            QCoreApplication::processEvents();
+            const qreal tabsYEmpty = tabsItem->y();
+            const qreal footerYEmpty = footerItem->y();
+
+            QVERIFY2(qAbs(tabsYEmpty - tabsYAll) <= 0.5,
+                     qPrintable(QStringLiteral("MarksPanel tabs jumped: all=%1 highlights=%2").arg(tabsYAll).arg(tabsYEmpty)));
+            QVERIFY2(qAbs(footerYEmpty - footerYAll) <= 0.5,
+                     qPrintable(QStringLiteral("MarksPanel footer jumped: all=%1 highlights=%2").arg(footerYAll).arg(footerYEmpty)));
+            mpItem->setParentItem(nullptr);
+        }
+
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
     }
 

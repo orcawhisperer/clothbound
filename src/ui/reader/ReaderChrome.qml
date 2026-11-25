@@ -57,6 +57,8 @@ Item {
     signal citeMenuRequested(Item anchor, real x, real y)
     signal goToTarget(var target)
     signal showGoTo()
+    signal prevPageRequested()
+    signal nextPageRequested()
     signal jumpBack()
     signal dismissJumpPill()
     signal dismissFirstBookTips()
@@ -463,43 +465,80 @@ Item {
                     ToolTip.text: qsTr("Click to switch time remaining")
                 }
 
-                // Right: spread page range ("Pages 3–4 of 148"), tappable for Go To (G).
-                AbstractButton {
-                    id: folioRightButton
+                // Right: explicit Previous / Next page buttons flanking the page count
+                // ("‹  Pages 3–4 of 148  ›"), so mouse page turns are always intentional.
+                Row {
+                    id: folioRightRow
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    enabled: bottomFooter.shown
-                    hoverEnabled: true
-                    focusPolicy: bottomFooter.shown ? Qt.TabFocus : Qt.NoFocus
-                    Accessible.name: folioRightLabel.text
-                    implicitWidth: folioRightLabel.implicitWidth + 12
-                    implicitHeight: 24
-                    onClicked: root.showGoTo()
-                    background: Rectangle {
-                        radius: Ui.radius(6, theme.radius)
-                        color: folioRightButton.hovered ? Ui.tint(root.look.fg, 0.06) : "transparent"
-                        border.width: folioRightButton.visualFocus ? 2 : 0
-                        border.color: root.look.link
+                    spacing: 2
+
+                    IconButton {
+                        id: folioLeftChevron
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.scrollLayout
+                        implicitWidth: 26
+                        implicitHeight: 24
+                        tabFocusable: bottomFooter.shown
+                        enabled: bottomFooter.shown && (reader.rtl ? !reader.atEnd : !reader.atStart)
+                        look: root.look
+                        tone: root.look.muted
+                        glyph: Icons.chevronLeft
+                        tip: reader.rtl ? qsTr("Next page") : qsTr("Previous page")
+                        onClicked: reader.rtl ? root.nextPageRequested() : root.prevPageRequested()
                     }
-                    contentItem: Label {
-                        id: folioRightLabel
-                        horizontalAlignment: Text.AlignRight
-                        verticalAlignment: Text.AlignVCenter
-                        leftPadding: 4
-                        rightPadding: 4
-                        text: {
-                            void(reader.bookPageStart); void(reader.bookPageEnd); void(reader.bookPages)
-                            void(reader.pageLabel); void(translator.language)
-                            return root.folioPagesText()
+
+                    AbstractButton {
+                        id: folioRightButton
+                        anchors.verticalCenter: parent.verticalCenter
+                        enabled: bottomFooter.shown
+                        hoverEnabled: true
+                        focusPolicy: bottomFooter.shown ? Qt.TabFocus : Qt.NoFocus
+                        Accessible.name: folioRightLabel.text
+                        implicitWidth: folioRightLabel.implicitWidth + 12
+                        implicitHeight: 24
+                        onClicked: root.showGoTo()
+                        background: Rectangle {
+                            radius: Ui.radius(6, theme.radius)
+                            color: folioRightButton.hovered ? Ui.tint(root.look.fg, 0.06) : "transparent"
+                            border.width: folioRightButton.visualFocus ? 2 : 0
+                            border.color: root.look.link
                         }
-                        color: root.look.muted
-                        font.pixelSize: 12
-                        font.features: ({ "tnum": 1 })
+                        contentItem: Label {
+                            id: folioRightLabel
+                            horizontalAlignment: Text.AlignRight
+                            verticalAlignment: Text.AlignVCenter
+                            leftPadding: 4
+                            rightPadding: 4
+                            text: {
+                                void(reader.bookPageStart); void(reader.bookPageEnd); void(reader.bookPages)
+                                void(reader.pageLabel); void(translator.language)
+                                return root.folioPagesText()
+                            }
+                            color: root.look.muted
+                            font.pixelSize: 12
+                            font.features: ({ "tnum": 1 })
+                        }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        ToolTip.visible: hovered
+                        ToolTip.delay: 700
+                        ToolTip.text: qsTr("Go to a page (G)")
                     }
-                    HoverHandler { cursorShape: Qt.PointingHandCursor }
-                    ToolTip.visible: hovered
-                    ToolTip.delay: 700
-                    ToolTip.text: qsTr("Go to a page (G)")
+
+                    IconButton {
+                        id: folioRightChevron
+                        anchors.verticalCenter: parent.verticalCenter
+                        visible: !root.scrollLayout
+                        implicitWidth: 26
+                        implicitHeight: 24
+                        tabFocusable: bottomFooter.shown
+                        enabled: bottomFooter.shown && (reader.rtl ? !reader.atStart : !reader.atEnd)
+                        look: root.look
+                        tone: root.look.muted
+                        glyph: Icons.chevronRight
+                        tip: reader.rtl ? qsTr("Previous page") : qsTr("Next page")
+                        onClicked: reader.rtl ? root.prevPageRequested() : root.nextPageRequested()
+                    }
                 }
             }
         }

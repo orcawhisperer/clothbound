@@ -1421,6 +1421,8 @@ FocusScope {
             onCiteMenuRequested: (anchor, x, y) => citeMenu.popup(anchor, x, y)
             onGoToTarget: (target) => view.goTo(target)
             onShowGoTo: goTo.show()
+            onPrevPageRequested: view.prev()
+            onNextPageRequested: view.next()
             onJumpBack: view.back()
             onDismissJumpPill: view.jumpPillVisible = false
             onDismissFirstBookTips: {

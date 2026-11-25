@@ -56,6 +56,8 @@ SidePanel {
         spacing: 10
 
         Segmented {
+            id: filterTabs
+            objectName: "marksFilterTabs"
             Layout.fillWidth: true
             Layout.leftMargin: 16
             Layout.rightMargin: 16
@@ -68,21 +70,31 @@ SidePanel {
             onActivated: (value) => panel.filter = value
         }
 
-        Label {
+        // Fill the remaining height whenever the list is empty so the tab bar
+        // stays pinned to the top and the footer stays pinned to the bottom.
+        Item {
+            id: emptyState
             Layout.fillWidth: true
-            Layout.leftMargin: 18
-            Layout.rightMargin: 18
-            Layout.topMargin: 18
+            Layout.fillHeight: true
             visible: marks.count === 0 || panel.filteredMarks.length === 0
-            text: marks.count === 0
-                ? qsTr("Select words on the page to highlight them or add a note. B bookmarks the page.")
-                : panel.filter === "highlights" ? qsTr("No highlights yet.")
-                : panel.filter === "notes" ? qsTr("No notes yet.")
-                : panel.filter === "bookmarks" ? qsTr("No bookmarks yet.")
-                : qsTr("No marks yet.")
-            color: panel.look.muted
-            font.pixelSize: 13
-            wrapMode: Text.Wrap
+
+            Label {
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.leftMargin: 18
+                anchors.rightMargin: 18
+                anchors.topMargin: 18
+                text: marks.count === 0
+                    ? qsTr("Select words on the page to highlight them or add a note. B bookmarks the page.")
+                    : panel.filter === "highlights" ? qsTr("No highlights yet.")
+                    : panel.filter === "notes" ? qsTr("No notes yet.")
+                    : panel.filter === "bookmarks" ? qsTr("No bookmarks yet.")
+                    : qsTr("No marks yet.")
+                color: panel.look.muted
+                font.pixelSize: 13
+                wrapMode: Text.Wrap
+            }
         }
 
         ListView {
@@ -240,6 +252,8 @@ SidePanel {
         }
 
         RowLayout {
+            id: footerRow
+            objectName: "marksFooterRow"
             Layout.fillWidth: true
             Layout.leftMargin: 16
             Layout.rightMargin: 16

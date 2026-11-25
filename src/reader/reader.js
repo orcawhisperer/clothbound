@@ -271,17 +271,26 @@ h1 + p[data-cb-flow], h2 + p[data-cb-flow], h3 + p[data-cb-flow], h4 + p[data-cb
 hr + p[data-cb-flow], blockquote + p[data-cb-flow], [data-cb-dropcap] { text-indent: 0 !important; }`
             : ''
         const colorRules = own
-            ? `body *, body *::before, body *::after { color: inherit !important; background-color: transparent !important; }
-               pre { background-color: ${t.dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'} !important;
+            ? `html, html body:not(#__cb_none) { color: ${t.fg} !important; }
+               html body:not(#__cb_none) *, html body:not(#__cb_none) *::before, html body:not(#__cb_none) *::after {
+                   color: inherit !important; background-color: transparent !important;
+               }
+               html body:not(#__cb_none) pre { background-color: ${t.dark ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.04)'} !important;
                      padding: 0.7em 0.9em; border-radius: 6px; }
-               :not(pre) > code { background-color: ${t.dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.05)'} !important;
+               html body:not(#__cb_none) :not(pre) > code { background-color: ${t.dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.05)'} !important;
                                   padding: 0.08em 0.28em; border-radius: 3px; }`
             : t.dark
-                ? `body *, body *::before, body *::after { color: inherit !important; background-color: transparent !important; }
-                   pre, code, blockquote, aside, th, [class*="callout"], [class*="note"], [class*="box"], [class*="tip"], [class*="sidebar"] {
+                ? `html, html body:not(#__cb_none) { color: ${t.fg} !important; }
+                   html body:not(#__cb_none) *, html body:not(#__cb_none) *::before, html body:not(#__cb_none) *::after {
+                       color: inherit !important; background-color: transparent !important;
+                   }
+                   html body:not(#__cb_none) pre, html body:not(#__cb_none) code, html body:not(#__cb_none) blockquote,
+                   html body:not(#__cb_none) aside, html body:not(#__cb_none) th, html body:not(#__cb_none) [class*="callout"],
+                   html body:not(#__cb_none) [class*="note"], html body:not(#__cb_none) [class*="box"],
+                   html body:not(#__cb_none) [class*="tip"], html body:not(#__cb_none) [class*="sidebar"] {
                        background-color: rgba(255, 255, 255, 0.06) !important;
                    }`
-                : `body *, body *::before, body *::after { color: inherit; }`
+                : `body, body *, body *::before, body *::after { color: inherit; }`
         const darkMediaRules = t.dark ? `
 svg:not(:has(image)) { filter: invert(0.86) hue-rotate(180deg); }
 img[src$=".svg" i], img[src*=".svg?" i], img[src^="data:image/svg+xml" i], img[data-cb-lineart] {
@@ -317,7 +326,7 @@ body, body :not(table):not(thead):not(tbody):not(tfoot):not(tr):not(td):not(th) 
 nobr { white-space: normal !important; }
 ${colorRules}
 ${legacyColorReset}
-a, a * { color: ${t.link} !important; }
+html body:not(#__cb_none) a, html body:not(#__cb_none) a * { color: ${t.link} !important; }
 a { text-decoration: none !important; }
 ::selection { background: ${t.selection}; }
 ::highlight(cb-spoken) { color: ${t.muted}; }
@@ -333,7 +342,7 @@ img, svg, video { max-width: 100% !important; object-fit: contain; break-inside:
 img, svg { cursor: zoom-in; }
 a img, a svg { cursor: pointer; }
 img { height: auto; }
-math, math * { color: ${t.fg} !important; fill: currentColor; stroke: currentColor; }
+html body:not(#__cb_none) math, html body:not(#__cb_none) math * { color: ${t.fg} !important; fill: currentColor; stroke: currentColor; }
 ${darkMediaRules}
 h1, h2, h3, h4, h5, h6 { break-after: avoid; break-inside: avoid; }
 p { widows: 2; orphans: 2; }
@@ -352,7 +361,7 @@ h1, h2 { line-height: 1.2 !important; letter-spacing: -0.01em; }
 p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !important; }
 p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 ${literaryIndent}
-[data-cb-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; color: ${accentInk} !important; margin-inline-end: 0.14em; }
+html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; color: ${accentInk} !important; margin-inline-end: 0.14em; }
 [data-cb-flow] { text-align: ${s.justify ? 'justify' : 'start'} !important;
                  ${s.justify && hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }` : ''}
 `
@@ -389,13 +398,10 @@ ${literaryIndent}
         const enforce = !s.publisher || !!(s.theme && s.theme.dark)
         if (!enforce)
             return
-        const styled = doc.querySelectorAll('body [style]')
-        if (!styled || typeof styled[Symbol.iterator] !== 'function')
-            return
-        for (const el of styled) {
+        const cleanInline = (el) => {
             const st = el && el.style
             if (!st || typeof st.removeProperty !== 'function')
-                continue
+                return
             if (st.color)
                 st.removeProperty('color')
             if (st.webkitTextFillColor)
@@ -410,6 +416,13 @@ ${literaryIndent}
                     st.setProperty('opacity', '0.85', 'important')
             }
         }
+        cleanInline(doc.documentElement)
+        cleanInline(doc.body)
+        const styled = doc.querySelectorAll('body [style]')
+        if (!styled || typeof styled[Symbol.iterator] !== 'function')
+            return
+        for (const el of styled)
+            cleanInline(el)
     }
 
     function applyTypography(doc, hyphenOverride) {
@@ -2122,6 +2135,8 @@ ${literaryIndent}
         const selection = doc.getSelection()
         if (selection && !selection.isCollapsed)
             return
+        if (event.detail > 1)
+            return
         const anchor = event.target.closest ? event.target.closest('a[href], area[href], a') : null
         if (anchor && hrefOf(anchor)) {
             event.preventDefault()
@@ -2156,8 +2171,7 @@ ${literaryIndent}
                 return
             }
         }
-        const fraction = event.clientX / state.geometry.width
-        tap(fraction)
+        tap()
     }
 
     // The highlight under a point, if any.
@@ -2184,25 +2198,13 @@ ${literaryIndent}
         return state.marks.find(span => offset >= span.start && offset < span.end) || null
     }
 
-    function tap(fraction) {
-        if (state.geometry.scroll) {
-            if (state.bridge)
-                state.bridge.tapped('center')
-            return
-        }
-        // A turn the reader makes leaves the voice to read on unfollowed.
-        // In RTL (and vertical-rl), the left edge advances and the right edge goes back.
-        if (fraction < 0.28) {
-            if (state.bridge)
-                state.bridge.tapped('turn')
-            state.rtl ? api.next() : api.prev()
-        } else if (fraction > 0.72) {
-            if (state.bridge)
-                state.bridge.tapped('turn')
-            state.rtl ? api.prev() : api.next()
-        } else if (state.bridge) {
+    // Plain clicks anywhere on the page toggle chrome without turning pages,
+    // so clicking or double-clicking near left/right text edges never flips
+    // the page accidentally. Page turns stay intentional (keyboard, wheel /
+    // trackpad swipe, progress scrubber, or footer prev/next buttons).
+    function tap() {
+        if (state.bridge)
             state.bridge.tapped('center')
-        }
     }
 
     let wheelTotal = 0, wheelQuietUntil = 0, wheelReset = 0
@@ -3026,14 +3028,13 @@ ${literaryIndent}
         document.addEventListener('wheel', onWheel, { passive: false })
         document.addEventListener('keydown', onKey, true)
         stage().addEventListener('click', event => {
-            if (event.target !== stage())
+            if (event.target !== stage() || event.detail > 1)
                 return
             if (state.note) {
                 closeNote()
                 return
             }
-            const rect = stage().getBoundingClientRect()
-            tap((event.clientX - rect.left) / rect.width)
+            tap()
         })
         new QWebChannel(qt.webChannelTransport, channel => {
             state.bridge = channel.objects.bridge

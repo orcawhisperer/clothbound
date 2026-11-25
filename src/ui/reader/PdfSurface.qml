@@ -1271,7 +1271,7 @@ Item {
         // Selecting with the mouse always works via left-click drag (or double-click a word)
         // in every fit/zoom mode including Fit-to-Width; middle-click drag or Alt+drag pans
         // freely in 2D when zoomed; right-click opens the page menu; clicking a highlight or
-        // PDF link opens it; clicking the margins turns.
+        // PDF link opens it; plain clicks toggle chrome without turning pages.
         MouseArea {
             id: mouse
             anchors.fill: parent
@@ -1450,14 +1450,10 @@ Item {
                         return
                     }
                 }
-                // Otherwise, as on the EPUB page: the sides turn, the middle shows the toolbar.
-                const across = mouse.mapToItem(surface, event.x, event.y).x / surface.width
-                if (surface.scrolling || (across > 0.3 && across < 0.7))
-                    reader.tapped("center")
-                else if (across <= 0.3)
-                    surface.prev()
-                else
-                    surface.next()
+                // Plain clicks on the page never turn pages accidentally (so clicking
+                // or double-clicking words near the left/right edges stays reliable);
+                // intentional turns use keyboard, wheel/trackpad, scrubber, or footer buttons.
+                reader.tapped("center")
             }
         }
     }

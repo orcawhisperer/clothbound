@@ -229,6 +229,7 @@ public:
     const QVariantMap &lastLocation() const { return m_lastLocation; }
     const QList<QVariantMap> &relocations() const { return m_relocations; }
     const QStringList &logs() const { return m_logs; }
+    const QStringList &taps() const { return m_taps; }
     const QList<int> &pageTurns() const { return m_pageTurns; }
 
     bool takeAsyncResult(int token, QVariant *out) {
@@ -821,6 +822,106 @@ private slots:
         QCOMPARE(sizes.size(), 6);
         for (const QVariant &sz : sizes)
             QVERIFY(sz.toInt() > 0);
+    }
+
+    void testCalibreDarkThemeContrastOverride() {
+        // Real Chromium Blink proof for Calibre-style EPUBs (<body class="calibre"> +
+        // .calibre { color: #000; } + .block { color: black !important; } + inline style)
+        // under a dark theme: body, paragraphs, and links must all stay crisp & legible.
+        const QString expr = QStringLiteral(
+            "(async function() {"
+            "  var f = document.querySelector('iframe.shown') || document.getElementById('book');"
+            "  var doc = f.contentDocument;"
+            "  var st = doc.createElement('style');"
+            "  st.textContent = '.calibre { color: #000 !important; } .block { color: black !important; }';"
+            "  doc.head.appendChild(st);"
+            "  doc.body.classList.add('calibre');"
+            "  doc.body.style.setProperty('color', '#000000', 'important');"
+            "  var p = doc.createElement('p');"
+            "  p.className = 'block';"
+            "  p.setAttribute('style', 'color: #111 !important; opacity: 0.2;');"
+            "  p.textContent = 'Biodigital dark-theme test';"
+            "  var a = doc.createElement('a');"
+            "  a.href = '#top';"
+            "  a.textContent = 'Chapter link';"
+            "  doc.body.appendChild(p);"
+            "  doc.body.appendChild(a);"
+            "  var darkStyle = {"
+            "    theme: { bg: '#1E1D1B', fg: '#DCD5C8', muted: '#958D80', link: '#9DB8F2', accentInk: '#9DB8F2',"
+            "             selection: 'rgba(157,184,242,0.34)', speaking: 'rgba(157,184,242,0.30)',"
+            "             markYellow: '#5E4E22', markGreen: 'rgba(134,195,138,0.30)',"
+            "             markBlue: 'rgba(127,168,232,0.30)', markPink: 'rgba(227,154,182,0.32)', dark: true },"
+            "    font: 'Literata', fontScale: 1.0, fontWeight: 400, lineHeight: 1.5, paragraphSpacing: 0.0,"
+            "    margin: 0.08, measure: 32, justify: false, hyphenate: false, dropCap: false,"
+            "    layout: 'single', singleColumn: true, animate: false, reducedMotion: true, publisher: false,"
+            "    marginTop: 48, marginBottom: 48, radius: 6, listening: false"
+            "  };"
+            "  await clothbound.setStyle(darkStyle);"
+            "  var win = doc.defaultView;"
+            "  return {"
+            "    bodyColor: win.getComputedStyle(doc.body).color,"
+            "    pColor: win.getComputedStyle(p).color,"
+            "    pOpacity: parseFloat(win.getComputedStyle(p).opacity),"
+            "    aColor: win.getComputedStyle(a).color"
+            "  };"
+            "})()");
+
+        bool ok = false;
+        const QVariant resVar = m_page->awaitPromise(m_bridge.get(), expr, 10000, &ok);
+        QVERIFY2(ok, "Calibre dark-theme contrast E2E check timed out");
+        const QVariantMap res = resVar.toMap();
+        QVERIFY2(!res.contains(QStringLiteral("__error")), qPrintable(res.value(QStringLiteral("__error")).toString()));
+        QCOMPARE(res.value(QStringLiteral("bodyColor")).toString(), QStringLiteral("rgb(220, 213, 200)"));
+        QCOMPARE(res.value(QStringLiteral("pColor")).toString(), QStringLiteral("rgb(220, 213, 200)"));
+        QVERIFY2(res.value(QStringLiteral("pOpacity")).toDouble() >= 0.8,
+                 qPrintable(QString::number(res.value(QStringLiteral("pOpacity")).toDouble())));
+        QCOMPARE(res.value(QStringLiteral("aColor")).toString(), QStringLiteral("rgb(157, 184, 242)"));
+    }
+
+    void testEdgeClicksDoNotTurnPages() {
+        // Clicking or double-clicking near the far-left or far-right edge of an EPUB
+        // page (or outer stage margin) must never turn pages accidentally; page turns
+        // stay intentional (keyboard, wheel/swipe, scrubber, or footer prev/next).
+        bool ok = false;
+        const QVariant prepRes = m_page->awaitPromise(
+            m_bridge.get(),
+            QStringLiteral("clothbound.goTo({chapter: 0, offset: 0, instant: true})"
+                           ".then(() => clothbound.next())"
+                           ".then(() => JSON.parse(clothbound.debug()))"),
+            10000, &ok);
+        QVERIFY2(ok, "Failed to advance to page 1 before edge-click check");
+        const int startPage = prepRes.toMap().value(QStringLiteral("page")).toInt();
+        QVERIFY2(startPage >= 1, qPrintable(QStringLiteral("Expected page >= 1, got %1").arg(startPage)));
+
+        const int tapsBefore = m_bridge->taps().size();
+        const QString clickExpr = QStringLiteral(
+            "(async function() {"
+            "  var active = document.querySelector('iframe.book-frame.shown') || document.getElementById('book');"
+            "  var doc = active.contentDocument;"
+            "  var w = active.clientWidth || 700;"
+            "  var stage = document.getElementById('stage');"
+            "  var sw = stage.clientWidth || 900;"
+            "  var target = doc.body.firstElementChild || doc.body;"
+            "  target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 8, clientY: 120, detail: 1 }));"
+            "  target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: w - 8, clientY: 120, detail: 1 }));"
+            "  target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: w - 8, clientY: 120, detail: 2 }));"
+            "  stage.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: 4, clientY: 200, detail: 1 }));"
+            "  stage.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: sw - 4, clientY: 200, detail: 1 }));"
+            "  await new Promise(r => setTimeout(r, 80));"
+            "  return JSON.parse(clothbound.debug());"
+            "})()");
+        const QVariant afterRes = m_page->awaitPromise(m_bridge.get(), clickExpr, 10000, &ok);
+        QVERIFY2(ok, "Edge-click E2E check timed out");
+        const QVariantMap after = afterRes.toMap();
+        QVERIFY2(!after.contains(QStringLiteral("__error")), qPrintable(after.value(QStringLiteral("__error")).toString()));
+        QCOMPARE(after.value(QStringLiteral("chapter")).toInt(), 0);
+        QCOMPARE(after.value(QStringLiteral("page")).toInt(), startPage);
+
+        // Single clicks report 'center' (toggle chrome) and never 'turn'; detail:2 is ignored.
+        const QStringList newTaps = m_bridge->taps().mid(tapsBefore);
+        QCOMPARE(newTaps.size(), 4);
+        for (const QString &zone : newTaps)
+            QCOMPARE(zone, QStringLiteral("center"));
     }
 
     void testCleanCloseTeardown() {
