@@ -16,7 +16,7 @@
 #include <cstdio>
 
 #ifndef CLOTHBOUND_VERSION
-#define CLOTHBOUND_VERSION "0.4.1"
+#define CLOTHBOUND_VERSION "0.5.0"
 #endif
 
 namespace {

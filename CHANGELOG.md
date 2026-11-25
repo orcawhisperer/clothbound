@@ -2,6 +2,34 @@
 
 All notable changes to Clothbound are documented in this file.
 
+## [0.5.0] — 2026-11-25
+
+Architecture, reading craft, and reliability release for Linux, Wayland, and Omarchy — featuring a standalone WebEngine-free `clothbound-mcp` binary, CMake + AOT QML compilation, symmetric int8 semantic embeddings, continuous Library audio playback, smooth Companion docking, and 100% coverage across all 50 shipped languages.
+
+### Added
+- **Standalone WebEngine-Free `clothbound-mcp`**: Dedicated lean stdio JSON-RPC 2.0 MCP server and read-only CLI (`clothbound-mcp [mcp | list | search | notes]`) with zero Qt WebEngine, Qt Quick, Qt QML, or Qt Multimedia linkage (~31 ms startup; strictly read-only SQLite via `QSQLITE_OPEN_READONLY` and `PRAGMA query_only=ON`).
+- **Continuous Background Listening in the Library**: Returning to the Library (`← Library` or `Esc`) while narration is playing keeps audio running seamlessly with a floating Library mini-player (clickable cover/title returns straight to the book; `P` / `Shift+P` / `Shift+←/→` and media keys work in the Library).
+- **PDF Viewport Tiling & Cursor-Focal Zoom**: Crisp tiled high-DPI PDF rendering with cursor-anchored wheel zoom, asynchronous Lightbox & Snip capture, and full text selection (`IBeamCursor` drag & double-click) across all fit modes including Fit-to-Width (`Middle-drag` or `Alt+Left-drag` pans in 2D).
+- **Explicit Footer Page Buttons**: Added unobtrusive `‹` / `›` Previous & Next page buttons flanking the page count in the bottom footer alongside keyboard, wheel/trackpad, and scrubber navigation.
+- **Symmetric `int8` Vector Quantization**: `PassageIndex` stores normalized `int8` quantized embeddings (~4× smaller on disk and in RAM) with SIMD dot-product scoring and automatic legacy float32 compatibility.
+- **SQLite v5 Schema & Async Command Palette**: Added `ON DELETE CASCADE` integrity across `library.sqlite` (v5 migration), shared `WorksModel` store, and off-GUI-thread `CommandPalette` search so typing stays instant on large libraries.
+
+### Changed
+- **CMake 3.24+ & `qmlcachegen` AOT Build**: Migrated from qmake to CMake with an 8-module zero-cycle DAG, ahead-of-time QML compilation, hardened ELF flags (`-fstack-protector-strong`, `_FORTIFY_SOURCE=2`, full RELRO `BIND_NOW`), zero `@Qt_6_PRIVATE_API` linkage, and externalized `usr/share/clothbound/i18n/*.json` catalogs.
+- **Intentional Desktop Page Turns**: Removed accidental single-click turning on the left/right 30% of EPUB and PDF pages so clicking or double-clicking words near edges never flips pages unexpectedly.
+- **Smooth GPU-Lockstep Companion Docking**: Opening, closing, or drag-resizing the Companion drawer glides smoothly without mid-slide reflow jitter on both PDFs and EPUBs.
+- **100% Translation Coverage Across 50 Languages**: Completed all 50 interface language catalogs (`1,524` strings, `0` missing, `0` orphan) and added cross-script validation + `--strict` CI checks to `bin/translate`.
+- **Faster, More Resilient OPDS Catalogs**: Added a 5-minute 32-entry in-memory LRU feed cache for instant back-and-forth browsing, IPv4-first DNS pinning, 8 s per-IP connect/TLS failover, and transient timeout retry.
+
+### Fixed
+- **Audio Output Crash (`SIGSEGV`)**: Fixed a pipewire/Qt6 `QAudioSink` synchronous `stateChanged` use-after-free in `AudioOutputPump::resetPlayback()` and made `SpeechPlayer` zero-suppression ThreadSanitizer-clean.
+- **Dark-Theme Legibility for Calibre EPUBs & Colored PDF Ink**: Overrode `<body class="calibre">` `.calibre { color: #000 }` and inline author colors on dark themes (`Omarchy`, `Dusk`, `Night`), and upgraded `PdfPages::recolor` to hue-preserving lightness inversion with a contrast floor for dark saturated ink.
+- **High-Contrast Right-Click Menus**: Explicitly bound the active reading theme palette on reader context, citation, and overflow menus so Sepia/Paper popups stay readable on dark desktops.
+- **Reliable Top-Edge Chrome Reveal**: Moving the pointer into the top 56 px edge now consistently reveals the top bar in every mode (including while listening and in zoomed/Fit-to-Width PDFs).
+- **Marks Panel Empty-Tab Layout & Sleep Timer Alignment**: Prevented the `All | Highlights | Notes | Bookmarks` tab bar and export footer from jumping vertically on empty tabs, and centered the moon icon inside the ListenBar sleep timer button.
+- **Boundary-Silent Page-Turn Sound**: Stopped pressing next/previous past the end or start of a book (including 2-page PDF spreads and scroll bounds) from playing unnecessary page-flip audio.
+- **Security & Parser Hardening**: Hardened `BookScheme` CSP & XML/SVG sanitization, `UrlGuard` DNS-rebinding & SSRF checks, W3C mark anchoring, and added live headless Chromium E2E, TSan concurrency, and 6 libFuzzer parser test suites (`289+` automated tests).
+
 ## [0.4.1] — 2026-11-25
 
 Performance, scrolling, narration stability, and desktop reliability release for Linux, Wayland, and Omarchy.

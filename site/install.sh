@@ -9,7 +9,7 @@
 #          release's SHA256SUMS, and builds from source with makepkg.
 #
 # Environment:
-#   CLOTHBOUND_VERSION=0.4.1   install a specific release instead of the latest
+#   CLOTHBOUND_VERSION=0.5.0   install a specific release instead of the latest
 #   CLOTHBOUND_DRY_RUN=1       download and verify, but install nothing
 #
 # Everything is wrapped in main() so a partially downloaded script never runs.

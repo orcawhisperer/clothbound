@@ -49,7 +49,7 @@ const protoSeoTags = `<meta name="description" content="Explore Clothbound's int
 <meta property="og:description" content="Explore all 18 interactive screens of Clothbound — a native Qt6 EPUB &amp; PDF reader for Linux and Omarchy.">
 <meta property="og:url" content="https://clothbound.app/prototype">
 <meta property="og:image" content="https://clothbound.app/og-card.png">
-<meta property="og:image:alt" content="Clothbound v0.4.1 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
+<meta property="og:image:alt" content="Clothbound v0.5.0 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Clothbound — Interactive 18-Board Design Prototype">
 <meta name="twitter:description" content="Explore all 18 interactive screens of Clothbound — a native Qt6 EPUB &amp; PDF reader for Linux and Omarchy.">
@@ -96,7 +96,7 @@ fs.writeFileSync(
   path.join(distDir, "llms.txt"),
   `# Clothbound
 
-> A calm, local-first native Qt 6 EPUB and PDF reader for Linux, Wayland, and Omarchy (v0.4.1, MIT licensed).
+> A calm, local-first native Qt 6 EPUB and PDF reader for Linux, Wayland, and Omarchy (v0.5.0, MIT licensed).
 
 - Website: https://clothbound.app
 - Interactive 18-board UI Prototype: https://clothbound.app/prototype
@@ -104,13 +104,13 @@ fs.writeFileSync(
 - One-line Arch / Omarchy Installer: \`curl -fsSL https://clothbound.app/install | bash\` (inspect at https://clothbound.app/install.sh)
 
 ## Core Capabilities
-- **Library & Instant Search (\`Ctrl+K\`)**: Local watched folders (files never modified), edition grouping, collections, local SQLite FTS5 full-text search, optional semantic search, W3C text-quote anchored highlights/notes, Obsidian/Readwise Markdown export.
-- **Online-to-Offline (\`Ctrl+Shift+U\` / \`Ctrl+Shift+O\`)**: Save web articles offline as EPUBs on an Articles shelf; fetch arXiv, alphaXiv, Hugging Face Papers, and direct EPUB/PDF links; browse OPDS 1.2 & 2.0 catalogs (Standard Ebooks, Project Gutenberg, Open Library, arXiv, Calibre-Web, Kavita, Komga).
-- **Academic PDF Craft**: Theme-recolored pages with white-margin cropping, preset view modes (\`0\` Fit page, \`W\` Fit width, \`1\` Actual), Visual Snip & Explain (\`X\`), Zero-Jump Quick-Look citation/figure peek cards, and automatic arXiv/DOI BibTeX & APA copy.
-- **Read-Aloud (\`P\`)**: Built-in offline neural voices (Kokoro, Pocket TTS, Piper across 42 languages), optional Gemini/Studio voices, 44px/86px floating player, sleep timer, and M4B audiobook export.
-- **Story & Study Companion (\`C\`)**: Spoiler-free Story mode and Study mode (Brief, Glossary, Smart Scope, offline LaTeX math) via local Ollama or your own Gemini key.
-- **Local MCP Server (\`clothbound mcp\`)**: Read-only stdio JSON-RPC 2.0 server exposing \`list_books\`, \`search_library\`, \`search_passages\`, \`get_book_outline\`, \`read_passage\`, and \`list_marks\`.
-- **Desktop Integration**: Follows Omarchy palettes, 50 interface languages, and Hyprland corner rounding live (plus in-app Light/Dark and Rounded/Sharp overrides).
+- **Library & Instant Search (\`Ctrl+K\`)**: Local watched folders (files never modified), edition grouping, collections, local SQLite FTS5 full-text search, optional \`int8\`-quantized SIMD semantic search, off-UI-thread Command Palette, W3C text-quote anchored highlights/notes, Obsidian/Readwise Markdown export.
+- **Online-to-Offline (\`Ctrl+Shift+U\` / \`Ctrl+Shift+O\`)**: Save web articles offline as EPUBs on an Articles shelf; fetch arXiv, alphaXiv, Hugging Face Papers, and direct EPUB/PDF links; browse cached OPDS 1.2 & 2.0 catalogs (Standard Ebooks, Project Gutenberg, Open Library, arXiv, Calibre-Web, Kavita, Komga).
+- **Academic PDF Craft**: Hue-preserving theme-recolored pages with white-margin cropping, tiled viewport rendering & cursor-focal zoom, preset view modes (\`0\` Fit page, \`W\` Fit width, \`1\` Actual), Visual Snip & Explain (\`X\`), Zero-Jump Quick-Look citation/figure peek cards, and automatic arXiv/DOI BibTeX & APA copy.
+- **Read-Aloud (\`P\`)**: Built-in offline neural voices (Kokoro, Pocket TTS, Piper across 42 languages), optional Gemini/Studio voices, 44px/86px floating player with continuous Library mini-player, sleep timer, and M4B audiobook export.
+- **Story & Study Companion (\`C\`)**: Spoiler-free Story mode and Study mode (Brief, Glossary, Smart Scope, offline LaTeX math) with smooth GPU-lockstep docking via local Ollama or your own Gemini key.
+- **Standalone Local MCP Server (\`clothbound-mcp\`)**: WebEngine-free read-only stdio JSON-RPC 2.0 server (~31 ms startup) exposing \`list_books\`, \`search_library\`, \`search_passages\`, \`get_book_outline\`, \`read_passage\`, and \`list_marks\`.
+- **Desktop Integration**: Follows Omarchy palettes, 50 fully translated interface languages, and Hyprland corner rounding live (plus in-app Light/Dark and Rounded/Sharp overrides).
 `
 );
 

@@ -88,7 +88,7 @@ jobs:
 
       - name: Validate translations, JS, QML lint, and desktop entry
         run: |
-          ./bin/translate check
+          ./bin/translate check --strict
           node --check src/reader/reader.js src/reader/hyphenation.js src/reader/dropcap.js
           /usr/lib/qt6/bin/qmllint --unqualified disable -I src/ui -I src/ui/style $(find src/ui -name '*.qml' | sort)
           desktop-file-validate pkgbuild/clothbound.desktop

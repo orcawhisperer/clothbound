@@ -13,12 +13,13 @@ Clothbound is the user's EPUB & PDF ebook reader and audiobook player on Omarchy
 Its commands start fast without a display; add `--json` for machine-readable
 output. Errors go to stderr and the exit code is 1.
 
-## Local MCP server (`clothbound mcp`)
+## Local MCP server (`clothbound-mcp`)
 
-Clothbound ships a built-in, strictly read-only local stdio Model Context
-Protocol (MCP) server so Antigravity, Claude Code, Cursor, Codex, and other MCP
-clients can query the user's private library locally — nothing leaves the
-computer.
+Clothbound ships a standalone, WebEngine-free, strictly read-only local stdio
+Model Context Protocol (MCP) server (`clothbound-mcp`, ~31 ms startup; also
+available via `clothbound mcp`) so Antigravity, Claude Code, Cursor, Codex, and
+other MCP clients can query the user's private library locally — nothing leaves
+the computer.
 
 Configure your MCP client with:
 
@@ -26,15 +27,15 @@ Configure your MCP client with:
 {
   "mcpServers": {
     "clothbound": {
-      "command": "clothbound",
-      "args": ["mcp"]
+      "command": "clothbound-mcp",
+      "args": []
     }
   }
 }
 ```
 
-(Or copy the exact executable path config from **Settings → Intelligence → Local
-agents (MCP)**; toggle **Enable local MCP server** there at any time.)
+(Or copy the exact config from **Settings → Intelligence → Local agents (MCP)**;
+toggle **Enable local MCP server** there at any time.)
 
 ### MCP tools (strictly read-only)
 
@@ -68,8 +69,11 @@ agents (MCP)**; toggle **Enable local MCP server** there at any time.)
 
 ## CLI commands
 
-- `clothbound mcp`: run the local stdio MCP server (JSON-RPC 2.0 on stdin/stdout;
-  all diagnostics go to stderr).
+- `clothbound-mcp [mcp | list | search | notes] [--json]`: standalone
+  WebEngine-free read-only stdio MCP server (default) and fast headless query
+  CLI (`list`, `search <query>`, `notes [book]`).
+- `clothbound mcp`: run the local stdio MCP server via the main binary
+  (JSON-RPC 2.0 on stdin/stdout; all diagnostics go to stderr).
 - `clothbound search <query> [--book <id>] [--limit <n>] [--json]`: search
   across all books (or one book) via the local FTS5 full-text index.
 - `clothbound passage <book_id> [--chapter <n> | --page <n>] [--page-end <n>] [--max-chars <n>] [--json]`:
@@ -93,7 +97,7 @@ agents (MCP)**; toggle **Enable local MCP server** there at any time.)
   cost this month, where text work runs, and the model servers found on this
   computer (Ollama, llama.cpp, LM Studio, MLX, vLLM).
 
-## Reader capabilities (v0.4.0+)
+## Reader capabilities
 
 - **Online-to-offline ingest (`Ctrl+Shift+U`) & OPDS catalogs (`Ctrl+Shift+O`)**:
   save web articles offline as EPUBs (with dedicated **Articles** shelf), fetch

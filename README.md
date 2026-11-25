@@ -1,6 +1,6 @@
 # Clothbound
 
-A calm, local-first EPUB and PDF reader for Linux and [Omarchy](https://omarchy.org) ([clothbound.app](https://clothbound.app)): your books, academic papers, and saved web articles in one library, a quiet page to read them on, natural voices to read aloud, an adaptive Story & Study Companion, and a built-in local MCP server.
+A calm, local-first EPUB and PDF reader for Linux and [Omarchy](https://omarchy.org) ([clothbound.app](https://clothbound.app)): your books, academic papers, and saved web articles in one library, a quiet page to read them on, natural offline and cloud voices to read aloud, an adaptive Story & Study Companion, and a standalone WebEngine-free local MCP server.
 
 Clothbound follows your Omarchy theme, language, and window corner rounding (with **Match desktop / Rounded / Sharp** and **Light / Dark** overrides in Settings), is driven from the keyboard (and works just as well with a mouse or touchpad), and never modifies your book files.
 
@@ -8,37 +8,37 @@ Clothbound follows your Omarchy theme, language, and window corner rounding (wit
 
 ## Contents
 
-- [What's in v0.4.0](#whats-in-v040)
+- [Features](#features)
 - [Intelligence: where it runs](#intelligence-where-it-runs)
 - [System requirements](#system-requirements)
 - [Install](#install)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [CLI & MCP commands](#cli--mcp-commands)
-- [Credits & License](#credits--license)
+- [Changelog & License](#changelog--license)
 
-## What's in v0.4.0
+## Features
 
 ![The Clothbound library: shelves, collections, online catalogs, and Continue reading](screenshot-library.png)
 
 - **A local-first library** for EPUBs, PDFs, and saved web articles:
   - Watched folders that keep your files untouched, edition grouping, drag-and-drop collections, cover grid & compact list views, a Continue reading hero card, and reading stats (time read, daily streak, 14-day activity). `Ctrl+B` folds the sidebar.
   - **Add from URL (`Ctrl+Shift+U`)**: paste any web article URL to save a clean, offline EPUB on your **Articles** shelf, or fetch arXiv, alphaXiv, Hugging Face Papers, and direct EPUB/PDF links straight into your library.
-  - **OPDS 1.2 & 2.0 Catalogs (`Ctrl+Shift+O`)**: browse Standard Ebooks, Project Gutenberg, Open Library, arXiv, and Feedbooks — or connect your own Calibre-Web, Kavita, or Komga servers (credentials stored in the system keyring).
-- **Command Palette (`Ctrl+K`)**: instant fuzzy search across book titles, **full-text passages inside every book** (local SQLite FTS5), passages close **in meaning** across indexed books, chapters, cross-book highlights & notes, page/percentage jumps, and every action (`Tab` switches between *Everything* and *This book*).
+  - **OPDS 1.2 & 2.0 Catalogs (`Ctrl+Shift+O`)**: browse Standard Ebooks, Project Gutenberg, Open Library, arXiv, and Feedbooks — or connect your own Calibre-Web, Kavita, or Komga servers (credentials stored in the system keyring, with in-memory feed caching and fast IPv4 failover).
+- **Command Palette (`Ctrl+K`)**: instant off-UI-thread fuzzy search across book titles, **full-text passages inside every book** (local SQLite FTS5), passages close **in meaning** (`int8`-quantized SIMD embeddings), chapters, cross-book highlights & notes, page/percentage jumps, and every action (`Tab` switches between *Everything* and *This book*).
 - **A calm page to read on**:
-  - **EPUB**: zero-flash double-buffered spreads or scroll view, drop caps, hyphenation, margin notes beside highlights, five reading themes (*Omarchy*, *Paper*, *Sepia*, *Dusk*, *Night*), optional hardcover **page-turn sound** (auto-mutes while listening), and live typeface preview in Settings.
-  - **Academic PDF craft**: theme-recolored pages with automatic white-margin cropping, **preset view modes** (`0` Fit page · `W` Fit width · `1` Actual) with live auto-refit, single-press spread navigation, **Visual Snip & Explain (`X`)** (Explain, Copy LaTeX, Extract Table, Ask…), **Zero-Jump Quick-Look Peek Card** for clickable figures & citations, and automatic **arXiv / DOI** detection with one-click **BibTeX / APA** copy.
-- **Highlights, notes & bookmarks**: W3C text-quote anchoring, undo/redo, cross-book search, Obsidian/Readwise Markdown export, and `clothbound notes` on the CLI.
+  - **EPUB**: zero-flash double-buffered spreads or continuous scroll, drop caps, hyphenation, margin notes beside highlights, five reading themes (*Omarchy*, *Paper*, *Sepia*, *Dusk*, *Night*) with automatic dark-theme contrast normalization (including Calibre EPUBs), intentional desktop page turns (keyboard, wheel/swipe, scrubber, or footer `‹`/`›` buttons — never accidental edge clicks), optional hardcover **page-turn sound** (auto-mutes while listening and stays silent at book boundaries), and live typeface preview in Settings.
+  - **Academic PDF craft**: hue-preserving theme-recolored pages with automatic white-margin cropping, tiled viewport rendering & cursor-focal zoom, **preset view modes** (`0` Fit page · `W` Fit width · `1` Actual) with full text selection in every mode (`Middle-drag` or `Alt+drag` to pan), **Visual Snip & Explain (`X`)** (Explain, Copy LaTeX, Extract Table, Ask…), **Zero-Jump Quick-Look Peek Card** for clickable figures & citations, and automatic **arXiv / DOI** detection with one-click **BibTeX / APA** copy.
+- **Highlights, notes & bookmarks (`M` / `B`)**: W3C text-quote anchoring, undo/redo, cross-book search, Obsidian/Readwise Markdown export, and `clothbound-mcp notes` / `clothbound notes` on the CLI.
 - **Natural read-aloud (`P`)**:
-  - Adaptive **44 px / 86 px floating narration pill** with sentence highlighting, ±15 s skip, speed control, chapter scrubber, sleep timer, media keys (MPRIS), and background listening.
+  - Adaptive **44 px / 86 px floating narration pill** with sentence highlighting, ±15 s skip, speed control, chapter scrubber, sleep timer, media keys (MPRIS), and **continuous background playback while browsing your Library** (with a floating mini-player to jump straight back to the book).
   - **Built-in offline voices** (Kokoro, Pocket TTS, and Piper across 42 languages — free, private, on this computer), **Gemini voices** (styles + full-cast narration with your own key), and **Studio voices** (local OpenAI-compatible TTS servers). Export offline narration as chaptered **M4B audiobooks**.
 - **Adaptive Story & Study Companion (`C`)**:
   - Switch cleanly between **Story mode** (*Ask*, *Previously…*, *Who's who*, *Pictures* — strictly spoiler-free up to your current page) and **Study mode** (*Ask*, *Brief*, *Glossary* with **Smart Scope**: *Up to here* · *Whole book* · *This shelf*).
-  - Renders **offline LaTeX math** (zero CDN), reads replies aloud, resizes via left-edge drag (double-click snaps to 384 px), and powers inline *Define* (offline `sdcv` StarDict or model), *Explain*, and *Translate*.
-- **Built-in Local MCP Server (`clothbound-mcp`)**:
-  - Standalone WebEngine-free read-only stdio JSON-RPC 2.0 server (~31 ms startup, zero Qt WebEngine/QML linkage; also accessible via `clothbound mcp`) so your local coding and research agents (Antigravity, Claude Code, Cursor, Codex) can query `list_books`, `search_library`, `search_passages`, `get_book_outline`, `read_passage`, and `list_marks` privately — one-click **Copy MCP config** in **Settings › Intelligence**.
+  - Smooth GPU-lockstep docking beside both EPUBs and PDFs, **offline LaTeX math** (zero CDN), reply read-aloud, left-edge drag resize (double-click snaps to 384 px), and inline *Define* (offline `sdcv` StarDict or model), *Explain*, and *Translate*.
+- **Standalone Local MCP Server (`clothbound-mcp`)**:
+  - WebEngine-free read-only stdio JSON-RPC 2.0 server (~31 ms startup, zero Qt WebEngine/QML/Multimedia linkage; also available via `clothbound mcp`) so your local coding and research agents (Antigravity, Claude Code, Cursor, Codex) can query `list_books`, `search_library`, `search_passages`, `get_book_outline`, `read_passage`, and `list_marks` privately — one-click **Copy MCP config** in **Settings › Intelligence**.
 - **Desktop craft & 50 languages**:
-  - Live Omarchy theme matching, **Corners (`Match desktop | Rounded | Sharp`)** and **Reduce motion** in **Settings › General**, and 50 shipped interface languages.
+  - Live Omarchy theme matching, **Corners (`Match desktop | Rounded | Sharp`)** and **Reduce motion** in **Settings › General**, native Wayland D-Bus tray integration, and 50 fully translated interface languages.
 
 ## Intelligence: where it runs
 
@@ -68,15 +68,15 @@ Clothbound never bundles a language model or sends book text without consent. Cl
 
 ### Arch Linux & Omarchy
 
-One line, on x86_64 or aarch64:
+One line, on `x86_64` or `aarch64`:
 
 ```sh
 curl -fsSL https://clothbound.app/install | bash
 ```
 
-On x86_64 it downloads the [release package](https://github.com/orcawhisperer/clothbound/releases), verifies its checksum, and installs it with pacman; on aarch64 (for example Asahi Linux) it builds the same release from source. [Read the script](site/install.sh) first if you like.
+On `x86_64` it downloads the [release package](https://github.com/orcawhisperer/clothbound/releases), verifies its checksum against `SHA256SUMS`, and installs it with `pacman`; on `aarch64` (for example Asahi Linux) it downloads and verifies the tagged release archive and builds from source with `makepkg`. [Read the script](site/install.sh) first if you like.
 
-Or build and install from a clone (binary, `.desktop` entry, and icon):
+Or build and install from a clone (both `clothbound` and `clothbound-mcp`, externalized i18n catalogs, `.desktop` entry, and icon):
 
 ```sh
 git clone https://github.com/orcawhisperer/clothbound.git
@@ -89,12 +89,12 @@ cd clothbound
 Clothbound uses **CMake 3.24+** (C++20, Ninja or Unix Makefiles, Qt 6):
 
 ```sh
-./bin/build           # CMake Release build -> ./build/clothbound and ./build/clothbound-mcp
-./bin/test            # builds & runs the full offscreen QtTest suite (266+ tests)
-./bin/test --asan     # runs tests under AddressSanitizer + UBSan
-./bin/test --tsan     # runs concurrency stress tests under ThreadSanitizer
-./bin/bench           # runs C++ core micro-benchmarks and headless startup/memory benchmarks
-./bin/translate check # verifies all 50 translation catalogs
+./bin/build                    # CMake Release build -> ./build/clothbound and ./build/clothbound-mcp
+./bin/test                     # builds & runs the full offscreen QtTest + Chromium E2E suites (289+ tests)
+./bin/test --asan              # runs tests under AddressSanitizer + UBSan
+./bin/test --tsan              # runs concurrency & palette stress tests under ThreadSanitizer
+./bin/bench                    # runs C++ core micro-benchmarks and headless startup/memory benchmarks
+./bin/translate check --strict # verifies all 50 translation catalogs (0 missing, 0 orphan)
 ```
 
 ## Keyboard shortcuts
@@ -123,11 +123,12 @@ Clothbound uses **CMake 3.24+** (C++20, Ninja or Unix Makefiles, Qt 6):
 | `C` | Toggle Story / Study Companion |
 | `A` · `D` | Appearance popover · cycle reading theme |
 | `Ctrl+Z` · `Ctrl+Shift+Z` | Undo · redo mark changes |
-| `Esc` | Close active overlay, or return to the library |
+| `Esc` | Close active overlay, or return to the library (keeps audio playing) |
 
 | Listening | |
 |---|---|
-| `P` · `Shift+P` | Listen / pause · stop |
+| `P` · `Shift+P` | Listen / pause · stop (works in the Library too) |
+| `Shift+←` `Shift+→` | Skip back / forward 15 seconds |
 | `,` `.` | Previous / next paragraph |
 | `<` `>` | Slower / faster |
 | `V` | Choose narrator, style, full cast, or export M4B audiobook |
@@ -165,6 +166,8 @@ clothbound ai [status|key|forget|local]      # inspect Gemini usage/keys and loc
 clothbound skill [install]                   # install the Clothbound skill for coding agents
 ```
 
-## Credits & License
+## Changelog & License
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
 
 Clothbound is MIT licensed ([LICENSE](LICENSE)). It uses Qt 6 (LGPL) and Qt WebEngine, and bundles **Literata** and **Inter** under the SIL Open Font License 1.1. Built-in offline voices use [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0) with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0), [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (CC BY 4.0), and [Piper](https://github.com/rhasspy/piper) voices (per-voice license shown in Settings › Voices), downloaded only when requested; sherpa-onnx's `espeak-ng` component is GPL-3.0.

@@ -47,7 +47,7 @@ jobs:
         run: |
           ./bin/build
           ./bin/test
-          ./bin/translate check
+          ./bin/translate check --strict
           desktop-file-validate pkgbuild/clothbound.desktop
           rm -rf build
 
@@ -75,6 +75,13 @@ jobs:
           echo "Packaged i18n catalogs: $i18n_count"
           test "$i18n_count" -eq 50
           (cd /tmp/pkg-out && sha256sum "$(basename "$pkg")" > SHA256SUMS)
+          if [[ "${GITHUB_REF:-}" == refs/tags/v* ]]; then
+            ver="${GITHUB_REF_NAME#v}"
+            src_tar="clothbound-${ver}.tar.gz"
+            curl -fsSL -o "/tmp/pkg-out/${src_tar}" "https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+            (cd /tmp/pkg-out && sha256sum "${src_tar}" >> SHA256SUMS)
+            rm -f "/tmp/pkg-out/${src_tar}"
+          fi
           cat /tmp/pkg-out/SHA256SUMS
 
       - name: Extract release notes from CHANGELOG.md
@@ -87,7 +94,7 @@ jobs:
           m = re.search(rf"^## \[{re.escape(ver)}\][^\n]*\n(.*?)(?=^## \[|\Z)", text, re.M | re.S)
           body = m.group(1).strip() if m else ""
           if body:
-              body += f"\n\n---\n\n### Install on Arch Linux / Omarchy\n```sh\ncurl -LO https://github.com/orcawhisperer/clothbound/releases/download/v{ver}/clothbound-{ver}-1-x86_64.pkg.tar.zst\nsudo pacman -U ./clothbound-{ver}-1-x86_64.pkg.tar.zst\n```\n\nDownload first: `pacman -U <url>` requires a package signature, and this package is unsigned. The prebuilt package is x86_64 only; on aarch64 (Asahi), build from source with `./bin/install`.\n"
+              body += f"\n\n---\n\n### Install on Arch Linux / Omarchy\nOne-line installer (x86_64 prebuilt package or aarch64 verified source build):\n```sh\ncurl -fsSL https://clothbound.app/install | bash\n```\n\nOr download the x86_64 package manually:\n```sh\ncurl -LO https://github.com/orcawhisperer/clothbound/releases/download/v{ver}/clothbound-{ver}-1-x86_64.pkg.tar.zst\nsudo pacman -U ./clothbound-{ver}-1-x86_64.pkg.tar.zst\n```\n"
           open("/tmp/release-notes.md", "w", encoding="utf-8").write(body)
           print("Release notes bytes:", len(body))
           '

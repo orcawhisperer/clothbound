@@ -17,12 +17,12 @@
 <meta property="og:image" content="https://clothbound.app/og-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Clothbound v0.4.1 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
+<meta property="og:image:alt" content="Clothbound v0.5.0 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Clothbound — Native EPUB &amp; PDF Reader for Linux &amp; Omarchy">
 <meta name="twitter:description" content="A calm, local-first Qt6 EPUB &amp; PDF reader for Linux and Omarchy with Study Companion, PDF Snip &amp; Explain, OPDS catalogs, natural read-aloud, and local MCP.">
 <meta name="twitter:image" content="https://clothbound.app/og-card.png">
-<meta name="twitter:image:alt" content="Clothbound v0.4.1 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
+<meta name="twitter:image:alt" content="Clothbound v0.5.0 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
 <link rel="canonical" href="https://clothbound.app/">
 <title>Clothbound — Native EPUB &amp; PDF Reader for Linux &amp; Omarchy</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
@@ -33,13 +33,13 @@
   "@type": "SoftwareApplication",
   "name": "Clothbound",
   "headline": "Native EPUB & PDF Reader for Linux & Omarchy",
-  "description": "A calm, local-first Qt6 EPUB and PDF reader for Linux, Wayland, and Omarchy with zero-flash spreads, save-from-URL articles, OPDS 1.2/2.0 catalogs, PDF Snip & Explain, Quick-Look citation peek, offline neural voices, an adaptive Story & Study Companion, and a built-in local MCP server.",
+  "description": "A calm, local-first Qt6 EPUB and PDF reader for Linux, Wayland, and Omarchy with zero-flash spreads, save-from-URL articles, OPDS 1.2/2.0 catalogs, PDF Snip & Explain, Quick-Look citation peek, offline neural voices with background Library playback, an adaptive Story & Study Companion, and a standalone WebEngine-free local MCP server.",
   "url": "https://clothbound.app/",
-  "downloadUrl": "https://github.com/orcawhisperer/clothbound/releases/tag/v0.4.1",
+  "downloadUrl": "https://github.com/orcawhisperer/clothbound/releases/tag/v0.5.0",
   "installUrl": "https://clothbound.app/#install",
   "codeRepository": "https://github.com/orcawhisperer/clothbound",
   "license": "https://opensource.org/licenses/MIT",
-  "softwareVersion": "0.4.1",
+  "softwareVersion": "0.5.0",
   "applicationCategory": "UtilitiesApplication",
   "operatingSystem": "Linux, Arch Linux, Omarchy, Wayland",
   "image": "https://clothbound.app/og-card.png",
@@ -50,13 +50,13 @@
     "priceCurrency": "USD"
   },
   "featureList": [
-    "Zero-flash EPUB spreads and theme-recolored academic PDF reading",
-    "Live Omarchy theme, language, and Hyprland corner rounding sync (Rounded / Sharp overrides)",
-    "Add from URL offline article archival and OPDS 1.2/2.0 catalog browsing",
+    "Zero-flash EPUB spreads and theme-recolored academic PDF reading with viewport tiling and cursor-focal zoom",
+    "Live Omarchy theme, 50 interface languages, and Hyprland corner rounding sync (Rounded / Sharp overrides)",
+    "Add from URL offline article archival and cached OPDS 1.2/2.0 catalog browsing",
     "PDF Preset View Modes (Fit page, Fit width, Actual), Visual Snip & Explain, and Quick-Look citation peek",
-    "Offline neural read-aloud voices (Kokoro, Pocket TTS, Piper) and M4B audiobook export",
-    "Adaptive Story & Study Companion with Smart Scope and offline LaTeX math",
-    "Built-in read-only local stdio MCP server (clothbound mcp)"
+    "Offline neural read-aloud voices (Kokoro, Pocket TTS, Piper), continuous Library mini-player, and M4B audiobook export",
+    "Adaptive Story & Study Companion with GPU-lockstep docking, Smart Scope, and offline LaTeX math",
+    "Standalone WebEngine-free read-only local stdio MCP server (clothbound-mcp)"
   ]
 }
 </script>
@@ -2340,7 +2340,7 @@ kbd {
     <div class="hero-copy">
       <div class="eyebrow">
         <span class="eyebrow-dot" aria-hidden="true"></span>
-        <span>v0.4.1 · Native Qt6 · Wayland &amp; Omarchy · Local-First</span>
+        <span>v0.5.0 · Native Qt6 · Wayland &amp; Omarchy · Local-First</span>
       </div>
       <h1>Read deeply. Think clearly.</h1>
       <p class="hero-sub">A calm, fast EPUB and PDF reader for Linux — zero-flash page turns, smart PDF fit presets, save-from-URL articles &amp; OPDS catalogs, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server.</p>
@@ -2681,7 +2681,7 @@ kbd {
           </li>
           <li>
             <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
-            <span><strong>Adaptive 44px floating narration pill</strong> — rests quietly below the margin and expands smoothly for scrubbing, speed, and sleep timer.</span>
+            <span><strong>Adaptive 44px floating narration pill &amp; Library mini-player</strong> — expands smoothly for scrubbing, speed, and sleep timer, and keeps playing seamlessly when you browse back to your Library.</span>
           </li>
           <li>
             <span class="spec-bullet" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2.5 6.5L5 9l4.5-6"/></svg></span>
@@ -2911,7 +2911,7 @@ kbd {
       <div class="chapter-copy">
         <div class="chapter-kicker-label"><span>04</span> Local MCP Server</div>
         <h2>A private knowledge hub for your coding &amp; research agents.</h2>
-        <p>Point <strong>Antigravity</strong>, <strong>Claude Code</strong>, <strong>Cursor</strong>, or <strong>Codex</strong> directly at <code class="mono" style="font-size:13.5px">clothbound mcp</code>. Your agents can search passages, inspect book outlines, read verbatim pages, and quote your margin notes over pure local stdio — with zero open ports and zero cloud uploads.</p>
+        <p>Point <strong>Antigravity</strong>, <strong>Claude Code</strong>, <strong>Cursor</strong>, or <strong>Codex</strong> directly at standalone WebEngine-free <code class="mono" style="font-size:13.5px">clothbound-mcp</code> (~31 ms startup). Your agents can search passages, inspect book outlines, read verbatim pages, and quote your margin notes over pure local stdio — with zero open ports and zero cloud uploads.</p>
         <div class="mcp-tools-grid" aria-label="Six read-only MCP tools">
           <div class="mcp-tool-card">
             <code>list_books</code>
@@ -2954,8 +2954,8 @@ kbd {
           <pre id="mcpConfigDisplay"><code><span class="tok-punct">{</span>
   <span class="tok-key">"mcpServers"</span><span class="tok-punct">: {</span>
     <span class="tok-key">"clothbound"</span><span class="tok-punct">: {</span>
-      <span class="tok-key">"command"</span><span class="tok-punct">:</span> <span class="tok-str">"clothbound"</span><span class="tok-punct">,</span>
-      <span class="tok-key">"args"</span><span class="tok-punct">: [</span><span class="tok-str">"mcp"</span><span class="tok-punct">]</span>
+      <span class="tok-key">"command"</span><span class="tok-punct">:</span> <span class="tok-str">"clothbound-mcp"</span><span class="tok-punct">,</span>
+      <span class="tok-key">"args"</span><span class="tok-punct">: []</span>
     <span class="tok-punct">}</span>
   <span class="tok-punct">}</span>
 <span class="tok-punct">}</span></code></pre>
@@ -3051,7 +3051,7 @@ kbd {
           <div class="install-step">
             <span class="install-step-num">Step 01 · Arch / Omarchy</span>
           </div>
-          <h3>Install v0.4.1</h3>
+          <h3>Install v0.5.0</h3>
           <p class="install-note">Installs the verified release package on x86_64, or builds the same release from source on aarch64 (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>). Prefer building it yourself? <code>git clone</code> the <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">repo</a> and run <code>./bin/install</code>.</p>
         </div>
         <div class="cmd-bar">
@@ -3066,11 +3066,11 @@ kbd {
             <span class="install-step-num">Step 02 · AI Agents</span>
           </div>
           <h3>Start the local MCP server</h3>
-          <p class="install-note">Runs read-only JSON-RPC 2.0 over stdio for Antigravity, Claude Code, Cursor, and Codex. Diagnostics go cleanly to stderr.</p>
+          <p class="install-note">Standalone WebEngine-free read-only JSON-RPC 2.0 server over stdio (~31 ms startup) for Antigravity, Claude Code, Cursor, and Codex.</p>
         </div>
         <div class="cmd-bar">
-          <code><span class="cmd-prompt">$</span>clothbound mcp</code>
-          <button type="button" class="copy-btn" data-copy-text="clothbound mcp">Copy</button>
+          <code><span class="cmd-prompt">$</span>clothbound-mcp</code>
+          <button type="button" class="copy-btn" data-copy-text="clothbound-mcp">Copy</button>
         </div>
       </div>
 
@@ -3080,11 +3080,11 @@ kbd {
             <span class="install-step-num">Step 03 · Terminal CLI</span>
           </div>
           <h3>Query your library headless</h3>
-          <p class="install-note">Instant local SQLite FTS5 search across every EPUB and PDF — no display server required. Also try <code>clothbound list</code> and <code>clothbound notes</code>.</p>
+          <p class="install-note">Instant local SQLite FTS5 search across every EPUB and PDF — no display server required. Also try <code>clothbound-mcp list</code> and <code>clothbound-mcp notes</code>.</p>
         </div>
         <div class="cmd-bar">
-          <code><span class="cmd-prompt">$</span>clothbound search "attention" --json</code>
-          <button type="button" class="copy-btn" data-copy-text='clothbound search "attention" --json'>Copy</button>
+          <code><span class="cmd-prompt">$</span>clothbound-mcp search "attention" --json</code>
+          <button type="button" class="copy-btn" data-copy-text='clothbound-mcp search "attention" --json'>Copy</button>
         </div>
       </div>
     </div>
@@ -3557,8 +3557,8 @@ kbd {
   var mcpConfigCanonical = JSON.stringify({
     mcpServers: {
       clothbound: {
-        command: "clothbound",
-        args: ["mcp"]
+        command: "clothbound-mcp",
+        args: []
       }
     }
   }, null, 2);
