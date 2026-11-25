@@ -132,6 +132,7 @@ private:
     QHash<int, QList<std::function<void()>>> m_pendingCastBatches;
     QHash<int, QList<std::function<void()>>> m_pendingDirectorBatches;
     QList<QPointer<Ai::Reply>> m_replies;
+    QHash<Ai::Reply *, Job> m_inFlight;
     double m_minutesReady = 0;
     double m_minutesTotal = 0;
     double m_audioSeconds = 0;  // made by this download, for its pace

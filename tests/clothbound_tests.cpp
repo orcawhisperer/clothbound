@@ -12789,6 +12789,514 @@ Item {
         }
     }
     // === end fix-core tests ===
+    // === fix-audio tests ===
+#ifndef Q_MOC_RUN
+private:
+    struct FixAudioCastReply : public Ai::Reply {
+        explicit FixAudioCastReply(QObject *parent = nullptr) : Ai::Reply(parent) {}
+        bool aborted = false;
+        void abort() override {
+            aborted = true;
+            finish({Ai::Error::Cancelled, QStringLiteral("Cancelled.")});
+        }
+        void succeed(const QString &json) {
+            m_text = json;
+            finish();
+        }
+    };
+    struct FixAudioCastProvider : public Ai::Provider, public Ai::TextModel {
+        explicit FixAudioCastProvider(QObject *parent = nullptr) : Ai::Provider(parent) {}
+        QList<QPointer<FixAudioCastReply>> replies;
+        QString id() const override { return QStringLiteral("manual"); }
+        QString name() const override { return QStringLiteral("Manual"); }
+        QString privacyNote() const override { return {}; }
+        bool isLocal() const override { return true; }
+        bool needsKey() const override { return false; }
+        void setKey(const QString &) override {}
+        bool hasKey() const override { return true; }
+        Ai::Reply *check() override { return new FixAudioCastReply(this); }
+        Ai::TextModel *text() override { return this; }
+        Ai::Reply *generate(const Ai::TextRequest &) override {
+            auto *r = new FixAudioCastReply(this);
+            replies.append(r);
+            return r;
+        }
+        QString textModelName(bool) const override { return QStringLiteral("manual-fast"); }
+    };
+#endif
+
+private slots:
+    void fixAudioScopedCastCancelDoesNotDeadlockSecondCaller() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath(QStringLiteral("cast-scope.epub"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(16, 16))));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        FixAudioCastProvider provider;
+        MemoryKeyStore keys;
+        AiServices services(&provider, &keys, library.database().connectionName());
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        VoiceCatalog catalog(&services, &cache, &reader, library.database().connectionName(),
+                             dir.filePath(QStringLiteral("voices.json")));
+        VoicePacks packs(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                         packsManifest(QStringLiteral("http://x")));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("engine-arm"));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("kokoro-fp32"));
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+
+        Cast cast(&services, &cache, &reader, &library, &catalog, &packs);
+        cast.setNarrator(QStringLiteral("builtin:kokoro:bm_george"));
+        cast.setEnabled(true);
+        QVERIFY(cast.available());
+
+        // 1. Cancelling caller A's scope settles A's callback without aborting or deadlocking caller B.
+        QObject scopeA;
+        QObject scopeB;
+        const QList<SpeechBlock> blocksA{block(0, QStringLiteral("\"Hello there,\" said Alice."))};
+        const QList<SpeechBlock> blocksB{block(0, QStringLiteral("\"Good morning,\" replied Bob."))};
+
+        bool settledA = false;
+        QMap<int, Cast::Line> resultA;
+        bool settledB = false;
+        QMap<int, Cast::Line> resultB;
+
+        cast.ask(0, blocksA, &scopeA, [&](const QMap<int, Cast::Line> &lines) {
+            settledA = true;
+            resultA = lines;
+        });
+        cast.ask(1, blocksB, &scopeB, [&](const QMap<int, Cast::Line> &lines) {
+            settledB = true;
+            resultB = lines;
+        });
+        QCOMPARE(provider.replies.size(), 2);
+        QPointer<FixAudioCastReply> replyA = provider.replies[0];
+        QPointer<FixAudioCastReply> replyB = provider.replies[1];
+        QVERIFY(replyA && replyB);
+
+        cast.cancel(&scopeA);
+        QVERIFY(replyA->aborted);
+        QVERIFY(settledA);
+        QVERIFY(resultA.isEmpty());
+        QVERIFY(!replyB->aborted);
+        QVERIFY(!settledB);
+
+        replyB->succeed(QStringLiteral("{\"lines\":[{\"block\":0,\"speaker\":\"Bob\",\"gender\":\"male\"}]}"));
+        QVERIFY(settledB);
+        QCOMPARE(resultB.value(0).speaker, QStringLiteral("Bob"));
+
+        // 2. Narration::stop() does not orphan or deadlock an active Download's cast request.
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        narration.setCast(&cast);
+
+        Download download(&services, &cache, &reader, &narration);
+        download.setCast(&cast);
+        download.start(0, 0);
+        const qsizetype beforeReplies = provider.replies.size();
+        download.addBlocks(
+            0, QStringLiteral("[{\"start\":0,\"end\":28,\"text\":\"\\\"Watch the tide,\\\" said Mara.\",\"kind\":\"text\"}]"));
+        QCOMPARE(provider.replies.size(), beforeReplies + 1);
+        QPointer<FixAudioCastReply> dlReply = provider.replies.last();
+        QVERIFY(dlReply && !dlReply->aborted);
+
+        narration.stop();
+        QVERIFY(!dlReply->aborted);
+        dlReply->succeed(QStringLiteral("{\"lines\":[{\"block\":0,\"speaker\":\"Mara\",\"gender\":\"female\"}]}"));
+        QTRY_VERIFY_WITH_TIMEOUT(download.finished(), 10000);
+        QVERIFY2(download.problem().isEmpty(), qPrintable(download.problem()));
+    }
+
+    void fixAudioNarrationHoldSamplesReleasesOnShortClipsAndSleepTrim() {
+        QTemporaryDir dir;
+        const QByteArray twoChOpf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+            "    <dc:title>Short Story</dc:title>\n"
+            "    <dc:creator>Test Author</dc:creator>\n"
+            "    <dc:language>en-GB</dc:language>\n"
+            "  </metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "    <item id=\"c2\" href=\"c2.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine><itemref idref=\"c1\"/><itemref idref=\"c2\"/></spine>\n"
+            "</package>";
+        const QString epubPath = dir.filePath(QStringLiteral("short.epub"));
+        QVERIFY(TestBooks::write(
+            epubPath,
+            TestBooks::epub({
+                {"OEBPS/content.opf", twoChOpf},
+                {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>Chapter one sentence.</p>")},
+                {"OEBPS/c2.xhtml", TestBooks::chapter("Ch 2", "<p>Final short line.</p>")},
+            })));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                         packsManifest(QStringLiteral("http://x")));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("engine-arm"));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("kokoro-fp32"));
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+
+        // 1. Slow-CPU head-start (>= 2.0s hold) must release on a final chapter shorter than 2.0s.
+        const auto model = packs.model(QStringLiteral("builtin:kokoro:bm_george"));
+        QVERIFY(model.has_value());
+        local.noteSpeed(model->key, 0.5);
+
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        narration.start(1, 0);  // final chapter (chapter 1 of 2)
+        narration.addBlocks(1, R"([{"start":0,"end":17,"text":"Final short line.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(!narration.m_clips.isEmpty() &&
+                                     narration.m_clips[0].state == Narration::Clip::Complete,
+                                 5000);
+        // Clip is ~0.82s (< 2.0s head-start floor), yet head-start must release so playback never deadlocks.
+        QVERIFY(narration.m_clips[0].samples < 24000 * 2);
+        QCOMPARE(narration.m_holdSamples, qint64(0));
+        QVERIFY(!narration.preparing());
+        QCOMPARE(narration.preparedPercent(), 100);
+        QVERIFY(narration.m_player->isPlaying());
+        narration.stop();
+
+        // 2. sleepAtEndOfChapter() trims already-queued next-chapter clips and positions resume at Ch 2 start.
+        local.noteSpeed(model->key, 5.0);
+        local.noteSpeed(model->key, 5.0);
+        local.noteSpeed(model->key, 5.0);
+        narration.start(0, 0);
+        narration.addBlocks(0, R"([{"start":0,"end":21,"text":"Chapter one sentence.","kind":"text"}])");
+        narration.addBlocks(1, R"([{"start":0,"end":17,"text":"Final short line.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(narration.m_clips.size() == 2 &&
+                                     narration.m_clips[0].state == Narration::Clip::Complete &&
+                                     narration.m_clips[1].state == Narration::Clip::Complete &&
+                                     narration.m_clips[0].queued && narration.m_clips[1].queued,
+                                 5000);
+        QVERIFY(narration.m_player->hasTrack(narration.m_clips[1].id));
+
+        narration.sleepAtEndOfChapter();
+        QVERIFY(narration.m_clips[0].queued && narration.m_player->hasTrack(narration.m_clips[0].id));
+        QVERIFY(!narration.m_clips[1].queued && !narration.m_player->hasTrack(narration.m_clips[1].id));
+
+        emit narration.m_player->drained();
+        QVERIFY(!narration.playing());
+        QVERIFY(!narration.sleepAtChapterEnd());
+        QCOMPARE(narration.m_current, 1);
+        QCOMPARE(narration.m_currentSample, qint64(0));
+
+        narration.resume();
+        QVERIFY(narration.playing());
+        QVERIFY(narration.m_clips[1].queued && narration.m_player->hasTrack(narration.m_clips[1].id));
+        narration.stop();
+    }
+
+    void fixAudioNarrationQueueBlockedDuringResponseAndPauseSleepClear() {
+        QTemporaryDir dir;
+        const QString epubPath = dir.filePath(QStringLiteral("interleave.epub"));
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(16, 16))));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                         packsManifest(QStringLiteral("http://x")));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("engine-arm"));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("kokoro-fp32"));
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+        narration.start(0, 0);
+        narration.addBlocks(0, R"([{"start":0,"end":28,"text":"Book passage before speech.","kind":"text"}])");
+        QTRY_VERIFY_WITH_TIMEOUT(!narration.m_clips.isEmpty() &&
+                                     narration.m_clips[0].state == Narration::Clip::Complete,
+                                 5000);
+        const int bookClipId = narration.m_clips[0].id;
+
+        // Start Companion response speech: book audio must not inject into m_player.
+        narration.speakResponse(QStringLiteral("Companion answer spoken cleanly."), QStringLiteral("resp-1"));
+        QVERIFY(narration.speakingResponse());
+        QVERIFY(narration.m_bookPlayerDirty);
+        QVERIFY(!narration.playing());
+        QVERIFY(!narration.m_player->hasTrack(bookClipId));
+
+        narration.m_clips[0].queued = false;
+        narration.m_queued = -1;
+        narration.queue();
+        narration.pump();
+        QVERIFY(!narration.m_clips[0].queued);
+        QVERIFY(!narration.m_player->hasTrack(bookClipId));
+
+        // MPRIS Pause() path (Narration::pause()) must stop active Companion response speech.
+        narration.pause();
+        QVERIFY(!narration.speakingResponse());
+        QVERIFY(narration.speakingResponseId().isEmpty());
+
+        // Sleep timer expiry (finishSleep()) must also stop active Companion response speech.
+        narration.speakResponse(QStringLiteral("Second companion answer."), QStringLiteral("resp-2"));
+        QVERIFY(narration.speakingResponse());
+        narration.finishSleep();
+        QVERIFY(!narration.speakingResponse());
+        QVERIFY(narration.speakingResponseId().isEmpty());
+
+        // Extreme Seek/SetPosition values must not overflow int64.
+        narration.resume();
+        narration.seekByUs(std::numeric_limits<qint64>::max());
+        QVERIFY(narration.m_currentSample >= 0);
+        narration.seekByUs(std::numeric_limits<qint64>::min());
+        QCOMPARE(narration.m_currentSample, qint64(0));
+        narration.seekToUs(std::numeric_limits<qint64>::max());
+        QVERIFY(narration.m_currentSample >= 0);
+        narration.stop();
+    }
+
+    void fixAudioCacheClearStoreRaceAndWavValidation() {
+        QTemporaryDir dir;
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        const QByteArray pcmA(24000 * 2 / 4, '\x11');
+        const QByteArray pcmB(24000 * 2 / 4, '\x22');
+
+        cache.store(QStringLiteral("race-key-1"), pcmA, 24000);
+        cache.store(QStringLiteral("race-key-2"), pcmA, 24000);
+        QTRY_VERIFY_WITH_TIMEOUT(cache.clipCount() == 2 && !cache.hasPendingStores(), 10000);
+
+        // Immediately store the same key right after clear() while async trash deletion runs.
+        cache.clear();
+        QVERIFY(cache.clearing());
+        cache.store(QStringLiteral("race-key-1"), pcmB, 24000);
+        QTRY_VERIFY_WITH_TIMEOUT(!cache.clearing() && !cache.hasPendingStores(), 10000);
+
+        const QString survived = cache.lookupPath(QStringLiteral("race-key-1"));
+        QVERIFY2(!survived.isEmpty() && QFileInfo::exists(survived), "Newly stored clip was deleted by async clear()");
+        QVERIFY(cache.lookupPath(QStringLiteral("race-key-2")).isEmpty());
+        QCOMPARE(cache.clipCount(), 1);
+
+        // Repeated clear() calls serialize cleanly and never delete subsequent store().
+        cache.clear();
+        cache.clear();
+        cache.store(QStringLiteral("race-key-1"), pcmB, 24000);
+        QTRY_VERIFY_WITH_TIMEOUT(!cache.clearing() && !cache.hasPendingStores(), 10000);
+        QVERIFY(!cache.lookupPath(QStringLiteral("race-key-1")).isEmpty());
+
+        // WAV header validation in decode(): reject corrupt non-RIFF WAV, resample valid 16 kHz WAV -> 24 kHz.
+        const QString badWav = dir.filePath(QStringLiteral("bad.wav"));
+        write(badWav, QByteArray("<html>502 Bad Gateway error page that exceeds 44 bytes easily</html>"));
+        bool badDone = false;
+        bool badOk = true;
+        cache.decode(badWav, 24000, this, [&](const QByteArray &, bool ok) {
+            badDone = true;
+            badOk = ok;
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(badDone, 5000);
+        QVERIFY(!badOk);
+
+        const QString goodWav = dir.filePath(QStringLiteral("good16k.wav"));
+        QByteArray pcm16k(1600 * 2, '\0');  // 0.1 s at 16 kHz
+        auto *s16 = reinterpret_cast<qint16 *>(pcm16k.data());
+        for (int i = 0; i < 1600; ++i)
+            s16[i] = qint16(6000 * std::sin(2.0 * M_PI * 440.0 * i / 16000.0));
+        write(goodWav, Speech::wav(pcm16k, 16000));
+        bool goodDone = false;
+        bool goodOk = false;
+        QByteArray decoded;
+        cache.decode(goodWav, 24000, this, [&](const QByteArray &pcm, bool ok) {
+            goodDone = true;
+            goodOk = ok;
+            decoded = pcm;
+        });
+        QTRY_VERIFY_WITH_TIMEOUT(goodDone, 5000);
+        QVERIFY(goodOk);
+        QVERIFY2(qAbs(decoded.size() - 2400 * 2) <= 8, qPrintable(QString::number(decoded.size())));
+    }
+
+    void fixAudioAudiobookSnapshotsMetadataAcrossBookSwitch() {
+        if (QStandardPaths::findExecutable(QStringLiteral("ffmpeg")).isEmpty())
+            QSKIP("ffmpeg not installed");
+
+        QTemporaryDir dir;
+        const QString musicDir = dir.filePath(QStringLiteral("music"));
+        QVERIFY(QDir().mkpath(musicDir));
+        const QString userDirsPath = QString::fromUtf8(qgetenv("XDG_CONFIG_HOME")) + QStringLiteral("/user-dirs.dirs");
+        const bool hadUserDirs = QFile::exists(userDirsPath);
+        QByteArray prevUserDirs;
+        if (hadUserDirs) {
+            QFile f(userDirsPath);
+            if (f.open(QIODevice::ReadOnly))
+                prevUserDirs = f.readAll();
+        }
+        auto restoreUserDirs = qScopeGuard([&] {
+            if (hadUserDirs)
+                write(userDirsPath, prevUserDirs);
+            else
+                QFile::remove(userDirsPath);
+        });
+        write(userDirsPath, QStringLiteral("XDG_MUSIC_DIR=\"%1\"\n").arg(musicDir).toUtf8());
+
+        auto makeEpub = [&](const QString &fileName, const QByteArray &title, const QByteArray &author) {
+            const QByteArray opf =
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+                "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+                "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">\n"
+                "    <dc:title>" + title + "</dc:title>\n"
+                "    <dc:creator>" + author + "</dc:creator>\n"
+                "    <dc:language>en-GB</dc:language>\n"
+                "    <meta name=\"cover\" content=\"cover-image\"/>\n"
+                "  </metadata>\n"
+                "  <manifest>\n"
+                "    <item id=\"cover-image\" href=\"images/cover.png\" media-type=\"image/png\"/>\n"
+                "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+                "  </manifest>\n"
+                "  <spine><itemref idref=\"c1\"/></spine>\n"
+                "</package>";
+            const QString path = dir.filePath(fileName);
+            const bool ok = TestBooks::write(
+                path, TestBooks::epub({
+                          {"OEBPS/content.opf", opf},
+                          {"OEBPS/images/cover.png", png(32, 48)},
+                          {"OEBPS/c1.xhtml", TestBooks::chapter("Ch 1", "<p>Opening line.</p><p>Second line.</p>")},
+                      }));
+            return ok ? path : QString();
+        };
+
+        const QString pathA = makeEpub(QStringLiteral("alpha.epub"), "Alpha Voyage", "Author Alpha");
+        const QString pathB = makeEpub(QStringLiteral("beta.epub"), "Beta Chronicle", "Author Beta");
+        QVERIFY(!pathA.isEmpty() && !pathB.isEmpty());
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int idA = library.addBookFile(pathA);
+        const int idB = library.addBookFile(pathB);
+        QVERIFY(idA > 0 && idB > 0 && idA != idB);
+
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(idA));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        VoicePacks packs(dir.filePath(QStringLiteral("voices")), nullptr, QStringLiteral("aarch64"),
+                         packsManifest(QStringLiteral("http://x")));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("engine-arm"));
+        fakeInstall(dir.filePath(QStringLiteral("voices")), QStringLiteral("kokoro-fp32"));
+        LocalSpeech local(&packs, nullptr, [](const QString &) { return std::make_unique<ToneEngine>(); });
+        services.setLocalSpeech(&local);
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        narration.setVoice(QStringLiteral("builtin:kokoro:bm_george"), QStringLiteral("George"));
+
+        Download download(&services, &cache, &reader, &narration);
+        download.start(0, 0);
+        // Include a scene break so Audiobook::save() runs async silence prep before startMux().
+        download.addBlocks(0, R"([
+            {"start":0,"end":13,"text":"Opening line.","kind":"text"},
+            {"start":14,"end":19,"text":"* * *","kind":"break"},
+            {"start":20,"end":32,"text":"Second line.","kind":"text"}
+        ])");
+        QTRY_VERIFY_WITH_TIMEOUT(download.finished(), 15000);
+
+        Audiobook audiobook(&cache, &download, &reader, &library);
+        audiobook.save();
+        QVERIFY(audiobook.busy());
+        // Switch reader to Book B immediately while async prep is in flight!
+        QVERIFY(reader.openBook(idB));
+        QCOMPARE(reader.bookId(), idB);
+
+        QTRY_VERIFY_WITH_TIMEOUT(!audiobook.busy(), 15000);
+        QVERIFY2(audiobook.problem().isEmpty(), qPrintable(audiobook.problem()));
+        QVERIFY2(audiobook.saved().endsWith(QStringLiteral("Alpha Voyage.m4b")), qPrintable(audiobook.saved()));
+        QVERIFY(QFileInfo(audiobook.saved()).size() > 1000);
+        QCOMPARE(library.bookSetting(idA, QStringLiteral("audiobook_saved")), QStringLiteral("1"));
+        QVERIFY(library.bookSetting(idB, QStringLiteral("audiobook_saved")).isEmpty());
+
+        const QString ffprobe = QStandardPaths::findExecutable(QStringLiteral("ffprobe"));
+        if (!ffprobe.isEmpty()) {
+            QProcess probe;
+            probe.start(ffprobe, {QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-show_entries"),
+                                  QStringLiteral("format_tags=title,artist"), QStringLiteral("-of"),
+                                  QStringLiteral("default=noprint_wrappers=1"), audiobook.saved()});
+            QVERIFY(probe.waitForFinished(5000));
+            const QByteArray out = probe.readAllStandardOutput();
+            QVERIFY2(out.contains("TAG:title=Alpha Voyage"), out.constData());
+            QVERIFY2(out.contains("TAG:artist=Author Alpha"), out.constData());
+        }
+    }
+
+    void fixAudioVoicePacksCachedIsInstalledAndSpeechPlayerChunks() {
+        QTemporaryDir dir;
+        const QString voicesRoot = dir.filePath(QStringLiteral("voices"));
+        fakeInstall(voicesRoot, QStringLiteral("engine-arm"));
+        fakeInstall(voicesRoot, QStringLiteral("kokoro-fp32"));
+
+        VoicePacks packs(voicesRoot, nullptr, QStringLiteral("aarch64"), packsManifest(QStringLiteral("http://x")));
+        QVERIFY(packs.isInstalled(QStringLiteral("engine")));
+        QVERIFY(packs.isInstalled(QStringLiteral("kokoro-v1.0")));
+
+        // Delete ONLY the sentinel inside the subdirectory without altering voicesRoot's directory entries:
+        // cached m_installedPacks serves isInstalled() from RAM without re-statting pack marker files.
+        QVERIFY(QFile::remove(voicesRoot + QStringLiteral("/kokoro-fp32/.clothbound-installed")));
+        QVERIFY(packs.isInstalled(QStringLiteral("kokoro-v1.0")));
+        QVERIFY(packs.voice(QStringLiteral("builtin:kokoro:af_heart")).value(QStringLiteral("installed")).toBool());
+
+        // Async remove() updates cache & removes target directory path immediately without blocking.
+        packs.remove(QStringLiteral("kokoro-v1.0"));
+        QVERIFY(!packs.isInstalled(QStringLiteral("kokoro-v1.0")));
+        QVERIFY(!QFileInfo::exists(voicesRoot + QStringLiteral("/kokoro-fp32")));
+
+        // SpeechPlayer chunked appendAudio() handles odd-byte splits without shifting PCM samples.
+        SpeechPlayer player(24000);
+        player.setHeadless(true);
+        player.addTrack(7);
+        QByteArray pcm(2000 * 2, Qt::Uninitialized);
+        auto *samples = reinterpret_cast<qint16 *>(pcm.data());
+        for (int i = 0; i < 2000; ++i)
+            samples[i] = qint16(i - 1000);
+        player.appendAudio(7, pcm.left(5));
+        player.appendAudio(7, pcm.mid(5, 7));
+        player.appendAudio(7, pcm.mid(12));
+        player.finishTrack(7);
+        QCOMPARE(player.trackSamples(7), qint64(2000));
+        QVERIFY(player.trackComplete(7));
+    }
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

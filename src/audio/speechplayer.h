@@ -23,12 +23,20 @@ public:
     static constexpr int seek = 256;       // how far either way to look for a match
 
     void reset(qint64 at = 0);
+    // Preserves a unity-gain overlap tail at `at` across a mid-track rate change
+    // so changing speed does not introduce a zero-amplitude click.
+    void reseed(qint64 at, const qint16 *window, qint64 windowStart, qint64 windowLen, qint64 available);
     // Writes up to `room` samples of output from `source` (`available`
     // samples so far, `complete` when no more will come). Returns false when
     // the source is used up and the output flushed.
     bool process(const qint16 *source, qint64 available, bool complete, double rate, int room, QVector<qint16> &out);
+    // Windowed variant operating on `window[0..windowLen)` covering logical track
+    // samples `[windowStart, windowStart + windowLen)`.
+    bool processWindow(const qint16 *window, qint64 windowStart, qint64 windowLen, qint64 available, bool complete,
+                       double rate, int room, QVector<qint16> &out);
     // Where in the source the next output sample comes from.
     qint64 position() const { return qint64(m_position); }
+    qint64 previous() const { return m_previous; }
 
 private:
     double m_position = 0;
@@ -66,6 +74,7 @@ public:
     void setRate(double rate);
     void setMuted(bool muted);
     void setHeadless(bool headless);
+    bool isHeadless() const;
     double volume() const { return m_volume; }
     void setVolume(double volume);
     bool starved() const { return m_starved; }
@@ -87,7 +96,13 @@ private:
     friend class AudioOutputPump;
     struct Track {
         int id = 0;
-        QByteArray pcm;
+        // Immutable even-aligned PCM chunks so appendAudio() never detaches/deep-copies
+        // audio buffers while the WSOLA worker reads them outside m_mutex.
+        QVector<QByteArray> chunks;
+        QVector<qint64> chunkOffsets;
+        qint64 totalSamples = 0;
+        char trailingByte = 0;
+        bool hasTrailingByte = false;
         bool complete = false;
         qint64 startSample = 0;
     };
@@ -132,6 +147,7 @@ private:
     qint64 m_workerRead = 0;
     bool m_workerFinishedAll = true;
     quint64 m_generation = 0;
+    quint64 m_rateGeneration = 0;
     quint64 m_clearGeneration = 0;
     double m_rate = 1.0;
     bool m_playing = false;

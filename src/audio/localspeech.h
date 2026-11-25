@@ -104,8 +104,8 @@ public:
     int threads() const { return SherpaEngine::threads(); }
     // Records a measured pace (from the worker).
     void noteSpeed(const QString &modelKey, double speed);
-    // Stops active work and unloads the voice model synchronously on the worker
-    // thread, so its files can be removed safely.
+    // Stops active work and queues unloading the voice model on the worker thread
+    // without blocking the GUI thread.
     void unloadEngine();
     VoicePacks *packs() const { return m_packs; }
     bool packsSupported() const { return m_packs && m_packs->supported(); }
@@ -115,10 +115,14 @@ signals:
     void speedChanged();
 
 private:
+    void flushSpeeds();
+
     VoicePacks *m_packs;
     QThread m_thread;
     LocalWorker *m_worker;
     QHash<QString, double> m_speeds;
+    QHash<QString, double> m_dirtySpeeds;
     QTimer m_idleTimer;
+    QTimer m_speedSaveTimer;
     int m_activeJobs = 0;
 };

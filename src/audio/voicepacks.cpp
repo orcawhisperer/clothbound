@@ -2,6 +2,7 @@
 
 #include "audio/sherpaonnx.h"
 
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QDirIterator>
@@ -18,9 +19,11 @@
 #include <QProcess>
 #include <QSet>
 #include <QSysInfo>
+#include <QTemporaryDir>
 #include <QtConcurrent>
 #include <algorithm>
 #include <memory>
+#include <sys/stat.h>
 
 namespace {
 const QString installedMarker = QStringLiteral(".clothbound-installed");
@@ -87,12 +90,14 @@ VoicePacks::VoicePacks(const QString &directory, QObject *parent, const QString 
     }
     load(json);
     QDir().mkpath(m_directory);
+    cleanupOrphanedStaging();
+    scanInstalledPacks();
     // Seed estimates immediately from the manifest so callers never block on
     // recursive directory walks during startup, then refine off the UI thread.
     for (const Pack &pack : std::as_const(m_packs))
-        if (isInstalled(pack.id))
+        if (isInstalledCached(pack.id))
             m_packMegabytes.insert(pack.id, pack.size / (1024.0 * 1024.0));
-    if (!m_engine.url.isEmpty() && isInstalled(m_engine.id))
+    if (!m_engine.url.isEmpty() && isInstalledCached(m_engine.id))
         m_packMegabytes.insert(m_engine.id, m_engine.size / (1024.0 * 1024.0));
     recomputeMegabytes();
     if (!m_packMegabytes.isEmpty())
@@ -104,27 +109,113 @@ VoicePacks::~VoicePacks() {
     ++m_measureGeneration;
     if (m_download)
         m_download->abort();
-    if (m_tar) {
-        m_tar->disconnect(this);
-        if (m_tar->state() != QProcess::NotRunning) {
-            m_tar->kill();
-            m_tar->waitForFinished(1000);
+    if (m_tar)
+        m_dyingTars.append(m_tar);
+    for (const QPointer<QProcess> &proc : std::as_const(m_dyingTars)) {
+        if (!proc)
+            continue;
+        proc->disconnect(this);
+        if (proc->state() != QProcess::NotRunning) {
+            proc->kill();
+            proc->waitForFinished(1000);
         }
+    }
+    m_dyingTars.clear();
+    m_tar = nullptr;
+    if (m_activeStaging) {
+        QDir(m_activeStaging->path()).removeRecursively();
+        m_activeStaging.reset();
     }
     if (m_part)
         m_part->close();
     if (m_measureFuture.isRunning())
         m_measureFuture.waitForFinished();
+    if (m_trashFuture.isRunning())
+        m_trashFuture.waitForFinished();
+    for (const QString &path : std::as_const(m_pendingTrash))
+        QDir(path).removeRecursively();
+    m_pendingTrash.clear();
+}
+
+VoicePacks::DirStamp VoicePacks::readDirStamp() const {
+    struct stat st {};
+    const QByteArray native = QFile::encodeName(m_directory);
+    if (::stat(native.constData(), &st) != 0)
+        return {};
+    DirStamp stamp;
+    stamp.valid = true;
+    stamp.mtimeSec = qint64(st.st_mtim.tv_sec);
+    stamp.mtimeNsec = qint64(st.st_mtim.tv_nsec);
+    stamp.nlink = quint64(st.st_nlink);
+    stamp.ino = quint64(st.st_ino);
+    return stamp;
+}
+
+void VoicePacks::scanInstalledPacks() const {
+    m_installedPacks.clear();
+    const QDir base(m_directory);
+    auto check = [&](const Pack &p) {
+        if (p.dir.isEmpty())
+            return;
+        if (QFile::exists(base.filePath(p.dir + QLatin1Char('/') + installedMarker)) ||
+            QFile::exists(base.filePath(p.dir + QLatin1Char('/') + legacyInstalledMarker)))
+            m_installedPacks.insert(p.id);
+    };
+    if (!m_engine.url.isEmpty())
+        check(m_engine);
+    for (const Pack &p : std::as_const(m_packs))
+        check(p);
+    m_dirStamp = readDirStamp();
+}
+
+void VoicePacks::syncInstalledIfDirChanged() const {
+    const DirStamp now = readDirStamp();
+    if (!m_dirStamp.valid || now != m_dirStamp)
+        scanInstalledPacks();
+}
+
+void VoicePacks::cleanupOrphanedStaging() {
+    const QDir dir(m_directory);
+    const QStringList orphans = dir.entryList(
+        {QStringLiteral(".unpack-*"), QStringLiteral(".trash-*"), QStringLiteral(".backup-*")},
+        QDir::Dirs | QDir::Hidden | QDir::NoDotAndDotDot);
+    for (const QString &name : orphans)
+        scheduleTrashRemoval(dir.filePath(name));
+}
+
+void VoicePacks::scheduleTrashRemoval(const QString &path) {
+    if (path.isEmpty())
+        return;
+    m_pendingTrash.append(path);
+    pumpTrash();
+}
+
+void VoicePacks::pumpTrash() {
+    if (m_trashFuture.isRunning() || m_pendingTrash.isEmpty())
+        return;
+    const QStringList batch = std::exchange(m_pendingTrash, {});
+    auto *watcher = new QFutureWatcher<void>(this);
+    connect(watcher, &QFutureWatcher<void>::finished, this, [this, watcher] {
+        watcher->deleteLater();
+        if (!m_pendingTrash.isEmpty())
+            pumpTrash();
+    });
+    m_trashFuture = QtConcurrent::run([batch] {
+        for (const QString &path : batch)
+            QDir(path).removeRecursively();
+    });
+    watcher->setFuture(m_trashFuture);
 }
 
 QString VoicePacks::engineVersion() const { return QString::fromLatin1(SherpaOnnx::version); }
 
 int VoicePacks::installedVoiceCount() const {
-    if (!engineInstalled())
+    syncInstalledIfDirChanged();
+    if (!isInstalledCached(m_engine.id))
         return 0;
     int count = 0;
     for (const Voice &voice : m_voices)
-        if (isInstalled(voice.pack))
+        if (isInstalledCached(voice.pack))
             ++count;
     return count;
 }
@@ -145,11 +236,12 @@ void VoicePacks::recomputeMegabytes() {
 }
 
 void VoicePacks::measureInstalledAsync() {
+    syncInstalledIfDirChanged();
     QList<QPair<QString, QString>> targets;
-    if (!m_engine.url.isEmpty() && isInstalled(m_engine.id))
+    if (!m_engine.url.isEmpty() && isInstalledCached(m_engine.id))
         targets.append({m_engine.id, QDir(m_directory).filePath(m_engine.dir)});
     for (const Pack &pack : std::as_const(m_packs))
-        if (isInstalled(pack.id))
+        if (isInstalledCached(pack.id))
             targets.append({pack.id, QDir(m_directory).filePath(pack.dir)});
     if (targets.isEmpty())
         return;
@@ -160,8 +252,9 @@ void VoicePacks::measureInstalledAsync() {
         watcher->deleteLater();
         if (gen != m_measureGeneration)
             return;
+        syncInstalledIfDirChanged();
         for (auto it = measured.cbegin(); it != measured.cend(); ++it)
-            if (isInstalled(it.key()))
+            if (isInstalledCached(it.key()))
                 m_packMegabytes.insert(it.key(), it.value());
         recomputeMegabytes();
         emit changed();
@@ -306,12 +399,10 @@ std::optional<VoicePacks::Pack> VoicePacks::pack(const QString &packId) const {
 }
 
 bool VoicePacks::isInstalled(const QString &packId) const {
-    const auto found = pack(packId);
-    if (!found)
+    if (packId.isEmpty())
         return false;
-    const QDir base(m_directory);
-    return QFile::exists(base.filePath(found->dir + QLatin1Char('/') + installedMarker)) ||
-           QFile::exists(base.filePath(found->dir + QLatin1Char('/') + legacyInstalledMarker));
+    syncInstalledIfDirChanged();
+    return isInstalledCached(packId);
 }
 
 QString VoicePacks::engineLibrary() const {
@@ -329,7 +420,10 @@ const VoicePacks::Voice *VoicePacks::findVoice(const QString &id) const {
 
 std::optional<VoicePacks::Model> VoicePacks::model(const QString &voiceId) const {
     const Voice *voice = findVoice(voiceId);
-    if (!voice || !engineInstalled() || !isInstalled(voice->pack))
+    if (!voice)
+        return std::nullopt;
+    syncInstalledIfDirChanged();
+    if (!isInstalledCached(m_engine.id) || !isInstalledCached(voice->pack))
         return std::nullopt;
     const QString dir = QDir(m_directory).filePath(m_packs.value(voice->pack).dir);
     auto path = [&dir](const QString &file) { return file.isEmpty() ? QString() : dir + '/' + file; };
@@ -369,9 +463,9 @@ std::optional<VoicePacks::Model> VoicePacks::model(const QString &voiceId) const
 
 QVariantMap VoicePacks::toMap(const Voice &voice) const {
     qint64 bytes = 0;
-    if (!isInstalled(voice.pack))
+    if (!isInstalledCached(voice.pack))
         bytes += m_packs.value(voice.pack).size;
-    if (!engineInstalled())
+    if (!isInstalledCached(m_engine.id))
         bytes += m_engine.size;
     const bool kokoro = voice.pack == QStringLiteral("kokoro-v1.0") ||
                         (!voice.pack.startsWith(QStringLiteral("piper:")) && voice.reference.isEmpty());
@@ -404,6 +498,7 @@ QVariantMap VoicePacks::toMap(const Voice &voice) const {
 }
 
 QVariantList VoicePacks::voices(const QString &language) const {
+    syncInstalledIfDirChanged();
     const QString base = baseOf(language);
     const QString region = regionOf(language);
     QList<const Voice *> found;
@@ -414,7 +509,7 @@ QVariantList VoicePacks::voices(const QString &language) const {
         return voice->quality.isEmpty() ? gradeRank(voice->grade) : 3 + 2 * qualityRank(voice->quality);
     };
     std::stable_sort(found.begin(), found.end(), [&](const Voice *a, const Voice *b) {
-        const bool installedA = isInstalled(a->pack), installedB = isInstalled(b->pack);
+        const bool installedA = isInstalledCached(a->pack), installedB = isInstalledCached(b->pack);
         if (installedA != installedB)
             return installedA;
         const bool regionA = !region.isEmpty() && regionOf(a->language) == region;
@@ -426,6 +521,7 @@ QVariantList VoicePacks::voices(const QString &language) const {
         return score(a) > score(b);
     });
     QVariantList result;
+    result.reserve(found.size());
     for (const Voice *voice : found)
         result.append(toMap(*voice));
     return result;
@@ -433,7 +529,10 @@ QVariantList VoicePacks::voices(const QString &language) const {
 
 QVariantMap VoicePacks::voice(const QString &id) const {
     const Voice *found = findVoice(id);
-    return found ? toMap(*found) : QVariantMap();
+    if (!found)
+        return {};
+    syncInstalledIfDirChanged();
+    return toMap(*found);
 }
 
 QVariantList VoicePacks::searchVoices(const QString &query, const QString &language, bool installedOnly) const {
@@ -470,6 +569,8 @@ QVariantList VoicePacks::searchVoices(const QString &query, const QString &langu
 }
 
 QVariantList VoicePacks::languages() const {
+    syncInstalledIfDirChanged();
+    const bool engineHere = isInstalledCached(m_engine.id);
     struct LangInfo {
         QString code;
         QString name;
@@ -488,7 +589,7 @@ QVariantList VoicePacks::languages() const {
             info.name = native.isEmpty() ? base : native;
         }
         ++info.count;
-        if (engineInstalled() && isInstalled(voice.pack))
+        if (engineHere && isInstalledCached(voice.pack))
             ++info.installed;
     }
     QList<LangInfo> list = byBase.values();
@@ -648,13 +749,20 @@ void VoicePacks::download(const Pack &pack) {
         m_currentBytes = m_part->pos();
         emit progressChanged();
     });
-    connect(reply, &QNetworkReply::finished, this, [this, reply, pack, gen, writeFailed] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, pack, had, gen, started, writeFailed] {
         reply->deleteLater();
         if (gen != m_generation || reply != m_download)
             return;
         m_download = nullptr;
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
         if (!*writeFailed && status < 400 && reply->bytesAvailable() > 0 && m_part && m_part->isOpen()) {
+            if (!*started) {
+                *started = true;
+                if (had > 0 && status == 200) {
+                    m_part->resize(0);
+                    m_part->seek(0);
+                }
+            }
             const QByteArray chunk = reply->readAll();
             if (!chunk.isEmpty() && m_part->write(chunk) != chunk.size()) {
                 *writeFailed = true;
@@ -707,63 +815,103 @@ void VoicePacks::verifyAndUnpack(const Pack &pack, const QString &archive) {
             fail(tr("The download of %1 didn't match its checksum, so it was set aside. Try again.").arg(pack.title));
             return;
         }
-        // Unpacked aside, then moved into place: a half-unpacked voice is never used.
-        const QString aside = QDir(m_directory).filePath(QStringLiteral(".unpack-") + pack.dir);
-        QDir(aside).removeRecursively();
-        QDir().mkpath(aside);
+        // Unpacked into a unique per-attempt staging directory inside m_directory so
+        // cancel() + fast retry can never delete a live retry's extraction dir.
+        auto staging = std::make_shared<QTemporaryDir>(
+            QDir(m_directory).filePath(QStringLiteral(".unpack-") + pack.dir + QStringLiteral("-XXXXXX")));
+        if (!staging->isValid()) {
+            m_unpacking = false;
+            fail(tr("%1 couldn't be unpacked: couldn't create staging directory.").arg(pack.title));
+            return;
+        }
+        staging->setAutoRemove(false);
+        const QString aside = staging->path();
+        m_activeStaging = staging;
+        m_dirStamp = readDirStamp();
+
         auto *tar = new QProcess(this);
         m_tar = tar;
         auto handled = std::make_shared<bool>(false);
-        connect(tar, &QProcess::errorOccurred, this, [this, tar, pack, aside, gen, handled](QProcess::ProcessError error) {
-            if (error != QProcess::FailedToStart || *handled)
-                return;
-            *handled = true;
-            if (m_tar == tar)
-                m_tar = nullptr;
-            tar->deleteLater();
-            QDir(aside).removeRecursively();
-            if (gen != m_generation)
-                return;
-            m_unpacking = false;
-            fail(tr("%1 couldn't be unpacked: tar couldn't be started.").arg(pack.title));
-        });
+        connect(tar, &QProcess::errorOccurred, this,
+                [this, tar, pack, aside, staging, gen, handled](QProcess::ProcessError error) {
+                    if (error != QProcess::FailedToStart || *handled)
+                        return;
+                    *handled = true;
+                    if (m_tar == tar)
+                        m_tar = nullptr;
+                    m_dyingTars.removeAll(tar);
+                    if (m_activeStaging == staging)
+                        m_activeStaging.reset();
+                    tar->deleteLater();
+                    scheduleTrashRemoval(aside);
+                    if (gen != m_generation)
+                        return;
+                    m_unpacking = false;
+                    fail(tr("%1 couldn't be unpacked: tar couldn't be started.").arg(pack.title));
+                });
         connect(tar, &QProcess::finished, this,
-                [this, tar, pack, archive, aside, gen, handled](int code, QProcess::ExitStatus status) {
+                [this, tar, pack, archive, aside, staging, gen, handled](int code, QProcess::ExitStatus status) {
                     if (*handled)
                         return;
                     *handled = true;
                     if (m_tar == tar)
                         m_tar = nullptr;
+                    m_dyingTars.removeAll(tar);
+                    if (m_activeStaging == staging)
+                        m_activeStaging.reset();
                     tar->deleteLater();
                     if (gen != m_generation) {
-                        QDir(aside).removeRecursively();
+                        scheduleTrashRemoval(aside);
                         return;
                     }
                     m_unpacking = false;
+                    const QString extracted = QDir(aside).filePath(pack.dir);
                     const QString target = QDir(m_directory).filePath(pack.dir);
-                    if (code != 0 || status != QProcess::NormalExit || !QFileInfo::exists(aside + '/' + pack.dir)) {
-                        QDir(aside).removeRecursively();
+                    if (code != 0 || status != QProcess::NormalExit || !QFileInfo::exists(extracted)) {
+                        scheduleTrashRemoval(aside);
                         fail(tr("%1 couldn't be unpacked: %2")
                                  .arg(pack.title, QString::fromLocal8Bit(tar->readAllStandardError()).trimmed()));
                         return;
                     }
-                    QDir(target).removeRecursively();
-                    if (!QDir().rename(aside + '/' + pack.dir, target)) {
-                        QDir(aside).removeRecursively();
-                        fail(tr("%1 couldn't be moved into place.").arg(pack.title));
-                        return;
-                    }
-                    QDir(aside).removeRecursively();
-                    QFile marker(target + '/' + installedMarker);
+                    // Write the sentinel before swapping into place so target is never half-installed.
+                    QFile marker(extracted + QLatin1Char('/') + installedMarker);
                     const QByteArray markerData = pack.id.toUtf8() + ' ' + pack.sha256 + '\n';
                     if (!marker.open(QIODevice::WriteOnly) || marker.write(markerData) != markerData.size()) {
                         marker.close();
-                        QDir(target).removeRecursively();
+                        scheduleTrashRemoval(aside);
                         fail(tr("Couldn't finish installing %1.").arg(pack.title));
                         return;
                     }
                     marker.close();
-                    QFile::remove(target + QLatin1Char('/') + legacyInstalledMarker);
+                    QFile::remove(extracted + QLatin1Char('/') + legacyInstalledMarker);
+
+                    QString backup;
+                    if (QFileInfo::exists(target)) {
+                        emit aboutToRemove(pack.id);
+                        backup = QDir(m_directory)
+                                     .filePath(QStringLiteral(".backup-%1-%2-%3")
+                                                   .arg(pack.dir)
+                                                   .arg(QCoreApplication::applicationPid())
+                                                   .arg(++m_trashSeq));
+                        if (!QDir().rename(target, backup)) {
+                            scheduleTrashRemoval(aside);
+                            fail(tr("%1 couldn't be moved into place.").arg(pack.title));
+                            return;
+                        }
+                    }
+                    if (!QDir().rename(extracted, target)) {
+                        if (!backup.isEmpty())
+                            QDir().rename(backup, target);
+                        m_dirStamp = readDirStamp();
+                        scheduleTrashRemoval(aside);
+                        fail(tr("%1 couldn't be moved into place.").arg(pack.title));
+                        return;
+                    }
+                    m_installedPacks.insert(pack.id);
+                    m_dirStamp = readDirStamp();
+                    if (!backup.isEmpty())
+                        scheduleTrashRemoval(backup);
+                    scheduleTrashRemoval(aside);
                     QFile::remove(archive);
                     m_packMegabytes.insert(pack.id, pack.size / (1024.0 * 1024.0));
                     recomputeMegabytes();
@@ -775,7 +923,9 @@ void VoicePacks::verifyAndUnpack(const Pack &pack, const QString &archive) {
                     emit changed();
                     next();
                 });
-        tar->start(QStringLiteral("tar"), {QStringLiteral("-xjf"), archive, QStringLiteral("-C"), aside});
+        tar->start(QStringLiteral("tar"),
+                   {QStringLiteral("--no-same-owner"), QStringLiteral("--no-same-permissions"),
+                    QStringLiteral("-xjf"), archive, QStringLiteral("-C"), aside, QStringLiteral("--")});
     });
     watcher->setFuture(QtConcurrent::run([archive] {
         QFile file(archive);
@@ -812,6 +962,7 @@ void VoicePacks::cancel() {
         m_part = nullptr;
     }
     if (m_tar) {
+        m_dyingTars.append(m_tar);
         m_tar->kill();
         m_tar = nullptr;
     }
@@ -829,9 +980,20 @@ void VoicePacks::remove(const QString &packId) {
     if (!QFileInfo(target).canonicalFilePath().startsWith(QFileInfo(m_directory).canonicalFilePath() + '/'))
         return;
     emit aboutToRemove(packId);
+    m_installedPacks.remove(packId);
     m_packMegabytes.remove(packId);
     recomputeMegabytes();
-    QDir(target).removeRecursively();
+    const QString trashDir = QDir(m_directory)
+                                 .filePath(QStringLiteral(".trash-%1-%2-%3")
+                                               .arg(found->dir)
+                                               .arg(QCoreApplication::applicationPid())
+                                               .arg(++m_trashSeq));
+    if (QDir().rename(target, trashDir)) {
+        scheduleTrashRemoval(trashDir);
+    } else {
+        scheduleTrashRemoval(target);
+    }
+    m_dirStamp = readDirStamp();
     const QString archive = archivePath(*found);
     QFile::remove(archive);
     QFile::remove(archive + QStringLiteral(".part"));
@@ -839,6 +1001,7 @@ void VoicePacks::remove(const QString &packId) {
 }
 
 QVariantList VoicePacks::installedPacks() const {
+    syncInstalledIfDirChanged();
     QVariantList result;
     QList<Pack> all;
     if (!m_engine.url.isEmpty())
@@ -854,7 +1017,7 @@ QVariantList VoicePacks::installedPacks() const {
         return a.title.localeAwareCompare(b.title) < 0;
     });
     for (const Pack &pack : std::as_const(all))
-        if (!pack.url.isEmpty() && isInstalled(pack.id))
+        if (!pack.url.isEmpty() && isInstalledCached(pack.id))
             result.append(QVariantMap{{"id", pack.id},
                                       {"kind", pack.kind},
                                       {"title", pack.title},
@@ -865,8 +1028,10 @@ QVariantList VoicePacks::installedPacks() const {
 }
 
 QVariantList VoicePacks::catalogPacks() const {
+    syncInstalledIfDirChanged();
     QVariantList result;
-    const qint64 engineExtra = engineInstalled() ? 0 : m_engine.size;
+    const bool engineHere = isInstalledCached(m_engine.id);
+    const qint64 engineExtra = engineHere ? 0 : m_engine.size;
     QList<Pack> featured;
     for (const Pack &pack : std::as_const(m_packs))
         if (pack.kind == QLatin1String("kokoro") || pack.kind == QLatin1String("pocket"))
@@ -875,7 +1040,8 @@ QVariantList VoicePacks::catalogPacks() const {
         return a.kind == QLatin1String("kokoro") && b.kind != QLatin1String("kokoro");
     });
     for (const Pack &pack : std::as_const(featured)) {
-        const bool installed = engineInstalled() && isInstalled(pack.id);
+        const bool packHere = isInstalledCached(pack.id);
+        const bool installed = engineHere && packHere;
         QSet<QString> langs;
         int voices = 0;
         for (const Voice &v : m_voices) {
@@ -888,8 +1054,8 @@ QVariantList VoicePacks::catalogPacks() const {
                                   {"kind", pack.kind},
                                   {"title", pack.title},
                                   {"installed", installed},
-                                  {"packInstalled", isInstalled(pack.id)},
-                                  {"bytes", installed ? 0 : (isInstalled(pack.id) ? 0 : pack.size) + engineExtra},
+                                  {"packInstalled", packHere},
+                                  {"bytes", installed ? 0 : (packHere ? 0 : pack.size) + engineExtra},
                                   {"license", pack.license},
                                   {"voiceCount", voices},
                                   {"languageCount", int(langs.size())}});

@@ -33,14 +33,28 @@ Cast::Cast(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, 
         connect(packs, &VoicePacks::changed, this, &Cast::changed);
 }
 
-Cast::~Cast() { cancel(); }
+Cast::~Cast() {
+    m_destroying = true;
+    cancel();
+}
 
-void Cast::cancel() {
-    ++m_generation;
-    const auto replies = std::exchange(m_replies, {});
-    for (const QPointer<Ai::Reply> &reply : replies)
-        if (reply)
-            reply->abort();
+void Cast::cancel(const QObject *scope) {
+    QList<std::shared_ptr<PendingRequest>> cancelled;
+    for (qsizetype i = m_pending.size() - 1; i >= 0; --i) {
+        if (!scope || m_pending[i]->scope == scope)
+            cancelled.append(m_pending.takeAt(i));
+    }
+    std::reverse(cancelled.begin(), cancelled.end());
+    for (const auto &req : std::as_const(cancelled)) {
+        if (req->settled)
+            continue;
+        req->settled = true;
+        auto done = std::move(req->done);
+        if (req->reply)
+            req->reply->abort();
+        if (!m_destroying && req->guard && done)
+            done({});
+    }
 }
 
 QString Cast::family() const {
@@ -440,20 +454,26 @@ void Cast::ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context,
     const Ai::TextRequest question = request(chapter, blocks);
     const QString keptAs = key(blocks);
     const int count = int(blocks.size());
-    const quint64 gen = m_generation;
     const int bookId = m_reader->bookId();
     Ai::Reply *reply = model->generate(question);
     m_ai->track(reply);
-    m_replies.removeAll(nullptr);
-    m_replies.append(reply);
-    QPointer<QObject> guard(context ? context : this);
-    connect(reply, &Ai::Reply::finished, this, [this, reply, keptAs, count, gen, bookId, guard, done] {
+    auto pending = std::make_shared<PendingRequest>();
+    pending->scope = context;
+    pending->reply = reply;
+    pending->guard = context ? context : this;
+    pending->done = std::move(done);
+    m_pending.append(pending);
+    connect(reply, &Ai::Reply::finished, this, [this, reply, keptAs, count, bookId, pending] {
         reply->deleteLater();
-        m_replies.removeAll(reply);
-        if (gen != m_generation || m_reader->bookId() != bookId || !guard)
+        m_pending.removeOne(pending);
+        if (pending->settled)
             return;
-        if (reply->error()) {
-            done({});
+        pending->settled = true;
+        auto cb = std::move(pending->done);
+        if (!pending->guard || !cb)
+            return;
+        if (m_reader->bookId() != bookId || reply->error()) {
+            cb({});
             return;
         }
         const QString text = reply->result().isEmpty()
@@ -463,11 +483,11 @@ void Cast::ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context,
         const QJsonDocument doc = QJsonDocument::fromJson(text.toUtf8(), &err);
         if (err.error != QJsonParseError::NoError || !doc.isObject() ||
             !doc.object().value(QStringLiteral("lines")).isArray()) {
-            done({});
+            cb({});
             return;
         }
         m_cache->storeDirections(keptAs, text);
-        done(parse(text, count));
+        cb(parse(text, count));
     });
 }
 

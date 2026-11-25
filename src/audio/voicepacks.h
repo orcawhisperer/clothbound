@@ -6,14 +6,18 @@
 #include <QList>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
+#include <QStringList>
 #include <QUrl>
 #include <QVariantList>
+#include <memory>
 #include <optional>
 
 class QFile;
 class QNetworkAccessManager;
 class QNetworkReply;
 class QProcess;
+class QTemporaryDir;
 
 // Built-in voices as packages: the speech engine for this computer, Kokoro
 // (49 voices in 8 languages) and Piper (173 voices in 42), from a pinned
@@ -140,8 +144,23 @@ private:
         QString lang;
         QString dict;
     };
+    struct DirStamp {
+        bool valid = false;
+        qint64 mtimeSec = 0;
+        qint64 mtimeNsec = 0;
+        quint64 nlink = 0;
+        quint64 ino = 0;
+        bool operator==(const DirStamp &other) const = default;
+    };
 
     void load(const QByteArray &manifest);
+    DirStamp readDirStamp() const;
+    void scanInstalledPacks() const;
+    void syncInstalledIfDirChanged() const;
+    bool isInstalledCached(const QString &packId) const { return m_installedPacks.contains(packId); }
+    void cleanupOrphanedStaging();
+    void scheduleTrashRemoval(const QString &path);
+    void pumpTrash();
     void measureInstalledAsync();
     void recomputeMegabytes();
     int voiceCountForPack(const QString &packId) const;
@@ -160,15 +179,20 @@ private:
     QList<Voice> m_voices;
     QHash<QString, LanguageSetup> m_kokoroLanguages;
     QString m_kokoroModel;
+    mutable QSet<QString> m_installedPacks;
+    mutable DirStamp m_dirStamp;
 
     QNetworkAccessManager *m_network;
     QList<Pack> m_queue;
     QString m_waitingVoice;
     QPointer<QNetworkReply> m_download;
     QPointer<QProcess> m_tar;
+    QList<QPointer<QProcess>> m_dyingTars;
+    std::shared_ptr<QTemporaryDir> m_activeStaging;
     QFile *m_part = nullptr;
     bool m_unpacking = false;
     quint64 m_generation = 0;
+    quint64 m_trashSeq = 0;
     QString m_currentTitle;
     qint64 m_batchBytes = 0;
     qint64 m_doneBytes = 0;
@@ -178,4 +202,6 @@ private:
     QHash<QString, double> m_packMegabytes;
     QFuture<QHash<QString, double>> m_measureFuture;
     quint64 m_measureGeneration = 0;
+    QStringList m_pendingTrash;
+    QFuture<void> m_trashFuture;
 };

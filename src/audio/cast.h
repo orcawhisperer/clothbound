@@ -11,6 +11,7 @@
 #include <QSet>
 #include <QVariantList>
 #include <functional>
+#include <memory>
 #include <optional>
 
 class AiServices;
@@ -67,8 +68,8 @@ public:
     std::optional<QHash<int, QMap<int, Line>>> keptPdfBatch(int page) const;
     void ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context, std::function<void(const QMap<int, Line> &)> done);
     void askPdfBatch(int page, QObject *context, std::function<void(const QHash<int, QMap<int, Line>> &byPage)> done);
-    // Aborts any in-flight casting requests.
-    void cancel();
+    // Aborts in-flight casting requests for `scope`, or all when `scope` is null.
+    void cancel(const QObject *scope = nullptr);
     // What's known of a chapter's speakers (asked, or kept).
     void learn(int chapter, const QMap<int, Line> &lines);
     bool knows(int chapter) const { return m_lines.contains(chapter); }
@@ -102,6 +103,14 @@ private:
     void load();
     void save() const;
 
+    struct PendingRequest {
+        const QObject *scope = nullptr;
+        QPointer<Ai::Reply> reply;
+        QPointer<QObject> guard;
+        std::function<void(const QMap<int, Line> &)> done;
+        bool settled = false;
+    };
+
     AiServices *m_ai;
     AudioCache *m_cache;
     Reader *m_reader;
@@ -109,9 +118,9 @@ private:
     VoiceCatalog *m_catalog;
     VoicePacks *m_packs;
     bool m_enabled = false;
+    bool m_destroying = false;
     QString m_narrator;
-    quint64 m_generation = 0;
-    QList<QPointer<Ai::Reply>> m_replies;
+    QList<std::shared_ptr<PendingRequest>> m_pending;
     // chapter → paragraph → who
     QHash<int, QMap<int, Line>> m_lines;
     QSet<int> m_countedChapters;

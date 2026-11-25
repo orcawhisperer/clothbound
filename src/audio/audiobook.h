@@ -78,6 +78,10 @@ private:
     QString m_partial;
     QString m_target;
     QString m_ffmpegPath;
+    int m_exportBookId = 0;
+    QString m_exportTitle;
+    QString m_exportAuthor;
+    QString m_exportCoverPath;
     QStringList m_files;
     QList<Chapter> m_chapters;
     QList<PrepJob> m_prepQueue;

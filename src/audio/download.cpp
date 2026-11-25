@@ -56,8 +56,9 @@ Download::~Download() {
     m_active = false;
     m_director->cancel();
     if (m_cast)
-        m_cast->cancel();
-    const auto replies = m_replies;
+        m_cast->cancel(this);
+    m_inFlight.clear();
+    const auto replies = std::exchange(m_replies, {});
     for (const auto &reply : replies)
         if (reply)
             reply->abort();
@@ -312,10 +313,14 @@ void Download::plan(int chapter, const QList<SpeechBlock> &blocks, const QMap<in
         job.minutes = job.text.size() / charsPerMinute;
         m_plannedKeys[chapter].append(job.key);
         planned += job.minutes;
-        if (!m_cache->lookupPath(job.key).isEmpty())
+        if (!m_cache->lookupPath(job.key).isEmpty()) {
             m_minutesReady += job.minutes;  // heard or downloaded before
-        else
+        } else if (m_cache->isStoring(job.key)) {
+            m_storing.insert(job.key);
+            m_minutesReady += job.minutes;
+        } else {
             m_queue.append(job);
+        }
     }
     // The chapter's length was a guess until now.
     m_minutesTotal += planned - estimatedMinutes(chapter);
@@ -330,6 +335,17 @@ void Download::pump() {
     m_replies.removeAll(nullptr);
     while (m_replies.size() < (m_local ? 1 : parallel) && !m_queue.isEmpty()) {
         Job job = m_queue.takeFirst();
+        if (!m_cache->lookupPath(job.key).isEmpty()) {
+            m_minutesReady += job.minutes;
+            emit progressChanged();
+            continue;
+        }
+        if (m_cache->isStoring(job.key)) {
+            m_storing.insert(job.key);
+            m_minutesReady += job.minutes;
+            emit progressChanged();
+            continue;
+        }
         const double cost = m_local ? 0.0 : m_ai->listeningCost(job.minutes, m_economy, m_flex);
         if (!m_local && !m_ai->fitsBudget(cost)) {
             m_queue.prepend(job);
@@ -355,9 +371,14 @@ void Download::pump() {
         Ai::Reply *reply = speaker->synthesize(request);
         m_ai->track(reply, m_flex);
         m_replies.append(reply);
-        connect(reply, &Ai::Reply::finished, this, [this, reply, job] {
+        m_inFlight.insert(reply, job);
+        const quint64 session = m_session;
+        connect(reply, &Ai::Reply::finished, this, [this, reply, job, session] {
             reply->deleteLater();
             m_replies.removeAll(reply);
+            m_inFlight.remove(reply);
+            if (session != m_session)
+                return;
             if (reply->error())
                 failed(job, reply->error());
             else
@@ -450,7 +471,7 @@ void Download::pause() {
     m_clock.invalidate();
     m_director->cancel();
     if (m_cast)
-        m_cast->cancel();
+        m_cast->cancel(this);
     m_pendingCastBatches.clear();
     m_pendingDirectorBatches.clear();
     // Chapters still waiting on blocks/direction are replanned cleanly on resume.
@@ -459,10 +480,16 @@ void Download::pause() {
             m_replan.append(chapter);
     m_waiting.clear();
     // What's being made now is let go, and made again on resuming.
-    const auto replies = m_replies;
-    for (const auto &reply : replies)
-        if (reply)
-            reply->abort();
+    const auto replies = std::exchange(m_replies, {});
+    for (qsizetype i = replies.size() - 1; i >= 0; --i) {
+        Ai::Reply *reply = replies[i];
+        if (!reply)
+            continue;
+        if (m_inFlight.contains(reply))
+            m_queue.prepend(m_inFlight.take(reply));
+        reply->abort();
+    }
+    m_inFlight.clear();
     emit changed();
 }
 
@@ -485,12 +512,12 @@ void Download::cancel() {
     m_retry.stop();
     m_director->cancel();
     if (m_cast)
-        m_cast->cancel();
-    const auto replies = m_replies;
+        m_cast->cancel(this);
+    m_inFlight.clear();
+    const auto replies = std::exchange(m_replies, {});
     for (const auto &reply : replies)
         if (reply)
             reply->abort();
-    m_replies.clear();
     m_queue.clear();
     m_waiting.clear();
     m_replan.clear();

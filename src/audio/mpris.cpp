@@ -9,6 +9,7 @@
 #include <QDBusConnectionInterface>
 #include <QDBusMessage>
 #include <QUrl>
+#include <algorithm>
 
 namespace {
 const QString path = QStringLiteral("/org/mpris/MediaPlayer2");
@@ -32,8 +33,9 @@ Mpris::Mpris(Narration *narration, Reader *reader, Library *library, QObject *pa
 
 Mpris::~Mpris() {
     if (m_registered) {
-        QDBusConnection::sessionBus().unregisterObject(path);
-        QDBusConnection::sessionBus().unregisterService(m_service);
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        bus.unregisterService(m_service);
+        bus.unregisterObject(path);
     }
 }
 
@@ -154,10 +156,15 @@ void MprisPlayer::Pause() { m_mpris->narration()->pause(); }
 void MprisPlayer::PlayPause() { m_mpris->narration()->toggle(); }
 void MprisPlayer::Stop() { m_mpris->narration()->stop(); }
 void MprisPlayer::Play() { m_mpris->narration()->resume(); }
-void MprisPlayer::Seek(qlonglong offsetUs) { m_mpris->narration()->seekByUs(qint64(offsetUs)); }
+void MprisPlayer::Seek(qlonglong offsetUs) {
+    // Clamp extreme D-Bus Seek deltas so downstream microsecond->sample scaling cannot overflow int64.
+    constexpr qint64 maxSeekUs = 100LL * 365 * 24 * 3600 * 1000000LL;
+    m_mpris->narration()->seekByUs(std::clamp<qint64>(qint64(offsetUs), -maxSeekUs, maxSeekUs));
+}
 void MprisPlayer::SetPosition(const QDBusObjectPath &trackId, qlonglong positionUs) {
     const QDBusObjectPath current = m_mpris->metadata().value(QStringLiteral("mpris:trackid")).value<QDBusObjectPath>();
-    if (current.path().isEmpty() || trackId.path() != current.path())
+    if (current.path().isEmpty() || trackId.path() != current.path() || positionUs < 0)
         return;
-    m_mpris->narration()->seekToUs(qint64(positionUs));
+    constexpr qint64 maxPosUs = 100LL * 365 * 24 * 3600 * 1000000LL;
+    m_mpris->narration()->seekToUs(std::min<qint64>(qint64(positionUs), maxPosUs));
 }

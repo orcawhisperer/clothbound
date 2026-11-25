@@ -4,6 +4,7 @@
 #include "audio/speech.h"
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QHash>
 #include <QObject>
 #include <QPair>
@@ -207,6 +208,7 @@ private:
     void showSentenceAt(int sentence);
     int indexOfClip(int trackId) const;
     qint64 expectedSamples(const Clip &clip) const;
+    bool allRemainingComplete() const;
     void checkHeadStart();
     void setBuffering(bool buffering);
     void setProblem(const QString &problem);
@@ -300,11 +302,36 @@ private:
     int m_pendingChapter = 0;
     qint64 m_pendingOffset = 0;
 
+    struct SleepDeadline {
+        QElapsedTimer clock;
+        qint64 durationMs = 0;
+
+        bool isValid() const { return clock.isValid(); }
+        void clear() {
+            clock.invalidate();
+            durationMs = 0;
+        }
+        void startMs(qint64 ms) {
+            durationMs = ms;
+            clock.start();
+        }
+        qint64 remainingMs() const { return clock.isValid() ? (durationMs - clock.elapsed()) : 0; }
+        SleepDeadline &operator=(const QDateTime &dt) {
+            if (!dt.isValid()) {
+                clear();
+            } else {
+                durationMs = QDateTime::currentDateTime().msecsTo(dt);
+                clock.start();
+            }
+            return *this;
+        }
+    };
+
     QTimer m_directionsTimer;
     QTimer m_retryTimer;
     QTimer m_sleepTimer;
     QTimer m_sleepTick;
-    QDateTime m_sleepAt;
+    SleepDeadline m_sleepAt;
     int m_lastSleepSec = 0;
     bool m_sleepFading = false;
     bool m_sleepPausedRestore = false;

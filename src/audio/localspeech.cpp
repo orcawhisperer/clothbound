@@ -16,6 +16,7 @@
 namespace {
 constexpr int outputRate = 24000;
 constexpr int idleUnloadMs = 180000;
+constexpr int speedSaveDelayMs = 15000;
 
 QSettings settings() {
     return QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini"),
@@ -338,9 +339,13 @@ LocalSpeech::LocalSpeech(VoicePacks *packs, QObject *parent, Engines engines) : 
     m_idleTimer.setSingleShot(true);
     m_idleTimer.setInterval(idleUnloadMs);
     connect(&m_idleTimer, &QTimer::timeout, this, [this] {
+        flushSpeeds();
         if (m_activeJobs == 0 && m_thread.isRunning())
             QMetaObject::invokeMethod(m_worker, [worker = m_worker] { worker->unload(false); }, Qt::QueuedConnection);
     });
+    m_speedSaveTimer.setSingleShot(true);
+    m_speedSaveTimer.setInterval(speedSaveDelayMs);
+    connect(&m_speedSaveTimer, &QTimer::timeout, this, &LocalSpeech::flushSpeeds);
     if (m_packs)
         connect(m_packs, &VoicePacks::aboutToRemove, this, &LocalSpeech::unloadEngine);
 
@@ -352,6 +357,7 @@ LocalSpeech::LocalSpeech(VoicePacks *packs, QObject *parent, Engines engines) : 
 
 LocalSpeech::~LocalSpeech() {
     m_idleTimer.stop();
+    flushSpeeds();
     // Replies (our children) stop their work as they go.
     qDeleteAll(findChildren<Ai::Reply *>());
     m_thread.quit();
@@ -365,8 +371,17 @@ void LocalSpeech::unloadEngine() {
         if (!reply->isFinished())
             reply->abort();
     if (m_thread.isRunning())
-        QMetaObject::invokeMethod(m_worker, [worker = m_worker] { worker->unload(true); },
-                                  Qt::BlockingQueuedConnection);
+        QMetaObject::invokeMethod(m_worker, [worker = m_worker] { worker->unload(true); }, Qt::QueuedConnection);
+}
+
+void LocalSpeech::flushSpeeds() {
+    m_speedSaveTimer.stop();
+    if (m_dirtySpeeds.isEmpty())
+        return;
+    const auto dirty = std::exchange(m_dirtySpeeds, {});
+    QSettings s = settings();
+    for (auto it = dirty.cbegin(); it != dirty.cend(); ++it)
+        s.setValue(QStringLiteral("builtinSpeed/") + QString(it.key()).replace(':', '|'), it.value());
 }
 
 QString LocalSpeech::speechModelName(bool) const { return QStringLiteral("sherpa-onnx-") + QLatin1String(SherpaOnnx::version); }
@@ -461,8 +476,9 @@ void LocalSpeech::noteSpeed(const QString &modelKey, double speed) {
     const double before = m_speeds.value(modelKey);
     const double now = before > 0 ? 0.7 * before + 0.3 * speed : speed;
     m_speeds.insert(modelKey, now);
-    QSettings s = settings();
-    s.setValue(QStringLiteral("builtinSpeed/") + QString(modelKey).replace(':', '|'), now);
+    m_dirtySpeeds.insert(modelKey, now);
+    if (!m_speedSaveTimer.isActive())
+        m_speedSaveTimer.start();
     emit speedChanged();
 }
 

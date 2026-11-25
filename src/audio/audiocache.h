@@ -10,6 +10,7 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QTimer>
 #include <functional>
 
 class QProcess;
@@ -94,6 +95,9 @@ private:
     void syncStats();
     bool hasBoundaries() const;
     void cleanupPartials();
+    void cleanupOrphanedTrash();
+    void flushTouches();
+    void pumpTrash();
     void indexClip(const QString &key, const QString &name, double seconds, const QString &joined);
     void pumpEncodes();
     void pumpDecodes();
@@ -106,7 +110,12 @@ private:
     int m_clipCount = 0;
     bool m_clearing = false;
     quint64 m_clearGen = 0;
+    quint64 m_trashSeq = 0;
+    QStringList m_pendingTrash;
     QFuture<void> m_clearFuture;
+    QFuture<void> m_orphanFuture;
+    QHash<QString, qint64> m_pendingTouches;
+    QTimer m_touchTimer;
     QList<EncodeJob> m_encodeQueue;
     QList<DecodeJob> m_decodeQueue;
     QHash<QProcess *, QString> m_encodePartials;
