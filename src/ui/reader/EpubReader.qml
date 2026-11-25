@@ -65,12 +65,17 @@ FocusScope {
     readonly property var pdfSurface: pdfLoader.item
     readonly property alias listenBar: listenBar
     // Companion docks beside the page on wide screens without a blocking scrim (04_companion).
-    // Wait until the drawer slide settles so WebEngine / PDF never resize & reflow mid-animation.
+    // PDFs track the drawer's slideProgress smoothly on the GPU (deferring crisp re-raster
+    // until settled); EPUBs glide via zero-reflow GPU translation and commit one clean
+    // WebEngine reflow on settle so neither surface snaps robotically.
     readonly property bool companionDocked: companionPanel.settledOpen && view.width >= 860
+    readonly property bool companionSliding: companionPanel.sliding && view.width >= 860
     readonly property bool companionResizing: Boolean(companionPanel["resizing"])
-    readonly property real companionDockWidth: companionDocked
-                                               ? Math.max(0, Math.min(Math.max(0, view.width - 320), companionPanel.width))
-                                               : 0
+    readonly property real companionTargetWidth: view.width >= 860
+                                                 ? Math.max(0, Math.min(Math.max(0, view.width - 320), companionPanel.width))
+                                                 : 0
+    readonly property real companionLiveDockWidth: companionTargetWidth * companionPanel.slideProgress
+    readonly property real companionDockWidth: companionDocked ? companionTargetWidth : 0
     readonly property bool modalPanelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
                                            || marksPanel.open || noteEditor.open || (companionPanel.open && view.width < 860)
     readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
@@ -560,6 +565,24 @@ FocusScope {
         view.lastCompanionTarget = null
         decoratedChapter = -1
         closeWebSurface()
+    }
+    // Dismiss transient reader overlays when stepping back to the Library while
+    // audio continues playing, keeping the book and WebEngine surface alive.
+    function leaveForLibrary() {
+        listenOffer.close()
+        menus.closeAll()
+        closePanels()
+        if (searchBar.open)
+            searchBar.close()
+        lightbox.close()
+        if (pdfSurface) {
+            pdfSurface.cancelSnip()
+            pdfSurface.closePeek()
+            pdfSurface.clearSelection()
+        }
+        chromeShown = false
+        selectionBar.visible = false
+        view.selection = ({})
     }
     function toggleSnipMode() {
         if (!pdf || !reader.open || !pdfSurface)
@@ -1232,7 +1255,7 @@ FocusScope {
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         anchors.right: parent.right
-        anchors.rightMargin: view.companionDockWidth
+        anchors.rightMargin: view.pdf ? Math.round(view.companionLiveDockWidth) : view.companionDockWidth
 
         Loader {
             id: pdfLoader
@@ -1244,6 +1267,7 @@ FocusScope {
                 id: pdfSurfaceItem
                 anchors.fill: parent
                 look: view.look
+                liveResizing: view.companionSliding || view.companionResizing
                 onContextMenuRequested: (x, y) => {
                     const place = pdfSurfaceItem.placeAt(x, y)
                     if (!place)
@@ -1264,8 +1288,15 @@ FocusScope {
 
         Loader {
             id: webLoader
+            readonly property real epubDockGlide: (!view.pdf && view.companionSliding && !theme.reducedMotion)
+                                                  ? (view.companionDocked
+                                                     ? Math.round(view.companionTargetWidth * (1 - companionPanel.slideProgress) / 2)
+                                                     : -Math.round(view.companionTargetWidth * companionPanel.slideProgress / 2))
+                                                  : 0
             anchors.left: parent.left
             anchors.right: parent.right
+            anchors.leftMargin: epubDockGlide
+            anchors.rightMargin: -epubDockGlide
             anchors.top: parent.top
             anchors.bottom: parent.bottom
             anchors.bottomMargin: view.surfaceNudge && parent.height > 2 ? 1 : 0
@@ -1307,22 +1338,45 @@ FocusScope {
             }
         }
 
-        // Reveal reading chrome on pointer movement (2 s idle fade, 09:628).
-        // When a PDF is zoomed in, only reveal chrome when approaching the top
-        // or bottom edge so panning/reading never pops overlays over text.
+        // Reveal reading chrome consistently: moving into the top 56 px edge
+        // ALWAYS reveals the top bar (including while listening or in zoomed /
+        // Fit-to-Width PDFs), while mid-page pointer drift stays quiet during
+        // listening or PDF panning so text is never obscured.
         property real lastPointerX: -1
         property real lastPointerY: -1
         HoverHandler {
             id: pointerWatch
+            onHoveredChanged: {
+                if (!hovered) {
+                    readingStage.lastPointerX = -1
+                    readingStage.lastPointerY = -1
+                    return
+                }
+                const py = point.position.y
+                if (py <= 56 && !view.modalPanelOpen && !lightbox.open
+                    && !(view.pdf && pdfSurface && (pdfSurface.snipMode || pdfSurface.peekOpen)))
+                    view.showChrome()
+            }
             onPointChanged: {
                 const px = point.position.x, py = point.position.y
-                if (readingStage.lastPointerX >= 0 && !view.modalPanelOpen && !narration.active && !lightbox.open
-                    && !(view.pdf && pdfSurface && (pdfSurface.snipMode || pdfSurface.peekOpen))) {
+                const canReveal = !view.modalPanelOpen && !lightbox.open
+                                  && !(view.pdf && pdfSurface && (pdfSurface.snipMode || pdfSurface.peekOpen))
+                if (canReveal) {
+                    const nearTopEdge = py <= 56
+                    const nearBottomEdge = py >= readingStage.height - 84
                     const zoomedPdf = view.pdf && pdfSurface && pdfSurface.zoomedIn
-                    const nearEdge = py <= 64 || py >= readingStage.height - 84
-                    const dist = Math.hypot(px - readingStage.lastPointerX, py - readingStage.lastPointerY)
-                    if (dist >= 6 && (!zoomedPdf || nearEdge))
-                        view.showChrome()
+                    if (nearTopEdge) {
+                        if (readingStage.lastPointerX < 0 || Math.hypot(px - readingStage.lastPointerX, py - readingStage.lastPointerY) >= 2)
+                            view.showChrome()
+                    } else if (readingStage.lastPointerX >= 0 && !narration.active) {
+                        const dist = Math.hypot(px - readingStage.lastPointerX, py - readingStage.lastPointerY)
+                        if (zoomedPdf) {
+                            if (nearBottomEdge && dist >= 4)
+                                view.showChrome()
+                        } else if (dist >= 6) {
+                            view.showChrome()
+                        }
+                    }
                 }
                 readingStage.lastPointerX = px
                 readingStage.lastPointerY = py
@@ -1680,7 +1734,7 @@ FocusScope {
 
     Loader {
         id: listenBar
-        active: narration.active
+        active: narration.active && view.enabled
         readonly property var loaded: item
         readonly property bool menuOpen: loaded ? !!loaded.menuOpen : false
         // Preserve height on Loader for Main.qml's Toast bottomClearance binding.
@@ -1846,17 +1900,17 @@ FocusScope {
 
     // --- Keys ----------------------------------------------------------------
     readonly property bool modalOpen: win.helpVisible || settingsView.open || welcome.open || (typeof commandPalette !== "undefined" && commandPalette.open)
-    readonly property bool keys: reader.open && visible && !modalPanelOpen && !modalOpen && !win.typing && !lightbox.open && !(pdf && pdfSurface && pdfSurface.snipMode)
+    readonly property bool keys: reader.open && enabled && visible && !modalPanelOpen && !modalOpen && !win.typing && !lightbox.open && !(pdf && pdfSurface && pdfSurface.snipMode)
     // Listening keys work with a panel open too, unless a field is taking typing.
     readonly property bool typing: win.typing
-    readonly property bool listenKeys: reader.open && visible && !modalOpen && !win.typing && !lightbox.open
+    readonly property bool listenKeys: reader.open && enabled && visible && !modalOpen && !win.typing && !lightbox.open
     Shortcut {
         sequence: "C"
         context: Qt.ApplicationShortcut
-        enabled: view.keys || (reader.open && view.visible && companionPanel.open && !view.modalOpen && !win.typing && !lightbox.open)
+        enabled: view.keys || (reader.open && view.enabled && view.visible && companionPanel.open && !view.modalOpen && !win.typing && !lightbox.open)
         onActivated: companionPanel.open ? companionPanel.close() : view.showCompanion("ask")
     }
-    Shortcut { sequence: "X"; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && view.pdf && !view.modalPanelOpen && !view.modalOpen && !win.typing && !lightbox.open; onActivated: view.toggleSnipMode() }
+    Shortcut { sequence: "X"; context: Qt.ApplicationShortcut; enabled: reader.open && view.enabled && view.visible && view.pdf && !view.modalPanelOpen && !view.modalOpen && !win.typing && !lightbox.open; onActivated: view.toggleSnipMode() }
     Shortcut { sequence: "Right"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.prev() : view.next() }
     Shortcut { sequence: "Left"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: reader.rtl ? view.next() : view.prev() }
     Shortcut { sequence: "Down"; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.scrollVertical(1) }
@@ -1874,13 +1928,13 @@ FocusScope {
     Shortcut {
         sequence: "T"
         context: Qt.ApplicationShortcut
-        enabled: view.keys || (reader.open && view.visible && contents.open && !view.modalOpen && !win.typing && !lightbox.open)
+        enabled: view.keys || (reader.open && view.enabled && view.visible && contents.open && !view.modalOpen && !win.typing && !lightbox.open)
         onActivated: contents.open ? contents.close() : view.showContents()
     }
     Shortcut {
         sequence: "A"
         context: Qt.ApplicationShortcut
-        enabled: view.keys || (reader.open && view.visible && appearance.open && !view.modalOpen && !win.typing && !lightbox.open)
+        enabled: view.keys || (reader.open && view.enabled && view.visible && appearance.open && !view.modalOpen && !win.typing && !lightbox.open)
         onActivated: appearance.open ? appearance.close() : view.showAppearance()
     }
     Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: goTo.show() }
@@ -1888,22 +1942,22 @@ FocusScope {
     Shortcut {
         sequence: "M"
         context: Qt.ApplicationShortcut
-        enabled: view.keys || (reader.open && view.visible && marksPanel.open && !view.modalOpen && !win.typing && !lightbox.open)
+        enabled: view.keys || (reader.open && view.enabled && view.visible && marksPanel.open && !view.modalOpen && !win.typing && !lightbox.open)
         onActivated: marksPanel.open ? marksPanel.close() : view.showMarks()
     }
     Shortcut { sequences: [StandardKey.Redo]; context: Qt.ApplicationShortcut; enabled: view.keys && marks.canRedo; onActivated: marks.redo() }
-    Shortcut { sequences: [StandardKey.Copy]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && view.pdf && !!pdfSurface && !!pdfSurface.selection && !view.modalOpen && !win.typing; onActivated: { reader.copyText(pdfSurface.selection.text); toast.show(qsTr("Copied")) } }
+    Shortcut { sequences: [StandardKey.Copy]; context: Qt.ApplicationShortcut; enabled: reader.open && view.enabled && view.visible && view.pdf && !!pdfSurface && !!pdfSurface.selection && !view.modalOpen && !win.typing; onActivated: { reader.copyText(pdfSurface.selection.text); toast.show(qsTr("Copied")) } }
     Shortcut { sequences: ["/", StandardKey.Find]; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: searchBar.show() }
     Shortcut { sequence: "N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.next() }
     Shortcut { sequence: "Shift+N"; context: Qt.ApplicationShortcut; enabled: view.keys && bookSearch.count > 0; onActivated: searchBar.previous() }
     Shortcut { sequence: "D"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.cycleTheme() }
-    Shortcut { sequences: ["+", "=", "Ctrl++", "Ctrl+="]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0.05) }
-    Shortcut { sequences: ["-", "Ctrl+-"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(-0.05) }
-    Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0) }
+    Shortcut { sequences: ["+", "=", "Ctrl++", "Ctrl+="]; context: Qt.ApplicationShortcut; enabled: reader.open && view.enabled && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0.05) }
+    Shortcut { sequences: ["-", "Ctrl+-"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.enabled && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(-0.05) }
+    Shortcut { sequences: ["0", "Ctrl+0"]; context: Qt.ApplicationShortcut; enabled: reader.open && view.enabled && view.visible && !view.modalOpen && !win.typing; onActivated: view.resize(0) }
     Shortcut { sequence: "W"; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.setPdfFit("width", true) }
     Shortcut { sequences: ["1", "Ctrl+1"]; context: Qt.ApplicationShortcut; enabled: view.keys && view.pdf; onActivated: view.setPdfFit("actual", true) }
     Shortcut { sequence: "Tab"; context: Qt.ApplicationShortcut; enabled: view.keys && view.readingViewportFocused; onActivated: view.chromeShown ? (view.chromeShown = false) : view.showChrome() }
-    Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: reader.open && view.visible && !view.modalOpen; onActivated: view.dismiss() }
+    Shortcut { sequence: "Esc"; context: Qt.ApplicationShortcut; enabled: reader.open && view.enabled && view.visible && !view.modalOpen; onActivated: view.dismiss() }
     // Listening.
     // P listens from the page in view, then pauses and goes on; ⇧P stops.
     Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: view.listenKeys; onActivated: narration.active ? narration.toggle() : view.listen() }
@@ -1911,14 +1965,14 @@ FocusScope {
     Shortcut {
         sequence: "V"
         context: Qt.ApplicationShortcut
-        enabled: view.keys || (reader.open && view.visible && voicePanel.open && !view.modalOpen && !win.typing && !lightbox.open)
+        enabled: view.keys || (reader.open && view.enabled && view.visible && voicePanel.open && !view.modalOpen && !win.typing && !lightbox.open)
         onActivated: voicePanel.open ? voicePanel.close() : view.showVoices()
     }
     Shortcut { sequence: ","; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.previousParagraph() }
     Shortcut { sequence: "."; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.nextParagraph() }
     Shortcut { sequences: ["<", "Shift+,"]; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.rate = narration.rate - 0.1 }
     Shortcut { sequences: [">", "Shift+."]; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.rate = narration.rate + 0.1 }
-    Shortcut { sequence: "Media Play"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.resume() }
-    Shortcut { sequence: "Media Pause"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.pause() }
-    Shortcut { sequence: "Toggle Media Play/Pause"; context: Qt.ApplicationShortcut; enabled: narration.active; onActivated: narration.toggle() }
+    Shortcut { sequence: "Media Play"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.resume() }
+    Shortcut { sequence: "Media Pause"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.pause() }
+    Shortcut { sequence: "Toggle Media Play/Pause"; context: Qt.ApplicationShortcut; enabled: view.listenKeys && narration.active; onActivated: narration.toggle() }
 }

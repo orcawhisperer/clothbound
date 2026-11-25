@@ -6,6 +6,7 @@
 
 #include <QBuffer>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -32,7 +33,9 @@ namespace {
 constexpr qint64 kMaxFeedBytes = 10LL * 1024 * 1024;   // 10 MB
 constexpr qint64 kMaxBookBytes = 200LL * 1024 * 1024;  // 200 MB
 constexpr int kMaxRedirects = 5;
-constexpr int kTransferTimeoutMs = 30000;
+constexpr int kTransferTimeoutMs = 45000;              // Slow public catalogs (e.g. Open Library)
+constexpr qint64 kFeedCacheTtlMs = 5LL * 60 * 1000;    // 5-minute in-memory LRU for instant Back/revisit
+constexpr int kFeedCacheMaxEntries = 32;
 
 int effectivePort(const QUrl &url) {
     const int p = url.port(-1);
@@ -573,6 +576,7 @@ bool OpdsClient::updateCatalogCredentials(const QString &catalogId,
         m_authRequired = false;
         emit feedChanged();
     }
+    invalidateCatalogCache(catalogId);
     emit catalogsChanged();
     return true;
 }
@@ -621,6 +625,7 @@ bool OpdsClient::removeCatalog(const QString &catalogId) {
         m_keyStore->removeLater(secretKeyFor(catalogId));
 
     saveSettings();
+    invalidateCatalogCache(catalogId);
 
     if (m_activeCatalogId == catalogId) {
         abortActiveFeedRequest();
@@ -736,6 +741,88 @@ QList<QPair<QByteArray, QByteArray>> OpdsClient::authHeadersIfAllowed(const QUrl
     return {{QByteArrayLiteral("Authorization"), QByteArrayLiteral("Basic ") + token}};
 }
 
+QString OpdsClient::feedCacheKey(const QString &catalogId, const QUrl &url) const {
+    return catalogId + QLatin1Char('\n') + url.toString(QUrl::FullyEncoded);
+}
+
+void OpdsClient::invalidateCatalogCache(const QString &catalogId) {
+    const QString prefix = catalogId + QLatin1Char('\n');
+    for (auto it = m_feedCache.begin(); it != m_feedCache.end();) {
+        if (it.key().startsWith(prefix))
+            it = m_feedCache.erase(it);
+        else
+            ++it;
+    }
+    m_feedCacheOrder.removeIf([&prefix](const QString &k) { return k.startsWith(prefix); });
+}
+
+void OpdsClient::storeCachedFeed(const QString &catalogId, const QUrl &requestUrl, const QUrl &effectiveUrl,
+                                 const OpdsFeed &feed) {
+    if (catalogId.isEmpty() || !feed.isValid())
+        return;
+    const QString key = feedCacheKey(catalogId, requestUrl);
+    m_feedCache.insert(key, CachedFeed{feed, effectiveUrl, QDateTime::currentMSecsSinceEpoch()});
+    m_feedCacheOrder.removeAll(key);
+    m_feedCacheOrder.append(key);
+    while (m_feedCacheOrder.size() > kFeedCacheMaxEntries) {
+        const QString oldest = m_feedCacheOrder.takeFirst();
+        m_feedCache.remove(oldest);
+    }
+}
+
+bool OpdsClient::tryServeCachedFeed(const QString &catalogId, const QUrl &url) {
+    const QString key = feedCacheKey(catalogId, url);
+    const auto it = m_feedCache.constFind(key);
+    if (it == m_feedCache.constEnd())
+        return false;
+    const qint64 ageMs = QDateTime::currentMSecsSinceEpoch() - it->fetchedAtMs;
+    if (ageMs < 0 || ageMs > kFeedCacheTtlMs) {
+        m_feedCache.remove(key);
+        m_feedCacheOrder.removeAll(key);
+        return false;
+    }
+    // Touch LRU order.
+    m_feedCacheOrder.removeAll(key);
+    m_feedCacheOrder.append(key);
+    const CachedFeed hit = *it;
+    m_loading = false;
+    m_loadingMore = false;
+    applyParsedFeed(hit.feed, hit.effectiveUrl.isValid() ? hit.effectiveUrl : url, false);
+    emit loadingChanged();
+    emit feedChanged();
+    return true;
+}
+
+void OpdsClient::applyParsedFeed(const OpdsFeed &parsed, const QUrl &effectiveUrl, bool appendMode) {
+    m_authRequired = false;
+    m_error.clear();
+
+    if (!appendMode) {
+        if (!parsed.title.isEmpty()) {
+            m_feedTitle = parsed.title;
+            if (!m_history.isEmpty() && m_history.last().title == m_history.last().url)
+                m_history.last().title = parsed.title;
+        }
+        m_entries.clear();
+        m_entries.reserve(parsed.entries.size());
+        for (const OpdsEntry &e : parsed.entries)
+            m_entries.append(e.toVariantMap());
+
+        m_searchUrl = parsed.searchUrl;
+        m_searchTemplated = parsed.searchTemplated;
+        if (m_history.size() == 1 && !parsed.searchUrl.isEmpty()) {
+            m_catalogSearchUrl = parsed.searchUrl;
+            m_catalogSearchTemplated = parsed.searchTemplated;
+        }
+    } else {
+        for (const OpdsEntry &e : parsed.entries)
+            m_entries.append(e.toVariantMap());
+    }
+
+    const QString reqEncoded = effectiveUrl.toString(QUrl::FullyEncoded);
+    m_nextUrl = (!parsed.nextUrl.isEmpty() && parsed.nextUrl != reqEncoded) ? parsed.nextUrl : QString();
+}
+
 void OpdsClient::openCatalog(const QString &catalogId) {
     const Catalog *cat = findCatalog(catalogId);
     if (!cat) {
@@ -768,6 +855,10 @@ void OpdsClient::openCatalog(const QString &catalogId) {
     m_authRequired = false;
     m_authHint = cat->authHint;
     m_error.clear();
+
+    if (tryServeCachedFeed(cat->id, url))
+        return;
+
     m_loading = true;
     m_loadingMore = false;
     emit loadingChanged();
@@ -799,6 +890,10 @@ void OpdsClient::navigate(const QString &url, const QString &title) {
     m_pendingOpenSearchUrl.clear();
     m_authRequired = false;
     m_error.clear();
+
+    if (tryServeCachedFeed(m_activeCatalogId, target))
+        return;
+
     m_loading = true;
     m_loadingMore = false;
     emit loadingChanged();
@@ -826,6 +921,10 @@ void OpdsClient::goBack() {
     m_pendingOpenSearchUrl.clear();
     m_authRequired = false;
     m_error.clear();
+
+    if (tryServeCachedFeed(m_activeCatalogId, target))
+        return;
+
     m_loading = true;
     m_loadingMore = false;
     emit loadingChanged();
@@ -853,6 +952,10 @@ void OpdsClient::navigateBreadcrumb(int index) {
     m_pendingOpenSearchUrl.clear();
     m_authRequired = false;
     m_error.clear();
+
+    if (tryServeCachedFeed(m_activeCatalogId, target))
+        return;
+
     m_loading = true;
     m_loadingMore = false;
     emit loadingChanged();
@@ -973,6 +1076,11 @@ void OpdsClient::retry() {
         return;
     }
 
+    // Explicit retry always bypasses any cached copy for this URL.
+    const QString cacheKey = feedCacheKey(m_activeCatalogId, target);
+    m_feedCache.remove(cacheKey);
+    m_feedCacheOrder.removeAll(cacheKey);
+
     abortActiveFeedRequest();
     m_authRequired = false;
     m_error.clear();
@@ -988,7 +1096,7 @@ void OpdsClient::retry() {
     });
 }
 
-void OpdsClient::fetchFeed(const QUrl &url, bool appendMode, const QUrl &initialOrigin) {
+void OpdsClient::fetchFeed(const QUrl &url, bool appendMode, const QUrl &initialOrigin, int retriesLeft) {
     const Catalog *cat = findCatalog(m_activeCatalogId);
     const bool allowLocal = cat ? cat->allowLocalNetwork : false;
     const QUrl catalogOrigin = cat ? QUrl(cat->url) : url;
@@ -1022,7 +1130,7 @@ void OpdsClient::fetchFeed(const QUrl &url, bool appendMode, const QUrl &initial
     auto reqPtr = std::make_shared<QPointer<PinnedHttpRequest>>();
     PinnedHttpRequest *req = UrlGuard::fetchPinned(
         std::move(opts),
-        [this, reqPtr, url, appendMode, gen](PinnedHttpResponse resp) {
+        [this, reqPtr, url, appendMode, initialOrigin, catalogId, gen, retriesLeft](PinnedHttpResponse resp) {
             if (*reqPtr) {
                 if (m_activeFeedRequest == *reqPtr)
                     m_activeFeedRequest = nullptr;
@@ -1045,6 +1153,16 @@ void OpdsClient::fetchFeed(const QUrl &url, bool appendMode, const QUrl &initial
                 m_error = tr("Too many redirects while loading this catalog.");
                 emit loadingChanged();
                 emit feedChanged();
+                return;
+            }
+
+            // Automatic 1-shot retry for transient network timeouts/resets on idempotent GETs
+            // (common on slow public catalogs like Open Library).
+            const bool transientNetworkFailure =
+                !resp.ok && resp.httpStatus == 0 && !resp.blockedByGuard && !resp.sizeExceeded &&
+                !resp.tooManyRedirects && retriesLeft > 0;
+            if (transientNetworkFailure) {
+                fetchFeed(url, appendMode, initialOrigin, retriesLeft - 1);
                 return;
             }
 
@@ -1087,33 +1205,9 @@ void OpdsClient::fetchFeed(const QUrl &url, bool appendMode, const QUrl &initial
                 return;
             }
 
-            m_authRequired = false;
-            m_error.clear();
-
-            if (!appendMode) {
-                if (!parsed.title.isEmpty()) {
-                    m_feedTitle = parsed.title;
-                    if (!m_history.isEmpty() && m_history.last().title == m_history.last().url)
-                        m_history.last().title = parsed.title;
-                }
-                m_entries.clear();
-                m_entries.reserve(parsed.entries.size());
-                for (const OpdsEntry &e : parsed.entries)
-                    m_entries.append(e.toVariantMap());
-
-                m_searchUrl = parsed.searchUrl;
-                m_searchTemplated = parsed.searchTemplated;
-                if (m_history.size() == 1 && !parsed.searchUrl.isEmpty()) {
-                    m_catalogSearchUrl = parsed.searchUrl;
-                    m_catalogSearchTemplated = parsed.searchTemplated;
-                }
-            } else {
-                for (const OpdsEntry &e : parsed.entries)
-                    m_entries.append(e.toVariantMap());
-            }
-
-            const QString reqEncoded = effectiveUrl.toString(QUrl::FullyEncoded);
-            m_nextUrl = (!parsed.nextUrl.isEmpty() && parsed.nextUrl != reqEncoded) ? parsed.nextUrl : QString();
+            if (!appendMode)
+                storeCachedFeed(catalogId, url, effectiveUrl, parsed);
+            applyParsedFeed(parsed, effectiveUrl, appendMode);
 
             emit loadingChanged();
             emit feedChanged();

@@ -3101,3 +3101,39 @@ void ClothboundTests::w5AudioSpeechPlayerConcurrencyStress() {
     QCoreApplication::processEvents();
     QVERIFY2(recoveredSamples > sineSamples / 2, qPrintable(QString::number(recoveredSamples)));
 }
+
+void ClothboundTests::speechPlayerLiveResetAndReentrancySafety() {
+    // 1. Source-level guard against the AudioOutputPump::resetPlayback() SIGSEGV
+    //    where Qt 6's PipeWire backend destroyed the old QIODevice during reset()
+    //    and synchronously emitted stateChanged(IdleState) before start() returned.
+    const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+    QVERIFY(!srcRoot.isEmpty());
+    QFile f(srcRoot + QStringLiteral("/audio/speechplayer.cpp"));
+    QVERIFY(f.open(QIODevice::ReadOnly));
+    const QString src = QString::fromUtf8(f.readAll());
+    QVERIFY(src.contains(QStringLiteral("QPointer<QIODevice> m_out")));
+    QVERIFY(src.contains(QStringLiteral("QPointer<QAudioSink> m_sink")));
+    QVERIFY(src.contains(QStringLiteral("const QSignalBlocker blocker(m_sink)")));
+    QVERIFY(src.contains(QStringLiteral("AudioOutputPump::recoverFromSinkError")));
+
+    // 2. Exercise rapid live play/clear/setRate cycles (muted) so AudioOutputPump's
+    //    real resetPlayback(clearGen, playingNow=true) path runs on ClothboundAudio
+    //    whenever a system audio sink exists (and degrades safely on headless CI).
+    SpeechPlayer player(24000);
+    player.setMuted(true);
+    QByteArray pcm(24000 / 5 * 2, '\0');  // 200 ms silent PCM
+    for (int i = 0; i < 20; ++i) {
+        player.addTrack(i + 1);
+        player.appendAudio(i + 1, pcm);
+        player.finishTrack(i + 1);
+        player.play();
+        QCoreApplication::processEvents();
+        QThread::msleep(5);
+        player.setRate(1.0 + 0.05 * (i % 5));
+        player.clear();
+        QCoreApplication::processEvents();
+    }
+    player.pause();
+    player.clear();
+    QCoreApplication::processEvents();
+}

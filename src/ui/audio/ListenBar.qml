@@ -39,6 +39,7 @@ Rectangle {
 
     signal voiceRequested()
     signal followRequested()
+    signal openBookRequested()
 
     // Always-dark warm charcoal palette.
     readonly property color deckBg: Qt.rgba(28 / 255, 27 / 255, 25 / 255, 0.94)
@@ -276,20 +277,38 @@ Rectangle {
                     anchors.rightMargin: 7
                     spacing: 6
 
-                    // Optional compact cover when shown outside the reader.
-                    Item {
+                    // Optional compact cover when shown outside the reader (clicks back into the book).
+                    AbstractButton {
+                        id: restCoverBtn
                         visible: bar.showBookInfo
-                        Layout.preferredWidth: 20
-                        Layout.preferredHeight: 28
+                        Layout.preferredWidth: 22
+                        Layout.preferredHeight: 30
                         Layout.leftMargin: 2
                         Layout.alignment: Qt.AlignVCenter
-                        CoverImage {
-                            anchors.fill: parent
-                            source: reader.bookId > 0 ? library.coverUrl(reader.bookId) : ""
-                            title: reader.title
-                            author: reader.author
-                            radius: Ui.radius(3, theme.radius)
+                        hoverEnabled: true
+                        focusPolicy: Qt.TabFocus
+                        Accessible.name: qsTr("Back to the book")
+                        onClicked: bar.openBookRequested()
+                        background: Rectangle {
+                            radius: Ui.radius(4, theme.radius)
+                            color: "transparent"
+                            border.width: restCoverBtn.visualFocus ? 2 : 0
+                            border.color: theme.accent
                         }
+                        contentItem: Item {
+                            CoverImage {
+                                anchors.fill: parent
+                                anchors.margins: 1
+                                source: reader.bookId > 0 ? library.coverUrl(reader.bookId) : ""
+                                title: reader.title
+                                author: reader.author
+                                radius: Ui.radius(3, theme.radius)
+                            }
+                        }
+                        HoverHandler { cursorShape: Qt.PointingHandCursor }
+                        ToolTip.visible: hovered && !bar.expanded
+                        ToolTip.text: qsTr("Back to the book")
+                        ToolTip.delay: 500
                     }
 
                     // 32 px concentric accent Play/Pause circle.
@@ -686,25 +705,42 @@ Rectangle {
                         spacing: 6
                         clip: true
 
-                        Item {
+                        AbstractButton {
+                            id: expCoverBtn
                             visible: bar.showBookInfo
                             Layout.preferredWidth: 24
                             Layout.preferredHeight: 34
                             Layout.alignment: Qt.AlignVCenter
-                            CoverImage {
-                                anchors.fill: parent
-                                source: reader.bookId > 0 ? library.coverUrl(reader.bookId) : ""
-                                title: reader.title
-                                author: reader.author
-                                radius: Ui.radius(3, theme.radius)
+                            hoverEnabled: true
+                            focusPolicy: Qt.TabFocus
+                            Accessible.name: qsTr("Back to the book")
+                            onClicked: bar.openBookRequested()
+                            background: Rectangle {
+                                radius: Ui.radius(4, theme.radius)
+                                color: "transparent"
+                                border.width: expCoverBtn.visualFocus ? 2 : 0
+                                border.color: theme.accent
                             }
-                            Rectangle {
-                                anchors.left: parent.left
-                                anchors.top: parent.top
-                                anchors.bottom: parent.bottom
-                                width: 2
-                                color: Qt.rgba(0, 0, 0, 0.30)
+                            contentItem: Item {
+                                CoverImage {
+                                    anchors.fill: parent
+                                    source: reader.bookId > 0 ? library.coverUrl(reader.bookId) : ""
+                                    title: reader.title
+                                    author: reader.author
+                                    radius: Ui.radius(3, theme.radius)
+                                }
+                                Rectangle {
+                                    anchors.left: parent.left
+                                    anchors.top: parent.top
+                                    anchors.bottom: parent.bottom
+                                    width: 2
+                                    color: Qt.rgba(0, 0, 0, 0.30)
+                                }
                             }
+                            HoverHandler { cursorShape: Qt.PointingHandCursor }
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Back to the book")
+                            ToolTip.delay: 500
                         }
 
                         ColumnLayout {
@@ -713,14 +749,35 @@ Rectangle {
                             Layout.alignment: Qt.AlignVCenter
                             spacing: 1
 
-                            Label {
+                            AbstractButton {
+                                id: bookTitleBtn
                                 visible: bar.showBookInfo && reader.title !== ""
                                 Layout.fillWidth: true
-                                text: reader.title
-                                color: bar.deckFg
-                                font.pixelSize: 12
-                                font.weight: Font.DemiBold
-                                elide: Text.ElideRight
+                                Layout.minimumWidth: 40
+                                implicitHeight: 16
+                                hoverEnabled: true
+                                focusPolicy: Qt.TabFocus
+                                Accessible.name: qsTr("Back to the book")
+                                onClicked: bar.openBookRequested()
+                                background: Rectangle {
+                                    radius: Ui.radius(4, theme.radius)
+                                    color: bookTitleBtn.pressed ? bar.deckHover
+                                         : bookTitleBtn.hovered ? bar.deckFill : "transparent"
+                                }
+                                contentItem: Label {
+                                    leftPadding: 4
+                                    rightPadding: 4
+                                    verticalAlignment: Text.AlignVCenter
+                                    text: reader.title
+                                    color: bookTitleBtn.hovered ? theme.accent : bar.deckFg
+                                    font.pixelSize: 12
+                                    font.weight: Font.DemiBold
+                                    elide: Text.ElideRight
+                                }
+                                HoverHandler { cursorShape: Qt.PointingHandCursor }
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Back to the book")
+                                ToolTip.delay: 500
                             }
 
                             AbstractButton {
@@ -1207,36 +1264,38 @@ Rectangle {
                                     border.color: theme.accent
                                 }
                             }
-                            contentItem: Row {
-                                id: sleepRow
-                                anchors.centerIn: parent
-                                spacing: 4
-                                Glyph {
-                                    id: sleepMoon
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    width: 14
-                                    height: 14
-                                    path: Icons.moon
-                                    color: narration.sleepFading ? theme.cloudInk
-                                         : sleepButton.timerActive ? theme.accent : bar.deckSoft
-                                    SequentialAnimation on opacity {
-                                        running: narration.sleepFading && expandedCol.visible && !theme.reducedMotion
-                                        loops: Animation.Infinite
-                                        NumberAnimation { to: 0.45; duration: 600; easing.type: Easing.InOutSine }
-                                        NumberAnimation { to: 1.0; duration: 600; easing.type: Easing.InOutSine }
-                                        onRunningChanged: if (!running) sleepMoon.opacity = 1.0
+                            contentItem: Item {
+                                Row {
+                                    id: sleepRow
+                                    anchors.centerIn: parent
+                                    spacing: 4
+                                    Glyph {
+                                        id: sleepMoon
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        width: 14
+                                        height: 14
+                                        path: Icons.moon
+                                        color: narration.sleepFading ? theme.cloudInk
+                                             : sleepButton.timerActive ? theme.accent : bar.deckSoft
+                                        SequentialAnimation on opacity {
+                                            running: narration.sleepFading && expandedCol.visible && !theme.reducedMotion
+                                            loops: Animation.Infinite
+                                            NumberAnimation { to: 0.45; duration: 600; easing.type: Easing.InOutSine }
+                                            NumberAnimation { to: 1.0; duration: 600; easing.type: Easing.InOutSine }
+                                            onRunningChanged: if (!running) sleepMoon.opacity = 1.0
+                                        }
                                     }
-                                }
-                                Label {
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    visible: sleepButton.timerActive
-                                    text: narration.sleepSecondsLeft > 0
-                                          ? bar.formatClock(narration.sleepSecondsLeft)
-                                          : qsTr("Chapter")
-                                    color: narration.sleepFading ? theme.cloudInk : bar.deckSoft
-                                    font.pixelSize: 12
-                                    font.weight: narration.sleepSecondsLeft > 0 ? Font.DemiBold : Font.Normal
-                                    font.features: ({ "tnum": 1 })
+                                    Label {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        visible: sleepButton.timerActive
+                                        text: narration.sleepSecondsLeft > 0
+                                              ? bar.formatClock(narration.sleepSecondsLeft)
+                                              : qsTr("Chapter")
+                                        color: narration.sleepFading ? theme.cloudInk : bar.deckSoft
+                                        font.pixelSize: 12
+                                        font.weight: narration.sleepSecondsLeft > 0 ? Font.DemiBold : Font.Normal
+                                        font.features: ({ "tnum": 1 })
+                                    }
                                 }
                             }
                             onClicked: {

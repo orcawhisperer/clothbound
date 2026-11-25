@@ -245,4 +245,6 @@ private slots:
     void w5ReaderCraftPdfSurfaceFocalZoomAndBaseCap();
     void w5ReaderCraftDecomposedReaderGpuFoldAndKeyboardA11y();
     void w6CmakeAotExternalizedI18nAndWebEngineFreeMcp();
+    void speechPlayerLiveResetAndReentrancySafety();
+    void uxPolishSleepIconSmoothDockTopEdgeAndLibraryMiniPlayer();
 };

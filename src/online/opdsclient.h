@@ -158,6 +158,12 @@ private:
         QString url;
     };
 
+    struct CachedFeed {
+        OpdsFeed feed;
+        QUrl effectiveUrl;
+        qint64 fetchedAtMs = 0;
+    };
+
     struct ActiveDownload {
         QString acquisitionUrl;
         QString currentUrl;
@@ -201,7 +207,13 @@ private:
                                                               const QUrl &initialOrigin,
                                                               const QString &catalogId) const;
 
-    void fetchFeed(const QUrl &url, bool appendMode, const QUrl &initialOrigin = {});
+    void fetchFeed(const QUrl &url, bool appendMode, const QUrl &initialOrigin = {}, int retriesLeft = 1);
+    void applyParsedFeed(const OpdsFeed &parsed, const QUrl &effectiveUrl, bool appendMode);
+    QString feedCacheKey(const QString &catalogId, const QUrl &url) const;
+    bool tryServeCachedFeed(const QString &catalogId, const QUrl &url);
+    void storeCachedFeed(const QString &catalogId, const QUrl &requestUrl, const QUrl &effectiveUrl,
+                         const OpdsFeed &feed);
+    void invalidateCatalogCache(const QString &catalogId);
     void fetchOpenSearchAndExecute(const QUrl &openSearchUrl, const QString &query,
                                    const QUrl &initialOrigin = {});
     void startDownloadRequest(const std::shared_ptr<ActiveDownload> &dl);
@@ -248,6 +260,8 @@ private:
     QString m_error;
     quint64 m_feedGeneration = 0;
     QPointer<PinnedHttpRequest> m_activeFeedRequest;
+    QHash<QString, CachedFeed> m_feedCache;
+    QList<QString> m_feedCacheOrder;
 
     QVariantMap m_downloadStates;
     QHash<QString, std::shared_ptr<ActiveDownload>> m_activeDownloads;

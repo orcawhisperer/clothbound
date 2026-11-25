@@ -64,6 +64,9 @@ Item {
     // Cap full-page base texture width so every base page fits inside s_rawCache
     // (32 MiB) while zoomed viewports overlay a debounced crisp high-res tile.
     readonly property int maxBaseTextureWidth: 2048
+    // True while an adjacent docked panel is sliding or drag-resizing: GPU-scales
+    // existing page textures smoothly and defers crisp re-rasterization until settled.
+    property bool liveResizing: false
     property int viewportRevision: 0
     property int pendingSnipReqId: 0
 
@@ -767,8 +770,26 @@ Item {
         property bool showPlaceholder: false
         // Full desired pixel width at current zoom/DPR; base layer stays ≤ 2048 px
         // while zoomed viewports (> 2048 px) layer a debounced crisp tile on top.
+        // During docked-panel slides/resizes (surface.liveResizing), hold the last
+        // committed texture width so the GPU scales smoothly at 60/120 fps, then
+        // silently swap in the exact crisp raster once settled.
         readonly property int targetPixelWidth: Math.max(64, Math.min(12000, Math.ceil(pageItem.fullWidth * Screen.devicePixelRatio / 64) * 64))
-        readonly property int basePixelWidth: Math.min(surface.maxBaseTextureWidth, targetPixelWidth)
+        property int committedPixelWidth: 64
+        Binding {
+            target: pageItem
+            property: "committedPixelWidth"
+            value: pageItem.targetPixelWidth
+            when: !surface.liveResizing
+            restoreMode: Binding.RestoreNone
+        }
+        readonly property int basePixelWidth: Math.min(surface.maxBaseTextureWidth, committedPixelWidth)
+        Connections {
+            target: surface
+            function onLiveResizingChanged() {
+                if (!surface.liveResizing)
+                    pageItem.scheduleTileUpdate()
+            }
+        }
         readonly property bool needsHiResTile: pageItem.page >= 0 && reader.pdfSource !== "" && targetPixelWidth > surface.maxBaseTextureWidth
         property string tileSource: ""
         property rect pendingTileRect: Qt.rect(0, 0, 0, 0)
@@ -795,6 +816,10 @@ Item {
             loadedTileFullW = 0
         }
         function scheduleTileUpdate() {
+            if (surface.liveResizing) {
+                tileDebounce.stop()
+                return
+            }
             if (!needsHiResTile || suppressPlaceholder || !visible || !surface.visible) {
                 if (tileSource !== "" || tileHasLoaded)
                     clearTile()
@@ -1243,16 +1268,17 @@ Item {
             }
         }
 
-        // Selecting with the mouse (drag or double-click a word), panning while
-        // zoomed in (Shift+drag still selects); right-click opens the page menu;
-        // clicking a highlight or PDF link opens it; clicking the margins turns.
+        // Selecting with the mouse always works via left-click drag (or double-click a word)
+        // in every fit/zoom mode including Fit-to-Width; middle-click drag or Alt+drag pans
+        // freely in 2D when zoomed; right-click opens the page menu; clicking a highlight or
+        // PDF link opens it; clicking the margins turns.
         MouseArea {
             id: mouse
             anchors.fill: parent
             hoverEnabled: true
-            acceptedButtons: Qt.LeftButton | Qt.RightButton
-            cursorShape: surface.canPan
-                ? (pressed && panning ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
+            acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
+            cursorShape: (pressed && panning)
+                ? Qt.ClosedHandCursor
                 : (hoveredLink ? Qt.PointingHandCursor : Qt.IBeamCursor)
             preventStealing: true
             property point from
@@ -1312,17 +1338,17 @@ Item {
                 skipRelease = false
                 from = Qt.point(pageItem.toPageX(event.x), pageItem.toPageY(event.y))
                 dragged = false
-                panning = surface.canPan && !(event.modifiers & Qt.ShiftModifier)
+                panning = surface.canPan && (event.button === Qt.MiddleButton || !!(event.modifiers & Qt.AltModifier))
                 if (panning) {
                     panStart = mouse.mapToItem(surface, event.x, event.y)
                     startContentX = surface.scrolling ? pageList.panX : zoomed.contentX
                     startContentY = surface.scrolling ? pageList.contentY : zoomed.contentY
-                } else {
+                } else if (event.button === Qt.LeftButton) {
                     surface.applySelection(null)
                 }
             }
             onDoubleClicked: (event) => {
-                if (event.button === Qt.RightButton)
+                if (event.button !== Qt.LeftButton)
                     return
                 dragSelectTimer.stop()
                 hasPendingSelect = false
@@ -1335,7 +1361,7 @@ Item {
                 }
             }
             onPositionChanged: (event) => {
-                if (!(event.buttons & Qt.LeftButton)) {
+                if (!(event.buttons & (Qt.LeftButton | Qt.MiddleButton))) {
                     hoveredLink = pageItem.linkAt(pageItem.toPageX(event.x), pageItem.toPageY(event.y))
                     return
                 }
@@ -1354,6 +1380,8 @@ Item {
                     }
                     return
                 }
+                if (!(event.buttons & Qt.LeftButton))
+                    return
                 const to = Qt.point(pageItem.toPageX(event.x), pageItem.toPageY(event.y))
                 if (Math.abs(to.x - from.x) + Math.abs(to.y - from.y) < 0.004)
                     return
@@ -1373,7 +1401,7 @@ Item {
                     panning = false
                     return
                 }
-                if (panning && dragged) {
+                if (panning || event.button === Qt.MiddleButton) {
                     hasPendingSelect = false
                     panning = false
                     return

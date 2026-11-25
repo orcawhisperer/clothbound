@@ -8,6 +8,8 @@
 #include <QElapsedTimer>
 #include <QMediaDevices>
 #include <QMetaObject>
+#include <QPointer>
+#include <QSignalBlocker>
 #include <QTimer>
 #include <algorithm>
 #include <chrono>
@@ -252,8 +254,20 @@ public slots:
                 m_timer.stop();
                 releaseSink();
             } else {
-                m_sink->reset();
-                m_out = m_sink->start();
+                // Invalidate m_out BEFORE reset()/start(): Qt 6's PipeWire backend
+                // destroys the old QIODevice during reset() and synchronously emits
+                // stateChanged(IdleState) before start() returns. Block re-entrant
+                // signal callbacks until the new QIODevice is assigned, then fill.
+                m_out = nullptr;
+                m_resetting = true;
+                {
+                    const QSignalBlocker blocker(m_sink);
+                    m_sink->reset();
+                    m_out = m_sink->start();
+                }
+                m_resetting = false;
+                if (m_sink && m_out && m_out->isOpen())
+                    fill();
             }
         } else if (!playingNow) {
             m_timer.stop();
@@ -323,7 +337,7 @@ private:
         m_sink->setBufferSize(reqBytes);
         m_sink->setVolume(m_muted ? 0.0 : m_volume);
         connect(m_sink, &QAudioSink::stateChanged, this, [this](QAudio::State state) {
-            if (!m_sink)
+            if (!m_sink || m_resetting)
                 return;
             if (audioProfileEnabled() && state == QAudio::IdleState && m_owner->isPlaying()) {
                 fprintf(stderr, "PROFILE audio_idle buf_bytes=%lld free_bytes=%lld\n",
@@ -331,20 +345,11 @@ private:
                 fflush(stderr);
             }
             if (state == QAudio::StoppedState && m_sink->error() != QAudio::NoError) {
-                if (m_owner->isPlaying() && !m_recovered) {
-                    m_recovered = true;
-                    releaseSink();
-                    m_marks.clear();
-                    m_writtenBytes = 0;
-                    m_pendingOut.clear();
-                    ensureSink();
-                    if (m_sink && m_out) {
-                        fill();
-                        return;
-                    }
+                // Never delete m_sink synchronously from inside its own stateChanged signal.
+                if (!m_recoveryPending) {
+                    m_recoveryPending = true;
+                    QMetaObject::invokeMethod(this, &AudioOutputPump::recoverFromSinkError, Qt::QueuedConnection);
                 }
-                pausePlayback();
-                emit sinkErrorReported(SpeechPlayer::tr("Audio output stopped working."));
                 return;
             }
             if (state == QAudio::ActiveState)
@@ -354,7 +359,13 @@ private:
                 report();
             }
         });
-        m_out = m_sink->start();
+        m_out = nullptr;
+        m_resetting = true;
+        {
+            const QSignalBlocker blocker(m_sink);
+            m_out = m_sink->start();
+        }
+        m_resetting = false;
         if (audioProfileEnabled()) {
             fprintf(stderr, "PROFILE audio_sink device=\"%s\" req_bytes=%lld actual_bytes=%lld rate=%d\n",
                     qPrintable(device.description()), static_cast<long long>(reqBytes),
@@ -363,15 +374,38 @@ private:
         }
     }
 
-    void releaseSink() {
-        m_pendingOut.clear();
+    void recoverFromSinkError() {
+        Q_ASSERT(QThread::currentThread() == thread());
+        m_recoveryPending = false;
         if (!m_sink)
             return;
-        m_sink->disconnect(this);
-        m_sink->stop();
-        delete m_sink;
-        m_sink = nullptr;
+        if (m_owner->isPlaying() && !m_recovered) {
+            m_recovered = true;
+            releaseSink();
+            m_marks.clear();
+            m_writtenBytes = 0;
+            m_pendingOut.clear();
+            ensureSink();
+            if (m_sink && m_out && m_out->isOpen()) {
+                fill();
+                return;
+            }
+        }
+        pausePlayback();
+        emit sinkErrorReported(SpeechPlayer::tr("Audio output stopped working."));
+    }
+
+    void releaseSink() {
+        m_pendingOut.clear();
         m_out = nullptr;
+        m_recoveryPending = false;
+        if (!m_sink)
+            return;
+        QAudioSink *sink = m_sink;
+        m_sink = nullptr;
+        sink->disconnect(this);
+        sink->stop();
+        delete sink;
     }
 
     void handleOutputsChanged() {
@@ -386,13 +420,13 @@ private:
         m_writtenBytes = 0;
         if (wasPlaying) {
             ensureSink();
-            if (m_sink && m_out)
+            if (m_sink && m_out && m_out->isOpen())
                 fill();
         }
     }
 
     bool flushPending() {
-        while (!m_pendingOut.isEmpty() && m_out) {
+        while (!m_pendingOut.isEmpty() && m_out && m_out->isOpen()) {
             const qint64 n = m_out->write(m_pendingOut.constData(), m_pendingOut.size());
             if (n <= 0)
                 return false;
@@ -425,7 +459,7 @@ private:
     void fill() {
         Q_ASSERT(QThread::currentThread() == thread());
         Q_ASSERT(m_sampleRate > 0 && m_bytesPerFrame > 0 && m_writtenBytes >= 0 && m_consumedIndex >= 0);
-        if (!m_out || !m_sink)
+        if (!m_out || !m_out->isOpen() || !m_sink || m_resetting)
             return;
         {
             std::unique_lock<std::mutex> lock(m_owner->m_mutex);
@@ -458,6 +492,11 @@ private:
                 const QByteArray outBytes =
                     m_passthroughFormat ? chunk.bytes : convertForSink(chunk.bytes, m_sampleRate, m_sinkFormat);
                 const qint64 bytes = outBytes.size();
+                if (!m_out || !m_out->isOpen()) {
+                    m_pendingOut.append(outBytes);
+                    partialWrite = true;
+                    break;
+                }
                 const qint64 wrote = bytes > 0 ? m_out->write(outBytes.constData(), bytes) : 0;
                 if (wrote > 0)
                     m_writtenBytes += wrote;
@@ -540,8 +579,8 @@ private:
     QAudioFormat m_sinkFormat;
     int m_bytesPerFrame = 2;
     bool m_passthroughFormat = true;
-    QAudioSink *m_sink = nullptr;
-    QIODevice *m_out = nullptr;
+    QPointer<QAudioSink> m_sink;
+    QPointer<QIODevice> m_out;
     QByteArray m_pendingOut;
     QList<SpeechPlayer::Mark> m_marks;
     qint64 m_writtenBytes = 0;
@@ -550,6 +589,8 @@ private:
     qint64 m_lastSample = -1;
     quint64 m_clearGen = 0;
     bool m_recovered = false;
+    bool m_resetting = false;
+    bool m_recoveryPending = false;
     bool m_drained = true;
     bool m_starved = false;
 };

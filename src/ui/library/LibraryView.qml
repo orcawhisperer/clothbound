@@ -17,6 +17,7 @@ FocusScope {
     property string viewMode: "grid"
     property int statsRevision: 0
     property int pulsedBookId: 0
+    property real bottomClearance: 0
     property real nowEpoch: Math.floor(Date.now() / 1000)
     readonly property var continueBooks: library.continueReading
 
@@ -840,7 +841,7 @@ FocusScope {
             width: grid.width
             readonly property int existingRows: grid.columns > 0 ? Math.ceil(grid.count / grid.columns) : 0
             readonly property int totalRows: grid.columns > 0 ? Math.ceil((grid.count + grid.pendingSlots) / grid.columns) : 0
-            height: Math.max(24, (totalRows - existingRows) * grid.cellHeight + 24)
+            height: Math.max(24, (totalRows - existingRows) * grid.cellHeight + 24) + view.bottomClearance
         }
 
         // J2 inline trailing skeletons: placed directly in the slots after the
@@ -893,6 +894,10 @@ FocusScope {
 
         ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
         SmoothWheel { stepSize: 115 }
+        footer: Item {
+            width: listView.width
+            height: 24 + view.bottomClearance
+        }
 
         header: Column {
             width: listView.width

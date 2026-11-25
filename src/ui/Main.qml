@@ -1,6 +1,7 @@
 import QtCore
 import QtQuick
 import QtQuick.Controls
+import "audio"
 import "components"
 import "library"
 import "reader"
@@ -131,6 +132,8 @@ ApplicationWindow {
                 win.applyDefaultSleep()
             }
             win.wasNarrationActive = active
+            if (!active && win.browsingLibrary)
+                win.closeBook()
             if (!active && !win.visible)
                 Qt.quit()
         }
@@ -160,7 +163,10 @@ ApplicationWindow {
     }
 
     property bool helpVisible: false
-    readonly property bool readerOpen: reader.open
+    // True when the user stepped back to the Library while narration stays
+    // playing in the background (mini-player style): reader remains live underneath.
+    property bool browsingLibrary: false
+    readonly property bool readerOpen: reader.open && !browsingLibrary
     // Letters are text while any editable field or command palette has focus, not global shortcuts.
     readonly property bool typing: libraryView.typing || commandPalette.open
                                    || (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined && !activeFocusItem.readOnly)
@@ -170,7 +176,19 @@ ApplicationWindow {
                                         || libraryView.catalogsOpen
     readonly property bool libraryKeys: !readerOpen && !typing && !overlayOpen && !libraryView.detailsOpen
 
+    function returnToPlayingBook() {
+        if (!reader.open)
+            return
+        browsingLibrary = false
+        readerLoader.active = true
+        if (readerLoader.item)
+            readerLoader.item.focusPage()
+    }
     function openBook(bookId) {
+        if (browsingLibrary && reader.open && reader.bookId === bookId) {
+            returnToPlayingBook()
+            return
+        }
         const book = library.book(bookId)
         if (!book.id)
             return
@@ -178,6 +196,7 @@ ApplicationWindow {
             toast.show(qsTr("“%1” can't be opened: %2").arg(book.title).arg(book.problem))
             return
         }
+        browsingLibrary = false
         if (pendingJump && pendingJump.bookId !== bookId)
             pendingJump = null
         if (!reader.openBook(bookId)) {
@@ -193,6 +212,15 @@ ApplicationWindow {
         pendingListen = false
         pendingCompanionQuestion = ""
         const id = reader.bookId
+        if (narration.active && !browsingLibrary && reader.open) {
+            if (readerLoader.item && typeof readerLoader.item.leaveForLibrary === "function")
+                readerLoader.item.leaveForLibrary()
+            browsingLibrary = true
+            libraryView.select(id)
+            libraryView.focusGrid()
+            return
+        }
+        browsingLibrary = false
         if (readerLoader.item)
             readerLoader.item.closeBook()
         reader.close()
@@ -207,7 +235,8 @@ ApplicationWindow {
             readerLoader.item.listen()
     }
     function openBookAndListen(bookId) {
-        if (readerOpen && reader.bookId === bookId && readerLoader.item) {
+        if (reader.open && reader.bookId === bookId && readerLoader.item) {
+            browsingLibrary = false
             startReaderListening()
             return
         }
@@ -224,10 +253,11 @@ ApplicationWindow {
         const q = (question || "").trim()
         if (q === "")
             return
-        const targetId = readerOpen ? reader.bookId : library.lastOpenedBook()
+        const targetId = reader.open ? reader.bookId : library.lastOpenedBook()
         if (targetId <= 0)
             return
-        if (readerOpen && reader.bookId === targetId && readerLoader.item) {
+        if (reader.open && reader.bookId === targetId && readerLoader.item) {
+            browsingLibrary = false
             if (typeof readerLoader.item.askCompanion === "function") {
                 readerLoader.item.askCompanion(q)
             } else {
@@ -267,7 +297,8 @@ ApplicationWindow {
         visibility = visibility === Window.FullScreen ? Window.Windowed : Window.FullScreen
     }
     function jumpToMark(bookId, chapter, offset) {
-        if (readerOpen && reader.bookId === bookId && readerLoader.item) {
+        if (reader.open && reader.bookId === bookId && readerLoader.item) {
+            browsingLibrary = false
             readerLoader.item.goTo({ chapter: chapter, offset: offset, instant: true })
             return
         }
@@ -286,7 +317,8 @@ ApplicationWindow {
             return
         const targetChapter = Math.max(0, chapter || 0)
         const cleanQuote = (quote || "").replace(/\u2026+$/, "").replace(/\s+/g, " ").trim()
-        if (readerOpen && reader.bookId === bookId && readerLoader.item) {
+        if (reader.open && reader.bookId === bookId && readerLoader.item) {
+            browsingLibrary = false
             applyJump({ bookId: bookId, chapter: targetChapter, offset: 0, quote: cleanQuote })
             return
         }
@@ -568,6 +600,10 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: win.libraryKeys
         onActivated: {
+            if (win.browsingLibrary && reader.open) {
+                win.returnToPlayingBook()
+                return
+            }
             const last = library.lastOpenedBook()
             if (last > 0)
                 win.openBook(last)
@@ -575,6 +611,14 @@ ApplicationWindow {
                 toast.show(qsTr("Nothing to continue yet: pick a book and press ↵"))
         }
     }
+    // Background audio controls while browsing the Library.
+    Shortcut { sequence: "P"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && narration.active && !win.typing && !win.overlayOpen; onActivated: narration.toggle() }
+    Shortcut { sequence: "Shift+P"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && narration.active && !win.typing && !win.overlayOpen; onActivated: narration.stop() }
+    Shortcut { sequence: "Shift+Left"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && narration.active && !win.typing && !win.overlayOpen; onActivated: if (typeof narration.skipSeconds === "function") narration.skipSeconds(-15) }
+    Shortcut { sequence: "Shift+Right"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && narration.active && !win.typing && !win.overlayOpen; onActivated: if (typeof narration.skipSeconds === "function") narration.skipSeconds(15) }
+    Shortcut { sequence: "Media Play"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && narration.active; onActivated: narration.resume() }
+    Shortcut { sequence: "Media Pause"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && narration.active; onActivated: narration.pause() }
+    Shortcut { sequence: "Toggle Media Play/Pause"; context: Qt.ApplicationShortcut; enabled: !win.readerOpen && narration.active; onActivated: narration.toggle() }
 
     // Right-to-left languages mirror the window; the Translator sets the
     // application's layout direction.
@@ -587,6 +631,7 @@ ApplicationWindow {
         LibraryView {
             id: libraryView
             anchors.fill: parent
+            bottomClearance: libraryListenBar.active ? Math.round(libraryListenBar.height) + 28 : 0
             property real viewReveal: win.readerOpen ? 0 : 1
             Behavior on viewReveal {
                 NumberAnimation {
@@ -608,19 +653,53 @@ ApplicationWindow {
             id: readerLoader
             anchors.fill: parent
             active: false
-            property real readerReveal: reader.open ? 1 : 0
+            property real readerReveal: win.readerOpen ? 1 : 0
             Behavior on readerReveal {
                 NumberAnimation {
-                    duration: theme.reducedMotion ? 90 : (reader.open ? 210 : 170)
-                    easing.type: reader.open ? Easing.OutCubic : Easing.OutQuad
+                    duration: theme.reducedMotion ? 90 : (win.readerOpen ? 210 : 170)
+                    easing.type: win.readerOpen ? Easing.OutCubic : Easing.OutQuad
                 }
             }
             opacity: readerReveal
             visible: readerReveal > 0.01
-            enabled: reader.open
+            enabled: win.readerOpen
             sourceComponent: EpubReader {
                 settings: readingSettings
                 onCloseRequested: win.closeBook()
+            }
+        }
+
+        // Persistent floating mini-player while browsing the Library with an
+        // active audiobook/narration session (cover & title jump back in).
+        Loader {
+            id: libraryListenBar
+            active: narration.active && !win.readerOpen && reader.open
+            readonly property var loaded: item
+            height: loaded ? loaded.height : 0
+            sourceComponent: ListenBar {
+                parent: root
+                z: 35
+                showBookInfo: true
+                look: ({ dark: !theme.light })
+                availableWidth: Math.max(320, root.width - 32)
+                property real showProgress: (narration.active && !win.readerOpen) ? 1 : 0
+                Behavior on showProgress {
+                    enabled: !theme.reducedMotion
+                    NumberAnimation { duration: 240; easing.type: Easing.OutQuart }
+                }
+                x: Math.round((root.width - width) / 2)
+                y: Math.round((root.height - height - 14) + (1 - showProgress) * (height + 30))
+                visible: showProgress > 0.005 && !settingsView.open && !welcome.open
+                onOpenBookRequested: win.returnToPlayingBook()
+                onFollowRequested: {
+                    narration.following = true
+                    win.returnToPlayingBook()
+                }
+                onVoiceRequested: {
+                    win.returnToPlayingBook()
+                    if (readerLoader.item)
+                        readerLoader.item.showVoices()
+                }
             }
         }
 
@@ -667,7 +746,9 @@ ApplicationWindow {
             z: 70
             readonly property bool readerSurfaceVisible: win.readerOpen && !settingsView.open && !welcome.open
                                                          && !commandPalette.open && !win.helpVisible
-            bottomClearance: !readerSurfaceVisible ? 28
+            bottomClearance: !readerSurfaceVisible
+                           ? (libraryListenBar.active && !settingsView.open && !welcome.open
+                              ? Math.round(libraryListenBar.height) + 28 : 28)
                            : narration.active
                              ? ((readerLoader.item && readerLoader.item.listenBar)
                                 ? Math.round(readerLoader.item.listenBar.height) + 28

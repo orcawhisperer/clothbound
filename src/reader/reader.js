@@ -296,6 +296,12 @@ img[data-cb-matte] {
 img:not([data-cb-lineart]):not([data-cb-matte]):not([src$=".svg" i]):not([src*=".svg?" i]):not([src^="data:image/svg+xml" i]) {
     filter: brightness(0.88) contrast(1.04);
 }` : ''
+        // Keep author color/font attributes legible even when an EPUB ships
+        // legacy <font color="black"> or low-contrast inline CSS under dark themes.
+        const legacyColorReset = (own || t.dark)
+            ? `font[color] { color: inherit !important; }
+               body [style] { -webkit-text-fill-color: inherit !important; }`
+            : ''
         return `
 @font-face { font-family: "Literata"; src: url("clothbound://local/app/fonts/Literata.ttf"); font-weight: 200 900; font-style: normal; font-display: block; }
 @font-face { font-family: "Literata"; src: url("clothbound://local/app/fonts/Literata-Italic.ttf"); font-weight: 200 900; font-style: italic; font-display: block; }
@@ -310,6 +316,7 @@ body, body :not(table):not(thead):not(tbody):not(tfoot):not(tr):not(td):not(th) 
 }
 nobr { white-space: normal !important; }
 ${colorRules}
+${legacyColorReset}
 a, a * { color: ${t.link} !important; }
 a { text-decoration: none !important; }
 ::selection { background: ${t.selection}; }
@@ -372,11 +379,45 @@ ${literaryIndent}
         return element
     }
 
+    // Inline style="color: #000 !important" beats stylesheet !important rules in
+    // CSS cascade; clear forced author ink/fill/bg inline declarations when our
+    // theme is active (especially dark themes) so text never turns invisible.
+    function normalizeInlineContrast(doc) {
+        if (!doc || !doc.body || !state.style || typeof doc.querySelectorAll !== 'function')
+            return
+        const s = state.style
+        const enforce = !s.publisher || !!(s.theme && s.theme.dark)
+        if (!enforce)
+            return
+        const styled = doc.querySelectorAll('body [style]')
+        if (!styled || typeof styled[Symbol.iterator] !== 'function')
+            return
+        for (const el of styled) {
+            const st = el && el.style
+            if (!st || typeof st.removeProperty !== 'function')
+                continue
+            if (st.color)
+                st.removeProperty('color')
+            if (st.webkitTextFillColor)
+                st.removeProperty('-webkit-text-fill-color')
+            if (st.backgroundColor)
+                st.removeProperty('background-color')
+            if (st.background && !String(st.background).includes('url('))
+                st.removeProperty('background')
+            if (st.opacity !== '' && st.opacity !== undefined) {
+                const op = parseFloat(st.opacity)
+                if (Number.isFinite(op) && op > 0 && op < 0.55 && typeof st.setProperty === 'function')
+                    st.setProperty('opacity', '0.85', 'important')
+            }
+        }
+    }
+
     function applyTypography(doc, hyphenOverride) {
         const el = styleElement(doc, 'cb-typography')
         const css = typographyCss(hyphenOverride)
         if (el.textContent !== css)
             el.textContent = css
+        normalizeInlineContrast(doc)
     }
 
     function applyLayoutTo(targetFrame, doc, g, rtlOverride) {
@@ -512,7 +553,7 @@ ${literaryIndent}
                 ctx.drawImage(img, 0, 0, w, h)
                 const data = ctx.getImageData(0, 0, w, h).data
                 const total = w * h
-                let transparent = 0, opaque = 0, darkLowChroma = 0
+                let transparent = 0, opaque = 0, darkLowChroma = 0, whitePaper = 0, colorful = 0
                 for (let i = 0; i < data.length; i += 4) {
                     const a = data[i + 3]
                     if (a < 200) {
@@ -524,6 +565,10 @@ ${literaryIndent}
                         const chroma = Math.max(r, g, b) - Math.min(r, g, b)
                         if (luma < 95 && chroma < 45)
                             ++darkLowChroma
+                        else if (luma > 225 && chroma < 28)
+                            ++whitePaper
+                        else if (chroma >= 45)
+                            ++colorful
                     }
                 }
                 if (transparent / total > 0.08 && opaque > 0) {
@@ -532,6 +577,9 @@ ${literaryIndent}
                         img.setAttribute('data-cb-lineart', '')
                     else if (darkShare > 0.15)
                         img.setAttribute('data-cb-matte', '')
+                } else if (opaque > 0 && whitePaper / opaque > 0.72 && darkLowChroma / opaque > 0.015 && colorful / opaque < 0.05) {
+                    // Opaque black-on-white diagrams/equations/text plates invert cleanly in dark mode.
+                    img.setAttribute('data-cb-lineart', '')
                 }
             }
         } catch (e) { }

@@ -3487,3 +3487,197 @@ void ClothboundTests::w5ReaderCraftDecomposedReaderGpuFoldAndKeyboardA11y() {
 
     QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
 }
+
+void ClothboundTests::uxPolishSleepIconSmoothDockTopEdgeAndLibraryMiniPlayer() {
+    const QString srcRoot = QFileInfo(QFINDTESTDATA("../src")).canonicalFilePath();
+    QVERIFY(!srcRoot.isEmpty());
+    auto readSrc = [&](const QString &rel) -> QString {
+        QFile f(srcRoot + QLatin1Char('/') + rel);
+        if (!f.open(QIODevice::ReadOnly))
+            return {};
+        return QString::fromUtf8(f.readAll());
+    };
+
+    // 1. Sleep timer button wraps its Row inside an Item so AbstractButton's
+    //    contentItem resizing cannot pin the moon glyph to the left edge.
+    {
+        const QString lbQml = readSrc(QStringLiteral("ui/audio/ListenBar.qml"));
+        QVERIFY(lbQml.contains(QStringLiteral("signal openBookRequested()")));
+        QVERIFY(lbQml.contains(QStringLiteral("id: restCoverBtn")));
+        QVERIFY(lbQml.contains(QStringLiteral("id: bookTitleBtn")));
+        const qsizetype sleepIdx = lbQml.indexOf(QStringLiteral("id: sleepButton"));
+        QVERIFY(sleepIdx > 0);
+        const QString sleepChunk = lbQml.mid(sleepIdx, 4000);
+        QVERIFY2(sleepChunk.contains(QStringLiteral("contentItem: Item {")),
+                 "sleepButton contentItem must wrap sleepRow in an Item for exact centering");
+        QVERIFY(!sleepChunk.contains(QStringLiteral("contentItem: Row {")));
+    }
+
+    // 2. Smooth Companion docking: PdfSurface tracks liveResizing to GPU-scale smoothly
+    //    and defers crisp raster commit until settled; EPUB glides without mid-slide reflow.
+    {
+        const QString compQml = readSrc(QStringLiteral("ui/companion/CompanionPanel.qml"));
+        QVERIFY(compQml.contains(QStringLiteral("readonly property bool sliding: slideAnim.running")));
+
+        const QString panelsQml = readSrc(QStringLiteral("ui/reader/ReaderPanels.qml"));
+        QVERIFY(panelsQml.contains(QStringLiteral("readonly property bool sliding:")));
+        QVERIFY(panelsQml.contains(QStringLiteral("readonly property real slideProgress:")));
+
+        const QString pdfQml = readSrc(QStringLiteral("ui/reader/PdfSurface.qml"));
+        QVERIFY(pdfQml.contains(QStringLiteral("property bool liveResizing: false")));
+        QVERIFY(pdfQml.contains(QStringLiteral("property int committedPixelWidth: 64")));
+        QVERIFY(pdfQml.contains(QStringLiteral("restoreMode: Binding.RestoreNone")));
+        QVERIFY(pdfQml.contains(QStringLiteral("if (surface.liveResizing)")));
+
+        const QString erQml = readSrc(QStringLiteral("ui/reader/EpubReader.qml"));
+        QVERIFY(erQml.contains(QStringLiteral("readonly property real companionLiveDockWidth:")));
+        QVERIFY(erQml.contains(QStringLiteral("liveResizing: view.companionSliding || view.companionResizing")));
+        QVERIFY(erQml.contains(QStringLiteral("readonly property real epubDockGlide:")));
+        QVERIFY(erQml.contains(QStringLiteral("function leaveForLibrary()")));
+        // Top-edge hover reveal works in all modes (including while listening or zoomed PDF).
+        QVERIFY(erQml.contains(QStringLiteral("const nearTopEdge = py <= 56")));
+        QVERIFY(erQml.contains(QStringLiteral("onHoveredChanged:")));
+    }
+
+    // 3. Continuous background audio mini-player in the Library.
+    {
+        const QString mainQml = readSrc(QStringLiteral("ui/Main.qml"));
+        QVERIFY(mainQml.contains(QStringLiteral("property bool browsingLibrary: false")));
+        QVERIFY(mainQml.contains(QStringLiteral("readonly property bool readerOpen: reader.open && !browsingLibrary")));
+        QVERIFY(mainQml.contains(QStringLiteral("function returnToPlayingBook()")));
+        QVERIFY(mainQml.contains(QStringLiteral("id: libraryListenBar")));
+        QVERIFY(mainQml.contains(QStringLiteral("showBookInfo: true")));
+        QVERIFY(mainQml.contains(QStringLiteral("onOpenBookRequested: win.returnToPlayingBook()")));
+
+        const QString libQml = readSrc(QStringLiteral("ui/library/LibraryView.qml"));
+        QVERIFY(libQml.contains(QStringLiteral("property real bottomClearance: 0")));
+    }
+
+    // 4. Live QML instantiation of ListenBar (showBookInfo=true) verifying zero warnings
+    //    and exact horizontal centering of sleepButton's moon glyph inside its 28 px box.
+    {
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        AiServices ai(&gemini, &keys, library.database().connectionName());
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        Narration narration(&ai, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+        VoiceCatalog voices(&ai, &cache, &reader, library.database().connectionName(),
+                            dir.filePath(QStringLiteral("voices.json")));
+        Theme theme(dir.filePath(QStringLiteral("no-omarchy")));
+        Translator translator;
+
+        QQmlEngine engine;
+        engine.addImportPath(srcRoot + QStringLiteral("/ui/style"));
+        QList<QQmlError> warnings;
+        QObject::connect(&engine, &QQmlEngine::warnings, &engine,
+                         [&](const QList<QQmlError> &w) { warnings.append(w); });
+        engine.rootContext()->setContextProperty(QStringLiteral("library"), &library);
+        engine.rootContext()->setContextProperty(QStringLiteral("reader"), &reader);
+        engine.rootContext()->setContextProperty(QStringLiteral("ai"), &ai);
+        engine.rootContext()->setContextProperty(QStringLiteral("narration"), &narration);
+        engine.rootContext()->setContextProperty(QStringLiteral("voices"), &voices);
+        engine.rootContext()->setContextProperty(QStringLiteral("theme"), &theme);
+        engine.rootContext()->setContextProperty(QStringLiteral("translator"), &translator);
+        engine.rootContext()->setContextProperty(
+            QStringLiteral("settingsUrl"), QUrl::fromLocalFile(dir.filePath(QStringLiteral("settings.ini"))));
+
+        QQmlComponent comp(&engine, QUrl::fromLocalFile(srcRoot + QStringLiteral("/ui/audio/ListenBar.qml")));
+        QVERIFY2(comp.status() == QQmlComponent::Ready, qPrintable(comp.errorString()));
+        const QVariantMap look{{QStringLiteral("dark"), true}};
+        std::unique_ptr<QObject> obj(comp.createWithInitialProperties({
+            {QStringLiteral("showBookInfo"), true},
+            {QStringLiteral("availableWidth"), 960.0},
+            {QStringLiteral("look"), look},
+            {QStringLiteral("hoverExpanded"), true},
+        }));
+        QVERIFY(obj != nullptr);
+        QQuickWindow win;
+        win.resize(960, 240);
+        auto *barItem = qobject_cast<QQuickItem *>(obj.get());
+        QVERIFY(barItem != nullptr);
+        barItem->setParentItem(win.contentItem());
+        QCoreApplication::processEvents();
+
+        // Find sleepButton's inner Row and verify it sits centered inside its 28 px button.
+        QQuickItem *sleepBtn = nullptr;
+        std::function<void(QQuickItem *)> findSleep = [&](QQuickItem *node) {
+            if (!node || sleepBtn)
+                return;
+            if (node->property("Accessible.name").toString().contains(QStringLiteral("Sleep timer")) &&
+                qAbs(node->width() - 28.0) < 1.0 && qAbs(node->height() - 28.0) < 1.0) {
+                sleepBtn = node;
+                return;
+            }
+            for (QQuickItem *child : node->childItems())
+                findSleep(child);
+        };
+        findSleep(barItem);
+        if (sleepBtn) {
+            QQuickItem *contentWrap = sleepBtn->property("contentItem").value<QQuickItem *>();
+            QVERIFY(contentWrap != nullptr);
+            QVERIFY(!contentWrap->childItems().isEmpty());
+            QQuickItem *row = contentWrap->childItems().first();
+            const qreal leftGap = row->x();
+            const qreal rightGap = contentWrap->width() - (row->x() + row->width());
+            QVERIFY2(qAbs(leftGap - rightGap) <= 1.0,
+                     qPrintable(QStringLiteral("leftGap=%1 rightGap=%2").arg(leftGap).arg(rightGap)));
+        }
+        barItem->setParentItem(nullptr);
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.isEmpty() ? QString() : warnings.first().toString()));
+    }
+
+    // 5. Right-click / cite / overflow menus explicitly bind menus.look palette
+    //    so Sepia/Paper popups stay high-contrast even on a dark desktop theme.
+    {
+        const QString menusQml = readSrc(QStringLiteral("ui/reader/ReaderMenus.qml"));
+        QCOMPARE(menusQml.count(QStringLiteral("palette.windowText: menus.menuFg")), 3);
+        QCOMPARE(menusQml.count(QStringLiteral("palette.light: menus.menuBg")), 3);
+        QVERIFY(menusQml.contains(QStringLiteral("text: qsTr(\"Snip region…\") + \"\\tX\"")));
+
+        // Verify PdfPages::recolor keeps dark colored PDF text legible on dark themes.
+        QImage darkPdfTest(8, 2, QImage::Format_RGB32);
+        darkPdfTest.fill(qRgb(255, 255, 255));
+        darkPdfTest.setPixel(0, 0, qRgb(10, 30, 100));   // dark navy hyperlink / heading
+        darkPdfTest.setPixel(1, 0, qRgb(110, 15, 20));   // dark burgundy heading
+        darkPdfTest.setPixel(2, 0, qRgb(15, 90, 25));    // dark green text
+        darkPdfTest.setPixel(3, 0, qRgb(0, 0, 255));     // pure saturated blue link
+        const QColor darkBg(QStringLiteral("#1E1D1B"));
+        const QColor lightFg(QStringLiteral("#DCD5C8"));
+        PdfPages::recolor(darkPdfTest, darkBg, lightFg);
+        auto lumaOf = [](QRgb px) {
+            return (qRed(px) * 299 + qGreen(px) * 587 + qBlue(px) * 114) / 1000;
+        };
+        const int bgL = lumaOf(darkBg.rgb());
+        for (int x = 0; x < 4; ++x) {
+            const int outL = lumaOf(darkPdfTest.pixel(x, 0));
+            QVERIFY2(outL - bgL >= 85,
+                     qPrintable(QStringLiteral("pixel %1 too dark on dark theme: luma=%2 bg=%3").arg(x).arg(outL).arg(bgL)));
+        }
+
+        // Verify reader.js normalizes inline author colors & detects opaque line-art diagrams.
+        const QString rjs = readSrc(QStringLiteral("reader/reader.js"));
+        QVERIFY(rjs.contains(QStringLiteral("function normalizeInlineContrast(doc)")));
+        QVERIFY(rjs.contains(QStringLiteral("st.removeProperty('color')")));
+
+        // Verify OpdsClient has in-memory LRU feed cache and UrlGuard prioritizes IPv4 + per-IP failover.
+        const QString opdsCpp = readSrc(QStringLiteral("online/opdsclient.cpp"));
+        QVERIFY(opdsCpp.contains(QStringLiteral("tryServeCachedFeed(")));
+        QVERIFY(opdsCpp.contains(QStringLiteral("storeCachedFeed(")));
+        const QString ugCpp = readSrc(QStringLiteral("online/urlguard.cpp"));
+        QVERIFY(ugCpp.contains(QStringLiteral("QAbstractSocket::IPv4Protocol")));
+
+        // Verify PDF Fit-to-Width keeps IBeamCursor / left-drag text selection by default
+        // (middle-drag or Alt+drag handles 2D hand-panning when zoomed).
+        const QString pdfQml = readSrc(QStringLiteral("ui/reader/PdfSurface.qml"));
+        QVERIFY(!pdfQml.contains(QStringLiteral("Qt.OpenHandCursor")));
+        QVERIFY(pdfQml.contains(QStringLiteral("Qt.MiddleButton")));
+        QVERIFY(pdfQml.contains(QStringLiteral("Qt.AltModifier")));
+    }
+}

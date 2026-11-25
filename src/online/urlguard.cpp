@@ -247,8 +247,16 @@ PinnedHttpRequest::PinnedHttpRequest(PinnedHttpOptions options, Callback callbac
       m_timeoutTimer(new QTimer(this)) {
     m_timeoutTimer->setSingleShot(true);
     connect(m_timeoutTimer, &QTimer::timeout, this, [this]() {
-        if (!m_finished)
-            fail(QStringLiteral("Network request timed out."));
+        if (m_finished)
+            return;
+        // If we timed out waiting to connect/handshake on one resolved IP and more
+        // validated fallback addresses exist (e.g. blackholed IPv6 -> IPv4), fail over
+        // cleanly instead of aborting the whole request.
+        if (!m_requestSent && m_nextAddressIndex < m_resolvedAddresses.size()) {
+            connectToNextValidatedAddress();
+            return;
+        }
+        fail(QStringLiteral("Network request timed out."));
     });
 }
 
@@ -376,6 +384,13 @@ void PinnedHttpRequest::startHop(const QUrl &rawUrl, int redirectCount) {
             }
         }
         m_resolvedAddresses = addresses;
+        // Prefer IPv4 first when mixed A/AAAA records exist so broken/blackholed
+        // residential IPv6 routes never stall catalog fetches before IPv4 is tried.
+        std::stable_sort(m_resolvedAddresses.begin(), m_resolvedAddresses.end(),
+                         [](const QHostAddress &a, const QHostAddress &b) {
+                             return (a.protocol() == QAbstractSocket::IPv4Protocol) &&
+                                    (b.protocol() != QAbstractSocket::IPv4Protocol);
+                         });
         connectToNextValidatedAddress();
     };
 
@@ -414,7 +429,14 @@ void PinnedHttpRequest::connectToNextValidatedAddress() {
     if (const auto hook = currentConnectOverrideHook())
         connectAddr = hook(validatedAddr);
 
-    resetTransferTimeout();
+    // Use a bounded connect+TLS timeout when additional validated fallback IPs remain
+    // so one stalled endpoint falls over promptly instead of burning the full budget.
+    if (m_nextAddressIndex < m_resolvedAddresses.size() && m_timeoutTimer) {
+        const int fullMs = m_options.timeoutMs > 0 ? m_options.timeoutMs : kDefaultTimeoutMs;
+        m_timeoutTimer->start(qMin(fullMs, 8000));
+    } else {
+        resetTransferTimeout();
+    }
 
     if (m_currentIsHttps) {
         auto *ssl = new QSslSocket(this);

@@ -1,6 +1,8 @@
 import QtQuick
 import QtQuick.Controls
 
+import "../components/Ui.js" as Ui
+
 // Context and chrome menus for the reading surface: right-click page menu,
 // academic citation copy menu (BibTeX/APA/DOI/arXiv), and overflow reader menu.
 Item {
@@ -10,6 +12,14 @@ Item {
     property bool pdf: false
     property var selection: ({})
     property int pageBookmark: 0
+
+    readonly property color menuBg: menus.look ? menus.look.popover : "#FDFAF3"
+    readonly property color menuFg: menus.look ? menus.look.fg : "#26221D"
+    readonly property color menuMuted: menus.look ? menus.look.muted : "#6E665A"
+    readonly property color menuLine: menus.look ? menus.look.line : "#D8D2C6"
+    readonly property color menuAccent: menus.look ? menus.look.link : "#3E5F99"
+    readonly property color menuAccentFg: Ui.readableOn(menuAccent)
+    readonly property color menuShadow: (menus.look && menus.look.dark) ? "#73000000" : "#26000000"
 
     readonly property alias pageMenu: pageMenuPopup
     readonly property alias citeMenu: citeMenuPopup
@@ -46,11 +56,24 @@ Item {
         id: citeMenuPopup
         topPadding: 6
         bottomPadding: 6
+        // Menus reparent to Overlay.overlay, so bind the active reading-theme
+        // palette explicitly (prevents dark desktop white text on light Paper/Sepia popups).
+        palette.window: menus.menuBg
+        palette.windowText: menus.menuFg
+        palette.text: menus.menuFg
+        palette.buttonText: menus.menuFg
+        palette.mid: menus.menuMuted
+        palette.light: menus.menuBg
+        palette.dark: menus.menuLine
+        palette.highlight: menus.menuAccent
+        palette.highlightedText: menus.menuAccentFg
+        palette.link: menus.menuAccent
+        palette.shadow: menus.menuShadow
         background: Rectangle {
             implicitWidth: 248
             radius: Math.min(10, theme.radius)
-            color: menus.look ? menus.look.popover : "#FDFAF3"
-            border.color: menus.look ? menus.look.line : "#D8D2C6"
+            color: menus.menuBg
+            border.color: menus.menuLine
             Rectangle {
                 z: -1
                 anchors.fill: parent
@@ -106,6 +129,17 @@ Item {
     Menu {
         id: readerMorePopup
         width: 260
+        palette.window: menus.menuBg
+        palette.windowText: menus.menuFg
+        palette.text: menus.menuFg
+        palette.buttonText: menus.menuFg
+        palette.mid: menus.menuMuted
+        palette.light: menus.menuBg
+        palette.dark: menus.menuLine
+        palette.highlight: menus.menuAccent
+        palette.highlightedText: menus.menuAccentFg
+        palette.link: menus.menuAccent
+        palette.shadow: menus.menuShadow
         MenuItem { text: qsTr("Contents") + "\tT"; onTriggered: menus.showContents() }
         MenuItem { text: qsTr("Highlights, notes, and bookmarks") + "\tM"; onTriggered: menus.showMarks() }
         MenuItem { text: (menus.pageBookmark ? qsTr("Remove the bookmark") : qsTr("Bookmark this page")) + "\tB"; onTriggered: menus.toggleBookmark() }
@@ -121,11 +155,22 @@ Item {
         readonly property bool hasSelection: !!(menus.selection && menus.selection.text)
         topPadding: 6
         bottomPadding: 6
+        palette.window: menus.menuBg
+        palette.windowText: menus.menuFg
+        palette.text: menus.menuFg
+        palette.buttonText: menus.menuFg
+        palette.mid: menus.menuMuted
+        palette.light: menus.menuBg
+        palette.dark: menus.menuLine
+        palette.highlight: menus.menuAccent
+        palette.highlightedText: menus.menuAccentFg
+        palette.link: menus.menuAccent
+        palette.shadow: menus.menuShadow
         background: Rectangle {
             implicitWidth: 230
             radius: Math.min(10, theme.radius)
-            color: menus.look ? menus.look.popover : "#FDFAF3"
-            border.color: menus.look ? menus.look.line : "#D8D2C6"
+            color: menus.menuBg
+            border.color: menus.menuLine
             Rectangle {
                 z: -1
                 anchors.fill: parent

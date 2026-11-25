@@ -696,15 +696,26 @@ namespace {
 
 struct RecolorLut {
     QRgb bgRgb;
+    int br, bgG, bb;
+    int fr, fgG, fb;
+    int bgLuma;
+    bool darkBg;
     QRgb gray[256];
     uint8_t tintR[256];
     uint8_t tintG[256];
     uint8_t tintB[256];
 
     RecolorLut(const QColor &bg, const QColor &fg) {
-        const int br = bg.red(), bgG = bg.green(), bb = bg.blue();
-        const int fr = fg.red(), fgG = fg.green(), fb = fg.blue();
+        br = bg.red();
+        bgG = bg.green();
+        bb = bg.blue();
+        fr = fg.red();
+        fgG = fg.green();
+        fb = fg.blue();
         bgRgb = qRgb(br, bgG, bb);
+        bgLuma = (br * 19595 + bgG * 38470 + bb * 7471 + 32768) >> 16;
+        const int fgLuma = (fr * 19595 + fgG * 38470 + fb * 7471 + 32768) >> 16;
+        darkBg = bgLuma < fgLuma;
         for (int l = 0; l < 256; ++l) {
             gray[l] = qRgb(fr + (br - fr) * l / 255, fgG + (bgG - fgG) * l / 255, fb + (bb - fb) * l / 255);
             tintR[l] = uint8_t((l * 4 + br) / 5);
@@ -723,9 +734,37 @@ struct RecolorLut {
         const QRgb gpx = gray[light];
         if (chroma <= 16)
             return gpx;
-        const int cr = tintR[r];
-        const int cg = tintG[g];
-        const int cb = tintB[b];
+        int cr, cg, cb;
+        if (darkBg) {
+            // Hue-preserving lightness inversion (HSL L' = 255 - L) mapped cleanly
+            // into [bg, fg]: dark navy links, burgundy headings, and warm scans
+            // invert to crisp, vivid light hues instead of disappearing into dark bg,
+            // while pastel paper highlight boxes invert to dark tinted surfaces.
+            const int shift = 255 - high - low;
+            const int ir = r + shift;
+            const int ig = g + shift;
+            const int ib = b + shift;
+            cr = br + (fr - br) * ir / 255;
+            cg = bgG + (fgG - bgG) * ig / 255;
+            cb = bb + (fb - bb) * ib / 255;
+            // Deeply saturated primaries (e.g. pure #0000FF blue links) have shift ~= 0
+            // and low perceptual luminance on dark ground; lift dark-ink pixels cleanly
+            // toward fg so WCAG contrast stays comfortably legible.
+            if (light < 140) {
+                const int outLuma = (cr * 19595 + cg * 38470 + cb * 7471 + 32768) >> 16;
+                const int minLuma = std::min(220, bgLuma + 95);
+                if (outLuma < minLuma) {
+                    const int lift = minLuma - outLuma;
+                    cr = std::min(255, cr + lift);
+                    cg = std::min(255, cg + lift);
+                    cb = std::min(255, cb + lift);
+                }
+            }
+        } else {
+            cr = tintR[r];
+            cg = tintG[g];
+            cb = tintB[b];
+        }
         if (chroma >= 64)
             return qRgb(cr, cg, cb);
         const int w = chroma - 16;  // 1..47 over 48

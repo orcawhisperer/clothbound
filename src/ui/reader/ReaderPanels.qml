@@ -151,6 +151,8 @@ Item {
         readonly property var loaded: item
         readonly property bool open: loaded ? !!loaded.open : false
         readonly property bool settledOpen: loaded ? !!loaded.settledOpen : false
+        readonly property bool sliding: loaded ? Boolean(loaded["sliding"]) : false
+        readonly property real slideProgress: loaded ? Number(loaded["slideProgress"] || 0) : 0
         readonly property bool resizing: loaded ? Boolean(loaded["resizing"]) : false
         width: loaded ? loaded.width : 0
         property bool pendingOpen: false

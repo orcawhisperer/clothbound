@@ -519,6 +519,7 @@ FocusScope {
     // Updated only after the drawer finishes sliding so readingStage / WebEngine
     // never resize or reflow mid-animation.
     property bool settledOpen: false
+    readonly property bool sliding: slideAnim.running
 
     onOpenChanged: {
         if (!open)
