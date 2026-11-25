@@ -17,12 +17,12 @@
 <meta property="og:image" content="https://clothbound.app/og-card.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="Clothbound v0.5.0 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
+<meta property="og:image:alt" content="Clothbound v0.5.1 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Clothbound — Native EPUB &amp; PDF Reader for Linux &amp; Omarchy">
 <meta name="twitter:description" content="A calm, local-first Qt6 EPUB &amp; PDF reader for Linux and Omarchy with Study Companion, PDF Snip &amp; Explain, OPDS catalogs, natural read-aloud, and local MCP.">
 <meta name="twitter:image" content="https://clothbound.app/og-card.png">
-<meta name="twitter:image:alt" content="Clothbound v0.5.0 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
+<meta name="twitter:image:alt" content="Clothbound v0.5.1 — Native Qt6 EPUB and PDF reader for Linux and Omarchy">
 <link rel="canonical" href="https://clothbound.app/">
 <title>Clothbound — Native EPUB &amp; PDF Reader for Linux &amp; Omarchy</title>
 <link rel="icon" type="image/svg+xml" href="./favicon.svg">
@@ -35,11 +35,11 @@
   "headline": "Native EPUB & PDF Reader for Linux & Omarchy",
   "description": "A calm, local-first Qt6 EPUB and PDF reader for Linux, Wayland, and Omarchy with zero-flash spreads, save-from-URL articles, OPDS 1.2/2.0 catalogs, PDF Snip & Explain, Quick-Look citation peek, offline neural voices with background Library playback, an adaptive Story & Study Companion, and a standalone WebEngine-free local MCP server.",
   "url": "https://clothbound.app/",
-  "downloadUrl": "https://github.com/orcawhisperer/clothbound/releases/tag/v0.5.0",
+  "downloadUrl": "https://github.com/orcawhisperer/clothbound/releases/tag/v0.5.1",
   "installUrl": "https://clothbound.app/#install",
   "codeRepository": "https://github.com/orcawhisperer/clothbound",
   "license": "https://opensource.org/licenses/MIT",
-  "softwareVersion": "0.5.0",
+  "softwareVersion": "0.5.1",
   "applicationCategory": "UtilitiesApplication",
   "operatingSystem": "Linux, Arch Linux, Omarchy, Wayland",
   "image": "https://clothbound.app/og-card.png",
@@ -2407,7 +2407,7 @@ kbd {
     <div class="hero-copy">
       <div class="eyebrow">
         <span class="eyebrow-dot" aria-hidden="true"></span>
-        <span>v0.5.0 · Native Qt6 · Wayland &amp; Omarchy · Local-First</span>
+        <span>v0.5.1 · Native Qt6 · Linux, Flatpak &amp; Omarchy · Local-First</span>
       </div>
       <h1>Read deeply. Think clearly.</h1>
       <p class="hero-sub">A calm, fast EPUB and PDF reader for Linux — zero-flash page turns, smart PDF fit presets, save-from-URL articles &amp; OPDS catalogs, natural read-aloud, an adaptive Study Companion, and a built-in local MCP server.</p>
@@ -3131,7 +3131,7 @@ kbd {
           <div class="install-step">
             <span class="install-step-num" id="installStepLabel">Step 01 · Arch / Omarchy</span>
           </div>
-          <h3 id="installStepTitle">Install v0.5.0</h3>
+          <h3 id="installStepTitle">Install v0.5.1</h3>
           <p class="install-note" id="installStepNote">Installs the verified release package on x86_64, or builds the same release from source on aarch64 (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>). Prefer building it yourself? <code>git clone</code> the <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">repo</a> and run <code>./bin/install</code>.</p>
         </div>
         <div class="cmd-bar" id="installCmdBar">
@@ -3750,14 +3750,14 @@ kbd {
   var installProfiles = {
     arch: {
       label: "Step 01 · Arch / Omarchy",
-      title: "Install v0.5.0",
+      title: "Install v0.5.1",
       noteHtml: 'Installs the verified release package on x86_64, or builds the same release from source on aarch64 (<a href="/install.sh" style="text-decoration:underline;text-underline-offset:3px">read the script</a>). Prefer building it yourself? <code>git clone</code> the <a href="https://github.com/orcawhisperer/clothbound" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">repo</a> and run <code>./bin/install</code>.',
       cmd: "curl -fsSL https://clothbound.app/install | bash"
     },
     flatpak: {
       label: "Step 01 · Flatpak (Ubuntu · Fedora · Debian · Mint · SteamOS)",
-      title: "Install via Flatpak (app.clothbound.Reader)",
-      noteHtml: 'Universal Linux sandbox with Qt 6, WebEngine, PDF, and desktop light/dark portal support built in (<a href="https://github.com/orcawhisperer/clothbound/tree/master/flatpak" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">Flatpak guide</a>). Works via <code>install.sh</code> on releases with a <code>.flatpak</code> bundle, or build locally from the repo manifest.',
+      title: "Install v0.5.1 via Flatpak (app.clothbound.Reader)",
+      noteHtml: 'Universal Linux sandbox with Qt 6, WebEngine, PDF, and live desktop light/dark portal support built in (<a href="https://github.com/orcawhisperer/clothbound/tree/master/flatpak" rel="noopener noreferrer" style="text-decoration:underline;text-underline-offset:3px">Flatpak guide</a>). Downloads and verifies the official <code>.flatpak</code> bundle from GitHub Releases.',
       cmd: "curl -fsSL https://clothbound.app/install | bash"
     },
     source: {

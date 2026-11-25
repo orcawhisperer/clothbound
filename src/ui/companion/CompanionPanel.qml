@@ -232,8 +232,10 @@ FocusScope {
         if (clean.length === 0)
             return "?"
         const parts = clean.split(/\s+/).filter(p => p.length > 0)
-        if (parts.length >= 2)
-            return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase()
+        if (parts.length >= 2) {
+            const pair = String(parts[0].charAt(0)) + String(parts[parts.length - 1].charAt(0))
+            return pair.toUpperCase()
+        }
         return parts[0].charAt(0).toUpperCase()
     }
     function personTint(name) {

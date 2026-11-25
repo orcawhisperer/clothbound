@@ -1,6 +1,6 @@
 # Maintainer: orcawhisperer <orcawhisperer@proton.me>
 pkgname=clothbound
-pkgver=0.5.0
+pkgver=0.5.1
 pkgrel=1
 pkgdesc='A calm, local-first EPUB and PDF reader with read-aloud, Study Companion, PDF Snip & Explain, and local MCP'
 arch=('x86_64' 'aarch64')
@@ -15,7 +15,7 @@ optdepends=('ffmpeg: keep listened narration small (Opus), and save downloads as
 makedepends=('cmake' 'gcc' 'make' 'pkgconf')
 options=('!debug' '!lto')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/orcawhisperer/clothbound/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('0b5bb5bc11683ce377c4f98ce9f0b2a778777817bc15d837f7e7e28d692a5ef7')
+sha256sums=('SKIP')
 
 build() {
   local generator="Unix Makefiles"

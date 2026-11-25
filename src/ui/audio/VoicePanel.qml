@@ -97,7 +97,7 @@ FocusScope {
     readonly property bool styleDisabled: source === "builtin" || builtinVoice
     readonly property bool typingInDesignField: {
         const item = panel.Window.activeFocusItem
-        return item !== null && item !== searchInput && item.cursorPosition !== undefined && !item.readOnly
+        return item !== null && item !== searchInput && item["cursorPosition"] !== undefined && !item["readOnly"]
     }
     readonly property string activeProblem: {
         if (source === "builtin" && voicePacks.supported)
@@ -203,8 +203,9 @@ FocusScope {
         if (entry.designEntry || !entry.voice || entry.voice.kind !== "designed")
             return false
         const del = voiceList.itemAtIndex(idx)
-        if (del && del.voiceRow) {
-            del.voiceRow.triggerForget()
+        const row = del ? del["voiceRow"] : null
+        if (row) {
+            row.triggerForget()
             return true
         }
         return false

@@ -112,8 +112,8 @@ Rectangle {
 
                 Rectangle {
                     Layout.alignment: Qt.AlignVCenter
-                    width: 7
-                    height: 7
+                    Layout.preferredWidth: 7
+                    Layout.preferredHeight: 7
                     radius: 3.5
                     color: ai.localUrl === "" ? (localSetup.running ? theme.positive : theme.ink4)
                          : section.reachable ? theme.positive
@@ -648,8 +648,8 @@ Rectangle {
                     Rectangle {
                         Layout.alignment: Qt.AlignTop
                         Layout.topMargin: 5
-                        width: 6
-                        height: 6
+                        Layout.preferredWidth: 6
+                        Layout.preferredHeight: 6
                         radius: 3
                         color: modelData.level === "good" ? theme.positive
                              : modelData.level === "slow" ? theme.cloud : theme.ink4

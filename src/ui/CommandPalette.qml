@@ -4,7 +4,6 @@ import QtQuick.Layouts
 import "components"
 import "library"
 
-import "components/Format.js" as Format
 import "components/Icons.js" as Icons
 import "components/Themes.js" as Themes
 import "components/Ui.js" as Ui

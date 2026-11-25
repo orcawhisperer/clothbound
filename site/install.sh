@@ -14,7 +14,7 @@
 #            for the current user with flatpak.
 #
 # Environment:
-#   CLOTHBOUND_VERSION=0.5.0   install a specific release instead of the latest
+#   CLOTHBOUND_VERSION=0.5.1   install a specific release instead of the latest
 #   CLOTHBOUND_METHOD=pacman|flatpak  force a specific install method
 #   CLOTHBOUND_DRY_RUN=1       download and verify, but install nothing
 #

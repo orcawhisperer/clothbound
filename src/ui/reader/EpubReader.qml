@@ -48,7 +48,6 @@ FocusScope {
     readonly property alias contentsPanel: panels.contents
     readonly property alias appearance: panels.appearance
     readonly property alias appearancePanel: panels.appearance
-    readonly property alias goTo: panels.goTo
     readonly property alias goToBox: panels.goTo
     readonly property alias voicePanel: panels.voicePanel
     readonly property alias searchBar: panels.searchBar
@@ -76,9 +75,9 @@ FocusScope {
                                                  : 0
     readonly property real companionLiveDockWidth: companionTargetWidth * companionPanel.slideProgress
     readonly property real companionDockWidth: companionDocked ? companionTargetWidth : 0
-    readonly property bool modalPanelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
+    readonly property bool modalPanelOpen: contents.open || appearance.open || goToBox.open || voicePanel.open || searchBar.editing
                                            || marksPanel.open || noteEditor.open || (companionPanel.open && view.width < 860)
-    readonly property bool panelOpen: contents.open || appearance.open || goTo.open || voicePanel.open || searchBar.editing
+    readonly property bool panelOpen: contents.open || appearance.open || goToBox.open || voicePanel.open || searchBar.editing
                                      || marksPanel.open || noteEditor.open || companionPanel.open
     property bool chromeShown: false
     property bool surfaceReady: false
@@ -672,7 +671,7 @@ FocusScope {
     function closePanels() {
         contents.close()
         appearance.close()
-        goTo.close()
+        goToBox.close()
         voicePanel.close()
         marksPanel.close()
         companionPanel.close()
@@ -1212,7 +1211,7 @@ FocusScope {
         else if (key === "[") prevChapter()
         else if (key === "t" || key === "T") { contents.open ? contents.close() : showContents() }
         else if (key === "a" || key === "A") { appearance.open ? appearance.close() : showAppearance() }
-        else if (key === "g" || key === "G") goTo.show()
+        else if (key === "g" || key === "G") goToBox.show()
         else if (key === "b" || key === "B") toggleBookmark()
         else if (key === "m" || key === "M") { marksPanel.open ? marksPanel.close() : showMarks() }
         else if (key === "c" || key === "C") { companionPanel.open ? companionPanel.close() : showCompanion("ask") }
@@ -1422,7 +1421,7 @@ FocusScope {
             onToggleContents: contents.open ? contents.close() : view.showContents()
             onCiteMenuRequested: (anchor, x, y) => citeMenu.popup(anchor, x, y)
             onGoToTarget: (target) => view.goTo(target)
-            onShowGoTo: goTo.show()
+            onShowGoTo: goToBox.show()
             onPrevPageRequested: view.prev()
             onNextPageRequested: view.next()
             onJumpBack: view.back()
@@ -1694,7 +1693,7 @@ FocusScope {
         id: scrim
         z: 8
         anchors.fill: parent
-        readonly property bool dimmed: noteEditor.open || goTo.open
+        readonly property bool dimmed: noteEditor.open || goToBox.open
         property real dimOpacity: dimmed ? 1 : 0
         Behavior on dimOpacity {
             NumberAnimation {
@@ -1821,7 +1820,7 @@ FocusScope {
         onShowContents: view.showContents()
         onShowMarks: view.showMarks()
         onShowSearch: searchBar.show()
-        onShowGoTo: goTo.show()
+        onShowGoTo: goToBox.show()
         onToggleFullScreen: win.toggleFullScreen()
         onToastMessage: (msg) => toast.show(msg)
     }
@@ -1941,7 +1940,7 @@ FocusScope {
         enabled: view.keys || (reader.open && view.enabled && view.visible && appearance.open && !view.modalOpen && !win.typing && !lightbox.open)
         onActivated: appearance.open ? appearance.close() : view.showAppearance()
     }
-    Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: goTo.show() }
+    Shortcut { sequence: "G"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: goToBox.show() }
     Shortcut { sequence: "B"; context: Qt.ApplicationShortcut; enabled: view.keys; onActivated: view.toggleBookmark() }
     Shortcut {
         sequence: "M"

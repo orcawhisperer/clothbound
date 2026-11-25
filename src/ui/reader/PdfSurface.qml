@@ -665,8 +665,9 @@ Item {
             const out = []
             for (let i = range.first; i <= range.last; ++i) {
                 const del = pageList.itemAtIndex(i)
-                if (del && del.pageItem && del.pageItem.visible && del.pageItem.page >= 0)
-                    out.push(del.pageItem)
+                const pageItem = del ? del["pageItem"] : null
+                if (pageItem && pageItem.visible && pageItem.page >= 0)
+                    out.push(pageItem)
             }
             return out
         }
@@ -680,7 +681,7 @@ Item {
                 const idx = pageList.indexAt(pageList.width * 0.5, pageList.contentY + pt.y)
                 if (idx >= 0) {
                     const del = pageList.itemAtIndex(idx)
-                    const item = del && del.pageItem
+                    const item = del ? del["pageItem"] : null
                     if (item && item.visible && item.page >= 0) {
                         const at = item.mapFromItem(surface, x, y)
                         if (at.x >= 0 && at.y >= 0 && at.x <= item.width && at.y <= item.height)
@@ -1034,7 +1035,7 @@ Item {
                 // Highlights.
                 Repeater {
                     model: {
-                        surface.marksVersion
+                        void surface.marksVersion
                         const out = []
                         if (pageItem.page < 0)
                             return out
@@ -1065,7 +1066,7 @@ Item {
                 // Search results (handles both chapter-tagged hits and per-page queries).
                 Repeater {
                     model: {
-                        surface.foundVersion
+                        void surface.foundVersion
                         const out = []
                         if (pageItem.page < 0)
                             return out
@@ -1226,7 +1227,7 @@ Item {
         // Compact 22×22 margin note badges beside noted PDF highlights (02_reading.html).
         Repeater {
             model: {
-                surface.marksVersion
+                void surface.marksVersion
                 const out = []
                 if (pageItem.page < 0)
                     return out

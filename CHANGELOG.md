@@ -2,6 +2,24 @@
 
 All notable changes to Clothbound are documented in this file.
 
+## [0.5.1] — 2026-11-25
+
+Universal Linux Flatpak release (`app.clothbound.Reader`) bringing Clothbound to Ubuntu, Fedora, Debian, Linux Mint, Pop!_OS, openSUSE, and SteamOS alongside Arch Linux and Omarchy, with live XDG Desktop Portal light/dark theming, enriched bug-report diagnostics, Qt 6.10 compatibility, and zero `qmllint` warnings.
+
+### Added
+- **Universal Linux Flatpak (`app.clothbound.Reader`)**: Added Flathub-ready manifest (`org.kde.Platform//6.10` + `io.qt.qtwebengine.BaseApp//6.10`), validated AppStream metainfo, CMake `-DCLOTHBOUND_APP_ID` install support, automated `clothbound-<ver>-x86_64.flatpak` release bundles with unified `SHA256SUMS`, and universal Flatpak/pacman support in `https://clothbound.app/install`.
+- **Live Desktop Light & Dark Theme Across Linux**: Extended `Theme` to follow `org.freedesktop.portal.Settings` (`org.freedesktop.appearance/color-scheme`) asynchronously over D-Bus and `QStyleHints::colorSchemeChanged` so GNOME, KDE Plasma, COSMIC, and Flatpak sessions switch light/dark live without GTK3 (Omarchy palettes retain full precedence when installed).
+- **Enriched Diagnostics & One-Click Report Issue**: Added zero-PII OS/distro (reading `/run/host/os-release` in Flatpak), Qt version, display platform, and Flatpak sandbox ID to **Settings › About**, plus a **Report issue** button (translated across all 50 languages) that copies diagnostics and pre-fills the GitHub bug report template.
+- **Flatpak-Aware Sandbox Integration**: Honored `FLATPAK_ID` for Wayland `app_id`, window icon, MPRIS bus name/desktop entry, D-Bus StatusNotifierItem tray registration, and **Settings › Intelligence › Copy MCP config** (`flatpak run --command=clothbound-mcp app.clothbound.Reader`).
+- **OS-Aware Install Experience on `clothbound.app`**: Added a zero-tracking platform selector (*Arch / Omarchy*, *Flatpak*, *Build from source*, *macOS & Windows roadmap*) and footer Report Issue link.
+
+### Fixed
+- **Qt 6.10 Build Compatibility**: Gated `NO_GENERATE_AOT_VALIDATION` in `CMakeLists.txt` on Qt ≥ 6.11 and switched `QJsonObject::cbegin()/cend()` to `constBegin()/constEnd()` in `opdsparser.cpp` and `tst_core_formats.cpp`.
+- **Reader `goTo` Name Collision & Layout Warnings**: Removed the duplicate `goTo` alias colliding with `function goTo(target)` in `EpubReader.qml`, switched `WhereItRuns.qml` layout-managed status dots from `width`/`height` to `Layout.preferredWidth`/`Layout.preferredHeight`, and resolved all remaining `qmllint` diagnostics down to 0 warnings and 0 infos.
+
+### Infrastructure
+- **Parallel Cached CI**: Split Arch Linux CI into 3 parallel `ccache`-backed jobs (`arch-release`, `arch-asan`, `arch-tsan`) running concurrently alongside `flatpak`.
+
 ## [0.5.0] — 2026-11-25
 
 Architecture, reading craft, and reliability release for Linux, Wayland, and Omarchy — featuring a standalone WebEngine-free `clothbound-mcp` binary, CMake + AOT QML compilation, symmetric int8 semantic embeddings, continuous Library audio playback, smooth Companion docking, and 100% coverage across all 50 shipped languages.

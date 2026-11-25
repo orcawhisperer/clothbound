@@ -5,7 +5,6 @@ import QtQuick.Layouts
 import "../components"
 
 import "../components/Icons.js" as Icons
-import "../components/Ui.js" as Ui
 
 // Settings › General: appearance, language, library preferences, folders, and
 // full-text / semantic search indexes.
