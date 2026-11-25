@@ -2,7 +2,7 @@
 """Clothbound's translations, kept up to date with Gemini.
 
     bin/translate extract            list the strings to translate (and how many each language lacks)
-    bin/translate check              validate all catalogs offline (JSON, types, plural forms, placeholders)
+    bin/translate check [--strict]   validate all catalogs offline (report missing/orphan keys; --strict fails on drift)
     bin/translate [code ...]         translate what's missing into these languages (all of Omarchy's by default)
 
 Strings come from qsTr() in the QML and JS, tr(), translate(), and QT_TR_NOOP()
@@ -230,14 +230,29 @@ def english(strings):
     save("en", entries)
 
 
-def check(strings):
-    """Offline validation of all catalogs."""
+def check(strings, strict=False):
+    """Offline validation of all catalogs, with missing/orphan key reporting."""
     errors = []
-    en = catalog("en")
+    locale_stats = []
+    en_path = I18N / "en.json"
+    en = {}
+    if en_path.exists():
+        try:
+            en = json.loads(en_path.read_text())
+        except ValueError as err:
+            errors.append(f"en: invalid JSON: {err}")
     for text, counted in sorted(strings.items()):
         if counted and (text not in en or not is_valid_entry("en", text, True, en[text])):
             errors.append(f"en: missing or invalid plural entry for {text!r}")
-    for path in sorted(I18N.glob("*.json")):
+    for text, value in en.items():
+        if not is_valid_entry("en", text, True, value):
+            errors.append(f"en: invalid plural entry for {text!r}: {value!r}")
+    en_missing = sum(1 for text, counted in strings.items() if counted and text not in en)
+    en_orphans = sum(1 for text in en if text not in strings or not strings[text])
+    locale_stats.append(("en", en_missing, en_orphans))
+
+    catalog_paths = sorted(I18N.glob("*.json"))
+    for path in catalog_paths:
         code = path.stem
         if code == "en":
             continue
@@ -246,15 +261,53 @@ def check(strings):
         except ValueError as err:
             errors.append(f"{code}: invalid JSON: {err}")
             continue
+        if not isinstance(entries, dict):
+            errors.append(f"{code}: top-level JSON value must be an object")
+            continue
         for text, value in entries.items():
             counted = strings.get(text, "%n" in text or "%Ln" in text)
             if not is_valid_entry(code, text, counted, value):
                 errors.append(f"{code}: invalid entry for {text!r}: {value!r}")
+        missing = sum(1 for text in strings if text not in entries)
+        orphans = sum(1 for text in entries if text not in strings)
+        locale_stats.append((code, missing, orphans))
+
+    for code, missing, orphans in locale_stats:
+        print(f"  {code}: {missing} missing, {orphans} orphan")
+
+    total_missing = sum(m for _, m, _ in locale_stats)
+    total_orphans = sum(o for _, _, o in locale_stats)
+    locales_with_missing = sum(1 for _, m, _ in locale_stats if m > 0)
+    locales_with_orphans = sum(1 for _, _, o in locale_stats if o > 0)
+    non_en_stats = [(c, m, o) for c, m, o in locale_stats if c != "en"]
+    max_missing = max((m for _, m, _ in non_en_stats), default=0)
+    max_orphans = max((o for _, _, o in non_en_stats), default=0)
+
+    print(
+        f"Summary: checked {len(catalog_paths)} catalogs against {len(strings)} extracted strings "
+        f"({locales_with_missing} locales missing keys, up to {max_missing} missing / "
+        f"{total_missing} total; {locales_with_orphans} locales with orphan keys, up to "
+        f"{max_orphans} orphan / {total_orphans} total)."
+    )
+
     if errors:
         for err in errors:
             print(err, file=sys.stderr)
         return 1
-    print(f"Checked {len(list(I18N.glob('*.json')))} catalogs: all entries valid.")
+
+    if total_missing or total_orphans:
+        msg = (
+            f"i18n drift detected: {locales_with_missing} locale(s) missing up to {max_missing} "
+            f"keys ({total_missing} total), {locales_with_orphans} locale(s) with up to "
+            f"{max_orphans} orphan keys ({total_orphans} total)."
+        )
+        if strict:
+            print(f"ERROR: {msg} (--strict enabled)", file=sys.stderr)
+            return 1
+        print(f"WARNING: {msg} Run `bin/translate` to update catalogs or pass `--strict` to fail.", file=sys.stderr)
+        return 0
+
+    print(f"Checked {len(catalog_paths)} catalogs: all entries valid and up to date.")
     return 0
 
 
@@ -296,7 +349,10 @@ def main():
                 print(f"  {code}: {len(missing)} to translate")
         return
     if sys.argv[1:2] == ["check"]:
-        sys.exit(check(strings))
+        extra = sys.argv[2:]
+        if extra and extra != ["--strict"]:
+            sys.exit("Usage: bin/translate check [--strict]")
+        sys.exit(check(strings, strict=("--strict" in extra)))
     codes = sys.argv[1:] or [code for code in locales if code != "en"]
     english(strings)
     for code in codes:

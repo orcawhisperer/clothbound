@@ -5,6 +5,16 @@ TARGET = clothbound
 TEMPLATE = app
 DEFINES += CLOTHBOUND_VERSION=\\\"0.4.1\\\"
 
+QMAKE_CXXFLAGS += -Wall -Wextra -Werror=return-type
+
+linux {
+    QMAKE_CXXFLAGS += -fstack-protector-strong
+    !contains(QMAKE_CXXFLAGS, .*_FORTIFY_SOURCE.*):!contains(QMAKE_CXXFLAGS_RELEASE, .*_FORTIFY_SOURCE.*):!contains(DEFINES, .*_FORTIFY_SOURCE.*) {
+        QMAKE_CXXFLAGS_RELEASE += -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
+    }
+    QMAKE_LFLAGS += -Wl,-z,relro,-z,now -Wl,--as-needed
+}
+
 INCLUDEPATH += $$PWD/src
 
 # EPUBs are ZIP archives; zlib inflates them (Qt itself links it). API keys

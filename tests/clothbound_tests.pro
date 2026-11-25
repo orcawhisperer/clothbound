@@ -1,6 +1,7 @@
 QT += core gui qml quick quickcontrols2 testlib dbus sql concurrent network multimedia pdf webenginecore webenginequick webchannel
 CONFIG += c++20 testcase
-DEFINES += CLOTHBOUND_VERSION=\\\"0.4.1\\\" CLOTHBOUND_UNIFIED_TESTS
+DEFINES += CLOTHBOUND_VERSION=\\\"0.4.1\\\" CLOTHBOUND_UNIFIED_TESTS QT_FORCE_ASSERTS
+QMAKE_CXXFLAGS += -Wall -Wextra -Werror=return-type
 TARGET = clothbound_tests
 TEMPLATE = app
 LIBS += -lz
@@ -48,6 +49,7 @@ HEADERS += \
     ../src/audio/director.h \
     ../src/audio/download.h \
     ../src/audio/localspeech.h \
+    ../src/audio/mpris.h \
     ../src/audio/narration.h \
     ../src/audio/sherpaonnx.h \
     ../src/audio/speech.h \
@@ -108,6 +110,7 @@ SOURCES += \
     ../src/audio/director.cpp \
     ../src/audio/download.cpp \
     ../src/audio/localspeech.cpp \
+    ../src/audio/mpris.cpp \
     ../src/audio/narration.cpp \
     ../src/audio/speech.cpp \
     ../src/audio/speechplayer.cpp \

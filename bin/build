@@ -2,10 +2,38 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-mkdir -p "$ROOT/build"
-cd "$ROOT/build"
+BUILD_DIR="$ROOT/build"
+PRO_FILE="$ROOT/clothbound.pro"
+STAMP_FILE="$BUILD_DIR/.stamp"
 
-qmake6 "$ROOT/clothbound.pro"
+mkdir -p "$BUILD_DIR"
+
+# qmake does not track DEFINES/flag/repo-path changes as dependencies of .o
+# files. Stamp the resolved root, version/flag lines, and compiler env so
+# version bumps, flag edits, or moved repos automatically trigger a clean build.
+PRO_FLAGS="$(grep -E '^[[:space:]]*(DEFINES|CONFIG|QMAKE_CXXFLAGS|QMAKE_LFLAGS)' "$PRO_FILE" || true)"
+STAMP="root=$ROOT
+cxxflags=${CXXFLAGS:-}
+cflags=${CFLAGS:-}
+cppflags=${CPPFLAGS:-}
+ldflags=${LDFLAGS:-}
+args=$*
+$PRO_FLAGS"
+
+PREV_STAMP=""
+if [ -f "$STAMP_FILE" ]; then
+    PREV_STAMP="$(cat "$STAMP_FILE")"
+fi
+
+if [ "$STAMP" != "$PREV_STAMP" ]; then
+    rm -f "$BUILD_DIR/Makefile" "$BUILD_DIR/.qmake.stash" "$BUILD_DIR/clothbound" \
+        "$BUILD_DIR"/*.o "$BUILD_DIR"/moc_* "$BUILD_DIR"/qrc_* "$BUILD_DIR"/ui_*
+    printf '%s\n' "$STAMP" > "$STAMP_FILE"
+fi
+
+cd "$BUILD_DIR"
+
+qmake6 "$PRO_FILE" "$@"
 make -j"$(nproc)"
 
-echo "Built $ROOT/build/clothbound"
+echo "Built $BUILD_DIR/clothbound"

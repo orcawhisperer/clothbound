@@ -88,6 +88,7 @@
 #include "app/theme.h"
 #include "app/translator.h"
 #include "audio/voicecatalog.h"
+#include "audio/mpris.h"
 #include "formats/ziparchive.h"
 
 // A keyring that answers when told to, like one starting up or waiting to be
@@ -11522,6 +11523,105 @@ Item {
         QVERIFY(pdfQml.contains(QStringLiteral("SmoothWheel { stepSize: 165 }")));
         QVERIFY(pdfQml.contains(QStringLiteral("enabled: surface.canPanY")));
     }
+
+    // === fix-build-qa tests ===
+    void mprisMetadataAndForcedAsserts() {
+        // Verify Q_ASSERT is never silently compiled out in test builds.
+#if defined(QT_NO_DEBUG) && !defined(QT_FORCE_ASSERTS)
+#error "Q_ASSERT must remain enabled in clothbound_tests builds"
+#endif
+        int assertProbe = 0;
+        Q_ASSERT((++assertProbe) == 1);
+        QCOMPARE(assertProbe, 1);
+
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        const QString epubPath = dir.filePath(QStringLiteral("mpris_book.epub"));
+        const QByteArray opf =
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"
+            "<package version=\"2.0\" xmlns=\"http://www.idpf.org/2007/opf\">\n"
+            "  <metadata xmlns:dc=\"http://purl.org/dc/elements/1.1/\">"
+            "<dc:title>MPRIS Test Book</dc:title>"
+            "<dc:creator>Ada Lovelace</dc:creator>"
+            "<dc:language>en</dc:language></metadata>\n"
+            "  <manifest>\n"
+            "    <item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\n"
+            "  </manifest>\n"
+            "  <spine><itemref idref=\"c1\"/></spine>\n"
+            "</package>";
+        QVERIFY(TestBooks::write(epubPath, TestBooks::epub({
+            {"OEBPS/content.opf", opf},
+            {"OEBPS/c1.xhtml", TestBooks::chapter("Chapter One", "<p>Hello MPRIS.</p>")},
+        })));
+
+        Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+        QVERIFY(library.open());
+        const int bookId = library.addBookFile(epubPath);
+        QVERIFY(bookId > 0);
+        BookScheme scheme;
+        Reader reader(&library, &scheme);
+        QVERIFY(reader.openBook(bookId));
+
+        qunsetenv("GEMINI_API_KEY");
+        GeminiProvider gemini;
+        MemoryKeyStore keys;
+        keys.save(QStringLiteral("gemini"), QStringLiteral("test-key"));
+        AiServices services(&gemini, &keys, library.database().connectionName());
+        AudioCache cache(dir.filePath(QStringLiteral("audio")), library.database().connectionName());
+        Narration narration(&services, &cache, &reader, &library);
+        narration.m_player->setHeadless(true);
+
+        Mpris mpris(&narration, &reader, &library);
+        auto *root = mpris.findChild<MprisRoot *>();
+        auto *player = mpris.findChild<MprisPlayer *>();
+        QVERIFY(root != nullptr);
+        QVERIFY(player != nullptr);
+
+        // Root adaptor basics and Raise signal.
+        QCOMPARE(root->identity(), QStringLiteral("Clothbound"));
+        QCOMPARE(root->desktopEntry(), QStringLiteral("clothbound"));
+        QCOMPARE(root->yes(), true);
+        QCOMPARE(root->no(), false);
+        QSignalSpy raised(&mpris, &Mpris::raiseRequested);
+        root->Raise();
+        QCOMPARE(raised.count(), 1);
+
+        // Inactive narration reports Stopped and empty metadata.
+        QCOMPARE(mpris.playbackStatus(), QStringLiteral("Stopped"));
+        QCOMPARE(player->playbackStatus(), QStringLiteral("Stopped"));
+        QVERIFY(mpris.metadata().isEmpty());
+        QCOMPARE(player->minimumRate(), 0.75);
+        QCOMPARE(player->maximumRate(), 2.0);
+
+        // Active narration exposes book/chapter metadata and honors player controls.
+        narration.setVoice(QStringLiteral("sulafat"), QStringLiteral("Sulafat"));
+        narration.start(0, 0);
+        QCOMPARE(mpris.playbackStatus(), QStringLiteral("Playing"));
+        const QVariantMap meta = mpris.metadata();
+        QCOMPARE(meta.value(QStringLiteral("mpris:trackid")).value<QDBusObjectPath>().path(),
+                 QStringLiteral("/app/clothbound/book%1/chapter0").arg(bookId));
+        QCOMPARE(meta.value(QStringLiteral("xesam:album")).toString(), QStringLiteral("MPRIS Test Book"));
+        QVERIFY(!meta.value(QStringLiteral("xesam:title")).toString().isEmpty());
+        QCOMPARE(meta.value(QStringLiteral("xesam:artist")).toStringList(),
+                 QStringList{QStringLiteral("Ada Lovelace")});
+
+        player->setRate(1.25);
+        QVERIFY(qFuzzyCompare(player->rate(), 1.25));
+        player->setVolume(0.6);
+        QVERIFY(qFuzzyCompare(player->volume(), 0.6));
+
+        // Per MPRIS2 spec, Rate <= 0 pauses playback.
+        player->setRate(0.0);
+        QCOMPARE(mpris.playbackStatus(), QStringLiteral("Paused"));
+        player->Play();
+        QCOMPARE(mpris.playbackStatus(), QStringLiteral("Playing"));
+        player->Pause();
+        QCOMPARE(mpris.playbackStatus(), QStringLiteral("Paused"));
+        player->Stop();
+        QCOMPARE(mpris.playbackStatus(), QStringLiteral("Stopped"));
+        QVERIFY(mpris.metadata().isEmpty());
+    }
+    // === end fix-build-qa tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS

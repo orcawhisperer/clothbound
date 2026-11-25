@@ -2,19 +2,76 @@
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-mkdir -p "$ROOT/build/tests"
-cd "$ROOT/build/tests"
+PRO_FILE="$ROOT/tests/clothbound_tests.pro"
 
-qmake6 "$ROOT/tests/clothbound_tests.pro"
+ASAN=0
+if [ "${1:-}" = "--asan" ]; then
+    ASAN=1
+    shift
+fi
+
+if [ "$ASAN" -eq 1 ]; then
+    BUILD_DIR="$ROOT/build/tests-asan"
+    MODE="asan-o1"
+else
+    BUILD_DIR="$ROOT/build/tests"
+    MODE="default"
+fi
+
+STAMP_FILE="$BUILD_DIR/.stamp"
+mkdir -p "$BUILD_DIR"
+
+# Clean stale qmake objects when repo path, DEFINES, compiler flags, or build
+# mode change (qmake does not track Makefile/DEFINES changes for .o targets).
+PRO_FLAGS="$(grep -E '^[[:space:]]*(DEFINES|CONFIG|QMAKE_CXXFLAGS|QMAKE_LFLAGS)' "$PRO_FILE" || true)"
+STAMP="root=$ROOT
+mode=$MODE
+cxxflags=${CXXFLAGS:-}
+cflags=${CFLAGS:-}
+cppflags=${CPPFLAGS:-}
+ldflags=${LDFLAGS:-}
+$PRO_FLAGS"
+
+PREV_STAMP=""
+if [ -f "$STAMP_FILE" ]; then
+    PREV_STAMP="$(cat "$STAMP_FILE")"
+fi
+
+if [ "$STAMP" != "$PREV_STAMP" ]; then
+    rm -f "$BUILD_DIR/Makefile" "$BUILD_DIR/.qmake.stash" "$BUILD_DIR/clothbound_tests" \
+        "$BUILD_DIR"/*.o "$BUILD_DIR"/moc_* "$BUILD_DIR"/qrc_* "$BUILD_DIR"/ui_*
+    printf '%s\n' "$STAMP" > "$STAMP_FILE"
+fi
+
+cd "$BUILD_DIR"
+
+if [ "$ASAN" -eq 1 ]; then
+    qmake6 "$PRO_FILE" \
+        "QMAKE_CXXFLAGS+=-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+        "QMAKE_CXXFLAGS_RELEASE+=-O1" \
+        "QMAKE_LFLAGS+=-fsanitize=address,undefined"
+else
+    qmake6 "$PRO_FILE"
+fi
 make -j"$(nproc)"
 
 TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/clothbound-test.XXXXXX")"
 trap 'rm -rf "$TEST_HOME"' EXIT INT TERM
 mkdir -p "$TEST_HOME/config" "$TEST_HOME/data" "$TEST_HOME/cache"
 
-XDG_CONFIG_HOME="$TEST_HOME/config" \
-XDG_DATA_HOME="$TEST_HOME/data" \
-XDG_CACHE_HOME="$TEST_HOME/cache" \
-QT_QPA_PLATFORM=offscreen \
-QT_QPA_PLATFORMTHEME=generic \
-./clothbound_tests "$@"
+export XDG_CONFIG_HOME="$TEST_HOME/config"
+export XDG_DATA_HOME="$TEST_HOME/data"
+export XDG_CACHE_HOME="$TEST_HOME/cache"
+export QT_QPA_PLATFORM=offscreen
+export QT_QPA_PLATFORMTHEME=generic
+
+if [ "$ASAN" -eq 1 ]; then
+    export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
+    export UBSAN_OPTIONS="${UBSAN_OPTIONS:-print_stacktrace=1:halt_on_error=1}"
+fi
+
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && command -v dbus-run-session >/dev/null 2>&1; then
+    dbus-run-session -- ./clothbound_tests "$@"
+else
+    ./clothbound_tests "$@"
+fi

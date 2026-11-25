@@ -49,6 +49,7 @@ jobs:
             qt6-multimedia \
             qt6-tools \
             libsecret \
+            dbus \
             zlib \
             tar \
             bzip2 \
@@ -60,21 +61,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      - name: Build Clothbound (-Wall -Wextra)
-        run: |
-          mkdir -p build
-          cd build
-          qmake6 ../clothbound.pro "QMAKE_CXXFLAGS+=-Wall -Wextra -Werror=return-type"
-          make -j"$(nproc)"
+      - name: Build Clothbound (hardened, -Wall -Wextra)
+        run: ./bin/build
 
-      - name: Verify zero private Qt6 ABI symbols
+      - name: Verify ELF hardening and zero private Qt6 ABI symbols
         run: |
           count=$(readelf -Ws build/clothbound | grep -c '@Qt_6_PRIVATE_API' || true)
           echo "PRIVATE_API symbol count: $count"
           test "$count" -eq 0
+          readelf -d build/clothbound | grep -q 'BIND_NOW'
 
-      - name: Run unit and QML smoke tests
+      - name: Run unit and QML smoke tests (with D-Bus session)
         run: ./bin/test
+
+      - name: Run unit and QML smoke tests under ASan + UBSan
+        run: ./bin/test --asan
 
       - name: Validate translations, JS, QML lint, and desktop entry
         run: |
