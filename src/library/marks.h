@@ -2,11 +2,13 @@
 
 #include <QAbstractListModel>
 #include <QDateTime>
+#include <QHash>
 #include <QList>
 #include <QPair>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
+#include <memory>
 
 class Library;
 class QUndoStack;
@@ -110,17 +112,35 @@ public:
     void erase(int id);
     void update(const Mark &mark);
     Mark find(int id) const;
+    std::shared_ptr<int> idTokenFor(int id);
+    void registerIdToken(int id, const std::shared_ptr<int> &token);
+    void remapIdToken(int oldId, int newId, const std::shared_ptr<int> &token);
 
 signals:
     void changed();
     void undoChanged();
 
 private:
+    struct SearchCacheEntry {
+        qint64 updatedAt = 0;
+        QString rawNote;
+        QString rawQuote;
+        QString rawLabel;
+        QString rawBookTitle;
+        QString rawBookAuthor;
+        QString hayNote;
+        QString hayText;
+        QString hayMeta;
+    };
+
     void load();
     int rowOf(int id) const;
 
     Library *m_library;
     QUndoStack *m_undo;
     int m_bookId = 0;
+    int m_minNextId = 1;
     QList<Mark> m_marks;
+    QHash<int, std::shared_ptr<int>> m_idTokens;
+    mutable QHash<int, SearchCacheEntry> m_searchCache;
 };

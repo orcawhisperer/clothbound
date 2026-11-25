@@ -745,6 +745,7 @@ void ensureIndexedForCliSearch(const Library &library, const QString &indexPath,
         db.setDatabaseName(indexPath);
         if (db.open()) {
             QSqlQuery q(db);
+            q.exec(QStringLiteral("PRAGMA busy_timeout = 4000"));
             if (q.exec(QStringLiteral("SELECT book, mtime, path FROM indexed"))) {
                 while (q.next())
                     indexed.insert(q.value(0).toInt(), {q.value(1).toLongLong(), q.value(2).toString()});

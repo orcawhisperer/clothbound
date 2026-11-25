@@ -1,12 +1,14 @@
 #pragma once
 
+#include <QByteArray>
 #include <QFileSystemWatcher>
 #include <QHash>
-#include <QJsonValue>
 #include <QLocale>
 #include <QReadWriteLock>
 #include <QTimer>
 #include <QTranslator>
+#include <atomic>
+#include <memory>
 
 // Follows the language picked under Omarchy's Setup > Language. Catalogs are
 // flat JSON objects from English source text to translation, one per Omarchy
@@ -44,19 +46,29 @@ private:
     QString m_languageFile;
     QString m_catalogDirectory;
     bool m_useSettings = false;
-    // A translation, and the language whose catalog it came from, so a
-    // counted string falling back to English takes English plural rules.
-    struct Entry {
-        QJsonValue value;
+    // Pre-parsed translation entry stored inside an immutable Catalog snapshot
+    // so translate() never acquires m_lock or parses QJsonObjects on hot paths.
+    struct CatalogEntry {
+        bool isPlural = false;
+        QString text;
         QString language;
+        QHash<QString, QString> forms;
+    };
+    struct Catalog {
+        QHash<QByteArray, CatalogEntry> entries;
+        bool empty = true;
+        bool englishPluralsOnly = false;
     };
 
-    // translate() also runs on worker threads (an app's background errors),
-    // while a language switch replaces the catalog on the GUI thread.
+    // m_lock protects m_language and m_languageOverride; translate() and
+    // isEmpty() read atomic fast-path flags and the immutable m_catalog snapshot
+    // completely lock-free across threads.
     mutable QReadWriteLock m_lock;
     QString m_language;
     QString m_languageOverride;
-    QHash<QString, Entry> m_strings;
+    std::atomic<std::shared_ptr<const Catalog>> m_catalog;
+    std::atomic_bool m_emptyCatalog{true};
+    std::atomic_bool m_englishPluralsOnly{false};
     QFileSystemWatcher m_watcher;
     QTimer m_debounce;
 };

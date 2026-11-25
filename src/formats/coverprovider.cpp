@@ -1,16 +1,23 @@
 #include "formats/coverprovider.h"
 
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QImageReader>
 #include <QMetaObject>
 #include <QPainter>
 #include <QPainterPath>
 #include <QRunnable>
+#include <QStandardPaths>
 #include <QThreadPool>
 #include <QUrl>
 #include <QUrlQuery>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 
 QMutex CoverProvider::s_mutex;
@@ -62,10 +69,8 @@ private:
 
 class CoverResponse : public QQuickImageResponse, public QRunnable {
 public:
-    CoverResponse(QString cacheKey, QString filePath, QSize requestedSize, qreal radiusPx, qreal spineRadiusPx,
-                  qreal boxWidthPx)
-        : m_cacheKey(std::move(cacheKey)),
-          m_filePath(std::move(filePath)),
+    CoverResponse(QString filePath, QSize requestedSize, qreal radiusPx, qreal spineRadiusPx, qreal boxWidthPx)
+        : m_filePath(std::move(filePath)),
           m_requestedSize(requestedSize),
           m_radiusPx(radiusPx),
           m_spineRadiusPx(spineRadiusPx),
@@ -84,21 +89,35 @@ public:
             emit finished();
             return;
         }
-        if (const QImage hit = CoverProvider::cached(m_cacheKey); !hit.isNull()) {
+        CoverProvider::maybeScheduleCacheGc();
+
+        const QFileInfo fi(m_filePath);
+        if (m_cancelled.load(std::memory_order_relaxed) || !fi.exists() || !fi.isFile()) {
+            emit finished();
+            return;
+        }
+        const QString cacheKey = QStringLiteral("%1|%2|%3x%4|r=%5|sr=%6|bw=%7")
+                                     .arg(m_filePath)
+                                     .arg(fi.lastModified().toSecsSinceEpoch())
+                                     .arg(m_requestedSize.width())
+                                     .arg(m_requestedSize.height())
+                                     .arg(qRound(m_radiusPx))
+                                     .arg(qRound(m_spineRadiusPx))
+                                     .arg(qRound(m_boxWidthPx));
+        if (const QImage hit = CoverProvider::cached(cacheKey); !hit.isNull()) {
             m_image = hit;
             emit finished();
             return;
         }
         QImage out = CoverProvider::renderCoverImage(m_filePath, m_requestedSize, m_radiusPx, m_spineRadiusPx, m_boxWidthPx);
         if (!m_cancelled.load(std::memory_order_relaxed) && !out.isNull()) {
-            CoverProvider::storeCached(m_cacheKey, out);
+            CoverProvider::storeCached(cacheKey, out);
             m_image = std::move(out);
         }
         emit finished();
     }
 
 private:
-    QString m_cacheKey;
     QString m_filePath;
     QSize m_requestedSize;
     qreal m_radiusPx;
@@ -171,6 +190,100 @@ QImage CoverProvider::renderCoverImage(const QString &filePath, const QSize &req
     return out;
 }
 
+int CoverProvider::pruneCoverCacheDirectory(const QString &directory, qint64 maxBytes, int maxFiles) {
+    if (directory.isEmpty())
+        return 0;
+    const QDir dir(directory);
+    if (!dir.exists())
+        return 0;
+
+    const qint64 byteCap = qMax<qint64>(0, maxBytes);
+    const qsizetype fileCap = qsizetype(qMax(0, maxFiles));
+
+    struct Entry {
+        QString path;
+        qint64 size = 0;
+        qint64 mtimeMs = 0;
+    };
+    QList<Entry> entries;
+    qint64 totalBytes = 0;
+
+    QDirIterator it(directory, QDir::Files | QDir::NoDotAndDotDot | QDir::NoSymLinks);
+    while (it.hasNext()) {
+        if (QCoreApplication::closingDown())
+            return 0;
+        const QFileInfo info = it.nextFileInfo();
+        if (info.fileName().startsWith(QLatin1Char('.')))
+            continue;
+        const qint64 sz = qMax<qint64>(0, info.size());
+        totalBytes += sz;
+        entries.append({info.absoluteFilePath(), sz, info.lastModified().toMSecsSinceEpoch()});
+    }
+
+    if (totalBytes <= byteCap && entries.size() <= fileCap)
+        return 0;
+
+    std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
+        return a.mtimeMs != b.mtimeMs ? a.mtimeMs < b.mtimeMs : a.path < b.path;
+    });
+
+    int removed = 0;
+    qsizetype remaining = entries.size();
+    for (const Entry &entry : std::as_const(entries)) {
+        if (QCoreApplication::closingDown())
+            break;
+        if (totalBytes <= byteCap && remaining <= fileCap)
+            break;
+        if (QFile::remove(entry.path)) {
+            totalBytes -= entry.size;
+            --remaining;
+            ++removed;
+        }
+    }
+    return removed;
+}
+
+void CoverProvider::maybeScheduleCacheGc() {
+    static constexpr qint64 kGcIntervalMs = 5ll * 60 * 1000;
+    static std::atomic_bool s_gcRunning{false};
+    static std::atomic<qint64> s_lastGcMs{0};
+
+    if (QCoreApplication::closingDown() || s_gcRunning.load(std::memory_order_relaxed))
+        return;
+
+    const qint64 nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now().time_since_epoch())
+                             .count();
+    const qint64 lastMs = s_lastGcMs.load(std::memory_order_relaxed);
+    if (lastMs != 0 && nowMs - lastMs < kGcIntervalMs)
+        return;
+    if (s_gcRunning.exchange(true, std::memory_order_acq_rel))
+        return;
+
+    // Re-check after winning the single-flight guard to avoid duplicate sweeps.
+    const qint64 prevMs = s_lastGcMs.load(std::memory_order_relaxed);
+    if (prevMs != 0 && nowMs - prevMs < kGcIntervalMs) {
+        s_gcRunning.store(false, std::memory_order_release);
+        return;
+    }
+    s_lastGcMs.store(nowMs, std::memory_order_relaxed);
+
+    const QString cacheRoot = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    if (cacheRoot.isEmpty()) {
+        s_gcRunning.store(false, std::memory_order_release);
+        return;
+    }
+    const QString coversDir = cacheRoot + QStringLiteral("/covers");
+    QThreadPool::globalInstance()->start(
+        [coversDir] {
+            struct Guard {
+                ~Guard() { s_gcRunning.store(false, std::memory_order_release); }
+            } guard;
+            pruneCoverCacheDirectory(coversDir);
+        },
+        -1);
+}
+
 QQuickImageResponse *CoverProvider::requestImageResponse(const QString &id, const QSize &requestedSize) {
     // Format: "<percent-encoded-path-or-file-url>?r=<px>&sr=<px>&bw=<px>"
     const QString encodedPath = id.section(QLatin1Char('?'), 0, 0);
@@ -181,24 +294,16 @@ QQuickImageResponse *CoverProvider::requestImageResponse(const QString &id, cons
         if (u.isLocalFile())
             filePath = u.toLocalFile();
     }
+    if (filePath.isEmpty())
+        return new CachedCoverResponse(QImage());
+
     const QUrlQuery query(id.section(QLatin1Char('?'), 1));
     const qreal radiusPx = query.queryItemValue(QStringLiteral("r")).toDouble();
     const qreal spineRadiusPx = query.queryItemValue(QStringLiteral("sr")).toDouble();
     const qreal boxWidthPx = query.queryItemValue(QStringLiteral("bw")).toDouble();
 
-    const QFileInfo fi(filePath);
-    const QString cacheKey = QStringLiteral("%1|%2|%3x%4|r=%5|sr=%6|bw=%7")
-                                 .arg(filePath)
-                                 .arg(fi.lastModified().toSecsSinceEpoch())
-                                 .arg(requestedSize.width())
-                                 .arg(requestedSize.height())
-                                 .arg(qRound(radiusPx))
-                                 .arg(qRound(spineRadiusPx))
-                                 .arg(qRound(boxWidthPx));
-    if (const QImage hit = cached(cacheKey); !hit.isNull())
-        return new CachedCoverResponse(hit);
-
-    auto *response = new CoverResponse(cacheKey, filePath, requestedSize, radiusPx, spineRadiusPx, boxWidthPx);
+    // Defer QFileInfo::exists()/stat() and disk decode off the GUI thread.
+    auto *response = new CoverResponse(std::move(filePath), requestedSize, radiusPx, spineRadiusPx, boxWidthPx);
     QThreadPool::globalInstance()->start(response);
     return response;
 }

@@ -5,9 +5,10 @@
 #include <QStringDecoder>
 
 namespace {
-const QHash<QString, char32_t> &namedEntities() {
-    static const QHash<QString, char32_t> table = [] {
-        QHash<QString, char32_t> t;
+const QHash<QLatin1StringView, char32_t> &namedEntities() {
+    static const QHash<QLatin1StringView, char32_t> table = [] {
+        QHash<QLatin1StringView, char32_t> t;
+        t.reserve(280);
         // Latin-1, in code point order from U+00A0.
         static const char *const latin1[] = {
             "nbsp", "iexcl", "cent", "pound", "curren", "yen", "brvbar", "sect", "uml", "copy", "ordf",
@@ -21,7 +22,7 @@ const QHash<QString, char32_t> &namedEntities() {
             "ograve", "oacute", "ocirc", "otilde", "ouml", "divide", "oslash", "ugrave", "uacute", "ucirc",
             "uuml", "yacute", "thorn", "yuml"};
         for (int i = 0; i < 96; ++i)
-            t.insert(QString::fromLatin1(latin1[i]), char32_t(0xA0 + i));
+            t.insert(QLatin1StringView(latin1[i]), char32_t(0xA0 + i));
         // Greek, capitals then small letters, in code point order.
         static const char *const greekUpper[] = {"Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta",
                                                  "Eta", "Theta", "Iota", "Kappa", "Lambda", "Mu", "Nu", "Xi",
@@ -33,10 +34,10 @@ const QHash<QString, char32_t> &namedEntities() {
                                                  "phi", "chi", "psi", "omega"};
         for (int i = 0; i < 25; ++i) {
             if (greekUpper[i])
-                t.insert(QString::fromLatin1(greekUpper[i]), char32_t(0x391 + i));
-            t.insert(QString::fromLatin1(greekLower[i]), char32_t(0x3B1 + i));
+                t.insert(QLatin1StringView(greekUpper[i]), char32_t(0x391 + i));
+            t.insert(QLatin1StringView(greekLower[i]), char32_t(0x3B1 + i));
         }
-        const QList<QPair<const char *, char32_t>> rest = {
+        static constexpr QPair<const char *, char32_t> rest[] = {
             {"quot", 34}, {"amp", 38}, {"apos", 39}, {"lt", 60}, {"gt", 62},
             {"OElig", 338}, {"oelig", 339}, {"Scaron", 352}, {"scaron", 353}, {"Yuml", 376},
             {"fnof", 402}, {"circ", 710}, {"tilde", 732}, {"thetasym", 977}, {"upsih", 978}, {"piv", 982},
@@ -62,7 +63,7 @@ const QHash<QString, char32_t> &namedEntities() {
             {"clubs", 9827}, {"hearts", 9829}, {"diams", 9830}, {"half", 189}, {"centerdot", 183},
         };
         for (const auto &[name, code] : rest)
-            t.insert(QString::fromLatin1(name), code);
+            t.insert(QLatin1StringView(name), code);
         return t;
     }();
     return table;
@@ -131,18 +132,35 @@ QString HtmlTokenizer::decodeEntities(QStringView text) {
                     code = 0xFFFD;
                 found = true;
             }
-        } else {
-            const auto it = table.constFind(name.toString());
-            if (it != table.cend()) {
-                code = *it;
-                found = true;
+        } else if (!name.isEmpty() && name.size() <= 40) {
+            char ascii[40];
+            bool isAscii = true;
+            for (qsizetype k = 0; k < name.size(); ++k) {
+                const char16_t u = name[k].unicode();
+                if (u > 0x7F) {
+                    isAscii = false;
+                    break;
+                }
+                ascii[k] = static_cast<char>(u);
+            }
+            if (isAscii) {
+                const auto it = table.constFind(QLatin1StringView(ascii, name.size()));
+                if (it != table.cend()) {
+                    code = *it;
+                    found = true;
+                }
             }
         }
         if (!found) {
             out.append(c);
             continue;
         }
-        out.append(QString::fromUcs4(&code, 1));
+        if (code <= 0xFFFF) {
+            out.append(QChar(static_cast<char16_t>(code)));
+        } else {
+            out.append(QChar::highSurrogate(code));
+            out.append(QChar::lowSurrogate(code));
+        }
         i = semicolon;
     }
     return out;

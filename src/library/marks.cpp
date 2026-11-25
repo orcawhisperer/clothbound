@@ -7,6 +7,8 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QSet>
+#include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStandardPaths>
@@ -15,8 +17,48 @@
 #include <QUrl>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
+// Nested-safe SQLite transaction guard using SAVEPOINT, rolling back
+// automatically on early return or error.
+struct Savepoint {
+    QSqlDatabase db;
+    QString name;
+    bool active = false;
+
+    Savepoint(QSqlDatabase database, const char *label) : db(std::move(database)), name(QString::fromLatin1(label)) {
+        QSqlQuery q(db);
+        active = q.exec(QStringLiteral("SAVEPOINT ") + name);
+        if (!active)
+            qWarning("marks: SAVEPOINT %s failed: %s", label, qPrintable(q.lastError().text()));
+    }
+
+    bool commit() {
+        if (!active)
+            return false;
+        active = false;
+        QSqlQuery q(db);
+        if (q.exec(QStringLiteral("RELEASE SAVEPOINT ") + name))
+            return true;
+        qWarning("marks: RELEASE SAVEPOINT %s failed: %s", qPrintable(name), qPrintable(q.lastError().text()));
+        QSqlQuery rb(db);
+        rb.exec(QStringLiteral("ROLLBACK TO SAVEPOINT ") + name);
+        rb.exec(QStringLiteral("RELEASE SAVEPOINT ") + name);
+        return false;
+    }
+
+    void rollback() {
+        if (!active)
+            return;
+        active = false;
+        QSqlQuery q(db);
+        q.exec(QStringLiteral("ROLLBACK TO SAVEPOINT ") + name);
+        q.exec(QStringLiteral("RELEASE SAVEPOINT ") + name);
+    }
+
+    ~Savepoint() { rollback(); }
+};
 // An empty text, never a null one: a null QString is SQL's NULL, which the
 // columns refuse.
 QVariant text(const QString &value) { return value.isNull() ? QStringLiteral("") : value; }
@@ -124,46 +166,85 @@ int contextScore(const QString &haystack, qsizetype pos, qsizetype len, const QS
     return score;
 }
 
-// A mark made, or taken away: undoing one does the other. The mark keeps
-// its id across both, so later changes to it still find it.
+// A mark made, or taken away: undoing one does the other. Commands share a
+// mutable id handle (`m_idToken`) so that if SQLite's rowid is reused
+// externally while a mark is deleted, undoing the delete allocates a fresh
+// non-colliding id and rebinds every undo command for that logical mark.
 class Place : public QUndoCommand {
 public:
-    Place(Marks *marks, const Mark &mark, bool adding, const QString &text)
-        : QUndoCommand(text), m_marks(marks), m_mark(mark), m_adding(adding) {}
+    Place(Marks *marks, const Mark &mark, std::shared_ptr<int> idToken, bool adding, const QString &text)
+        : QUndoCommand(text), m_marks(marks), m_mark(mark), m_idToken(std::move(idToken)), m_adding(adding) {}
     void redo() override { m_adding ? put() : take(); }
     void undo() override { m_adding ? take() : put(); }
-    int id() const { return m_mark.id; }
+    int id() const { return *m_idToken; }
 
 private:
     void put() {
+        const int prevId = *m_idToken;
+        m_mark.id = prevId;
         const int inserted = m_marks->insert(m_mark);
-        if (inserted > 0)
+        if (inserted > 0) {
             m_mark.id = inserted;
+            *m_idToken = inserted;
+            if (prevId <= 0)
+                m_marks->registerIdToken(inserted, m_idToken);
+            else if (prevId != inserted)
+                m_marks->remapIdToken(prevId, inserted, m_idToken);
+        }
     }
     void take() {
-        if (m_mark.id <= 0)
+        const int curId = *m_idToken;
+        if (curId <= 0)
             return;
-        const Mark found = m_marks->find(m_mark.id);
+        const Mark found = m_marks->find(curId);
         if (found.id != 0)
             m_mark = found;
-        m_marks->erase(m_mark.id);
+        m_marks->erase(curId);
     }
     Marks *m_marks;
     Mark m_mark;
+    std::shared_ptr<int> m_idToken;
     bool m_adding;
 };
 
+// Edits a single user-editable field (note or color) against the live mark
+// state, so undoing/redoing after healChapter() never clobbers freshly healed
+// offsets with stale pre-heal start/end values.
 class Change : public QUndoCommand {
 public:
-    Change(Marks *marks, const Mark &before, const Mark &after, const QString &text)
-        : QUndoCommand(text), m_marks(marks), m_before(before), m_after(after) {}
-    void redo() override { m_marks->update(m_after); }
-    void undo() override { m_marks->update(m_before); }
+    enum class Field { Note, Color };
+
+    Change(Marks *marks, std::shared_ptr<int> idToken, Field field, QString beforeValue, QString afterValue,
+           const QString &text)
+        : QUndoCommand(text),
+          m_marks(marks),
+          m_idToken(std::move(idToken)),
+          m_field(field),
+          m_before(std::move(beforeValue)),
+          m_after(std::move(afterValue)) {}
+    void redo() override { apply(m_after); }
+    void undo() override { apply(m_before); }
 
 private:
+    void apply(const QString &value) {
+        const int curId = *m_idToken;
+        if (curId <= 0)
+            return;
+        Mark current = m_marks->find(curId);
+        if (current.id == 0)
+            return;
+        if (m_field == Field::Note)
+            current.note = value;
+        else
+            current.color = value;
+        m_marks->update(current);
+    }
+
     Marks *m_marks;
-    Mark m_before;
-    Mark m_after;
+    std::shared_ptr<int> m_idToken;
+    Field m_field;
+    QString m_before;
+    QString m_after;
 };
 }  // namespace
 
@@ -215,6 +296,7 @@ void Marks::setBook(int bookId) {
     m_bookId = bookId;
     // Undo belongs to the book it was done in.
     m_undo->clear();
+    m_idTokens.clear();
     load();
 }
 
@@ -222,7 +304,13 @@ void Marks::load() {
     beginResetModel();
     m_marks.clear();
     if (m_bookId > 0) {
-        QSqlQuery query(m_library->database());
+        QSqlDatabase db = m_library->database();
+        {
+            QSqlQuery maxQ(db);
+            if (maxQ.exec(QStringLiteral("SELECT COALESCE(MAX(id), 0) + 1 FROM annotations")) && maxQ.next())
+                m_minNextId = qMax(m_minNextId, maxQ.value(0).toInt());
+        }
+        QSqlQuery query(db);
         query.prepare(QStringLiteral("SELECT id, kind, chapter, start, finish, text, note, color, label, created_at,"
                                      " updated_at, prefix, suffix FROM annotations WHERE book_id = ?"));
         query.addBindValue(m_bookId);
@@ -262,22 +350,75 @@ Mark Marks::find(int id) const {
     return row >= 0 ? m_marks[row] : Mark{};
 }
 
+std::shared_ptr<int> Marks::idTokenFor(int id) {
+    auto it = m_idTokens.constFind(id);
+    if (it != m_idTokens.cend())
+        return *it;
+    auto token = std::make_shared<int>(id);
+    m_idTokens.insert(id, token);
+    return token;
+}
+
+void Marks::registerIdToken(int id, const std::shared_ptr<int> &token) {
+    if (id > 0 && token)
+        m_idTokens.insert(id, token);
+}
+
+void Marks::remapIdToken(int oldId, int newId, const std::shared_ptr<int> &token) {
+    if (oldId > 0) {
+        const auto it = m_idTokens.find(oldId);
+        if (it != m_idTokens.end() && it.value() == token)
+            m_idTokens.erase(it);
+    }
+    if (newId > 0 && token)
+        m_idTokens.insert(newId, token);
+}
+
 int Marks::insert(Mark mark) {
     if (m_bookId <= 0)
         return 0;
     if (!mark.created.isValid())
         mark.created = QDateTime::currentDateTime();
     mark.updated = QDateTime::currentDateTime();
-    QSqlQuery query(m_library->database());
-    // A mark put back by undo keeps its id.
-    query.prepare(mark.id > 0
+    QSqlDatabase db = m_library->database();
+
+    int dbNextId = 1;
+    {
+        QSqlQuery maxQ(db);
+        if (maxQ.exec(QStringLiteral("SELECT COALESCE(MAX(id), 0) + 1 FROM annotations")) && maxQ.next())
+            dbNextId = qMax(1, maxQ.value(0).toInt());
+    }
+    m_minNextId = qMax(m_minNextId, dbNextId);
+
+    // Guard undo-of-delete against SQLite rowid reuse: if an external writer
+    // claimed `mark.id` while this mark was deleted, allocate a fresh id rather
+    // than colliding with or losing the mark. Likewise, for brand-new marks
+    // (`mark.id <= 0`), avoid reusing a recently deleted id from this session.
+    bool useExplicitId = false;
+    if (mark.id > 0) {
+        QSqlQuery exists(db);
+        exists.prepare(QStringLiteral("SELECT 1 FROM annotations WHERE id = ?"));
+        exists.addBindValue(mark.id);
+        if (exists.exec() && exists.next()) {
+            mark.id = m_minNextId;
+            useExplicitId = true;
+        } else {
+            useExplicitId = true;
+        }
+    } else if (m_minNextId > dbNextId) {
+        mark.id = m_minNextId;
+        useExplicitId = true;
+    }
+
+    QSqlQuery query(db);
+    query.prepare(useExplicitId
                       ? QStringLiteral("INSERT INTO annotations (id, book_id, kind, chapter, start, finish, text, note, color,"
                                        " label, prefix, suffix, created_at, updated_at)"
                                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
                       : QStringLiteral("INSERT INTO annotations (book_id, kind, chapter, start, finish, text, note, color,"
                                        " label, prefix, suffix, created_at, updated_at)"
                                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"));
-    if (mark.id > 0)
+    if (useExplicitId)
         query.addBindValue(mark.id);
     for (const QVariant &value : {QVariant(m_bookId), text(mark.kind), QVariant(mark.chapter), QVariant(mark.start),
                                   QVariant(mark.end), text(mark.text), text(mark.note), text(mark.color),
@@ -289,6 +430,7 @@ int Marks::insert(Mark mark) {
         return 0;
     }
     mark.id = query.lastInsertId().toInt();
+    m_minNextId = qMax(m_minNextId, mark.id + 1);
     const auto at = std::lower_bound(m_marks.begin(), m_marks.end(), mark, before);
     const int row = int(at - m_marks.begin());
     beginInsertRows({}, row, row);
@@ -306,12 +448,15 @@ void Marks::erase(int id) {
         return;
     const bool wasHighlight = (m_marks[row].kind == QLatin1String("highlight"));
     QSqlQuery query(m_library->database());
-    query.prepare(QStringLiteral("DELETE FROM annotations WHERE id = ?"));
+    query.prepare(QStringLiteral("DELETE FROM annotations WHERE id = ? AND book_id = ?"));
     query.addBindValue(id);
+    query.addBindValue(m_bookId);
     if (!query.exec()) {
         qWarning("marks: %s", qPrintable(query.lastError().text()));
         return;
     }
+    m_minNextId = qMax(m_minNextId, id + 1);
+    m_searchCache.remove(id);
     beginRemoveRows({}, row, row);
     m_marks.removeAt(row);
     endRemoveRows();
@@ -328,7 +473,7 @@ void Marks::update(const Mark &mark) {
     changed.updated = QDateTime::currentDateTime();
     QSqlQuery query(m_library->database());
     query.prepare(QStringLiteral("UPDATE annotations SET start = ?, finish = ?, note = ?, color = ?, prefix = ?, "
-                                 "suffix = ?, updated_at = ? WHERE id = ?"));
+                                 "suffix = ?, updated_at = ? WHERE id = ? AND book_id = ?"));
     query.addBindValue(changed.start);
     query.addBindValue(changed.end);
     query.addBindValue(text(changed.note));
@@ -337,6 +482,7 @@ void Marks::update(const Mark &mark) {
     query.addBindValue(text(changed.suffix));
     query.addBindValue(changed.updated.toSecsSinceEpoch());
     query.addBindValue(changed.id);
+    query.addBindValue(m_bookId);
     if (!query.exec()) {
         qWarning("marks: %s", qPrintable(query.lastError().text()));
         return;
@@ -365,7 +511,8 @@ int Marks::addBookmark(int chapter, qint64 offset, const QString &text, const QS
     mark.label = label;
     mark.prefix = prefix.simplified().right(80);
     mark.suffix = suffix.simplified().left(80);
-    auto *command = new Place(this, mark, true, tr("Add the bookmark"));
+    auto token = std::make_shared<int>(0);
+    auto *command = new Place(this, mark, token, true, tr("Add the bookmark"));
     m_undo->push(command);
     return command->id();
 }
@@ -384,34 +531,32 @@ int Marks::addHighlight(int chapter, qint64 start, qint64 end, const QString &te
     mark.label = label;
     mark.prefix = prefix.simplified().right(80);
     mark.suffix = suffix.simplified().left(80);
-    auto *command = new Place(this, mark, true, tr("Highlight"));
+    auto token = std::make_shared<int>(0);
+    auto *command = new Place(this, mark, token, true, tr("Highlight"));
     m_undo->push(command);
     return command->id();
 }
 
 void Marks::setNote(int id, const QString &note) {
     const Mark before = find(id);
-    if (before.id == 0 || before.note == note.trimmed())
+    const QString trimmed = note.trimmed();
+    if (before.id == 0 || before.note == trimmed)
         return;
-    Mark after = before;
-    after.note = note.trimmed();
-    m_undo->push(new Change(this, before, after, tr("Edit the note")));
+    m_undo->push(new Change(this, idTokenFor(id), Change::Field::Note, before.note, trimmed, tr("Edit the note")));
 }
 
 void Marks::setColor(int id, const QString &color) {
     const Mark before = find(id);
     if (before.id == 0 || before.color == color)
         return;
-    Mark after = before;
-    after.color = color;
-    m_undo->push(new Change(this, before, after, tr("Change the color")));
+    m_undo->push(new Change(this, idTokenFor(id), Change::Field::Color, before.color, color, tr("Change the color")));
 }
 
 void Marks::remove(int id) {
     const Mark mark = find(id);
     if (mark.id == 0)
         return;
-    m_undo->push(new Place(this, mark, false,
+    m_undo->push(new Place(this, mark, idTokenFor(id), false,
                            mark.kind == QStringLiteral("bookmark") ? tr("Remove the bookmark") : tr("Remove the highlight")));
 }
 
@@ -502,6 +647,8 @@ QVariantList Marks::searchAll(const QString &query, int limit) const {
         QVariantMap map;
     };
     QList<ScoredHit> hits;
+    QSet<int> seenIds;
+    const QString trimmed = query.trimmed();
     while (sql.next()) {
         const int id = sql.value(0).toInt();
         const int bookId = sql.value(1).toInt();
@@ -520,26 +667,44 @@ QVariantList Marks::searchAll(const QString &query, int limit) const {
 
         int score = (bookId == m_bookId && m_bookId > 0) ? 20 : 0;
         if (!tokens.isEmpty()) {
-            const QString hayNote = WorksModel::searchable(note);
-            const QString hayText = WorksModel::searchable(quote);
-            const QString hayMeta = WorksModel::searchable(label + QLatin1Char(' ') + bookTitle + QLatin1Char(' ') + bookAuthor);
-            const QString combined = hayNote + QLatin1Char(' ') + hayText + QLatin1Char(' ') + hayMeta;
+            seenIds.insert(id);
+            auto it = m_searchCache.find(id);
+            if (it == m_searchCache.end() || it->updatedAt != updatedAt || it->rawNote != note ||
+                it->rawQuote != quote || it->rawLabel != label || it->rawBookTitle != bookTitle ||
+                it->rawBookAuthor != bookAuthor) {
+                SearchCacheEntry entry;
+                entry.updatedAt = updatedAt;
+                entry.rawNote = note;
+                entry.rawQuote = quote;
+                entry.rawLabel = label;
+                entry.rawBookTitle = bookTitle;
+                entry.rawBookAuthor = bookAuthor;
+                entry.hayNote = note.isEmpty() ? QString() : WorksModel::searchable(note);
+                entry.hayText = quote.isEmpty() ? QString() : WorksModel::searchable(quote);
+                entry.hayMeta = WorksModel::searchable(label + QLatin1Char(' ') + bookTitle + QLatin1Char(' ') + bookAuthor);
+                it = m_searchCache.insert(id, std::move(entry));
+            }
+            const QString &hayNote = it->hayNote;
+            const QString &hayText = it->hayText;
+            const QString &hayMeta = it->hayMeta;
             bool ok = true;
             for (const QString &tok : tokens) {
-                if (!combined.contains(tok)) {
+                const bool inNote = !hayNote.isEmpty() && hayNote.contains(tok);
+                const bool inText = !hayText.isEmpty() && hayText.contains(tok);
+                const bool inMeta = !hayMeta.isEmpty() && hayMeta.contains(tok);
+                if (!inNote && !inText && !inMeta) {
                     ok = false;
                     break;
                 }
-                if (hayNote.contains(tok))
+                if (inNote)
                     score += 30;
-                if (hayText.contains(tok))
+                if (inText)
                     score += 20;
-                if (hayMeta.contains(tok))
+                if (inMeta)
                     score += 10;
             }
             if (!ok)
                 continue;
-            const QString trimmed = query.trimmed();
             if (!trimmed.isEmpty()) {
                 if (note.contains(trimmed, Qt::CaseInsensitive))
                     score += 40;
@@ -564,6 +729,11 @@ QVariantList Marks::searchAll(const QString &query, int limit) const {
                                  {"updated", QDateTime::fromSecsSinceEpoch(updatedAt)}}});
         if (tokens.isEmpty() && hits.size() >= limit)
             break;
+    }
+
+    if (!tokens.isEmpty() && m_searchCache.size() > seenIds.size()) {
+        for (auto it = m_searchCache.begin(); it != m_searchCache.end();)
+            it = seenIds.contains(it.key()) ? std::next(it) : m_searchCache.erase(it);
     }
 
     if (!tokens.isEmpty()) {
@@ -660,10 +830,21 @@ QPair<qint64, qint64> Marks::locateQuote(const QString &chapterText, const QStri
     if (chapterText.isEmpty() || quote.isEmpty())
         return {-1, -1};
 
-    // Fast path: hint offset still matches verbatim.
-    if (hintStart >= 0 && hintStart + quote.size() <= chapterText.size() &&
-        chapterText.mid(hintStart, quote.size()) == quote) {
-        return {hintStart, hintStart + quote.size()};
+    // Fast path: hint offset matches verbatim AND matches full W3C prefix/suffix
+    // context (falling back to full scored search if context mismatches so
+    // repeated phrases never silently anchor to the wrong occurrence).
+    if (hintStart >= 0 && quote.size() <= chapterText.size() &&
+        hintStart <= chapterText.size() - quote.size() &&
+        QStringView(chapterText).mid(qsizetype(hintStart), quote.size()) == quote) {
+        int expectedScore = 0;
+        if (!prefix.isEmpty())
+            expectedScore += int(prefix.size()) * 4 + 40;
+        if (!suffix.isEmpty())
+            expectedScore += int(suffix.size()) * 4 + 40;
+        if (expectedScore == 0 ||
+            contextScore(chapterText, qsizetype(hintStart), quote.size(), prefix, suffix) == expectedScore) {
+            return {hintStart, hintStart + quote.size()};
+        }
     }
 
     // Pass 1: exact substring search, disambiguated by W3C prefix/suffix and proximity.
@@ -767,13 +948,74 @@ bool Marks::healMark(int id, const QString &chapterText) {
 }
 
 int Marks::healChapter(int chapter, const QString &chapterText) {
-    QList<int> ids;
-    for (const Mark &m : std::as_const(m_marks))
-        if (m.chapter == chapter)
-            ids.append(m.id);
-    int healed = 0;
-    for (const int id : ids)
-        if (healMark(id, chapterText))
-            ++healed;
-    return healed;
+    if (!m_library || !m_library->database().isOpen() || chapterText.isEmpty())
+        return 0;
+
+    struct PendingHeal {
+        int row = -1;
+        int id = 0;
+        qint64 start = 0;
+        qint64 end = 0;
+    };
+    QList<PendingHeal> pending;
+    for (int row = 0; row < m_marks.size(); ++row) {
+        const Mark &m = m_marks[row];
+        if (m.chapter != chapter)
+            continue;
+        const auto span = locateQuote(chapterText, m.text, m.prefix, m.suffix, m.start);
+        if (span.first < 0)
+            continue;
+        const qint64 resolvedEnd = m.kind == QLatin1String("bookmark") ? span.first : span.second;
+        if (span.first == m.start && resolvedEnd == m.end)
+            continue;
+        pending.append({row, m.id, span.first, resolvedEnd});
+    }
+    if (pending.isEmpty())
+        return 0;
+
+    QSqlDatabase db = m_library->database();
+    Savepoint sp(db, "heal_chapter");
+    if (!sp.active)
+        return 0;
+
+    const QDateTime now = QDateTime::currentDateTime();
+    const qint64 nowEpoch = now.toSecsSinceEpoch();
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral("UPDATE annotations SET start = ?, finish = ?, updated_at = ? WHERE id = ? AND book_id = ?"));
+    for (const PendingHeal &h : std::as_const(pending)) {
+        query.bindValue(0, h.start);
+        query.bindValue(1, h.end);
+        query.bindValue(2, nowEpoch);
+        query.bindValue(3, h.id);
+        query.bindValue(4, m_bookId);
+        if (!query.exec()) {
+            qWarning("marks: healChapter failed: %s", qPrintable(query.lastError().text()));
+            return 0;
+        }
+    }
+    if (!sp.commit())
+        return 0;
+
+    QList<Mark> updated = m_marks;
+    int firstRow = int(m_marks.size());
+    int lastRow = -1;
+    for (const PendingHeal &h : std::as_const(pending)) {
+        updated[h.row].start = h.start;
+        updated[h.row].end = h.end;
+        updated[h.row].updated = now;
+        firstRow = qMin(firstRow, h.row);
+        lastRow = qMax(lastRow, h.row);
+    }
+    const bool orderChanged = !std::is_sorted(updated.cbegin(), updated.cend(), before);
+    if (orderChanged) {
+        beginResetModel();
+        m_marks = std::move(updated);
+        std::sort(m_marks.begin(), m_marks.end(), before);
+        endResetModel();
+    } else {
+        m_marks = std::move(updated);
+        emit dataChanged(index(firstRow), index(lastRow), {StartRole, EndRole});
+    }
+    emit changed();
+    return int(pending.size());
 }

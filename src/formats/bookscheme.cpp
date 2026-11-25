@@ -5,8 +5,11 @@
 
 #include <QBuffer>
 #include <QFile>
+#include <QMetaObject>
 #include <QMultiMap>
 #include <QMutexLocker>
+#include <QPointer>
+#include <QThread>
 #include <QUrl>
 #include <QUuid>
 #include <QWebEngineUrlRequestJob>
@@ -24,27 +27,6 @@ public:
         return decoded.startsWith(QLatin1Char('&')) ? QString() : decoded;
     }
 };
-
-// Security headers applied to every resource served out of an untrusted EPUB.
-const QMultiMap<QByteArray, QByteArray> &bookHeaders() {
-    static const QMultiMap<QByteArray, QByteArray> headers{
-        {"X-Content-Type-Options", "nosniff"},
-        {"Cache-Control", "private, max-age=3600"},
-        {"Content-Security-Policy",
-         "default-src 'self' data: blob:; script-src 'none'; object-src 'none'; "
-         "base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'; "
-         "style-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob:; "
-         "font-src 'self' data: blob:; media-src 'self' data: blob:"},
-    };
-    return headers;
-}
-
-const QMultiMap<QByteArray, QByteArray> &appHeaders() {
-    static const QMultiMap<QByteArray, QByteArray> headers{
-        {"Cache-Control", "private, max-age=86400"},
-    };
-    return headers;
-}
 
 QString tokenFromReferer(const QByteArray &refererHeader) {
     if (refererHeader.isEmpty())
@@ -97,7 +79,15 @@ void reply(QWebEngineUrlRequestJob *job, const QByteArray &type, const QByteArra
 }
 }
 
-BookScheme::BookScheme(QObject *parent) : QWebEngineUrlSchemeHandler(parent) {}
+BookScheme::BookScheme(QObject *parent) : QWebEngineUrlSchemeHandler(parent) {
+    m_pool.setMaxThreadCount(qBound(2, QThread::idealThreadCount(), 4));
+}
+
+BookScheme::~BookScheme() {
+    m_shuttingDown.store(true, std::memory_order_release);
+    m_pool.clear();
+    m_pool.waitForDone();
+}
 
 QString BookScheme::add(const std::shared_ptr<EpubBook> &book) {
     const QString token = QUuid::createUuid().toString(QUuid::Id128);
@@ -116,6 +106,32 @@ void BookScheme::remove(const QString &token) {
 
 QString BookScheme::baseUrl(const QString &token) { return QStringLiteral("clothbound://local/book/%1/").arg(token); }
 
+const QMultiMap<QByteArray, QByteArray> &BookScheme::bookHeaders() {
+    static const QMultiMap<QByteArray, QByteArray> headers{
+        {"X-Content-Type-Options", "nosniff"},
+        {"Cache-Control", "private, max-age=3600"},
+        {"Content-Security-Policy",
+         "default-src 'self' data: blob:; script-src 'none'; object-src 'none'; "
+         "base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'; "
+         "style-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob:; "
+         "font-src 'self' data: blob:; media-src 'self' data: blob:"},
+    };
+    return headers;
+}
+
+const QMultiMap<QByteArray, QByteArray> &BookScheme::appHeaders() {
+    static const QMultiMap<QByteArray, QByteArray> headers{
+        {"X-Content-Type-Options", "nosniff"},
+        {"Cache-Control", "private, max-age=86400"},
+        {"Content-Security-Policy",
+         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+         "img-src 'self' clothbound: data: blob:; font-src 'self' clothbound: data:; "
+         "connect-src 'self' clothbound:; frame-src 'self' clothbound:; "
+         "object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"},
+    };
+    return headers;
+}
+
 bool BookScheme::isWellFormed(const QByteArray &document) {
     QXmlStreamReader xml(document);
     XhtmlEntityResolver resolver;
@@ -132,6 +148,77 @@ bool BookScheme::isWellFormed(const QByteArray &document) {
     return true;
 }
 
+BookScheme::ResolvedResource BookScheme::resolveAppRequest(const QString &path) {
+    ResolvedResource result;
+    const auto file = appFiles().value(path.mid(5));
+    QFile source(file.first);
+    if (file.first.isEmpty() || !source.open(QIODevice::ReadOnly))
+        return result;
+    result.ok = true;
+    result.mimeType = file.second;
+    result.data = source.readAll();
+    result.headers = appHeaders();
+    return result;
+}
+
+BookScheme::ResolvedResource BookScheme::resolveBookResource(const std::shared_ptr<EpubBook> &book,
+                                                             const QString &token, QString entry,
+                                                             const std::atomic_bool *cancelled) {
+    ResolvedResource result;
+    if (!book || (cancelled && cancelled->load(std::memory_order_relaxed)) ||
+        m_shuttingDown.load(std::memory_order_acquire))
+        return result;
+
+    QString type, error;
+    QByteArray data = book->resource(entry, &type, &error);
+    if (data.isNull() && !error.isEmpty()) {
+        if ((cancelled && cancelled->load(std::memory_order_relaxed)) || m_shuttingDown.load(std::memory_order_acquire))
+            return result;
+        const QString normalized = EpubBook::resolve(QString(), entry);
+        if (!normalized.isEmpty() && normalized != entry) {
+            error.clear();
+            data = book->resource(normalized, &type, &error);
+            if (!data.isNull() || error.isEmpty())
+                entry = normalized;
+        }
+    }
+    if (data.isNull() && !error.isEmpty())
+        return result;
+    if ((cancelled && cancelled->load(std::memory_order_relaxed)) || m_shuttingDown.load(std::memory_order_acquire))
+        return result;
+
+    result.ok = true;
+    result.data = std::move(data);
+    // Enforce CSP + nosniff on every book resource (including SVG, XML, MathML).
+    result.headers = bookHeaders();
+    if (type == QStringLiteral("application/xhtml+xml") || type == QStringLiteral("text/html")) {
+        const QString key = token + QLatin1Char('/') + entry;
+        bool cached = false;
+        bool xml = false;
+        {
+            QMutexLocker lock(&m_mutex);
+            const auto it = m_wellFormed.constFind(key);
+            if (it != m_wellFormed.cend()) {
+                xml = *it;
+                cached = true;
+            }
+        }
+        if (!cached) {
+            if ((cancelled && cancelled->load(std::memory_order_relaxed)) ||
+                m_shuttingDown.load(std::memory_order_acquire))
+                return {};
+            xml = isWellFormed(result.data);
+            QMutexLocker lock(&m_mutex);
+            if (m_books.contains(token))
+                m_wellFormed.insert(key, xml);
+        }
+        result.mimeType = xml ? QByteArrayLiteral("application/xhtml+xml") : QByteArrayLiteral("text/html");
+        return result;
+    }
+    result.mimeType = type.toUtf8();
+    return result;
+}
+
 BookScheme::ResolvedResource BookScheme::resolveRequest(const QUrl &url, const QByteArray &referer) {
     ResolvedResource result;
     if (url.host() != QStringLiteral("local")) {
@@ -140,17 +227,8 @@ BookScheme::ResolvedResource BookScheme::resolveRequest(const QUrl &url, const Q
     }
     const QString path = url.path(QUrl::FullyDecoded);
 
-    if (path.startsWith(QStringLiteral("/app/"))) {
-        const auto file = appFiles().value(path.mid(5));
-        QFile source(file.first);
-        if (file.first.isEmpty() || !source.open(QIODevice::ReadOnly))
-            return result;
-        result.ok = true;
-        result.mimeType = file.second;
-        result.data = source.readAll();
-        result.headers = appHeaders();
-        return result;
-    }
+    if (path.startsWith(QStringLiteral("/app/")))
+        return resolveAppRequest(path);
 
     QString token, entry;
     if (path.startsWith(QStringLiteral("/book/"))) {
@@ -175,46 +253,113 @@ BookScheme::ResolvedResource BookScheme::resolveRequest(const QUrl &url, const Q
     if (!book)
         return result;
 
-    QString type, error;
-    QByteArray data = book->resource(entry, &type, &error);
-    if (data.isNull() && !error.isEmpty()) {
-        const QString normalized = EpubBook::resolve(QString(), entry);
-        if (!normalized.isEmpty() && normalized != entry) {
-            error.clear();
-            data = book->resource(normalized, &type, &error);
-            if (!data.isNull() || error.isEmpty())
-                entry = normalized;
-        }
-    }
-    if (data.isNull() && !error.isEmpty())
-        return result;
+    return resolveBookResource(book, token, std::move(entry));
+}
 
-    result.ok = true;
-    result.data = std::move(data);
-    // Enforce CSP + nosniff on every book resource (including SVG, XML, MathML).
-    result.headers = bookHeaders();
-    if (type == QStringLiteral("application/xhtml+xml") || type == QStringLiteral("text/html")) {
-        bool xml;
-        {
-            QMutexLocker lock(&m_mutex);
-            const QString key = token + '/' + entry;
-            auto it = m_wellFormed.constFind(key);
-            xml = it != m_wellFormed.cend() ? *it : m_wellFormed.insert(key, isWellFormed(result.data)).value();
-        }
-        result.mimeType = xml ? QByteArrayLiteral("application/xhtml+xml") : QByteArrayLiteral("text/html");
-        return result;
+void BookScheme::resolveRequestAsync(const QUrl &url, const QByteArray &referer, QObject *context,
+                                     std::function<void(ResolvedResource)> callback) {
+    if (!callback)
+        return;
+
+    const bool hasContext = (context != nullptr);
+    QPointer<QObject> guard(context);
+    auto cancelled = std::make_shared<std::atomic_bool>(false);
+    if (context) {
+        QObject::connect(
+            context, &QObject::destroyed, this,
+            [cancelled] { cancelled->store(true, std::memory_order_relaxed); }, Qt::DirectConnection);
     }
-    result.mimeType = type.toUtf8();
-    return result;
+
+    auto deliver = [this, guard, hasContext, cancelled, callback = std::move(callback)](ResolvedResource res) mutable {
+        if (cancelled->load(std::memory_order_relaxed) || m_shuttingDown.load(std::memory_order_acquire))
+            return;
+        QMetaObject::invokeMethod(
+            this,
+            [guard, hasContext, cancelled, callback = std::move(callback), res = std::move(res)]() mutable {
+                if (cancelled->load(std::memory_order_relaxed) || (hasContext && !guard))
+                    return;
+                callback(std::move(res));
+            },
+            Qt::QueuedConnection);
+    };
+
+    if (url.host() != QStringLiteral("local")) {
+        ResolvedResource invalid;
+        invalid.invalidUrl = true;
+        deliver(std::move(invalid));
+        return;
+    }
+
+    const QString path = url.path(QUrl::FullyDecoded);
+    if (path.startsWith(QStringLiteral("/app/"))) {
+        deliver(resolveAppRequest(path));
+        return;
+    }
+
+    QString token, entry;
+    if (path.startsWith(QStringLiteral("/book/"))) {
+        const QString rest = path.mid(6);
+        const qsizetype slash = rest.indexOf('/');
+        token = rest.left(slash);
+        entry = slash < 0 ? QString() : rest.mid(slash + 1);
+    } else if (path.startsWith(QLatin1Char('/'))) {
+        token = tokenFromReferer(referer);
+        entry = EpubBook::resolve(QString(), path.mid(1));
+    }
+    if (token.isEmpty() || entry.isEmpty()) {
+        deliver(ResolvedResource{});
+        return;
+    }
+
+    std::shared_ptr<EpubBook> book;
+    {
+        QMutexLocker lock(&m_mutex);
+        book = m_books.value(token);
+    }
+    if (!book) {
+        deliver(ResolvedResource{});
+        return;
+    }
+
+    m_pool.start([this, book = std::move(book), token = std::move(token), entry = std::move(entry), cancelled,
+                  deliver = std::move(deliver)]() mutable {
+        if (cancelled->load(std::memory_order_relaxed) || m_shuttingDown.load(std::memory_order_acquire))
+            return;
+        ResolvedResource resolved = resolveBookResource(book, token, std::move(entry), cancelled.get());
+        deliver(std::move(resolved));
+    });
 }
 
 void BookScheme::requestStarted(QWebEngineUrlRequestJob *job) {
-    const ResolvedResource resolved = resolveRequest(job->requestUrl(), refererHeader(job));
-    if (!resolved.ok) {
-        job->fail(resolved.invalidUrl ? QWebEngineUrlRequestJob::UrlInvalid : QWebEngineUrlRequestJob::UrlNotFound);
+    if (!job)
+        return;
+    const QUrl url = job->requestUrl();
+    if (url.host() != QStringLiteral("local")) {
+        job->fail(QWebEngineUrlRequestJob::UrlInvalid);
         return;
     }
-    reply(job, resolved.mimeType, resolved.data, resolved.headers);
+    const QString path = url.path(QUrl::FullyDecoded);
+    if (path.startsWith(QStringLiteral("/app/"))) {
+        const ResolvedResource resolved = resolveAppRequest(path);
+        if (!resolved.ok) {
+            job->fail(QWebEngineUrlRequestJob::UrlNotFound);
+            return;
+        }
+        reply(job, resolved.mimeType, resolved.data, resolved.headers);
+        return;
+    }
+
+    QPointer<QWebEngineUrlRequestJob> jobGuard(job);
+    resolveRequestAsync(url, refererHeader(job), job, [jobGuard](ResolvedResource resolved) {
+        if (!jobGuard)
+            return;
+        if (!resolved.ok) {
+            jobGuard->fail(resolved.invalidUrl ? QWebEngineUrlRequestJob::UrlInvalid
+                                               : QWebEngineUrlRequestJob::UrlNotFound);
+            return;
+        }
+        reply(jobGuard.data(), resolved.mimeType, resolved.data, resolved.headers);
+    });
 }
 
 void OfflineInterceptor::interceptRequest(QWebEngineUrlRequestInfo &info) {

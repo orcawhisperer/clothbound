@@ -3,9 +3,12 @@
 #include <QHash>
 #include <QMultiMap>
 #include <QMutex>
+#include <QThreadPool>
 #include <QUrl>
 #include <QWebEngineUrlRequestInterceptor>
 #include <QWebEngineUrlSchemeHandler>
+#include <atomic>
+#include <functional>
 #include <memory>
 
 class EpubBook;
@@ -23,6 +26,7 @@ class BookScheme : public QWebEngineUrlSchemeHandler {
 
 public:
     explicit BookScheme(QObject *parent = nullptr);
+    ~BookScheme() override;
 
     QString add(const std::shared_ptr<EpubBook> &book);
     void remove(const QString &token);
@@ -38,15 +42,30 @@ public:
         QMultiMap<QByteArray, QByteArray> headers;
     };
     ResolvedResource resolveRequest(const QUrl &url, const QByteArray &referer = {});
+    // Resolves a request off the GUI thread on BookScheme's dedicated worker pool
+    // and delivers the result back on BookScheme's thread, safely ignoring cancelled
+    // or destroyed `context` objects.
+    void resolveRequestAsync(const QUrl &url, const QByteArray &referer, QObject *context,
+                             std::function<void(ResolvedResource)> callback);
 
     // Whether a chapter can be served as XML (XHTML); books that aren't
     // well-formed are served as HTML instead, which browsers forgive.
     static bool isWellFormed(const QByteArray &document);
 
+    // Response security headers for the reading surface (/app/) and book files (/book/).
+    static const QMultiMap<QByteArray, QByteArray> &appHeaders();
+    static const QMultiMap<QByteArray, QByteArray> &bookHeaders();
+
 private:
+    static ResolvedResource resolveAppRequest(const QString &path);
+    ResolvedResource resolveBookResource(const std::shared_ptr<EpubBook> &book, const QString &token, QString entry,
+                                         const std::atomic_bool *cancelled = nullptr);
+
     QMutex m_mutex;
     QHash<QString, std::shared_ptr<EpubBook>> m_books;
     QHash<QString, bool> m_wellFormed;
+    QThreadPool m_pool;
+    std::atomic_bool m_shuttingDown{false};
 };
 
 // Books never reach the network: everything but clothbound:, data: and blob:

@@ -14498,6 +14498,14 @@ private slots:
         QVERIFY2(maxStep < 1000, qPrintable(QStringLiteral("Abrupt boundary click step: %1").arg(maxStep)));
     }
     // === end a-plus-arch tests ===
+
+    // === a-plus-core tests ===
+    void aPlusCoreBookSchemeCspAndAsync();
+    void aPlusCoreMarksAnchoringHealingAndUndo();
+    void aPlusCoreTranslatorFastPathAndPlurals();
+    void aPlusCoreTokenizerAndCoverProviderGc();
+    void aPlusCoreParserFuzzStress();
+    // === end a-plus-core tests ===
 };
 
 #ifdef CLOTHBOUND_UNIFIED_TESTS
@@ -14570,4 +14578,551 @@ int main(int argc, char *argv[]) {
         rc = QTest::qExec(suites.front().get(), argc, argv);
     return rc;
 }
+
+// === a-plus-core tests ===
+#include "online/articleextractor.h"
+
+#include <QElapsedTimer>
+#include <QThread>
+#include <atomic>
+#include <random>
+#include <thread>
+
+void ClothboundTests::aPlusCoreBookSchemeCspAndAsync() {
+    // 1. Strict CSP + nosniff on /app/ (reader.html surface) allowing its own scripts/styles,
+    // clothbound: book frames, qwebchannel, and data:/blob: images without script unsafe-inline/eval.
+    const auto &appHdrs = BookScheme::appHeaders();
+    QCOMPARE(appHdrs.value("X-Content-Type-Options"), QByteArray("nosniff"));
+    const QByteArray csp = appHdrs.value("Content-Security-Policy");
+    QVERIFY(!csp.isEmpty());
+    QVERIFY(csp.contains("default-src 'self'"));
+    QVERIFY(csp.contains("script-src 'self'"));
+    QVERIFY(!csp.contains("'unsafe-eval'"));
+    QVERIFY(csp.contains("style-src 'self' 'unsafe-inline'"));
+    QVERIFY(csp.contains("frame-src 'self' clothbound:"));
+    QVERIFY(csp.contains("img-src") && csp.contains("data:") && csp.contains("blob:"));
+    QVERIFY(csp.contains("object-src 'none'"));
+    QVERIFY(csp.contains("form-action 'none'"));
+    QVERIFY(csp.contains("frame-ancestors 'none'"));
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString epubPath = dir.filePath(QStringLiteral("async.epub"));
+    QVERIFY(TestBooks::write(epubPath, TestBooks::epub2(png(24, 24))));
+    auto book = std::make_shared<EpubBook>(epubPath);
+    QVERIFY(book->open());
+
+    BookScheme scheme;
+    // qwebchannel.js is compiled into QtWebChannel resources and served via /app/.
+    const auto qwcRes = scheme.resolveRequest(QUrl(QStringLiteral("clothbound://local/app/qwebchannel.js")));
+    QVERIFY(qwcRes.ok);
+    QCOMPARE(qwcRes.headers.value("Content-Security-Policy"), csp);
+    QCOMPARE(qwcRes.headers.value("X-Content-Type-Options"), QByteArray("nosniff"));
+
+    const QString token = scheme.add(book);
+    const QUrl chapterUrl(QStringLiteral("clothbound://local/book/%1/OEBPS/text/chapter%201.xhtml").arg(token));
+    const QUrl imgUrl(QStringLiteral("clothbound://local/book/%1/OEBPS/images/cover.png").arg(token));
+
+    // 2. Async resolution runs off the GUI thread and delivers callback on the main thread.
+    QObject liveCtx;
+    bool gotChapter = false;
+    bool deliveredOnMainThread = false;
+    BookScheme::ResolvedResource asyncChapter;
+    scheme.resolveRequestAsync(chapterUrl, {}, &liveCtx, [&](BookScheme::ResolvedResource res) {
+        deliveredOnMainThread = (QThread::currentThread() == QCoreApplication::instance()->thread());
+        asyncChapter = std::move(res);
+        gotChapter = true;
+    });
+    QTRY_VERIFY_WITH_TIMEOUT(gotChapter, 3000);
+    QVERIFY(deliveredOnMainThread);
+    QVERIFY(asyncChapter.ok);
+    QCOMPARE(asyncChapter.mimeType, QByteArray("application/xhtml+xml"));
+    QVERIFY(asyncChapter.headers.value("Content-Security-Policy").contains("script-src 'none'"));
+
+    // 3. Cancelled/destroyed job contexts are safely ignored without invoking callback or crashing.
+    constexpr int totalJobs = 20;
+    QList<QObject *> alive;
+    int aliveCallbacks = 0;
+    int cancelledCallbacks = 0;
+    for (int i = 0; i < totalJobs; ++i) {
+        auto *ctx = new QObject;
+        const bool cancelImmediately = (i % 2 == 0);
+        const QUrl &target = (i % 3 == 0) ? imgUrl : chapterUrl;
+        scheme.resolveRequestAsync(target, {}, ctx,
+                                   [cancelImmediately, &aliveCallbacks, &cancelledCallbacks](BookScheme::ResolvedResource res) {
+                                       if (cancelImmediately)
+                                           ++cancelledCallbacks;
+                                       else if (res.ok)
+                                           ++aliveCallbacks;
+                                   });
+        if (cancelImmediately)
+            delete ctx;
+        else
+            alive.append(ctx);
+    }
+    QTRY_COMPARE_WITH_TIMEOUT(aliveCallbacks, totalJobs / 2, 3000);
+    QCoreApplication::processEvents();
+    QCOMPARE(cancelledCallbacks, 0);
+    qDeleteAll(alive);
+
+    // 4. Destroying BookScheme while async work is queued/in-flight drains m_pool cleanly.
+    {
+        BookScheme shortLived;
+        const QString t2 = shortLived.add(book);
+        const QUrl u2(QStringLiteral("clothbound://local/book/%1/OEBPS/text/chapter%201.xhtml").arg(t2));
+        QObject ctx2;
+        for (int i = 0; i < 8; ++i)
+            shortLived.resolveRequestAsync(u2, {}, &ctx2, [](BookScheme::ResolvedResource) {});
+    }
+    QCoreApplication::processEvents();
+}
+
+void ClothboundTests::aPlusCoreMarksAnchoringHealingAndUndo() {
+    // 1. locateQuote() fast-path MUST validate prefix/suffix so a shifted hint landing on
+    // an identical repeated phrase does NOT silently anchor to the wrong occurrence.
+    const QString chapter =
+        QStringLiteral("At dawn the harbor slept quietly. By noon the harbor roared with wind.");
+    const qint64 firstHarbor = chapter.indexOf(QStringLiteral("the harbor"));
+    const qint64 secondHarbor = chapter.indexOf(QStringLiteral("the harbor"), firstHarbor + 1);
+    QVERIFY(firstHarbor >= 0 && secondHarbor > firstHarbor);
+
+    const auto disamb = Marks::locateQuote(chapter, QStringLiteral("the harbor"),
+                                           QStringLiteral("By noon "), QStringLiteral(" roared"), firstHarbor);
+    QCOMPARE(disamb.first, secondHarbor);
+    QCOMPARE(disamb.second, secondHarbor + 10);
+
+    // Matching hint AND matching context hits fast path accurately.
+    const auto exact = Marks::locateQuote(chapter, QStringLiteral("the harbor"),
+                                          QStringLiteral("By noon "), QStringLiteral(" roared"), secondHarbor);
+    QCOMPARE(exact.first, secondHarbor);
+    QCOMPARE(exact.second, secondHarbor + 10);
+
+    // Extreme hintStart does not overflow.
+    const auto hugeHint = Marks::locateQuote(chapter, QStringLiteral("the harbor"),
+                                             QStringLiteral("At dawn "), QStringLiteral(" slept"),
+                                             std::numeric_limits<qint64>::max());
+    QCOMPARE(hugeHint.first, firstHarbor);
+
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString epub1 = dir.filePath(QStringLiteral("m1.epub"));
+    const QString epub2 = dir.filePath(QStringLiteral("m2.epub"));
+    QVERIFY(TestBooks::write(epub1, TestBooks::epub2(png(20, 30))));
+    QVERIFY(TestBooks::write(epub2, TestBooks::epub3(adobeObfuscate(fontPayload()))));
+
+    Library library(dir.filePath(QStringLiteral("data")), dir.filePath(QStringLiteral("cache")));
+    QVERIFY(library.open());
+    const int book1 = library.addBookFile(epub1);
+    const int book2 = library.addBookFile(epub2);
+    QVERIFY(book1 > 0 && book2 > 0);
+
+    Marks marks(&library);
+    marks.setBook(book1);
+
+    // 2. Batched healChapter() emits a single model refresh + single changed() signal.
+    const QString multiChapter = QStringLiteral(
+        "Prefix text. First alpha quote here. Second beta quote here. Third gamma quote here. Fourth delta quote here.");
+    const int m1 = marks.addHighlight(0, 0, 11, QStringLiteral("alpha quote"), QStringLiteral("yellow"),
+                                      QStringLiteral("p. 1"), QStringLiteral("First "), QStringLiteral(" here."));
+    const int m2 = marks.addHighlight(0, 1, 11, QStringLiteral("beta quote"), QStringLiteral("green"),
+                                      QStringLiteral("p. 1"), QStringLiteral("Second "), QStringLiteral(" here."));
+    const int m3 = marks.addHighlight(0, 2, 13, QStringLiteral("gamma quote"), QStringLiteral("blue"),
+                                      QStringLiteral("p. 1"), QStringLiteral("Third "), QStringLiteral(" here."));
+    const int m4 = marks.addBookmark(0, 3, QStringLiteral("delta quote"), QStringLiteral("p. 1"),
+                                     QStringLiteral("Fourth "), QStringLiteral(" here."));
+    QVERIFY(m1 > 0 && m2 > 0 && m3 > 0 && m4 > 0);
+
+    QSignalSpy changedSpy(&marks, &Marks::changed);
+    QSignalSpy resetSpy(&marks, &QAbstractItemModel::modelReset);
+    QSignalSpy dataSpy(&marks, &QAbstractItemModel::dataChanged);
+    QCOMPARE(marks.healChapter(0, multiChapter), 4);
+    QCOMPARE(changedSpy.count(), 1);
+    QCOMPARE(resetSpy.count() + dataSpy.count(), 1);
+    QCOMPARE(marks.healChapter(0, multiChapter), 0);
+    QCOMPARE(changedSpy.count(), 1);
+
+    // 3. Atomic Savepoint rollback in healChapter(): if SQLite aborts mid-batch, zero marks mutate.
+    const QString shiftedChapter = QStringLiteral("INSERTED EXTRA TEXT BEFORE EVERYTHING. ") + multiChapter;
+    const qint64 preStart1 = marks.mark(m1).value(QStringLiteral("start")).toLongLong();
+    const qint64 preStart2 = marks.mark(m2).value(QStringLiteral("start")).toLongLong();
+    {
+        QSqlDatabase db = library.database();
+        QSqlQuery trig(db);
+        QVERIFY(trig.exec(QStringLiteral(
+            "CREATE TEMP TRIGGER fail_second_heal BEFORE UPDATE ON annotations "
+            "WHEN NEW.id = %1 BEGIN SELECT RAISE(ABORT, 'injected heal failure'); END")
+                              .arg(m2)));
+        QCOMPARE(marks.healChapter(0, shiftedChapter), 0);
+        QCOMPARE(marks.mark(m1).value(QStringLiteral("start")).toLongLong(), preStart1);
+        QCOMPARE(marks.mark(m2).value(QStringLiteral("start")).toLongLong(), preStart2);
+        QSqlQuery check(db);
+        QVERIFY(check.exec(QStringLiteral("SELECT start FROM annotations WHERE id = %1").arg(m1)));
+        QVERIFY(check.next());
+        QCOMPARE(check.value(0).toLongLong(), preStart1);
+        QVERIFY(trig.exec(QStringLiteral("DROP TRIGGER fail_second_heal")));
+    }
+
+    // 4. Undo/redo of Change (note/color) after healChapter() preserves freshly healed offsets!
+    marks.setNote(m1, QStringLiteral("Café note"));
+    marks.setColor(m1, QStringLiteral("pink"));
+    QCOMPARE(marks.healChapter(0, shiftedChapter), 4);
+    const qint64 healedStart1 = marks.mark(m1).value(QStringLiteral("start")).toLongLong();
+    const qint64 healedEnd1 = marks.mark(m1).value(QStringLiteral("end")).toLongLong();
+    QVERIFY(healedStart1 > preStart1);
+
+    marks.undo();  // undo color -> yellow
+    QCOMPARE(marks.mark(m1).value(QStringLiteral("color")).toString(), QStringLiteral("yellow"));
+    QCOMPARE(marks.mark(m1).value(QStringLiteral("start")).toLongLong(), healedStart1);
+    QCOMPARE(marks.mark(m1).value(QStringLiteral("end")).toLongLong(), healedEnd1);
+
+    marks.undo();  // undo note -> ""
+    QVERIFY(marks.mark(m1).value(QStringLiteral("note")).toString().isEmpty());
+    QCOMPARE(marks.mark(m1).value(QStringLiteral("start")).toLongLong(), healedStart1);
+    QCOMPARE(marks.mark(m1).value(QStringLiteral("end")).toLongLong(), healedEnd1);
+
+    marks.redo();  // redo note -> "Café note"
+    QCOMPARE(marks.mark(m1).value(QStringLiteral("note")).toString(), QStringLiteral("Café note"));
+    QCOMPARE(marks.mark(m1).value(QStringLiteral("start")).toLongLong(), healedStart1);
+    QCOMPARE(marks.mark(m1).value(QStringLiteral("end")).toLongLong(), healedEnd1);
+
+    // 5. searchAll() cache serves repeated queries accurately and reflects mutations immediately.
+    QCOMPARE(marks.searchAll(QStringLiteral("cafe")).size(), 1);
+    QCOMPARE(marks.searchAll(QStringLiteral("cafe")).size(), 1);
+    marks.setNote(m1, QStringLiteral("Updated periwinkle remark"));
+    QCOMPARE(marks.searchAll(QStringLiteral("cafe")).size(), 0);
+    QCOMPARE(marks.searchAll(QStringLiteral("periwinkle")).size(), 1);
+
+    // 6. annotations.id undo-of-delete guards against rowid reuse (both in-session and external).
+    const int latest = marks.addHighlight(0, 5, 15, QStringLiteral("reusable"), QStringLiteral("yellow"),
+                                          QStringLiteral("p. 2"));
+    marks.setNote(latest, QStringLiteral("Keep across collision"));
+    marks.remove(latest);
+
+    // Same-session add must NOT reuse the deleted mark's id.
+    const int nextAdded = marks.addHighlight(0, 16, 26, QStringLiteral("brand new"), QStringLiteral("green"),
+                                             QStringLiteral("p. 2"));
+    QVERIFY(nextAdded > 0 && nextAdded != latest);
+    marks.undo();  // remove brand new
+
+    // Simulate an external writer (e.g. MCP / another book) stealing `latest`'s rowid in SQLite.
+    {
+        QSqlQuery hijack(library.database());
+        hijack.prepare(QStringLiteral(
+            "INSERT INTO annotations (id, book_id, kind, chapter, start, finish, text, note, color, label, "
+            "prefix, suffix, created_at, updated_at) "
+            "VALUES (?, ?, 'highlight', 0, 1, 5, 'book2 text', 'book2 note', 'blue', 'Ch 1', '', '', 100, 100)"));
+        hijack.addBindValue(latest);
+        hijack.addBindValue(book2);
+        QVERIFY(hijack.exec());
+    }
+
+    // Undo of delete detects collision on `latest`, allocates fresh id, and keeps book2's row intact.
+    marks.undo();
+    int restoredId = 0;
+    for (int r = 0; r < marks.count(); ++r) {
+        if (marks.data(marks.index(r), Marks::TextRole).toString() == QStringLiteral("reusable")) {
+            restoredId = marks.data(marks.index(r), Marks::IdRole).toInt();
+            break;
+        }
+    }
+    QVERIFY(restoredId > 0 && restoredId != latest);
+    QCOMPARE(marks.mark(restoredId).value(QStringLiteral("note")).toString(), QStringLiteral("Keep across collision"));
+
+    // Subsequent undo of setNote targets the remapped `restoredId`, never book2's hijacked rowid!
+    marks.undo();
+    QVERIFY(marks.mark(restoredId).value(QStringLiteral("note")).toString().isEmpty());
+    {
+        QSqlQuery verifyBook2(library.database());
+        verifyBook2.prepare(QStringLiteral("SELECT book_id, note FROM annotations WHERE id = ?"));
+        verifyBook2.addBindValue(latest);
+        QVERIFY(verifyBook2.exec() && verifyBook2.next());
+        QCOMPARE(verifyBook2.value(0).toInt(), book2);
+        QCOMPARE(verifyBook2.value(1).toString(), QStringLiteral("book2 note"));
+    }
+}
+
+void ClothboundTests::aPlusCoreTranslatorFastPathAndPlurals() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString langFile = dir.filePath(QStringLiteral("language"));
+    const QString i18nDir = QFileInfo(QFINDTESTDATA("../src/i18n")).canonicalFilePath();
+    QVERIFY(!i18nDir.isEmpty());
+
+    // 1. Default English with shipped en.json (3.1 KB plural rules): fast-path non-plurals, exact plurals.
+    write(langFile, "en\n");
+    Translator trEn(langFile, i18nDir);
+    QCOMPARE(trEn.language(), QStringLiteral("en"));
+    QVERIFY(!trEn.isEmpty());
+    QVERIFY(trEn.translate("Main", "Save").isNull());
+    QVERIFY(trEn.translate("Main", "Saved %1").isNull());
+    QVERIFY(trEn.translate("Main", nullptr).isNull());
+    QCOMPARE(trEn.translate("Main", "%n books", nullptr, 0), QStringLiteral("%n books"));
+    QCOMPARE(trEn.translate("Main", "%n books", nullptr, 1), QStringLiteral("%n book"));
+    QCOMPARE(trEn.translate("Main", "%n books", nullptr, 7), QStringLiteral("%n books"));
+    QCOMPARE(trEn.translate("Main", "%n books", nullptr, -1), QStringLiteral("%n books"));
+    QCOMPARE(trEn.translate("Main", "%Ln marks", nullptr, 1), QStringLiteral("%Ln mark"));
+    QCOMPARE(trEn.translate("Main", "%Ln marks", nullptr, 3), QStringLiteral("%Ln marks"));
+
+    // 2. Switching to non-English and back preserves translations and re-enables English fast path.
+    trEn.setLanguage(QStringLiteral("de"));
+    QCOMPARE(trEn.language(), QStringLiteral("de"));
+    QVERIFY(!trEn.translate("Main", "%n books", nullptr, 1).isEmpty());
+    trEn.setLanguage(QStringLiteral("en"));
+    QCOMPARE(trEn.language(), QStringLiteral("en"));
+    QVERIFY(trEn.translate("Main", "Save").isNull());
+    QCOMPARE(trEn.translate("Main", "%n books", nullptr, 1), QStringLiteral("%n book"));
+
+    // 3. Custom en.json with plain non-plural string override must NOT be bypassed.
+    const QString customCat = dir.filePath(QStringLiteral("custom-i18n"));
+    QVERIFY(QDir().mkpath(customCat));
+    write(customCat + QStringLiteral("/en.json"), R"({"Hello": "Howdy", "%n books": {"one": "%n book", "other": "%n books"}})");
+    Translator customEn(langFile, customCat);
+    QCOMPARE(customEn.translate("Main", "Hello"), QStringLiteral("Howdy"));
+    QCOMPARE(customEn.translate("Main", "%n books", nullptr, 1), QStringLiteral("%n book"));
+    QVERIFY(customEn.translate("Main", "Unmapped").isNull());
+
+    // 4. Lock-free concurrent stress: worker threads translate while main thread reloads languages.
+    std::atomic_bool stop{false};
+    std::vector<std::thread> readers;
+    for (int t = 0; t < 4; ++t) {
+        readers.emplace_back([&trEn, &stop] {
+            while (!stop.load(std::memory_order_relaxed)) {
+                (void)trEn.translate("Main", "Save");
+                (void)trEn.translate("Main", "%n books", nullptr, 1);
+                (void)trEn.translate("Main", "%n books", nullptr, 5);
+                (void)trEn.translate("Main", "Library");
+            }
+        });
+    }
+    const QStringList langs{QStringLiteral("de"), QStringLiteral("ru"), QStringLiteral("en"), QStringLiteral("fr")};
+    for (int i = 0; i < 16; ++i)
+        trEn.setLanguage(langs[i % langs.size()]);
+    stop.store(true, std::memory_order_relaxed);
+    for (auto &th : readers)
+        th.join();
+    trEn.setLanguage(QStringLiteral("en"));
+}
+
+void ClothboundTests::aPlusCoreTokenizerAndCoverProviderGc() {
+    // 1. HtmlTokenizer::decodeEntities() zero-alloc lookup & surrogate handling.
+    QCOMPARE(HtmlTokenizer::decodeEntities(u"&nbsp;&Alpha;&omega;&mdash;&ZeroWidthSpace;&#x1F516;"),
+             QStringLiteral("\u00A0\u0391\u03C9\u2014\u200B\U0001F516"));
+    QCOMPARE(HtmlTokenizer::decodeEntities(u"&; &#; &#x; &#0; &#xD800; &#x110000; &caf\u00E9;"),
+             QStringLiteral("&; &#; &#x; \uFFFD \uFFFD \uFFFD &caf\u00E9;"));
+    QCOMPARE(HtmlTokenizer::decodeEntities(u"&thisEntityNameIsWayLongerThanFortyCharactersTotal; &#9999999999999999999;"),
+             QStringLiteral("&thisEntityNameIsWayLongerThanFortyCharactersTotal; &#9999999999999999999;"));
+
+    // 2. CoverProvider::pruneCoverCacheDirectory() enforces byte cap & file count cap, oldest first.
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString cacheDir = dir.filePath(QStringLiteral("covers"));
+    QVERIFY(QDir().mkpath(cacheDir));
+    const QByteArray payload(1000, 'x');
+    const QDateTime baseTime = QDateTime::fromSecsSinceEpoch(1700000000);
+    for (int i = 0; i < 10; ++i) {
+        const QString path = QDir(cacheDir).filePath(QStringLiteral("c%1.jpg").arg(i));
+        QFile f(path);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        QCOMPARE(f.write(payload), payload.size());
+        QVERIFY(f.setFileTime(baseTime.addSecs(i * 60), QFileDevice::FileModificationTime));
+        f.close();
+    }
+
+    // Over byte cap (10,000 > 5,500) -> prunes 5 oldest (c0..c4), keeps c5..c9.
+    QCOMPARE(CoverProvider::pruneCoverCacheDirectory(cacheDir, 5500, 100), 5);
+    for (int i = 0; i < 5; ++i)
+        QVERIFY(!QFileInfo::exists(QDir(cacheDir).filePath(QStringLiteral("c%1.jpg").arg(i))));
+    for (int i = 5; i < 10; ++i)
+        QVERIFY(QFileInfo::exists(QDir(cacheDir).filePath(QStringLiteral("c%1.jpg").arg(i))));
+
+    // Over file count cap (5 > 3) -> prunes 2 oldest (c5..c6), keeps c7..c9.
+    QCOMPARE(CoverProvider::pruneCoverCacheDirectory(cacheDir, 1024 * 1024, 3), 2);
+    QVERIFY(!QFileInfo::exists(QDir(cacheDir).filePath(QStringLiteral("c5.jpg"))));
+    QVERIFY(!QFileInfo::exists(QDir(cacheDir).filePath(QStringLiteral("c6.jpg"))));
+    for (int i = 7; i < 10; ++i)
+        QVERIFY(QFileInfo::exists(QDir(cacheDir).filePath(QStringLiteral("c%1.jpg").arg(i))));
+
+    // Already within budget -> 0 removed.
+    QCOMPARE(CoverProvider::pruneCoverCacheDirectory(cacheDir, 1024 * 1024, 3), 0);
+    QCOMPARE(CoverProvider::pruneCoverCacheDirectory(dir.filePath(QStringLiteral("nonexistent")), 100, 1), 0);
+
+    // 3. CoverProvider async requestImageResponse() works for missing, valid, and cancelled requests.
+    CoverProvider provider;
+    {
+        std::unique_ptr<QQuickImageResponse> missing(
+            provider.requestImageResponse(QUrl::toPercentEncoding(dir.filePath(QStringLiteral("missing.png"))), QSize(128, 128)));
+        QSignalSpy doneSpy(missing.get(), &QQuickImageResponse::finished);
+        QTRY_COMPARE_WITH_TIMEOUT(doneSpy.count(), 1, 3000);
+        QVERIFY(missing->textureFactory() == nullptr);
+    }
+    {
+        const QString imgPath = dir.filePath(QStringLiteral("ok.png"));
+        QImage img(100, 150, QImage::Format_RGB32);
+        img.fill(QColor(80, 120, 160));
+        QVERIFY(img.save(imgPath, "PNG"));
+
+        const QString id = QString::fromLatin1(QUrl::toPercentEncoding(imgPath)) + QStringLiteral("?r=5&sr=3&bw=100");
+        std::unique_ptr<QQuickImageResponse> okResp(provider.requestImageResponse(id, QSize(128, 128)));
+        QSignalSpy doneSpy(okResp.get(), &QQuickImageResponse::finished);
+        QTRY_COMPARE_WITH_TIMEOUT(doneSpy.count(), 1, 3000);
+        std::unique_ptr<QQuickTextureFactory> factory(okResp->textureFactory());
+        QVERIFY(factory != nullptr);
+    }
+}
+
+void ClothboundTests::aPlusCoreParserFuzzStress() {
+    QElapsedTimer timer;
+    timer.start();
+    std::mt19937_64 rng(0xC107B00DuLL);
+
+    auto mutateBytes = [&rng](QByteArray data) {
+        const int ops = 1 + int(rng() % 6);
+        for (int op = 0; op < ops; ++op) {
+            const int kind = int(rng() % 5);
+            if (kind == 0 && !data.isEmpty()) {
+                // Flip random byte
+                const qsizetype pos = qsizetype(rng() % quint64(data.size()));
+                data[pos] = char(rng() & 0xFF);
+            } else if (kind == 1 && !data.isEmpty()) {
+                // Truncate
+                data.truncate(qsizetype(rng() % quint64(data.size())));
+            } else if (kind == 2 && data.size() < 4096) {
+                // Splice random adversarial tokens
+                static const QByteArray tokens[] = {
+                    "<", ">", "</", "<!--", "-->", "<![CDATA[", "]]>", "<!DOCTYPE [", "<?xml ", "&amp;",
+                    "&#x", "&#99999999;", "\0", "\xFF\xFE", "\xEF\xBB\xBF", "\"", "'", "{", "}", "[", "]",
+                    "PK\x03\x04", "PK\x01\x02", "PK\x05\x06", "PK\x06\x06", "PK\x06\x07", "javascript:alert(1)"};
+                const QByteArray &tok = tokens[rng() % (sizeof(tokens) / sizeof(tokens[0]))];
+                const qsizetype pos = data.isEmpty() ? 0 : qsizetype(rng() % quint64(data.size() + 1));
+                data.insert(pos, tok);
+            } else if (kind == 3 && data.size() > 4) {
+                // Delete a slice
+                const qsizetype pos = qsizetype(rng() % quint64(data.size()));
+                const qsizetype len = qsizetype(1 + rng() % quint64(qMin<qsizetype>(64, data.size() - pos)));
+                data.remove(pos, len);
+            } else if (data.size() < 2048) {
+                // Append random bytes
+                const int n = 1 + int(rng() % 32);
+                for (int k = 0; k < n; ++k)
+                    data.append(char(rng() & 0xFF));
+            }
+        }
+        return data;
+    };
+
+    int totalCases = 0;
+
+    // 1. HtmlTokenizer & Html::parse (350 adversarial + mutated cases)
+    const QList<QByteArray> htmlSeeds{
+        "<!DOCTYPE html [<!ENTITY x 'y'>]><html xmlns='http://www.w3.org/1999/xhtml'><body><p>Hello &amp; &mdash; &#8217;</p></body></html>",
+        "<?xml version='1.0' encoding='ISO-8859-1'?><script>var a = '</scriptx>'; </script><style>body{}</style><p>caf\xE9</p>",
+        "\xFF\xFE<\0p\0>\0h\0i\0<\0/\0p\0>",
+        "<![CDATA[raw <tag> &amp;]]><!-- comment --!><div a='1' b=2 c/>a < b && c > d",
+        QByteArray(600, '<') + "div>" + QByteArray(600, '&'),
+        QByteArray("<div>").repeated(600) + "deep" + QByteArray("</div>").repeated(600),
+    };
+    for (int i = 0; i < 350; ++i) {
+        const QByteArray input = (i < htmlSeeds.size()) ? htmlSeeds[i] : mutateBytes(htmlSeeds[rng() % htmlSeeds.size()]);
+        const QString decoded = HtmlTokenizer::decodeDocument(input);
+        (void)HtmlTokenizer::decodeEntities(decoded);
+        auto tree = Html::parse(decoded, (i & 1) != 0);
+        QVERIFY(tree != nullptr);
+        (void)tree->textContent();
+        (void)tree->elements(QStringLiteral("p"));
+        ++totalCases;
+    }
+
+    // 2. ZipArchive (250 adversarial + mutated ZIP/Zip64 cases)
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QByteArray validZip = TestBooks::epub2(png(8, 8));
+    const QList<QByteArray> zipSeeds{
+        validZip,
+        QByteArray(),
+        QByteArray("PK\x05\x06") + QByteArray(18, '\0'),
+        QByteArray("PK\x06\x07") + QByteArray(16, '\xFF') + QByteArray("PK\x05\x06") + QByteArray(18, '\xFF'),
+        QByteArray("PK\x03\x04") + QByteArray(40, '\xFF') + QByteArray("PK\x01\x02") + QByteArray(46, '\xFF') +
+            QByteArray("PK\x05\x06") + QByteArray(18, '\0'),
+    };
+    const QString zipPath = dir.filePath(QStringLiteral("fuzz.zip"));
+    for (int i = 0; i < 250; ++i) {
+        const QByteArray input = (i < zipSeeds.size()) ? zipSeeds[i] : mutateBytes(zipSeeds[rng() % zipSeeds.size()]);
+        QFile f(zipPath);
+        QVERIFY(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        f.write(input);
+        f.close();
+
+        ZipArchive zip(zipPath);
+        zip.setMaxArchiveInflateBytes(256ull * 1024);
+        if (zip.open()) {
+            const QStringList names = zip.names();
+            const int checkCount = qMin(int(names.size()), 4);
+            for (int n = 0; n < checkCount; ++n) {
+                (void)zip.size(names[n]);
+                (void)zip.encrypted(names[n]);
+                QString err;
+                (void)zip.read(names[n], &err);
+            }
+        }
+        ++totalCases;
+    }
+
+    // 3. OpdsParser (350 adversarial + mutated Atom / OPDS2 / OpenSearch cases)
+    const QUrl opdsBase(QStringLiteral("https://catalog.example/opds/root.xml"));
+    const QList<QByteArray> opdsSeeds{
+        R"raw(<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"><id>urn:1</id><title>Feed</title>
+           <link rel="search" type="application/opensearchdescription+xml" href="/search.xml"/>
+           <entry><id>e1</id><title>Book</title><author><name>Ada</name></author>
+           <link rel="http://opds-spec.org/acquisition/open-access" type="application/epub+zip" href="/b.epub"/>
+           <link rel="http://opds-spec.org/image" href="javascript:alert(1)"/></entry></feed>)raw",
+        R"raw({"metadata":{"title":"Catalog"},"links":[{"rel":"self","href":"/opds2.json"},{"rel":"search","href":"/s?q={searchTerms}","templated":true}],
+            "publications":[{"metadata":{"title":"Work","author":["Ada",{"name":"Bob"}]},"links":[{"rel":"http://opds-spec.org/acquisition","href":"/x.epub","type":"application/epub+zip"}],"images":[{"href":"/c.jpg"}]}]})raw",
+        R"raw(<?xml version="1.0"?><OpenSearchDescription xmlns="http://a9.com/-/spec/opensearch/1.1/">
+           <Url type="application/atom+xml" template="https://catalog.example/search?q={searchTerms}&amp;p={startPage?}"/></OpenSearchDescription>)raw",
+        R"raw({"groups":[{"metadata":{"title":"G"},"publications":[null,123,{"metadata":[]}]}]})raw",
+    };
+    for (int i = 0; i < 350; ++i) {
+        const QByteArray input = (i < opdsSeeds.size()) ? opdsSeeds[i] : mutateBytes(opdsSeeds[rng() % opdsSeeds.size()]);
+        (void)OpdsParser::detectFormat(input);
+        const OpdsFeed feed = OpdsParser::parse(input, opdsBase);
+        (void)feed.toVariantMap();
+        const QString tmpl = OpdsParser::parseOpenSearchTemplate(input, opdsBase);
+        if (!tmpl.isEmpty())
+            (void)OpdsParser::expandSearchTemplate(tmpl, QStringLiteral("test query & <tag>"));
+        if ((i & 3) == 0)
+            (void)OpdsParser::stripHtmlToPlainText(QString::fromUtf8(input));
+        ++totalCases;
+    }
+
+    // 4. ArticleExtractor (300 adversarial + mutated HTML article cases)
+    const QUrl pageUrl(QStringLiteral("https://example.org/articles/lantern"));
+    const QList<QByteArray> articleSeeds{
+        R"raw(<!doctype html><html lang="en"><head><title>Lantern Essay</title>
+           <meta property="og:title" content="The Lantern"/><meta name="author" content="Ada Marsh"/>
+           <script type="application/ld+json">{"@type":"Article","headline":"The Lantern","author":{"name":"Ada"}}</script>
+           </head><body><nav>Menu</nav><article><h1>The Lantern</h1>
+           <p>A long enough paragraph about optics, coastal fog, and quiet craftsmanship along the northern pier so scoring selects this article cleanly.</p>
+           <img src="/img/lamp.jpg" alt="Lamp"/><iframe src="https://evil.test"></iframe><script>alert(1)</script>
+           <h2>Second Section</h2><p>More prose with &mdash; entities and <a href="javascript:void(0)">bad link</a> and <a href="/ok">good link</a>.</p>
+           </article></body></html>)raw",
+        R"raw(<html><body><table><tr><td><div><p>Nested content</p><svg><script>x</script></svg><style>p{color:red}</style></div></td></tr></table></body></html>)raw",
+        QByteArray("<div><p>").repeated(200) + "deep article" + QByteArray("</p></div>").repeated(200),
+    };
+    for (int i = 0; i < 300; ++i) {
+        const QByteArray input = (i < articleSeeds.size()) ? articleSeeds[i] : mutateBytes(articleSeeds[rng() % articleSeeds.size()]);
+        const ExtractedArticle art = ArticleExtractor::extract(input, pageUrl);
+        if (!art.bodyXhtml.isEmpty()) {
+            QHash<QString, QString> map;
+            for (const ExtractedImage &img : art.images)
+                map.insert(img.localPath, img.localPath);
+            (void)ArticleExtractor::finalizeImages(art.bodyXhtml, map);
+        }
+        ++totalCases;
+    }
+
+    QVERIFY(totalCases >= 1250);
+    QVERIFY2(timer.elapsed() < 5000, qPrintable(QStringLiteral("Parser fuzz took %1 ms").arg(timer.elapsed())));
+}
+// === end a-plus-core tests ===
+
 #include "clothbound_tests.moc"

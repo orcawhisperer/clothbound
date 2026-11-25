@@ -12,6 +12,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
+#include <cstring>
 
 namespace {
 QSettings translatorSettings() {
@@ -77,8 +78,7 @@ void Translator::setLanguage(const QString &code) {
 }
 
 bool Translator::isEmpty() const {
-    QReadLocker locker(&m_lock);
-    return m_strings.isEmpty();
+    return m_emptyCatalog.load(std::memory_order_acquire);
 }
 
 // Unregistered before the catalog and its lock go, since a worker thread can
@@ -153,21 +153,42 @@ QLocale Translator::formatLocale(const QString &language) {
 
 QString Translator::translate(const char *, const char *sourceText, const char *, int n) const {
     // A null string tells Qt there is no translation, so it shows the English.
-    QReadLocker locker(&m_lock);
-    const Entry entry = m_strings.value(QString::fromUtf8(sourceText));
-    const QJsonValue &value = entry.value;
-    if (value.isString())
-        return value.toString();
-    if (value.isObject()) {
-        const QJsonObject forms = value.toObject();
-        QString form = forms.value(n < 0 ? "other" : pluralCategory(entry.language, n)).toString();
-        if (form.isEmpty())
-            form = forms.value("other").toString();
-        if (form.isEmpty())
-            form = forms.value("many").toString();
-        return form.isEmpty() ? QString() : form;
+    if (!sourceText)
+        return {};
+    if (m_emptyCatalog.load(std::memory_order_acquire))
+        return {};
+    if (n < 0 && m_englishPluralsOnly.load(std::memory_order_acquire)) {
+        // When default English only contains counted plural rules (%n / %Ln),
+        // non-counted strings without a plural placeholder bypass snapshot lookup.
+        const char *p = std::strchr(sourceText, '%');
+        bool hasPluralPlaceholder = false;
+        while (p) {
+            if (p[1] == 'n' || (p[1] == 'L' && p[2] == 'n')) {
+                hasPluralPlaceholder = true;
+                break;
+            }
+            p = std::strchr(p + 1, '%');
+        }
+        if (!hasPluralPlaceholder)
+            return {};
     }
-    return {};
+
+    const std::shared_ptr<const Catalog> catalog = m_catalog.load(std::memory_order_acquire);
+    if (!catalog || catalog->empty)
+        return {};
+    const QByteArray key = QByteArray::fromRawData(sourceText, qsizetype(std::strlen(sourceText)));
+    const auto it = catalog->entries.constFind(key);
+    if (it == catalog->entries.cend())
+        return {};
+    const CatalogEntry &entry = *it;
+    if (!entry.isPlural)
+        return entry.text;
+    QString form = entry.forms.value(n < 0 ? QStringLiteral("other") : pluralCategory(entry.language, n));
+    if (form.isEmpty())
+        form = entry.forms.value(QStringLiteral("other"));
+    if (form.isEmpty())
+        form = entry.forms.value(QStringLiteral("many"));
+    return form.isEmpty() ? QString() : form;
 }
 
 void Translator::reload() {
@@ -194,23 +215,51 @@ void Translator::reload() {
     // English first (it carries the plural forms of counted strings), then
     // the base language and the regional file over it (pt, then pt-BR), so a
     // missing string falls back toward English one step at a time.
-    QHash<QString, Entry> strings;
+    auto catalog = std::make_shared<Catalog>();
     QStringList codes{"en", language.section('-', 0, 0), language};
     codes.removeDuplicates();
     for (const auto &code : codes) {
-        QFile catalog(m_catalogDirectory + "/" + code + ".json");
-        if (!catalog.open(QIODevice::ReadOnly))
+        QFile catalogFile(m_catalogDirectory + "/" + code + ".json");
+        if (!catalogFile.open(QIODevice::ReadOnly))
             continue;
-        const QJsonObject object = QJsonDocument::fromJson(catalog.readAll()).object();
-        for (auto it = object.begin(); it != object.end(); ++it)
-            if ((it.value().isString() && !it.value().toString().isEmpty()) || it.value().isObject())
-                strings.insert(it.key(), {it.value(), code});
+        const QJsonObject object = QJsonDocument::fromJson(catalogFile.readAll()).object();
+        for (auto it = object.begin(); it != object.end(); ++it) {
+            if (it.value().isString() && !it.value().toString().isEmpty()) {
+                CatalogEntry entry;
+                entry.isPlural = false;
+                entry.text = it.value().toString();
+                catalog->entries.insert(it.key().toUtf8(), std::move(entry));
+            } else if (it.value().isObject()) {
+                const QJsonObject formsObj = it.value().toObject();
+                CatalogEntry entry;
+                entry.isPlural = true;
+                entry.language = code;
+                entry.forms.reserve(formsObj.size());
+                for (auto fit = formsObj.begin(); fit != formsObj.end(); ++fit)
+                    if (fit.value().isString())
+                        entry.forms.insert(fit.key(), fit.value().toString());
+                catalog->entries.insert(it.key().toUtf8(), std::move(entry));
+            }
+        }
     }
+    catalog->empty = catalog->entries.isEmpty();
+    bool englishPluralsOnly = (language == QLatin1String("en") && !catalog->empty);
+    if (englishPluralsOnly) {
+        for (auto it = catalog->entries.cbegin(); it != catalog->entries.cend(); ++it) {
+            if (!it.value().isPlural || (!it.key().contains("%n") && !it.key().contains("%Ln"))) {
+                englishPluralsOnly = false;
+                break;
+            }
+        }
+    }
+    catalog->englishPluralsOnly = englishPluralsOnly;
 
     {
         QWriteLocker locker(&m_lock);
         m_language = language;
-        m_strings = strings;
+        m_catalog.store(catalog, std::memory_order_release);
+        m_emptyCatalog.store(catalog->empty, std::memory_order_release);
+        m_englishPluralsOnly.store(catalog->englishPluralsOnly, std::memory_order_release);
     }
     // Dates, numbers, and Qt's own day and month names follow the language
     // too, and right-to-left languages mirror the window.
