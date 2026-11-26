@@ -52,6 +52,66 @@ const clothbound = (() => {
     const FRAME_LOAD_TIMEOUT_MS = 10000
     const pendingFrameLoads = new Map()
     const docStyles = new WeakMap()
+    const rtlScrollTypes = new WeakMap()
+    let domReady = false
+
+    // Runtime RTL scrollLeft convention probe (cached once per document):
+    // detects "negative" (Blink/modern WebKit), "reverse", or "default"
+    // so RTL multi-column spreads scroll identically across WebKit & Blink.
+    function rtlScrollTypeOf(doc) {
+        if (!doc || !doc.body || typeof doc.createElementNS !== 'function' || typeof doc.body.appendChild !== 'function')
+            return 'negative'
+        let type = rtlScrollTypes.get(doc)
+        if (type)
+            return type
+        type = 'negative'
+        const probe = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div')
+        if (probe && probe.style && typeof probe.appendChild === 'function') {
+            const inner = doc.createElementNS('http://www.w3.org/1999/xhtml', 'div')
+            probe.style.cssText = 'position:fixed;top:-9999px;left:0;width:1px;height:1px;overflow:scroll;direction:rtl;visibility:hidden;pointer-events:none;'
+            if (inner && inner.style)
+                inner.style.cssText = 'width:2px;height:1px;'
+            probe.appendChild(inner)
+            doc.body.appendChild(probe)
+            try {
+                if (typeof probe.scrollLeft === 'number')
+                    type = probe.scrollLeft > 0 ? 'default' : ((probe.scrollLeft = 1), probe.scrollLeft === 0 ? 'negative' : 'reverse')
+            } finally {
+                if (typeof probe.remove === 'function')
+                    probe.remove()
+                else if (typeof doc.body.removeChild === 'function')
+                    doc.body.removeChild(probe)
+            }
+        }
+        rtlScrollTypes.set(doc, type)
+        return type
+    }
+
+    function maxScrollLeftOf(el) {
+        return Math.max(0, (el.scrollWidth || 0) - (el.clientWidth || 0))
+    }
+
+    function logicalScrollX(doc, el, rtl) {
+        if (!rtl)
+            return el.scrollLeft
+        const type = rtlScrollTypeOf(doc)
+        if (type === 'reverse')
+            return el.scrollLeft
+        if (type === 'default')
+            return maxScrollLeftOf(el) - el.scrollLeft
+        return -el.scrollLeft
+    }
+
+    function nativeScrollLeft(doc, el, offset, rtl) {
+        if (!rtl)
+            return offset
+        const type = rtlScrollTypeOf(doc)
+        if (type === 'reverse')
+            return offset
+        if (type === 'default')
+            return Math.max(0, maxScrollLeftOf(el) - offset)
+        return -offset
+    }
 
     function cancelFrameLoad(targetFrame) {
         if (!targetFrame)
@@ -99,22 +159,21 @@ const clothbound = (() => {
 
     function canScrollToPage(page) {
         const g = state.geometry
+        const doc = chapterDocument()
         const el = scroller()
         if (!g || !el)
             return false
         const horizontal = !g.scroll || g.vertical
-        const target = horizontal && state.rtl ? -(page * g.step) : page * g.step
-        const now = horizontal ? el.scrollLeft : el.scrollTop
+        const desired = page * g.step
+        const now = horizontal ? logicalScrollX(doc, el, state.rtl) : el.scrollTop
         const span = horizontal ? (el.scrollWidth || 0) : (el.scrollHeight || 0)
         const view = horizontal ? (el.clientWidth || 0) : (el.clientHeight || 0)
         if (span > 0 && view > 0) {
             const maxAbs = Math.max(0, span - view)
-            const clamped = horizontal && state.rtl
-                ? -Math.min(Math.abs(target), maxAbs)
-                : Math.min(target, maxAbs)
+            const clamped = Math.min(desired, maxAbs)
             return Math.abs(clamped - now) >= 1
         }
-        return Math.abs(target - now) >= 1
+        return Math.abs(desired - now) >= 1
     }
 
     function setTurningMask(on) {
@@ -381,7 +440,7 @@ h1, h2 { line-height: 1.2 !important; letter-spacing: -0.01em; }
 p, li, dd, dt, blockquote, div, td { line-height: ${s.lineHeight} !important; }
 p { margin-top: 0 !important; margin-bottom: ${paragraphSpacing}em !important; }
 ${literaryIndent}
-html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; font-weight: ${headingWeight}; color: ${accentInk} !important; margin-inline-end: 0.14em; }
+html body:not(#__cb_none) [data-cb-dropcap]::first-letter { -webkit-initial-letter: 3; initial-letter: 3; font-weight: ${headingWeight}; color: ${accentInk} !important; margin-inline-end: 0.14em; }
 [data-cb-flow] { text-align: ${s.justify ? 'justify' : 'start'} !important;
                  ${s.justify && hyphenation ? 'hyphens: manual; -webkit-hyphens: manual;' : 'hyphens: none;'} }` : ''}
 `
@@ -1024,8 +1083,10 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
     function pageOfRect(rect) {
         if (!rect)
             return 0
-        const el = scroller()
-        const x = state.rtl ? (rect.left + rect.right) / 2 + el.scrollLeft : rect.left + el.scrollLeft
+        const doc = chapterDocument()
+        const el = scrollerOf(doc)
+        const scrollX = state.rtl ? -logicalScrollX(doc, el, true) : el.scrollLeft
+        const x = state.rtl ? (rect.left + rect.right) / 2 + scrollX : rect.left + scrollX
         return pageAtPosition(x, rect.top + el.scrollTop)
     }
 
@@ -1177,11 +1238,12 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
             if (!element)
                 continue
             const rect = element.getBoundingClientRect()
+            const scrollX = rtl ? -logicalScrollX(doc, el, true) : el.scrollLeft
             const at = (g.scroll && !g.vertical)
                 ? rect.top + el.scrollTop
                 : rtl
-                    ? g.width - ((rect.left + rect.right) / 2 + el.scrollLeft)
-                    : rect.left + el.scrollLeft
+                    ? g.width - ((rect.left + rect.right) / 2 + scrollX)
+                    : rect.left + scrollX
             labels.push({ label: target.label, at })
         }
         labels.sort((a, b) => a.at - b.at)
@@ -1204,7 +1266,8 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
             return [0]
         const rects = last.getClientRects()
         const rect = rects.length ? rects[rects.length - 1] : last.getBoundingClientRect()
-        return [rtl ? g.width - (rect.left + el.scrollLeft) : rect.right + el.scrollLeft]
+        const scrollX = rtl ? -logicalScrollX(doc, el, true) : el.scrollLeft
+        return [rtl ? g.width - (rect.left + scrollX) : rect.right + scrollX]
     }
 
     function labelForPage(page) {
@@ -1261,9 +1324,12 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
         closeNote()
         const g = state.geometry
         state.page = clamp(page, 0, state.pages - 1)
-        const el = scroller()
+        const doc = chapterDocument()
+        const el = scrollerOf(doc)
         const horizontal = !g.scroll || g.vertical
-        const target = horizontal && state.rtl ? -(state.page * g.step) : state.page * g.step
+        const target = horizontal
+            ? nativeScrollLeft(doc, el, state.page * g.step, state.rtl)
+            : state.page * g.step
         const axis = horizontal ? 'left' : 'top'
         const now = horizontal ? el.scrollLeft : el.scrollTop
         const reduced = isReducedMotion()
@@ -2246,7 +2312,8 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
             return
         const active = swipe
         swipe = null
-        const moved = scroller().scrollLeft - active.from
+        const doc = chapterDocument()
+        const movedLogical = logicalScrollX(doc, scrollerOf(doc), state.rtl) - active.fromLogical
         const rawDelta = active.delta
         const page = active.page
         return run(async () => {
@@ -2255,8 +2322,8 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
                 return
             // At page 0 or the final page, scrollLeft clamps to the edge; fall
             // back to accumulated deltaX so swiping still crosses chapter bounds.
-            const sign = state.rtl ? -1 : 1
-            const effective = (Math.abs(moved) > 1 ? moved : rawDelta) * sign
+            const rawLogical = state.rtl ? -rawDelta : rawDelta
+            const effective = Math.abs(movedLogical) > 1 ? movedLogical : rawLogical
             const threshold = state.geometry.step * 0.12
             const forward = effective > threshold, backward = effective < -threshold
             if (forward || backward)
@@ -2306,34 +2373,40 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
             event.preventDefault()
             if (!swipe && (performance.now() < wheelQuietUntil || state.navBusy > 0 || state.chapterAnim))
                 return
-            const el = scroller()
+            const doc = chapterDocument()
+            const el = scrollerOf(doc)
             if (!swipe) {
                 cancelAnimation()
-                swipe = { from: el.scrollLeft, page: state.page, chapter: state.chapter, session: sessionId(), delta: 0 }
+                swipe = { fromLogical: logicalScrollX(doc, el, state.rtl), page: state.page, chapter: state.chapter, session: sessionId(), delta: 0 }
             }
             swipe.delta += event.deltaX
             // Never more than a page either way.
             const step = state.geometry.step
-            const next = clamp(el.scrollLeft + event.deltaX, swipe.from - step, swipe.from + step)
-            el.scrollTo({ left: next, behavior: 'instant' })
+            const logicalDelta = state.rtl ? -event.deltaX : event.deltaX
+            const nextLogical = clamp(logicalScrollX(doc, el, state.rtl) + logicalDelta, Math.max(0, swipe.fromLogical - step), swipe.fromLogical + step)
+            el.scrollTo({ left: nativeScrollLeft(doc, el, nextLogical, state.rtl), behavior: 'instant' })
             clearTimeout(swipeEnd)
             swipeEnd = setTimeout(settleSwipe, 90)
             return
         }
         if (state.geometry.scroll) {
-            const el = scroller()
+            const doc = chapterDocument()
+            const el = scrollerOf(doc)
             if (state.geometry.vertical) {
                 const raw = Math.abs(event.deltaX) > Math.abs(event.deltaY)
                     ? event.deltaX : (state.rtl ? -event.deltaY : event.deltaY)
-                const atStart = state.rtl ? el.scrollLeft >= -1 && raw > 0 : el.scrollLeft <= 1 && raw < 0
-                const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth)
-                const atEnd = state.rtl ? el.scrollLeft <= -maxScroll + 2 && raw < 0 : el.scrollLeft >= maxScroll - 2 && raw > 0
+                const logicalDelta = state.rtl ? -raw : raw
+                const curLogical = logicalScrollX(doc, el, state.rtl)
+                const maxScroll = maxScrollLeftOf(el)
+                const atStart = curLogical <= 1 && logicalDelta < 0
+                const atEnd = curLogical >= maxScroll - 2 && logicalDelta > 0
                 if (!atStart && !atEnd) {
                     event.preventDefault()
-                    el.scrollLeft += raw
+                    const nextLogical = clamp(curLogical + logicalDelta, 0, maxScroll)
+                    el.scrollLeft = nativeScrollLeft(doc, el, nextLogical, state.rtl)
                     clearTimeout(wheelReset)
                     wheelReset = setTimeout(() => {
-                        state.page = clamp(Math.floor((Math.abs(el.scrollLeft) + 1) / state.geometry.step), 0, state.pages - 1)
+                        state.page = clamp(Math.floor((logicalScrollX(doc, el, state.rtl) + 1) / state.geometry.step), 0, state.pages - 1)
                         report()
                     }, 180)
                     return
@@ -2376,7 +2449,7 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
         if (!state.bridge || event.isComposing)
             return
         const modifiers = (event.shiftKey ? 1 : 0) | (event.ctrlKey ? 2 : 0) | (event.altKey ? 4 : 0) | (event.metaKey ? 8 : 0)
-        if (event.ctrlKey && (event.key === 'c' || event.key === 'C'))
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && (event.key === 'c' || event.key === 'C'))
             return
         event.preventDefault()
         event.stopPropagation()
@@ -3023,6 +3096,15 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
             const selection = state.index ? chapterDocument().getSelection() : null
             return selection ? selection.toString().split(SHY).join('') : ''
         },
+
+        // Installs a foreign host bridge (e.g. WKWebView bridge-webkit.js).
+        setBridge(bridge) {
+            if (!bridge || state.bridge === bridge)
+                return
+            state.bridge = bridge
+            if (domReady && typeof bridge.surfaceLoaded === 'function')
+                bridge.surfaceLoaded()
+        },
     }
 
     function applyPageColors() {
@@ -3056,10 +3138,18 @@ html body:not(#__cb_none) [data-cb-dropcap]::first-letter { initial-letter: 3; f
             }
             tap()
         })
-        new QWebChannel(qt.webChannelTransport, channel => {
-            state.bridge = channel.objects.bridge
-            state.bridge.surfaceLoaded()
-        })
+        domReady = true
+        const hostBridge = state.bridge || (typeof window !== 'undefined' && window.clothboundBridge) || null
+        if (hostBridge) {
+            state.bridge = hostBridge
+            if (typeof state.bridge.surfaceLoaded === 'function')
+                state.bridge.surfaceLoaded()
+        } else if (typeof QWebChannel === 'function' && typeof qt !== 'undefined' && qt && qt.webChannelTransport) {
+            new QWebChannel(qt.webChannelTransport, channel => {
+                state.bridge = channel.objects.bridge
+                state.bridge.surfaceLoaded()
+            })
+        }
     })
 
     return api

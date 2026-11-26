@@ -262,3 +262,155 @@ jobs:
         with:
           name: clothbound-flatpak-x86_64
           path: clothbound.flatpak
+
+  macos-core-arm64:
+    name: macOS Apple Silicon Headless Core & Framework
+    runs-on: macos-15
+    env:
+      QT_VERSION: "6.8.3"
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      CCACHE_DIR: ${{ github.workspace }}/.ccache-macos
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_MAXSIZE: 1G
+      CCACHE_COMPRESS: "true"
+      CCACHE_SLOPPINESS: pch_defines,time_macros,include_file_mtime
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install build tools via Homebrew
+        run: brew install cmake ninja ccache
+
+      - name: Restore official ICU-free Qt 6 cache
+        id: qt-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/Qt
+          key: qt-macos-official-${{ env.QT_VERSION }}-qtbase-qtpdf-v1
+
+      - name: Install official ICU-free Qt 6 (qtbase + qtpdf) via aqtinstall
+        if: steps.qt-cache.outputs.cache-hit != 'true'
+        run: |
+          python3 -m venv "$RUNNER_TEMP/aqt-venv"
+          "$RUNNER_TEMP/aqt-venv/bin/pip" install --upgrade pip aqtinstall
+          "$RUNNER_TEMP/aqt-venv/bin/aqt" install-qt mac desktop "$QT_VERSION" clang_64 -m qtpdf -O "$HOME/Qt"
+
+      - name: Export QT_DIR
+        run: |
+          QT_DIR="$HOME/Qt/${QT_VERSION}/macos"
+          test -d "$QT_DIR/lib/cmake/Qt6"
+          echo "QT_DIR=$QT_DIR" >> "$GITHUB_ENV"
+
+      - name: Restore ccache (macos-core-arm64)
+        uses: actions/cache@v6
+        with:
+          path: .ccache-macos
+          key: ccache-macos-core-${{ runner.arch }}-${{ env.QT_VERSION }}-${{ hashFiles('CMakeLists.txt', 'tests/CMakeLists.txt', 'src/**/*.h', 'src/**/*.cpp', 'src/**/*.mm', 'tests/**/*.h', 'tests/**/*.cpp') }}
+          restore-keys: |
+            ccache-macos-core-${{ runner.arch }}-${{ env.QT_VERSION }}-
+
+      - name: Configure & build ClothboundCore.framework, clothbound-mcp, clothbound-tts, and headless tests
+        run: |
+          ccache --zero-stats
+          cmake -S . -B build-macos-core -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 \
+            -DCLOTHBOUND_BUILD_QT_GUI=OFF \
+            -DCLOTHBOUND_BUILD_MAC_FRAMEWORK=ON \
+            -DCLOTHBOUND_BUILD_TESTS=ON \
+            -DCMAKE_PREFIX_PATH="$QT_DIR/lib/cmake"
+          cmake --build build-macos-core --parallel --target \
+            ClothboundCore \
+            clothbound-mcp \
+            clothbound-tts \
+            tst_p0_headless_core \
+            tst_p0_bridge_tts \
+            tst_w8_passage_quant \
+            tst_w8_mcp_cli \
+            tst_scanner_flatpak
+          ccache --show-stats
+
+      - name: Run all 5 headless CTest suites (including tst_p0_bridge_tts)
+        run: |
+          export CLOTHBOUND_TTS_BIN="$PWD/build-macos-core/clothbound-tts"
+          export CLOTHBOUND_MCP_BIN="$PWD/build-macos-core/clothbound-mcp"
+          ctest --test-dir build-macos-core --output-on-failure
+
+      - name: Validate WebKit reader JS syntax
+        run: node --check src/reader/reader.js src/reader/bridge-webkit.js src/reader/hyphenation.js src/reader/dropcap.js
+
+      - name: Verify ClothboundCore.framework layout, symbols, and strict otool -L hygiene
+        run: |
+          FW="build-macos-core/ClothboundCore.framework"
+          FW_BIN="$FW/Versions/A/ClothboundCore"
+          MCP_BIN="build-macos-core/clothbound-mcp"
+          TTS_BIN="build-macos-core/clothbound-tts"
+
+          test -f "$FW_BIN"
+          test -f "$FW/Versions/A/Headers/clothbound_c.h"
+          test -f "$FW/Versions/A/Modules/module.modulemap"
+          test -L "$FW/Modules"
+          grep -q 'framework module ClothboundCore' "$FW/Versions/A/Modules/module.modulemap"
+          otool -D "$FW_BIN" | grep -q '@rpath/ClothboundCore.framework/Versions/A/ClothboundCore'
+          nm -gU "$FW_BIN" | grep -q '_cb_engine_create'
+          nm -gU "$FW_BIN" | grep -q '_cb_session_open'
+
+          for bin in "$FW_BIN" "$MCP_BIN" "$TTS_BIN"; do
+            echo "=== otool -L $bin ==="
+            otool -L "$bin"
+            bad=$(otool -L "$bin" | grep -iE 'QtWebEngine|QtQuick|QtQml|QtMultimedia|libqcocoa|/opt/homebrew/|icu4c' || true)
+            if [ -n "$bad" ]; then
+              echo "FORBIDDEN dependency in $bin:" >&2
+              echo "$bad" >&2
+              exit 1
+            fi
+          done
+
+          tts_qt=$(otool -L "$TTS_BIN" | grep -iE 'Qt[A-Z]|libQt' || true)
+          if [ -n "$tts_qt" ]; then
+            echo "FORBIDDEN Qt dependency in clothbound-tts:" >&2
+            echo "$tts_qt" >&2
+            exit 1
+          fi
+
+      - name: Package unsigned ClothboundCore-macos-arm64.tar.gz artifact
+        run: |
+          STAGE="dist/ClothboundCore-macos-arm64"
+          rm -rf "$STAGE" ClothboundCore-macos-arm64.tar.gz
+          mkdir -p "$STAGE/Frameworks" "$STAGE/PlugIns" "$STAGE/bin" "$STAGE/reader" "$STAGE/i18n"
+
+          cp -a build-macos-core/ClothboundCore.framework "$STAGE/Frameworks/"
+          cp -p build-macos-core/clothbound-mcp "$STAGE/bin/"
+          cp -p build-macos-core/clothbound-tts "$STAGE/bin/"
+          cp -R src/reader/. "$STAGE/reader/"
+          cp -p src/i18n/*.json "$STAGE/i18n/"
+
+          for qt_fw in QtCore QtGui QtPdf QtNetwork QtSql QtConcurrent; do
+            if [ -d "$QT_DIR/lib/${qt_fw}.framework" ]; then
+              cp -a "$QT_DIR/lib/${qt_fw}.framework" "$STAGE/Frameworks/"
+              rm -rf "$STAGE/Frameworks/${qt_fw}.framework/Headers" \
+                     "$STAGE/Frameworks/${qt_fw}.framework/Versions/A/Headers" \
+                     "$STAGE/Frameworks/${qt_fw}.framework"/*.prl \
+                     "$STAGE/Frameworks/${qt_fw}.framework"/*_debug* \
+                     "$STAGE/Frameworks/${qt_fw}.framework/Versions/A"/*_debug*
+            fi
+          done
+
+          for plugin_dir in sqldrivers tls imageformats; do
+            if [ -d "$QT_DIR/plugins/${plugin_dir}" ]; then
+              mkdir -p "$STAGE/PlugIns/${plugin_dir}"
+              find "$QT_DIR/plugins/${plugin_dir}" -maxdepth 1 -name '*.dylib' ! -name '*_debug.dylib' \
+                -exec cp -p {} "$STAGE/PlugIns/${plugin_dir}/" \;
+            fi
+          done
+
+          test ! -e "$STAGE/PlugIns/platforms"
+          tar -czf ClothboundCore-macos-arm64.tar.gz -C dist ClothboundCore-macos-arm64
+          ls -lh ClothboundCore-macos-arm64.tar.gz
+
+      - name: Upload unsigned macOS Core artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ClothboundCore-macos-arm64
+          path: ClothboundCore-macos-arm64.tar.gz

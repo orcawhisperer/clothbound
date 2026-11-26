@@ -34,6 +34,7 @@ check_pie_supported(OUTPUT_VARIABLE _pie_output LANGUAGES CXX)
 include(GNUInstallDirs)
 
 option(CLOTHBOUND_BUILD_QT_GUI "Build the Qt Quick/WebEngine desktop GUI" ON)
+option(CLOTHBOUND_BUILD_MAC_FRAMEWORK "Build dynamic ClothboundCore.framework on macOS" ON)
 option(CLOTHBOUND_BUILD_TESTS "Build the Clothbound unit and QML smoke test suite" OFF)
 option(CLOTHBOUND_BUILD_BENCH "Build the Clothbound C++ micro-benchmark suite" OFF)
 option(CLOTHBOUND_FORCE_ASSERTS "Force Q_ASSERT checks on across Clothbound targets" OFF)
@@ -243,6 +244,56 @@ add_library(clothbound_bridge STATIC
     src/tts/tts_process_client.cpp
 )
 target_link_libraries(clothbound_bridge PUBLIC clothbound_headless)
+
+if(APPLE AND CLOTHBOUND_BUILD_MAC_FRAMEWORK)
+    # -----------------------------------------------------------------------
+    # macOS dynamic framework: ClothboundCore.framework (Swift 6 Clang module)
+    # -----------------------------------------------------------------------
+    add_library(ClothboundCore SHARED
+        src/bridge/clothbound_c.h
+        src/bridge/clothbound_c.cpp
+        src/tts/tts_protocol.h
+        src/tts/tts_process_client.h
+        src/tts/tts_process_client.cpp
+    )
+    target_link_libraries(ClothboundCore PRIVATE clothbound_headless)
+    set_target_properties(ClothboundCore PROPERTIES
+        FRAMEWORK TRUE
+        FRAMEWORK_VERSION A
+        MACOSX_FRAMEWORK_IDENTIFIER "app.clothbound.Core"
+        MACOSX_FRAMEWORK_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_FRAMEWORK_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        PUBLIC_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/bridge/clothbound_c.h"
+        INSTALL_NAME_DIR "@rpath"
+        BUILD_WITH_INSTALL_RPATH ON
+        INSTALL_RPATH "@loader_path/..;@loader_path/Frameworks;@loader_path/../../..;@executable_path/../Frameworks"
+        C_VISIBILITY_PRESET default
+        CXX_VISIBILITY_PRESET default
+        VISIBILITY_INLINES_HIDDEN OFF
+    )
+
+    # Qualify src/bridge/module.modulemap with `framework module` so Clang/Swift
+    # resolves clothbound_c.h inside ClothboundCore.framework/Versions/A/Headers/.
+    set(_clothbound_fw_modulemap "${CMAKE_CURRENT_BINARY_DIR}/ClothboundCore.framework.modulemap")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/bridge/module.modulemap" _clothbound_modulemap_raw)
+    string(REGEX REPLACE "(^|\n)module[ \t]+ClothboundCore" "\\1framework module ClothboundCore"
+        _clothbound_fw_modulemap_content "${_clothbound_modulemap_raw}")
+    file(GENERATE OUTPUT "${_clothbound_fw_modulemap}" CONTENT "${_clothbound_fw_modulemap_content}")
+
+    add_custom_command(TARGET ClothboundCore POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_BUNDLE_CONTENT_DIR:ClothboundCore>/Modules"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${_clothbound_fw_modulemap}"
+            "$<TARGET_BUNDLE_CONTENT_DIR:ClothboundCore>/Modules/module.modulemap"
+        COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "$<TARGET_BUNDLE_DIR:ClothboundCore>/Modules"
+        COMMAND "${CMAKE_COMMAND}" -E create_symlink
+            "Versions/Current/Modules"
+            "$<TARGET_BUNDLE_DIR:ClothboundCore>/Modules"
+        COMMENT "Installing ClothboundCore.framework Modules/module.modulemap"
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Standalone zero-Qt out-of-process sherpa-onnx TTS helper: clothbound-tts
@@ -591,6 +642,19 @@ else()
         "${CMAKE_CURRENT_SOURCE_DIR}/src/bridge/clothbound_c.h"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/bridge/module.modulemap"
         DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/clothbound"
+    )
+endif()
+if(APPLE AND CLOTHBOUND_BUILD_MAC_FRAMEWORK)
+    install(TARGETS ClothboundCore
+        FRAMEWORK DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    )
+    install(FILES "${_clothbound_fw_modulemap}"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/ClothboundCore.framework/Versions/A/Modules"
+        RENAME "module.modulemap"
+    )
+    install(CODE
+        "execute_process(COMMAND \"${CMAKE_COMMAND}\" -E rm -f \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/ClothboundCore.framework/Modules\")
+         execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink \"Versions/Current/Modules\" \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/ClothboundCore.framework/Modules\")"
     )
 endif()
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/i18n/"

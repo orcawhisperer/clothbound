@@ -249,4 +249,5 @@ private slots:
     void w6CmakeAotExternalizedI18nAndWebEngineFreeMcp();
     void speechPlayerLiveResetAndReentrancySafety();
     void uxPolishSleepIconSmoothDockTopEdgeAndLibraryMiniPlayer();
+    void readerJsWebKitBridgeDropCapMetaCopyAndRtlScroll();
 };
