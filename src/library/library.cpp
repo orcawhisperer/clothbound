@@ -8,11 +8,22 @@
 #include "library/scanner.h"
 
 #include <QCoreApplication>
+#include <QtGlobal>
+
+#if !defined(CLOTHBOUND_HAS_DBUS) && (defined(Q_OS_LINUX) || defined(__linux__)) && !defined(CLOTHBOUND_NO_DBUS)
+#define CLOTHBOUND_HAS_DBUS 1
+#endif
+
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#endif
+#ifdef Q_OS_MACOS
+#include <QProcess>
+#endif
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
@@ -1305,6 +1316,8 @@ void Library::showInFolder(int id) const {
     const BookRecord record = m_books.value(id);
     if (record.path.isEmpty())
         return;
+    const QString folder = QFileInfo(record.path).absolutePath();
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     // The file manager selects the file when it speaks FileManager1, as
     // Nautilus does; otherwise the folder just opens. Run asynchronously so
     // the UI thread never blocks waiting for D-Bus activation.
@@ -1312,7 +1325,6 @@ void Library::showInFolder(int id) const {
         QStringLiteral("org.freedesktop.FileManager1"), QStringLiteral("/org/freedesktop/FileManager1"),
         QStringLiteral("org.freedesktop.FileManager1"), QStringLiteral("ShowItems"));
     call.setArguments({QStringList{QUrl::fromLocalFile(record.path).toString()}, QString()});
-    const QString folder = QFileInfo(record.path).absolutePath();
     const QDBusPendingCall pending = QDBusConnection::sessionBus().asyncCall(call, 1500);
     auto *watcher = new QDBusPendingCallWatcher(pending, const_cast<Library *>(this));
     connect(watcher, &QDBusPendingCallWatcher::finished, watcher, [watcher, folder] {
@@ -1321,6 +1333,12 @@ void Library::showInFolder(int id) const {
         if (reply.isError())
             QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
     });
+#elif defined(Q_OS_MACOS)
+    if (!QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), record.path}))
+        QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
+#else
+    QDesktopServices::openUrl(QUrl::fromLocalFile(folder));
+#endif
 }
 
 QString Library::coverUrl(int id) const {
@@ -1362,7 +1380,7 @@ void Library::markOpened(int id) {
     changed(firstOpen, false);
 }
 
-void Library::savePosition(int id, const QString &position, double progress) {
+void Library::savePosition(int id, const QString &position, double progress, QObject *sourceSession) {
     Q_ASSERT(QThread::currentThread() == thread());
     if (rejectIfReadOnly() || !m_books.contains(id))
         return;
@@ -1382,11 +1400,22 @@ void Library::savePosition(int id, const QString &position, double progress) {
     m_works->updateBook(rec, &previous);
     emit bookUpdated(id);
     emit bookChanged(id);
+    int chapter = 0;
+    if (!position.isEmpty())
+        chapter = QJsonDocument::fromJson(position.toUtf8()).object().value(QStringLiteral("chapter")).toInt(0);
+    emit bookPositionChanged(id, chapter, progress, sourceSession);
     if (rec.visible() && rec.openedAt > 0 && rec.finishedAt == 0 && (prevProgress < 0.995 || progress < 0.995)) {
         m_continueNotifyDirty = true;
         if (!m_notify.isActive())
             m_notify.start();
     }
+}
+
+void Library::notifyMarksChanged(int bookId, QObject *sourceSession) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (bookId <= 0)
+        return;
+    emit marksChanged(bookId, sourceSession);
 }
 
 void Library::addReadingTime(int id, int seconds, qint64 charsRead) {

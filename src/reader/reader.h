@@ -2,6 +2,7 @@
 
 #include <QElapsedTimer>
 #include <QObject>
+#include <QPointer>
 #include <QRectF>
 #include <QTemporaryDir>
 #include <QTimer>
@@ -140,6 +141,10 @@ public:
 
     Q_INVOKABLE bool openBook(int bookId);
     Q_INVOKABLE void close();
+    Q_INVOKABLE void flushPosition();
+    // Optional owning session tag used to suppress self-echo on cross-session broadcasts.
+    void setSessionOwner(QObject *owner) { m_sessionOwner = owner; }
+    QObject *sessionOwner() const { return m_sessionOwner.data(); }
     // A place in the book for a fraction of the whole, for the scrubber and
     // "go to 40%": {chapter, offset}.
     Q_INVOKABLE QVariantMap targetForFraction(double fraction) const;
@@ -204,6 +209,7 @@ signals:
     void bookChanged();
     void lengthsChanged();
     void locationChanged();
+    void externalPositionSynced(int chapter, qint64 offset, double progress);
     void appearanceChanged();
     void jumpRecorded(const QString &label);
     void imageChosen(const QString &source, const QString &caption);
@@ -227,6 +233,8 @@ private:
     struct PageTurnSfx;
     bool playPageTurnDryRun(int direction, QByteArray *pcmOut = nullptr);
     void savePosition();
+    void handleExternalPositionChanged(int bookId, int chapter, double progress, QObject *sourceSession);
+    QObject *sessionSource() const { return m_sessionOwner ? m_sessionOwner.data() : const_cast<Reader *>(this); }
     void flushReadingTime();
     void measureChapters();
     void updateBookPages();
@@ -234,8 +242,10 @@ private:
     QString formatBackLabel(int chapter, const QString &pageLabel) const;
     qint64 globalOffset(int chapter, qint64 offset) const;
 
-    Library *m_library;
+    QPointer<Library> m_library;
+    QPointer<QObject> m_sessionOwner;
     BookScheme *m_scheme;
+    bool m_applyingExternalPosition = false;
     std::shared_ptr<EpubBook> m_book;
     std::shared_ptr<PdfBook> m_pdf;
     QRectF m_pdfCrop{0, 0, 1, 1};

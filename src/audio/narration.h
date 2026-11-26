@@ -5,6 +5,7 @@
 #include "audio/sleepcontroller.h"
 #include "audio/speech.h"
 #include "audio/speechcleaner.h"
+#include "reader/reader.h"
 
 #include <QHash>
 #include <QObject>
@@ -35,6 +36,7 @@ class Narration : public QObject {
     Q_PROPERTY(bool playing READ playing NOTIFY stateChanged)
     Q_PROPERTY(bool buffering READ buffering NOTIFY stateChanged)
     Q_PROPERTY(bool following READ following WRITE setFollowing NOTIFY stateChanged)
+    Q_PROPERTY(int boundBookId READ boundBookId NOTIFY boundReaderChanged)
     Q_PROPERTY(QString voice READ voice NOTIFY voiceChanged)
     Q_PROPERTY(QString voiceName READ voiceName NOTIFY voiceChanged)
     Q_PROPERTY(QString voiceAccent READ voiceAccent NOTIFY voiceChanged)
@@ -73,6 +75,15 @@ class Narration : public QObject {
 public:
     Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, QObject *parent = nullptr);
     ~Narration() override;
+
+    // Multi-session reader binding: Narration tracks one actively speaking Reader
+    // at a time so opening, turning pages, or closing another window/tab never
+    // interrupts active narration.
+    void bindReader(Reader *reader);
+    void unbindReader(Reader *reader = nullptr);
+    Reader *boundReader() const { return m_boundReader.data(); }
+    int boundBookId() const { return m_boundBookId; }
+    Q_INVOKABLE void startFor(Reader *reader, int chapter, qint64 offset);
 
     bool active() const { return m_active; }
     bool playing() const { return m_active && m_wanted; }
@@ -146,6 +157,7 @@ public:
 
 signals:
     void stateChanged();
+    void boundReaderChanged();
     void voiceChanged();
     void rateChanged();
     void volumeChanged();
@@ -243,10 +255,18 @@ private:
     Ai::SpeechSynthesizer *speaker() const;
     int nextChapterAfter(int chapter) const;
     void loadVoice();
+    void handleBoundReaderBookChanged();
+    void handleBoundReaderDestroyed(QObject *destroyedReader);
+    void resetDirector(Reader *reader);
 
     AiServices *m_ai;
     AudioCache *m_cache;
-    Reader *m_reader;
+    QPointer<Reader> m_boundReader;
+    const Reader *m_boundReaderRaw = nullptr;
+    int m_boundBookId = 0;
+    QMetaObject::Connection m_speakableConn;
+    QMetaObject::Connection m_bookChangedConn;
+    QMetaObject::Connection m_destroyedConn;
     Library *m_library;
 
     Director *m_director;

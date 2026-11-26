@@ -209,6 +209,94 @@ private:
     QString m_before;
     QString m_after;
 };
+
+struct NormalizedQuoteText {
+    QString text;
+    QList<qint64> starts;
+    QList<qint64> ends;
+};
+
+// Cross-engine (EPUB DOM / PDFium / macOS PDFKit) quote normalizer preserving exact UTF-16 source
+// spans: strips PDFium U+FFFE line-wrap hyphens and soft hyphens, handles hyphenated line breaks,
+// expands typographic ligatures, folds curly quotes/dashes, and collapses whitespace runs.
+NormalizedQuoteText normalizeForQuoteAnchor(const QString &raw, bool stripLineBreakHyphens) {
+    NormalizedQuoteText out;
+    out.text.reserve(raw.size());
+    out.starts.reserve(raw.size());
+    out.ends.reserve(raw.size());
+    auto emitChar = [&](QChar ch, qint64 s, qint64 e) {
+        out.text.append(ch);
+        out.starts.append(s);
+        out.ends.append(e);
+    };
+    const qsizetype n = raw.size();
+    bool inSpace = true;
+    for (qsizetype i = 0; i < n; ++i) {
+        const QChar c = raw[i];
+        if (c == QChar(0xFFFE)) {
+            if (i + 1 < n && raw[i + 1] == QLatin1Char('\r'))
+                ++i;
+            if (i + 1 < n && raw[i + 1] == QLatin1Char('\n'))
+                ++i;
+            continue;
+        }
+        if (c == QChar(0x00AD))
+            continue;
+        if ((c == QLatin1Char('-') || c == QChar(0x2010) || c == QChar(0x2011)) && i + 1 < n &&
+            (raw[i + 1] == QLatin1Char('\r') || raw[i + 1] == QLatin1Char('\n'))) {
+            qsizetype j = i + 1;
+            if (j < n && raw[j] == QLatin1Char('\r'))
+                ++j;
+            if (j < n && raw[j] == QLatin1Char('\n'))
+                ++j;
+            while (j < n && (raw[j] == QLatin1Char(' ') || raw[j] == QLatin1Char('\t')))
+                ++j;
+            if (j < n && raw[j].isLetter()) {
+                if (!stripLineBreakHyphens) {
+                    emitChar(QLatin1Char('-'), i, i + 1);
+                    inSpace = false;
+                }
+                i = j - 1;
+                continue;
+            }
+        }
+        if (c.isSpace()) {
+            if (!inSpace) {
+                emitChar(QLatin1Char(' '), i, i + 1);
+                inSpace = true;
+            } else if (!out.ends.isEmpty() && out.text.back() == QLatin1Char(' ')) {
+                out.ends.back() = i + 1;
+            }
+            continue;
+        }
+        inSpace = false;
+        switch (c.unicode()) {
+        case 0xFB00: emitChar('f', i, i + 1); emitChar('f', i, i + 1); continue;
+        case 0xFB01: emitChar('f', i, i + 1); emitChar('i', i, i + 1); continue;
+        case 0xFB02: emitChar('f', i, i + 1); emitChar('l', i, i + 1); continue;
+        case 0xFB03: emitChar('f', i, i + 1); emitChar('f', i, i + 1); emitChar('i', i, i + 1); continue;
+        case 0xFB04: emitChar('f', i, i + 1); emitChar('f', i, i + 1); emitChar('l', i, i + 1); continue;
+        case 0x2018: case 0x2019: case 0x201B: case 0x2032:
+            emitChar(QLatin1Char('\''), i, i + 1);
+            continue;
+        case 0x201C: case 0x201D: case 0x201F: case 0x2033:
+            emitChar(QLatin1Char('"'), i, i + 1);
+            continue;
+        case 0x2010: case 0x2011: case 0x2012: case 0x2013: case 0x2014: case 0x2212:
+            emitChar(QLatin1Char('-'), i, i + 1);
+            continue;
+        default:
+            emitChar(c, i, i + 1);
+            break;
+        }
+    }
+    if (!out.text.isEmpty() && out.text.endsWith(QLatin1Char(' '))) {
+        out.text.chop(1);
+        out.starts.removeLast();
+        out.ends.removeLast();
+    }
+    return out;
+}
 }  // namespace
 
 Marks::Marks(Library *library, QObject *parent)
@@ -217,6 +305,20 @@ Marks::Marks(Library *library, QObject *parent)
     connect(m_undo, &QUndoStack::canUndoChanged, this, &Marks::undoChanged);
     connect(m_undo, &QUndoStack::canRedoChanged, this, &Marks::undoChanged);
     connect(m_undo, &QUndoStack::undoTextChanged, this, &Marks::undoChanged);
+    if (m_library) {
+        connect(m_library, &Library::marksChanged, this, [this](int bookId, QObject *sourceSession) {
+            if (bookId <= 0 || bookId != m_bookId)
+                return;
+            if (sourceSession == this || (m_sessionOwner && sourceSession == m_sessionOwner))
+                return;
+            if (m_reloadingFromBroadcast)
+                return;
+            m_reloadingFromBroadcast = true;
+            m_searchCache.clear();
+            load();
+            m_reloadingFromBroadcast = false;
+        });
+    }
 }
 
 Marks::~Marks() = default;
@@ -274,7 +376,7 @@ void Marks::load() {
     Q_ASSERT(QThread::currentThread() == thread());
     beginResetModel();
     m_marks.clear();
-    if (m_bookId > 0) {
+    if (m_bookId > 0 && m_library) {
         QSqlDatabase db = m_library->database();
         {
             QSqlQuery maxQ(db);
@@ -347,7 +449,7 @@ void Marks::remapIdToken(int oldId, int newId, const std::shared_ptr<int> &token
 
 int Marks::insert(Mark mark) {
     Q_ASSERT(QThread::currentThread() == thread());
-    if (m_bookId <= 0)
+    if (m_bookId <= 0 || !m_library)
         return 0;
     if (!mark.created.isValid())
         mark.created = QDateTime::currentDateTime();
@@ -413,11 +515,14 @@ int Marks::insert(Mark mark) {
     if (mark.kind == QLatin1String("highlight"))
         m_library->adjustHighlightCount(m_bookId, 1);
     emit changed();
+    m_library->notifyMarksChanged(m_bookId, sessionSource());
     return mark.id;
 }
 
 void Marks::erase(int id) {
     Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_library)
+        return;
     const int row = rowOf(id);
     if (row < 0)
         return;
@@ -439,10 +544,13 @@ void Marks::erase(int id) {
     if (wasHighlight)
         m_library->adjustHighlightCount(m_bookId, -1);
     emit changed();
+    m_library->notifyMarksChanged(m_bookId, sessionSource());
 }
 
 void Marks::update(const Mark &mark) {
     Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_library)
+        return;
     const int row = rowOf(mark.id);
     if (row < 0)
         return;
@@ -475,12 +583,13 @@ void Marks::update(const Mark &mark) {
         emit dataChanged(index(row), index(row));
     }
     emit this->changed();
+    m_library->notifyMarksChanged(m_bookId, sessionSource());
 }
 
 int Marks::addBookmark(int chapter, qint64 offset, const QString &text, const QString &label, const QString &prefix,
                        const QString &suffix) {
     Q_ASSERT(QThread::currentThread() == thread());
-    if (m_bookId <= 0 || !m_library->database().isOpen())
+    if (m_bookId <= 0 || !m_library || !m_library->database().isOpen())
         return 0;
     Mark mark;
     mark.kind = QStringLiteral("bookmark");
@@ -499,7 +608,7 @@ int Marks::addBookmark(int chapter, qint64 offset, const QString &text, const QS
 int Marks::addHighlight(int chapter, qint64 start, qint64 end, const QString &text, const QString &color,
                         const QString &label, const QString &prefix, const QString &suffix) {
     Q_ASSERT(QThread::currentThread() == thread());
-    if (end <= start || m_bookId <= 0 || !m_library->database().isOpen())
+    if (end <= start || m_bookId <= 0 || !m_library || !m_library->database().isOpen())
         return 0;
     Mark mark;
     mark.kind = QStringLiteral("highlight");
@@ -906,7 +1015,65 @@ QPair<qint64, qint64> Marks::locateQuote(const QString &chapterText, const QStri
     if (bestNormStart >= 0)
         return {bestNormStart, bestNormEnd};
 
+    // Pass 3: PDF / cross-engine resilient normalization (PDFium U+FFFE\r\n line-wrap hyphens,
+    // soft hyphens, ligatures, typographic quotes/dashes, and hyphenated PDF line wraps).
+    // Pass 3a preserves hyphens on wrapped compounds ("well-\nknown" -> "well-known");
+    // Pass 3b strips line-wrap hyphens ("inter-\nferometer" -> "interferometer").
+    for (const bool stripLineHyphens : {false, true}) {
+        const NormalizedQuoteText normHay = normalizeForQuoteAnchor(chapterText, stripLineHyphens);
+        const NormalizedQuoteText normQ = normalizeForQuoteAnchor(quote, stripLineHyphens);
+        if (normHay.text.isEmpty() || normQ.text.isEmpty())
+            continue;
+        const QString normP = normalizeForQuoteAnchor(prefix, stripLineHyphens).text;
+        const QString normS = normalizeForQuoteAnchor(suffix, stripLineHyphens).text;
+        qint64 matchStart = -1;
+        qint64 matchEnd = -1;
+        bestScore = -1;
+        bestDist = std::numeric_limits<qint64>::max();
+        pos = 0;
+        while ((pos = normHay.text.indexOf(normQ.text, pos)) != -1) {
+            const int score = contextScore(normHay.text, pos, normQ.text.size(), normP, normS);
+            const qint64 mappedStart = normHay.starts[int(pos)];
+            const qint64 mappedEnd = normHay.ends[int(pos + normQ.text.size() - 1)];
+            const qint64 dist = hintStart >= 0 ? std::abs(mappedStart - hintStart) : mappedStart;
+            if (score > bestScore || (score == bestScore && dist < bestDist)) {
+                bestScore = score;
+                bestDist = dist;
+                matchStart = mappedStart;
+                matchEnd = mappedEnd;
+            }
+            pos += 1;
+        }
+        if (matchStart >= 0)
+            return {matchStart, matchEnd};
+    }
+
     return {-1, -1};
+}
+
+QVariantList Marks::anchorHighlightsIn(int chapter, const QString &pageText) const {
+    QVariantList anchored;
+    for (const Mark &mark : m_marks) {
+        if (mark.kind != QLatin1String("highlight") || mark.chapter != chapter)
+            continue;
+        const auto span = locateQuote(pageText, mark.text, mark.prefix, mark.suffix, mark.start);
+        const bool found = span.first >= 0;
+        const qint64 start = found ? span.first : mark.start;
+        const qint64 end = found ? span.second : mark.end;
+        const bool drifted = found && (start != mark.start || end != mark.end);
+        anchored.append(QVariantMap{
+            {QStringLiteral("id"), mark.id},
+            {QStringLiteral("start"), start},
+            {QStringLiteral("end"), end},
+            {QStringLiteral("color"), mark.color},
+            {QStringLiteral("noted"), !mark.note.isEmpty()},
+            {QStringLiteral("note"), mark.note},
+            {QStringLiteral("text"), mark.text},
+            {QStringLiteral("found"), found},
+            {QStringLiteral("drifted"), drifted},
+        });
+    }
+    return anchored;
 }
 
 QVariantMap Marks::resolveOffset(int id, const QString &chapterText) const {
@@ -1011,5 +1178,6 @@ int Marks::healChapter(int chapter, const QString &chapterText) {
         emit dataChanged(index(firstRow), index(lastRow), {StartRole, EndRole});
     }
     emit changed();
+    m_library->notifyMarksChanged(m_bookId, sessionSource());
     return int(pending.size());
 }

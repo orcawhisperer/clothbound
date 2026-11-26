@@ -35,6 +35,7 @@ class Cast : public QObject {
     Q_PROPERTY(bool available READ available NOTIFY changed)
     // Characters heard so far: {speaker, gender, voice, voiceName, lines}.
     Q_PROPERTY(QVariantList members READ members NOTIFY changed)
+    Q_PROPERTY(int bookId READ bookId NOTIFY changed)
 
 public:
     struct Line {
@@ -45,6 +46,11 @@ public:
     Cast(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, VoiceCatalog *catalog,
          VoicePacks *packs, QObject *parent = nullptr);
     ~Cast() override;
+
+    Reader *reader() const { return m_reader.data(); }
+    void setReader(Reader *reader);
+    int bookId() const { return m_bookId; }
+    void setBookId(int bookId);
 
     bool enabled() const { return m_enabled; }
     void setEnabled(bool enabled);
@@ -107,6 +113,7 @@ private:
     QString key(const QList<SpeechBlock> &blocks) const;
     void load();
     void save() const;
+    int activeBookId() const;
 
     struct PendingRequest {
         const QObject *scope = nullptr;
@@ -118,7 +125,11 @@ private:
 
     AiServices *m_ai;
     AudioCache *m_cache;
-    Reader *m_reader;
+    QPointer<Reader> m_reader;
+    const Reader *m_readerRaw = nullptr;
+    QMetaObject::Connection m_readerBookConn;
+    QMetaObject::Connection m_readerDestroyedConn;
+    int m_bookId = 0;
     Library *m_library;
     VoiceCatalog *m_catalog;
     VoicePacks *m_packs;

@@ -5,11 +5,19 @@
 #include <QObject>
 #include <QPointer>
 #include <QVariantList>
+#include <QtGlobal>
 #include <atomic>
+#include <functional>
 #include <memory>
 
+#if !defined(CLOTHBOUND_HAS_DBUS) && (defined(Q_OS_LINUX) || defined(__linux__)) && !defined(CLOTHBOUND_NO_DBUS)
+#define CLOTHBOUND_HAS_DBUS 1
+#endif
+
 class AiServices;
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 class QDBusPendingCallWatcher;
+#endif
 class Reader;
 namespace Ai { class Reply; }
 
@@ -38,9 +46,19 @@ class Illustrator : public QObject {
     Q_PROPERTY(QVariantList styles READ styles CONSTANT)
 
 public:
+    // Optional injected save-file chooser callback (e.g. macOS NSSavePanel
+    // wired from src/app/main.cpp without introducing an ai -> app include edge).
+    using SaveFileChooser =
+        std::function<void(const QString &title,
+                           const QString &suggestedName,
+                           const QString &initialFolder,
+                           std::function<void(const QString &selectedPath, bool cancelled)> done)>;
+
     Illustrator(AiServices *ai, Reader *reader, const QString &databaseConnection, const QString &folder,
                 QObject *parent = nullptr);
     ~Illustrator() override;
+
+    void setSaveFileChooser(SaveFileChooser chooser);
 
     bool busy() const { return m_busy; }
     QString status() const { return m_status; }
@@ -69,7 +87,7 @@ public:
     Q_INVOKABLE QString saveCopy(int id);
     // Copies to an explicit destination path; returns the saved path or "".
     Q_INVOKABLE QString saveCopyTo(int id, const QString &destinationPath);
-    // Opens the desktop Save File portal (falling back to saveCopy() if unavailable).
+    // Opens the desktop Save File chooser (falling back to saveCopy() if unavailable).
     Q_INVOKABLE void chooseSaveCopy(int id);
 
     // The prompt writer's instructions, public for tests.
@@ -85,8 +103,10 @@ signals:
     void savedCopy(const QString &path);
     void saveFailed(const QString &message);
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 private slots:
     void handleSaveResponse(uint response, const QVariantMap &results);
+#endif
 
 private:
     void fail(const QString &problem, bool isConfig = false);
@@ -96,7 +116,7 @@ private:
     void clearPendingSave();
 
     AiServices *m_ai;
-    Reader *m_reader;
+    QPointer<Reader> m_reader;
     CompanionStore m_store;
     QString m_folder;
     QString m_style = QStringLiteral("auto");
@@ -113,6 +133,9 @@ private:
     int m_generation = 0;
     int m_pendingSaveId = 0;
     int m_saveGeneration = 0;
+    SaveFileChooser m_saveFileChooser;
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     QString m_pendingSavePath;
     QPointer<QDBusPendingCallWatcher> m_saveWatcher;
+#endif
 };

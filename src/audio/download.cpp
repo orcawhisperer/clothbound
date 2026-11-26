@@ -20,17 +20,13 @@ constexpr int parallel = 3;
 }
 
 Download::Download(AiServices *ai, AudioCache *cache, Reader *reader, Narration *narration, QObject *parent)
-    : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_narration(narration),
+    : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_readerRaw(reader), m_narration(narration),
       m_director(new Director(ai, cache, reader, this)) {
-    connect(reader, &Reader::speakable, this, &Download::addBlocks);
-    // The chapters come from the open book's pages, so a download cancels
-    // cleanly when its book closes; what's made is kept for next time.
-    connect(reader, &Reader::bookChanged, this, [this] {
-        if (m_active && m_reader->bookId() != m_bookId) {
-            cancel();
-            setProblem(tr("The download stopped when the book closed. What's made is kept; start it again to finish."));
-        }
-    });
+    if (m_reader) {
+        m_speakableConn = connect(m_reader, &Reader::speakable, this, &Download::addBlocks);
+        m_bookChangedConn = connect(m_reader, &Reader::bookChanged, this, &Download::handleReaderBookChanged);
+        m_destroyedConn = connect(m_reader, &QObject::destroyed, this, &Download::handleReaderDestroyed);
+    }
     connect(cache, &AudioCache::stored, this, [this](const QString &key) {
         if (m_storing.remove(key))
             checkFinished();
@@ -53,6 +49,9 @@ Download::Download(AiServices *ai, AudioCache *cache, Reader *reader, Narration 
 }
 
 Download::~Download() {
+    disconnect(m_speakableConn);
+    disconnect(m_bookChangedConn);
+    disconnect(m_destroyedConn);
     ++m_session;
     m_active = false;
     m_director->cancel();
@@ -63,6 +62,67 @@ Download::~Download() {
     for (const auto &reply : replies)
         if (reply)
             reply->abort();
+}
+
+void Download::resetDirector(Reader *reader) {
+    if (m_director) {
+        m_director->cancel();
+        delete m_director;
+    }
+    m_director = new Director(m_ai, m_cache, reader, this);
+}
+
+void Download::setReader(Reader *reader) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (reader == m_reader.data())
+        return;
+    if (m_active && (!reader || reader->bookId() != m_bookId)) {
+        cancel();
+        setProblem(tr("The download stopped when the book closed. What's made is kept; start it again to finish."));
+    }
+    disconnect(m_speakableConn);
+    disconnect(m_bookChangedConn);
+    disconnect(m_destroyedConn);
+    m_reader = reader;
+    m_readerRaw = reader;
+    resetDirector(reader);
+    if (m_reader) {
+        m_speakableConn = connect(m_reader, &Reader::speakable, this, &Download::addBlocks);
+        m_bookChangedConn = connect(m_reader, &Reader::bookChanged, this, &Download::handleReaderBookChanged);
+        m_destroyedConn = connect(m_reader, &QObject::destroyed, this, &Download::handleReaderDestroyed);
+    }
+}
+
+void Download::startFor(Reader *reader, int first, int last) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!reader)
+        return;
+    setReader(reader);
+    start(first, last);
+}
+
+void Download::handleReaderBookChanged() {
+    // The chapters come from the bound book's pages, so a download cancels
+    // cleanly when its book closes; what's made is kept for next time.
+    if (m_active && (!m_reader || m_reader->bookId() != m_bookId)) {
+        cancel();
+        setProblem(tr("The download stopped when the book closed. What's made is kept; start it again to finish."));
+    }
+}
+
+void Download::handleReaderDestroyed(QObject *destroyedReader) {
+    if (destroyedReader != m_readerRaw)
+        return;
+    disconnect(m_speakableConn);
+    disconnect(m_bookChangedConn);
+    disconnect(m_destroyedConn);
+    m_reader = nullptr;
+    m_readerRaw = nullptr;
+    if (m_active) {
+        cancel();
+        setProblem(tr("The download stopped when the book closed. What's made is kept; start it again to finish."));
+    }
+    resetDirector(nullptr);
 }
 
 void Download::setCast(Cast *cast) {
@@ -82,6 +142,8 @@ int Download::secondsLeft() const {
 
 QList<int> Download::chaptersBetween(int first, int last) const {
     QList<int> chapters;
+    if (!m_reader)
+        return chapters;
     const QVariantList spine = m_reader->manifest().value(QStringLiteral("spine")).toList();
     for (int i = qMax(0, first); i <= last && i < spine.size(); ++i)
         if (spine[i].toMap().value(QStringLiteral("linear")).toBool() && m_reader->charactersIn(i) > 0)
@@ -89,7 +151,9 @@ QList<int> Download::chaptersBetween(int first, int last) const {
     return chapters;
 }
 
-double Download::estimatedMinutes(int chapter) const { return m_reader->charactersIn(chapter) / charsPerMinute; }
+double Download::estimatedMinutes(int chapter) const {
+    return m_reader ? m_reader->charactersIn(chapter) / charsPerMinute : 0.0;
+}
 
 QVariantMap Download::estimate(int first, int last) const {
     Q_ASSERT(QThread::currentThread() == thread());
@@ -122,6 +186,8 @@ void Download::start(int first, int last) {
                    : m_ai->describe(int(Ai::Error::NoKey)));
         return;
     }
+    if (!m_reader || m_reader->bookId() <= 0)
+        return;
     m_chapters = chaptersBetween(first, last);
     if (m_chapters.isEmpty())
         return;
@@ -182,7 +248,8 @@ void Download::addBlocks(int chapter, const QString &json) {
                 const quint64 session = m_session;
                 const int bookId = m_bookId;
                 auto resume = [this, session, bookId, chapter, blocks] {
-                    if (!running() || session != m_session || m_reader->bookId() != bookId || !m_waiting.contains(chapter))
+                    if (!running() || session != m_session || !m_reader || m_reader->bookId() != bookId ||
+                        !m_waiting.contains(chapter))
                         return;
                     direct(chapter, blocks);
                 };
@@ -192,7 +259,8 @@ void Download::addBlocks(int chapter, const QString &json) {
                     m_cast->askPdfBatch(chapter, this,
                                         [this, session, bookId, first, last](const QHash<int, QMap<int, Cast::Line>> &byPage) {
                                             const auto callbacks = m_pendingCastBatches.take(first);
-                                            if (!running() || session != m_session || m_reader->bookId() != bookId)
+                                            if (!running() || session != m_session || !m_reader ||
+                                                m_reader->bookId() != bookId)
                                                 return;
                                             if (m_cast)
                                                 for (int p = first; p <= last; ++p)
@@ -209,7 +277,8 @@ void Download::addBlocks(int chapter, const QString &json) {
             const quint64 session = m_session;
             const int bookId = m_bookId;
             m_cast->ask(chapter, blocks, this, [this, session, bookId, chapter, blocks](const QMap<int, Cast::Line> &lines) {
-                if (!running() || session != m_session || m_reader->bookId() != bookId || !m_waiting.contains(chapter))
+                if (!running() || session != m_session || !m_reader || m_reader->bookId() != bookId ||
+                    !m_waiting.contains(chapter))
                     return;
                 if (m_cast)
                     m_cast->learn(chapter, lines);
@@ -223,7 +292,8 @@ void Download::addBlocks(int chapter, const QString &json) {
 
 void Download::direct(int chapter, const QList<SpeechBlock> &blocks) {
     const Ai::SpeechSynthesizer *speaker = m_ai->speechFor(m_voice);
-    if (m_performance == QStringLiteral("plain") || !speaker || !speaker->supportsStyle() || !m_director->canDirect(blocks)) {
+    if (!m_reader || m_performance == QStringLiteral("plain") || !speaker || !speaker->supportsStyle() ||
+        !m_director->canDirect(blocks)) {
         plan(chapter, blocks, {});
         return;
     }
@@ -242,7 +312,8 @@ void Download::direct(int chapter, const QList<SpeechBlock> &blocks) {
         const quint64 session = m_session;
         const int bookId = m_bookId;
         auto resume = [this, session, bookId, chapter, blocks] {
-            if (running() && session == m_session && m_reader->bookId() == bookId && m_waiting.contains(chapter))
+            if (running() && session == m_session && m_reader && m_reader->bookId() == bookId &&
+                m_waiting.contains(chapter))
                 plan(chapter, blocks, m_pdfMoods.value(chapter));
         };
         const bool alreadyAsked = m_pendingDirectorBatches.contains(first);
@@ -251,7 +322,8 @@ void Download::direct(int chapter, const QList<SpeechBlock> &blocks) {
             m_director->askPdfBatch(chapter, m_performance, this,
                                     [this, session, bookId, first, last](const QHash<int, QMap<int, QString>> &byPage) {
                                         const auto callbacks = m_pendingDirectorBatches.take(first);
-                                        if (!running() || session != m_session || m_reader->bookId() != bookId)
+                                        if (!running() || session != m_session || !m_reader ||
+                                            m_reader->bookId() != bookId)
                                             return;
                                         for (int p = first; p <= last; ++p)
                                             m_pdfMoods.insert(p, byPage.value(p));
@@ -268,7 +340,8 @@ void Download::direct(int chapter, const QList<SpeechBlock> &blocks) {
     const quint64 session = m_session;
     const int bookId = m_bookId;
     m_director->ask(chapter, blocks, m_performance, this, [this, session, bookId, chapter, blocks](const QMap<int, QString> &moods) {
-        if (running() && session == m_session && m_reader->bookId() == bookId && m_waiting.contains(chapter))
+        if (running() && session == m_session && m_reader && m_reader->bookId() == bookId &&
+            m_waiting.contains(chapter))
             plan(chapter, blocks, moods);
     });
 }

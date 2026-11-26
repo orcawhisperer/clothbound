@@ -25,8 +25,22 @@ constexpr double estimatedCastCost = 0.005;
 
 Cast::Cast(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, VoiceCatalog *catalog, VoicePacks *packs,
            QObject *parent)
-    : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_library(library), m_catalog(catalog), m_packs(packs) {
-    connect(reader, &Reader::bookChanged, this, &Cast::load);
+    : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_readerRaw(reader),
+      m_bookId(reader ? reader->bookId() : 0), m_library(library), m_catalog(catalog), m_packs(packs) {
+    if (m_reader) {
+        m_readerBookConn = connect(m_reader, &Reader::bookChanged, this, &Cast::load);
+        m_readerDestroyedConn = connect(m_reader, &QObject::destroyed, this, [this](QObject *obj) {
+            if (obj != m_readerRaw)
+                return;
+            disconnect(m_readerBookConn);
+            disconnect(m_readerDestroyedConn);
+            m_reader = nullptr;
+            m_readerRaw = nullptr;
+            m_bookId = 0;
+            if (!m_destroying)
+                load();
+        });
+    }
     if (catalog)
         connect(catalog, &VoiceCatalog::changed, this, &Cast::changed);
     if (packs)
@@ -35,7 +49,52 @@ Cast::Cast(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, 
 
 Cast::~Cast() {
     m_destroying = true;
+    disconnect(m_readerBookConn);
+    disconnect(m_readerDestroyedConn);
     cancel();
+}
+
+int Cast::activeBookId() const { return m_reader ? m_reader->bookId() : m_bookId; }
+
+void Cast::setReader(Reader *reader) {
+    if (reader == m_reader.data())
+        return;
+    disconnect(m_readerBookConn);
+    disconnect(m_readerDestroyedConn);
+    m_reader = reader;
+    m_readerRaw = reader;
+    if (m_reader) {
+        m_readerBookConn = connect(m_reader, &Reader::bookChanged, this, &Cast::load);
+        m_readerDestroyedConn = connect(m_reader, &QObject::destroyed, this, [this](QObject *obj) {
+            if (obj != m_readerRaw)
+                return;
+            disconnect(m_readerBookConn);
+            disconnect(m_readerDestroyedConn);
+            m_reader = nullptr;
+            m_readerRaw = nullptr;
+            m_bookId = 0;
+            if (!m_destroying)
+                load();
+        });
+        m_bookId = m_reader->bookId();
+    } else {
+        m_bookId = 0;
+    }
+    load();
+}
+
+void Cast::setBookId(int bookId) {
+    bookId = qMax(0, bookId);
+    if (m_reader) {
+        disconnect(m_readerBookConn);
+        disconnect(m_readerDestroyedConn);
+        m_reader = nullptr;
+        m_readerRaw = nullptr;
+    }
+    if (bookId == m_bookId)
+        return;
+    m_bookId = bookId;
+    load();
 }
 
 void Cast::cancel(const QObject *scope) {
@@ -88,9 +147,10 @@ void Cast::load() {
     m_familyVoices.clear();
     m_genders.clear();
     m_counts.clear();
-    const int book = m_reader->bookId();
-    m_enabled = book > 0 && m_library->bookSetting(book, QStringLiteral("fullCast")) == QLatin1String("on");
-    if (book > 0) {
+    const int book = activeBookId();
+    m_bookId = book;
+    m_enabled = book > 0 && m_library && m_library->bookSetting(book, QStringLiteral("fullCast")) == QLatin1String("on");
+    if (book > 0 && m_library) {
         const QJsonObject saved =
             QJsonDocument::fromJson(m_library->bookSetting(book, QStringLiteral("cast")).toUtf8()).object();
         if (saved.value(QStringLiteral("v")).toInt() == 2) {
@@ -132,8 +192,8 @@ void Cast::load() {
 }
 
 void Cast::save() const {
-    const int book = m_reader->bookId();
-    if (book <= 0)
+    const int book = activeBookId();
+    if (book <= 0 || !m_library)
         return;
     QJsonObject families;
     for (auto fit = m_familyVoices.cbegin(); fit != m_familyVoices.cend(); ++fit) {
@@ -159,8 +219,9 @@ void Cast::setEnabled(bool enabled) {
     m_enabled = enabled;
     if (!enabled)
         cancel();
-    if (m_reader->bookId() > 0)
-        m_library->setBookSetting(m_reader->bookId(), QStringLiteral("fullCast"), enabled ? QStringLiteral("on") : QString());
+    const int book = activeBookId();
+    if (book > 0 && m_library)
+        m_library->setBookSetting(book, QStringLiteral("fullCast"), enabled ? QStringLiteral("on") : QString());
     emit changed();
     emit recast();
 }
@@ -170,11 +231,14 @@ bool Cast::available() const { return !family().isEmpty() && pool().size() >= 3;
 QList<Cast::Choice> Cast::pool() const {
     QList<Choice> out;
     if (m_narrator.startsWith(QLatin1String("builtin:kokoro:"))) {
+        if (!m_packs)
+            return out;
         // The installed Kokoro voices of the book's language.
         // The narrator's own accent first (a British narrator, British
         // voices), then others before any voice is heard twice.
         const QString accent = m_packs->voice(m_narrator).value(QStringLiteral("language")).toString();
-        for (const QVariant &value : m_packs->voices(m_reader->language())) {
+        const QString language = m_reader ? m_reader->language() : QString();
+        for (const QVariant &value : m_packs->voices(language)) {
             const QVariantMap voice = value.toMap();
             const QString id = voice.value(QStringLiteral("id")).toString();
             if (!id.startsWith(QLatin1String("builtin:kokoro:")) || !voice.value(QStringLiteral("installed")).toBool())
@@ -410,8 +474,11 @@ Ai::TextRequest Cast::request(int chapter, const QList<SpeechBlock> &blocks) con
         {"required", QJsonArray{"lines"}},
         {"additionalProperties", false}};
     QStringList known = m_counts.keys();
+    const QString title = m_reader ? m_reader->title() : QString();
+    const QString author = m_reader ? m_reader->author() : QString();
+    const QString chapterTitle = m_reader ? m_reader->titleOfChapter(chapter) : QString();
     request.messages = {{true, QStringLiteral("Book: %1, by %2.\nChapter: %3.\nCharacters named so far: %4.\n\n%5")
-                                   .arg(m_reader->title(), m_reader->author(), m_reader->titleOfChapter(chapter),
+                                   .arg(title, author, chapterTitle,
                                         known.isEmpty() ? QStringLiteral("none") : known.join(QStringLiteral(", ")), paragraphs)}};
     return request;
 }
@@ -454,7 +521,7 @@ void Cast::ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context,
     const Ai::TextRequest question = request(chapter, blocks);
     const QString keptAs = key(blocks);
     const int count = int(blocks.size());
-    const int bookId = m_reader->bookId();
+    const int bookId = activeBookId();
     Ai::Reply *reply = model->generate(question);
     m_ai->track(reply);
     auto pending = std::make_shared<PendingRequest>();
@@ -472,7 +539,7 @@ void Cast::ask(int chapter, const QList<SpeechBlock> &blocks, QObject *context,
         auto cb = std::move(pending->done);
         if (!pending->guard || !cb)
             return;
-        if (m_reader->bookId() != bookId || reply->error()) {
+        if (activeBookId() != bookId || reply->error()) {
             cb({});
             return;
         }

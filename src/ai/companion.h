@@ -83,8 +83,12 @@ public:
     using Citation = CompanionStore::Citation;
     using Turn = CompanionStore::Turn;
 
-    Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent = nullptr);
+    Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent = nullptr,
+              PassageIndex *sharedIndex = nullptr);
     ~Companion() override;
+
+    PassageIndex *passageIndex() const { return m_index.data(); }
+    void setPassageIndex(PassageIndex *sharedIndex);
 
     QString feature() const { return m_feature; }
     QString subject() const { return m_subject; }
@@ -245,9 +249,11 @@ private:
     bool wholeBookStudyActive() const { return studyMode() && m_scope != QLatin1String("upto"); }
 
     AiServices *m_ai;
-    Reader *m_reader;
+    QPointer<Reader> m_reader;
     CompanionStore m_store;
-    PassageIndex m_index;
+    QPointer<PassageIndex> m_index;
+    bool m_ownsIndex = false;
+    bool m_indexOpActive = false;
     LocalDictionary m_dictionary;
     QString m_feature;
     QString m_subject;

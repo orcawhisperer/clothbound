@@ -239,8 +239,11 @@ BookSearch::~BookSearch() {
     if (m_cancel)
         *m_cancel = true;
     ++m_meaningRun;
-    if (m_index)
+    ++m_libraryRun;
+    if (m_index && (m_ownsIndex || m_indexOpActive)) {
+        m_indexOpActive = false;
         m_index->cancel();
+    }
 }
 
 QString BookSearch::fold(const QString &text) {
@@ -353,8 +356,10 @@ void BookSearch::find(const QString &query) {
     if (m_cancel)
         *m_cancel = true;
     ++m_meaningRun;
-    if (m_index)
+    if (m_index && (m_ownsIndex || m_indexOpActive)) {
+        m_indexOpActive = false;
         m_index->cancel();
+    }
     m_preparing.clear();
     m_query = wanted;
     m_results.clear();
@@ -473,8 +478,10 @@ void BookSearch::clear() {
         *m_cancel = true;
     m_cancel.reset();
     ++m_meaningRun;
-    if (m_index)
+    if (m_index && (m_ownsIndex || m_indexOpActive)) {
+        m_indexOpActive = false;
         m_index->cancel();
+    }
     const bool had = !m_query.isEmpty() || !m_results.isEmpty() || m_searching || !m_preparing.isEmpty();
     m_query.clear();
     m_results.clear();
@@ -636,10 +643,29 @@ QPair<qint64, qint64> BookSearch::sentenceSpan(const QString &chapterText, qint6
 
 void BookSearch::setMeaning(AiServices *ai, const QString &databaseConnection) {
     Q_ASSERT(QThread::currentThread() == thread());
+    setMeaning(ai, new PassageIndex(ai, databaseConnection, this));
+    m_ownsIndex = true;
+}
+
+void BookSearch::setMeaning(AiServices *ai, PassageIndex *sharedIndex) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (m_ai && m_ai != ai)
+        disconnect(m_ai, nullptr, this, nullptr);
+    if (m_index && m_index != sharedIndex) {
+        if (m_ownsIndex || m_indexOpActive) {
+            m_indexOpActive = false;
+            m_index->cancel();
+        }
+        if (m_ownsIndex)
+            delete m_index.data();
+    }
     m_ai = ai;
-    m_index = new PassageIndex(ai, databaseConnection, this);
-    connect(ai, &AiServices::changed, this, &BookSearch::changed);
-    connect(ai, &AiServices::routingChanged, this, &BookSearch::changed);
+    m_index = sharedIndex;
+    m_ownsIndex = false;
+    if (m_ai) {
+        connect(m_ai, &AiServices::changed, this, &BookSearch::changed, Qt::UniqueConnection);
+        connect(m_ai, &AiServices::routingChanged, this, &BookSearch::changed, Qt::UniqueConnection);
+    }
 }
 
 bool BookSearch::canSearchByMeaning() const { return m_ai && m_ai->embedder(); }
@@ -657,8 +683,13 @@ void BookSearch::searchLibrary(const QString &query) {
         return;
     }
     QPointer<BookSearch> self(this);
+    m_indexOpActive = true;
     m_index->searchLibrary(query, 6, [self, run](const QList<PassageIndex::LibraryHit> &hits) {
-        if (!self || run != self->m_libraryRun)
+        if (!self)
+            return;
+        if (run == self->m_libraryRun)
+            self->m_indexOpActive = false;
+        if (run != self->m_libraryRun)
             return;
         QVariantList list;
         for (const auto &hit : hits)
@@ -699,8 +730,10 @@ void BookSearch::findByMeaning(const QString &query) {
     const QString wanted = query.trimmed();
     if (m_cancel)
         *m_cancel = true;
-    if (m_index)
+    if (m_index && (m_ownsIndex || m_indexOpActive)) {
+        m_indexOpActive = false;
         m_index->cancel();
+    }
     m_query = wanted;
     m_results.clear();
     m_current = -1;
@@ -708,7 +741,7 @@ void BookSearch::findByMeaning(const QString &query) {
     m_preparing.clear();
     const int run = ++m_meaningRun;
     const QString path = readerBookPath();
-    if (wanted.size() < 3 || !canSearchByMeaning() || path.isEmpty()) {
+    if (wanted.size() < 3 || !canSearchByMeaning() || !m_index || path.isEmpty()) {
         m_searching = false;
         emit changed();
         emit currentChanged();
@@ -745,13 +778,20 @@ void BookSearch::findByMeaning(const QString &query) {
         QMetaObject::invokeMethod(
             qApp,
             [self, cancel, passages, texts, run, wanted, bookId] {
-                if (!self || *cancel || run != self->m_meaningRun)
+                if (!self || !self->m_index || *cancel || run != self->m_meaningRun)
                     return;
                 const auto search = [self, cancel, run, wanted, bookId, passages, texts] {
+                    if (!self || !self->m_index || *cancel || run != self->m_meaningRun)
+                        return;
+                    self->m_indexOpActive = true;
                     self->m_index->search(
                         bookId, passages, wanted, 25,
                         [self, cancel, run, texts, wanted](const QList<PassageIndex::Hit> &hits, bool byMeaning) {
-                            if (!self || *cancel || run != self->m_meaningRun)
+                            if (!self)
+                                return;
+                            if (run == self->m_meaningRun)
+                                self->m_indexOpActive = false;
+                            if (*cancel || run != self->m_meaningRun)
                                 return;
                             for (const PassageIndex::Hit &found : hits) {
                                 const QString chapterText = texts.value(found.passage.chapter);
@@ -778,6 +818,7 @@ void BookSearch::findByMeaning(const QString &query) {
                 }
                 self->m_preparing = tr("Reading the book for meaning…");
                 emit self->changed();
+                self->m_indexOpActive = true;
                 self->m_index->build(
                     bookId, passages,
                     [self, cancel, run](double share) {
@@ -787,7 +828,11 @@ void BookSearch::findByMeaning(const QString &query) {
                         emit self->changed();
                     },
                     [self, cancel, run, search](const QString &problem) {
-                        if (!self || *cancel || run != self->m_meaningRun)
+                        if (!self)
+                            return;
+                        if (run == self->m_meaningRun)
+                            self->m_indexOpActive = false;
+                        if (*cancel || run != self->m_meaningRun)
                             return;
                         if (!problem.isEmpty()) {
                             self->m_preparing = problem;

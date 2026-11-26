@@ -5,6 +5,7 @@
 #include <QHash>
 #include <QList>
 #include <QPair>
+#include <QPointer>
 #include <QString>
 #include <QVariantList>
 #include <QVariantMap>
@@ -72,6 +73,9 @@ public:
     // The book whose marks these are (0 for none).
     void setBook(int bookId);
     int bookId() const { return m_bookId; }
+    // Optional owning session tag used to suppress self-echo on cross-session broadcasts.
+    void setSessionOwner(QObject *owner) { m_sessionOwner = owner; }
+    QObject *sessionOwner() const { return m_sessionOwner.data(); }
 
     Q_INVOKABLE int addBookmark(int chapter, qint64 offset, const QString &text, const QString &label,
                                 const QString &prefix = {}, const QString &suffix = {});
@@ -100,9 +104,15 @@ public:
     Q_INVOKABLE QString exportMarkdownToFile(const QString &filePath, const QString &title, const QString &author,
                                              const QString &format = QStringLiteral("obsidian")) const;
 
-    // Resilient W3C Web Annotation offset resolution & healing against chapter text.
+    // Resilient W3C Web Annotation offset resolution & healing against chapter or PDF page text.
+    // Works across EPUB DOM text, Linux PDFium text (U+FFFE\r\n line-wrap hyphens), and macOS
+    // PDFKit PDFPage.string (ligatures, \n breaks, hyphenated wraps).
     static QPair<qint64, qint64> locateQuote(const QString &chapterText, const QString &quote, const QString &prefix,
                                              const QString &suffix, qint64 hintStart = -1);
+    // Re-anchors every highlight in `chapter` (or PDF page) against `pageText` using W3C
+    // quote+prefix+suffix context without mutating stored offsets (ideal for PDFView rendering):
+    // [{id, start, end, color, noted, note, text, found, drifted}].
+    Q_INVOKABLE QVariantList anchorHighlightsIn(int chapter, const QString &pageText) const;
     Q_INVOKABLE QVariantMap resolveOffset(int id, const QString &chapterText) const;
     Q_INVOKABLE bool healMark(int id, const QString &chapterText);
     Q_INVOKABLE int healChapter(int chapter, const QString &chapterText);
@@ -135,11 +145,14 @@ private:
 
     void load();
     int rowOf(int id) const;
+    QObject *sessionSource() const { return m_sessionOwner ? m_sessionOwner.data() : const_cast<Marks *>(this); }
 
-    Library *m_library;
+    QPointer<Library> m_library;
+    QPointer<QObject> m_sessionOwner;
     QUndoStack *m_undo;
     int m_bookId = 0;
     int m_minNextId = 1;
+    bool m_reloadingFromBroadcast = false;
     QList<Mark> m_marks;
     QHash<int, std::shared_ptr<int>> m_idTokens;
     mutable QHash<int, SearchCacheEntry> m_searchCache;

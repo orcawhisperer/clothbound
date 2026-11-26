@@ -7,10 +7,13 @@
 #include "library/library.h"
 #include "reader/readerimageprovider.h"
 
+#if !defined(CLOTHBOUND_NO_MULTIMEDIA)
 #include <QAudioDevice>
 #include <QAudioFormat>
 #include <QAudioSink>
 #include <QBuffer>
+#include <QMediaDevices>
+#endif
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
@@ -20,13 +23,13 @@
 #include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QMediaDevices>
 #include <QPromise>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QThread>
 #include <QUrl>
+#include <QUuid>
 #include <QVector>
 #include <QtConcurrentRun>
 #include <algorithm>
@@ -40,14 +43,16 @@ QString typographySettingsPath() {
     return QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
 }
 
+#if !defined(CLOTHBOUND_NO_MULTIMEDIA)
 bool sfxSuppressedEnvironment() {
     if (qEnvironmentVariableIsSet("CLOTHBOUND_MUTE") || qEnvironmentVariableIsSet("DOGEAR_MUTE"))
         return true;
-    if (!QGuiApplication::instance())
+    if (!qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
         return true;
     const QString platform = QGuiApplication::platformName();
     return platform == QLatin1String("offscreen") || platform == QLatin1String("minimal");
 }
+#endif
 
 // Ensures a shared PdfBook (and its thread-affine QPdfDocument) is always
 // destroyed on the main/UI thread even when a worker outlives Reader::close().
@@ -131,6 +136,7 @@ QVariantMap buildPeekDestinationMap(const PdfBook &pdf, const QRectF &pdfCrop, i
 }
 }
 
+#if !defined(CLOTHBOUND_NO_MULTIMEDIA)
 // Tactile page-turn sound engine backed by Clothbound's single signature Public
 // Domain hardcover page-flip WAV clip (:/audio/sfx/page_turn.wav), with minimal
 // RIFF/WAVE PCM decoding, linear resampling for any audio output device format,
@@ -441,6 +447,9 @@ private:
     QElapsedTimer m_throttle;
     QTimer m_idleTimer;
 };
+#else
+struct Reader::PageTurnSfx {};
+#endif
 
 Reader::Reader(Library *library, BookScheme *scheme, QObject *parent)
     : QObject(parent), m_library(library), m_scheme(scheme) {
@@ -457,12 +466,18 @@ Reader::Reader(Library *library, BookScheme *scheme, QObject *parent)
     connect(&m_saveTimer, &QTimer::timeout, this, &Reader::savePosition);
     m_timeFlush.setInterval(60000);
     connect(&m_timeFlush, &QTimer::timeout, this, &Reader::flushReadingTime);
+    if (m_library)
+        connect(m_library, &Library::bookPositionChanged, this, &Reader::handleExternalPositionChanged);
 }
 
 Reader::~Reader() { close(); }
 
 bool Reader::openBook(int bookId) {
     Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_library) {
+        m_error = tr("That book isn't in the library.");
+        return false;
+    }
     const BookRecord record = m_library->record(bookId);
     if (!record.id) {
         m_error = tr("That book isn't in the library.");
@@ -486,7 +501,7 @@ bool Reader::openBook(int bookId) {
     close();
 
     m_book = book;
-    m_token = m_scheme->add(book);
+    m_token = m_scheme ? m_scheme->add(book) : QUuid::createUuid().toString(QUuid::Id128);
     ReaderImageProvider::add(m_token, book);
     m_bookId = bookId;
     ++m_session;
@@ -615,7 +630,8 @@ void Reader::close() {
     ++m_session;
     m_activeSession->store(m_session, std::memory_order_relaxed);
     m_latestPeekReqId = 0;
-    m_scheme->remove(m_token);
+    if (m_scheme && !m_token.isEmpty())
+        m_scheme->remove(m_token);
     ReaderImageProvider::remove(m_token);
     PdfPages::remove(m_token);
     m_lightboxDir.reset();
@@ -710,7 +726,8 @@ void Reader::measureChapters() {
     connect(watcher, &QFutureWatcher<QList<int>>::finished, this, [this, watcher, bookId] {
         watcher->deleteLater();
         const QList<int> lengths = watcher->result();
-        m_library->setChapterLengths(bookId, lengths);
+        if (m_library)
+            m_library->setChapterLengths(bookId, lengths);
         if (bookId != m_bookId)
             return;
         m_lengths = lengths;
@@ -817,7 +834,7 @@ int Reader::contentsIndex() const {
 }
 
 int Reader::minutesLeftInChapter() const {
-    if (m_atEnd)
+    if (m_atEnd || !m_library)
         return 0;
     const double pace = m_library->charsPerMinute();
     const qint64 length = m_lengths.value(m_chapter, 0);
@@ -830,7 +847,7 @@ int Reader::minutesLeftInChapter() const {
 }
 
 int Reader::minutesLeftInBook() const {
-    if (m_atEnd)
+    if (m_atEnd || !m_library)
         return 0;
     const double pace = m_library->charsPerMinute();
     qint64 total = 0;
@@ -995,27 +1012,86 @@ void Reader::relocated(const QVariantMap &location) {
             m_pendingChars += delta;
     }
     m_lastGlobal = global;
-    m_saveTimer.start();
+    if (!m_applyingExternalPosition)
+        m_saveTimer.start();
     emit locationChanged();
     if (jumped && m_canGoBack && !m_backLabel.isEmpty())
         emit jumpRecorded(m_backLabel);
 }
 
-void Reader::savePosition() {
+void Reader::flushPosition() {
     Q_ASSERT(QThread::currentThread() == thread());
     if (!m_bookId)
+        return;
+    if (m_saveTimer.isActive())
+        m_saveTimer.stop();
+    savePosition();
+}
+
+void Reader::savePosition() {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_bookId || !m_library || m_applyingExternalPosition)
         return;
     // The chapter's name rides along, for the library's Continue card.
     const QJsonObject position{{"chapter", m_chapter}, {"offset", double(m_offset)}, {"snippet", m_snippet},
                                {"title", chapterTitle()}};
     m_library->savePosition(m_bookId, QString::fromUtf8(QJsonDocument(position).toJson(QJsonDocument::Compact)),
-                            m_progress);
+                            m_progress, sessionSource());
     if (m_atEnd && m_library->record(m_bookId).finishedAt == 0)
         m_library->setFinished(m_bookId, true);
 }
 
+void Reader::handleExternalPositionChanged(int bookId, int chapter, double progress, QObject *sourceSession) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (bookId <= 0 || bookId != m_bookId || !m_library)
+        return;
+    if (sourceSession == this || (m_sessionOwner && sourceSession == m_sessionOwner))
+        return;
+    if (m_applyingExternalPosition)
+        return;
+
+    const BookRecord record = m_library->record(bookId);
+    int nextChapter = chapter;
+    qint64 nextOffset = m_offset;
+    QString nextSnippet = m_snippet;
+    if (!record.position.isEmpty()) {
+        const QJsonObject saved = QJsonDocument::fromJson(record.position.toUtf8()).object();
+        if (saved.contains(QStringLiteral("chapter")))
+            nextChapter = saved.value(QStringLiteral("chapter")).toInt(nextChapter);
+        if (saved.contains(QStringLiteral("offset")))
+            nextOffset = qMax<qint64>(0, saved.value(QStringLiteral("offset")).toInteger());
+        if (saved.contains(QStringLiteral("snippet")))
+            nextSnippet = saved.value(QStringLiteral("snippet")).toString();
+    }
+    const int count = chapterCount();
+    if (count > 0)
+        nextChapter = qBound(0, nextChapter, count - 1);
+    else
+        nextChapter = qMax(0, nextChapter);
+    const double nextProgress = std::clamp(progress, 0.0, 1.0);
+    if (nextChapter == m_chapter && nextOffset == m_offset &&
+        qFuzzyCompare(nextProgress + 1.0, m_progress + 1.0)) {
+        return;
+    }
+
+    m_applyingExternalPosition = true;
+    m_saveTimer.stop();
+    m_chapter = nextChapter;
+    m_offset = nextOffset;
+    m_snippet = nextSnippet;
+    m_progress = nextProgress;
+    m_startPosition = QVariantMap{{"chapter", m_chapter}, {"offset", double(m_offset)}, {"snippet", m_snippet}};
+    const bool nearEnd = m_pdf ? (m_chapter >= qMax(0, count - 2)) : (m_chapter >= m_lastLinear);
+    m_atEnd = nextProgress >= 0.999 && nearEnd;
+    updateBookPages();
+    m_lastGlobal = globalOffset(m_chapter, m_offset);
+    emit locationChanged();
+    emit externalPositionSynced(m_chapter, m_offset, m_progress);
+    m_applyingExternalPosition = false;
+}
+
 void Reader::flushReadingTime() {
-    if (!m_bookId || m_pendingSeconds <= 0)
+    if (!m_bookId || !m_library || m_pendingSeconds <= 0)
         return;
     m_library->addReadingTime(m_bookId, m_pendingSeconds, m_pendingChars);
     m_pendingSeconds = 0;
@@ -1035,17 +1111,27 @@ void Reader::openExternal(const QString &url) {
 void Reader::keyPressed(const QString &key, int modifiers) { emit this->key(key, modifiers); }
 
 void Reader::playPageTurn(int direction) {
+#if !defined(CLOTHBOUND_NO_MULTIMEDIA)
     if (sfxSuppressedEnvironment())
         return;
     if (!m_sfx)
         m_sfx = std::make_unique<PageTurnSfx>(this);
     m_sfx->play(direction);
+#else
+    Q_UNUSED(direction);
+#endif
 }
 
 bool Reader::playPageTurnDryRun(int direction, QByteArray *pcmOut) {
+#if !defined(CLOTHBOUND_NO_MULTIMEDIA)
     if (!m_sfx)
         m_sfx = std::make_unique<PageTurnSfx>(this);
     return m_sfx->playDryRun(direction, pcmOut);
+#else
+    Q_UNUSED(direction);
+    Q_UNUSED(pcmOut);
+    return false;
+#endif
 }
 
 void Reader::notifyPageTurn(int direction) { emit pageTurnRequested(direction >= 0 ? 1 : -1); }
@@ -1202,6 +1288,8 @@ QString Reader::passageFrom(int chapter, int maxChars) const {
 QString Reader::bookPath() const { return m_book ? m_book->filePath() : m_pdf ? m_pdf->path() : QString(); }
 
 void Reader::copyText(const QString &text) const {
+    if (!qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
+        return;
     if (QClipboard *clipboard = QGuiApplication::clipboard())
         clipboard->setText(text);
 }
@@ -1210,6 +1298,8 @@ void Reader::copyText(const QString &text) const {
 
 bool Reader::openPdf(int bookId) {
     Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_library)
+        return false;
     const BookRecord record = m_library->record(bookId);
     auto book = std::make_shared<PdfBook>(record.path);
     if (!book->open()) {
@@ -1227,7 +1317,7 @@ bool Reader::openPdf(int bookId) {
     ++m_session;
     m_activeSession->store(m_session, std::memory_order_relaxed);
     const qint64 session = m_session;
-    m_token = QStringLiteral("p%1-%2").arg(bookId).arg(QDateTime::currentMSecsSinceEpoch());
+    m_token = QStringLiteral("p%1-%2").arg(bookId).arg(QUuid::createUuid().toString(QUuid::Id128));
     PdfPages::add(m_token, book);
     m_format = record.format;
     m_title = record.title;
@@ -1306,20 +1396,23 @@ bool Reader::openPdf(int bookId) {
         connect(watcher, &QFutureWatcher<PdfInitChunk>::resultReadyAt, this, [this, watcher, bookId, mtime, session](int index) {
             const PdfInitChunk chunk = watcher->resultAt(index);
             if (chunk.kind == PdfInitChunk::Kind::Crop) {
-                m_library->setBookSetting(
-                    bookId, QStringLiteral("pdf_crop"),
-                    QStringLiteral("%1:%2,%3,%4,%5")
-                        .arg(mtime)
-                        .arg(chunk.crop.x(), 0, 'f', 4)
-                        .arg(chunk.crop.y(), 0, 'f', 4)
-                        .arg(chunk.crop.width(), 0, 'f', 4)
-                        .arg(chunk.crop.height(), 0, 'f', 4));
+                if (m_library) {
+                    m_library->setBookSetting(
+                        bookId, QStringLiteral("pdf_crop"),
+                        QStringLiteral("%1:%2,%3,%4,%5")
+                            .arg(mtime)
+                            .arg(chunk.crop.x(), 0, 'f', 4)
+                            .arg(chunk.crop.y(), 0, 'f', 4)
+                            .arg(chunk.crop.width(), 0, 'f', 4)
+                            .arg(chunk.crop.height(), 0, 'f', 4));
+                }
                 if (bookId != m_bookId || session != m_session)
                     return;
                 m_pdfCrop = chunk.crop;
                 emit pdfCropChanged();
             } else {
-                m_library->setChapterLengths(bookId, chunk.lengths);
+                if (m_library)
+                    m_library->setChapterLengths(bookId, chunk.lengths);
                 if (bookId != m_bookId || session != m_session)
                     return;
                 m_lengths = chunk.lengths;
