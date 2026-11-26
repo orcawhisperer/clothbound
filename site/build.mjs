@@ -96,7 +96,7 @@ fs.writeFileSync(
   path.join(distDir, "llms.txt"),
   `# Clothbound
 
-> A calm, local-first native Qt 6 EPUB and PDF reader for Linux, Wayland, Flatpak, and Omarchy (v0.5.2, MIT licensed).
+> A calm, local-first native Qt 6 EPUB and PDF reader for Linux, Wayland, Flatpak, and Omarchy (v0.5.2, GPL-3.0-or-later licensed).
 
 - Website: https://clothbound.app
 - Interactive 18-board UI Prototype: https://clothbound.app/prototype

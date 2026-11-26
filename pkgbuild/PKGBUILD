@@ -4,7 +4,7 @@ pkgrel=1
 pkgdesc='A calm, local-first EPUB and PDF reader for Linux with read-aloud, Study Companion, PDF Snip & Explain, and local MCP'
 url='https://clothbound.app'
 arch=('x86_64' 'aarch64')
-license=('MIT' 'OFL-1.1')
+license=('GPL-3.0-or-later' 'OFL-1.1')
 depends=('qt6-base' 'qt6-declarative' 'qt6-wayland' 'qt6-webengine' 'qt6-webchannel' 'qt6-svg'
          'qt6-multimedia' 'libsecret' 'xdg-desktop-portal' 'zlib' 'tar' 'bzip2')
 optdepends=('ffmpeg: keep listened narration small (Opus), and save downloads as M4B audiobooks'

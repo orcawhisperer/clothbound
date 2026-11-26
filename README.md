@@ -179,6 +179,15 @@ clothbound skill [install]                   # install the Clothbound skill for 
 
 ## Changelog & License
 
-See [CHANGELOG.md](CHANGELOG.md) for release notes and [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+See [CHANGELOG.md](CHANGELOG.md) for release notes and [CONTRIBUTING.md](CONTRIBUTING.md) for contributor guidelines, the lightweight CLA, and the Trademark & Brand Notice.
 
-Clothbound is MIT licensed ([LICENSE](LICENSE)). It uses Qt 6 (LGPL) and Qt WebEngine, and bundles **Literata** and **Inter** under the SIL Open Font License 1.1. Built-in offline voices use [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0) with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0), [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (CC BY 4.0), and [Piper](https://github.com/rhasspy/piper) voices (per-voice license shown in Settings › Voices), downloaded only when requested; sherpa-onnx's `espeak-ng` component is GPL-3.0.
+Clothbound is licensed under the **GNU General Public License v3.0 or later (`GPL-3.0-or-later`)** ([LICENSE](LICENSE)).
+
+### License & Sustainability
+
+Following `v0.5.2`, Clothbound moved from MIT to **GPL-3.0-or-later**. This keeps Clothbound's shared core and Linux app free and open source forever while preventing closed-source clones and supporting sustainable, independent development of a native macOS app.
+
+- **Prior releases (`v0.5.0`–`v0.5.2`)** remain licensed under the MIT License historically.
+- **Bundled fonts:** **Literata** ([src/fonts/OFL.txt](src/fonts/OFL.txt)) and **Inter** ([src/fonts/Inter-OFL.txt](src/fonts/Inter-OFL.txt)) remain under the **SIL Open Font License 1.1 (`OFL-1.1`)**.
+- **Original MIT notices preserved:** Small Linux desktop integration pieces originally adapted from Omacut and Hype (in `src/app/portalfilepicker.cpp`, `src/app/portalfilepicker.h`, `src/app/theme.cpp`, `src/app/translator.cpp`, `src/app/cli.cpp`, and app bootstrap patterns in `src/app/main.cpp`) retain their original MIT License notices (Copyright (c) 2026 David Heinemeier Hansson). American English hyphenation patterns (`src/reader/hyphenation/hyph-en-us.*.txt`, Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken) retain their original permissive notice.
+- **Runtime & optional voice components:** Clothbound uses Qt 6 (LGPL) and Qt WebEngine. Built-in offline voices use [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache-2.0) with [Kokoro](https://huggingface.co/hexgrad/Kokoro-82M) (Apache-2.0), [Pocket TTS](https://github.com/kyutai-labs/pocket-tts) (CC BY 4.0), and [Piper](https://github.com/rhasspy/piper) voices (per-voice license shown in Settings › Voices), downloaded only when requested; sherpa-onnx's `espeak-ng` component is GPL-3.0.

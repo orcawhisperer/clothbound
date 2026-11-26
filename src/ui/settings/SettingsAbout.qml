@@ -121,7 +121,7 @@ ColumnLayout {
                 }
                 Label {
                     Layout.fillWidth: true
-                    text: qsTr("An ebook reader for Omarchy. MIT licensed.")
+                    text: qsTr("An ebook reader for Omarchy. GPL-3.0-or-later licensed.")
                     color: theme.ink2
                     font.pixelSize: 13
                     wrapMode: Text.Wrap
