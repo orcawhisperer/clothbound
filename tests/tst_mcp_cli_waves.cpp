@@ -2313,7 +2313,8 @@ Item {
     QFile readerFile(srcRoot + QStringLiteral("/ui/reader/EpubReader.qml"));
     QVERIFY(readerFile.open(QIODevice::ReadOnly));
     const QString readerQml = QString::fromUtf8(readerFile.readAll());
-    QVERIFY(readerQml.contains(QStringLiteral("animateSize: !view.companionResizing")));
+    QVERIFY(readerQml.contains(QStringLiteral("animateSize: !view.panelResizing")));
+    QVERIFY(readerQml.contains(QStringLiteral("panelResizing: companionResizing")));
     QVERIFY(readerQml.contains(QStringLiteral("showBookInfo: false")));
 }
 

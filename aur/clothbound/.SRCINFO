@@ -1,6 +1,6 @@
 pkgbase = clothbound
 	pkgdesc = A calm, local-first EPUB and PDF reader with read-aloud, Study Companion, PDF Snip & Explain, and local MCP
-	pkgver = 0.5.1
+	pkgver = 0.5.2
 	pkgrel = 1
 	url = https://clothbound.app
 	arch = x86_64
@@ -29,7 +29,7 @@ pkgbase = clothbound
 	optdepends = llama.cpp: run text, embedding and voice models on this computer
 	options = !debug
 	options = !lto
-	source = clothbound-0.5.1.tar.gz::https://github.com/orcawhisperer/clothbound/archive/refs/tags/v0.5.1.tar.gz
-	sha256sums = d78c501e346eb128507ccc9b03f7633c679a0c0a2c1d02075f1b0cefaf802642
+	source = clothbound-0.5.2.tar.gz::https://github.com/orcawhisperer/clothbound/archive/refs/tags/v0.5.2.tar.gz
+	sha256sums = SKIP
 
 pkgname = clothbound

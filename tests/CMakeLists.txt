@@ -158,6 +158,26 @@ if(CLOTHBOUND_BUILD_TESTS)
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic;CLOTHBOUND_MCP_BIN=$<TARGET_FILE:clothbound-mcp>"
         TIMEOUT 180
     )
+
+    add_executable(tst_scanner_flatpak
+        tst_scanner_flatpak.cpp
+        testbooks.h
+    )
+    set_target_properties(tst_scanner_flatpak PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    target_include_directories(tst_scanner_flatpak PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(tst_scanner_flatpak PRIVATE QT_FORCE_ASSERTS)
+    target_link_libraries(tst_scanner_flatpak
+        PRIVATE
+            clothbound_headless
+            Qt6::Test
+    )
+    add_test(NAME tst_scanner_flatpak COMMAND tst_scanner_flatpak)
+    set_tests_properties(tst_scanner_flatpak PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic"
+        TIMEOUT 180
+    )
 endif()
 
 if(CLOTHBOUND_BUILD_BENCH)

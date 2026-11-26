@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.24)
 # honoring caller-supplied -DCMAKE_CXX_FLAGS_RELEASE=... or CXXFLAGS.
 set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "Flags used by the CXX compiler during RELEASE builds.")
 
-project(clothbound VERSION 0.5.1 LANGUAGES CXX)
+project(clothbound VERSION 0.5.2 LANGUAGES CXX)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)

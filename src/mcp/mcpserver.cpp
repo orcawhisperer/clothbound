@@ -15,7 +15,7 @@
 #include <memory>
 
 #ifndef CLOTHBOUND_VERSION
-#define CLOTHBOUND_VERSION "0.5.1"
+#define CLOTHBOUND_VERSION "0.5.2"
 #endif
 
 using namespace McpProtocol;

@@ -118,7 +118,7 @@ else
     cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target \
         clothbound_tests tst_concurrency tst_webengine_e2e \
         tst_w8_storage_palette tst_w8_passage_quant tst_w8_mcp_cli \
-        clothbound-mcp
+        tst_scanner_flatpak clothbound-mcp
 fi
 
 TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/clothbound-test.XXXXXX")"
@@ -173,4 +173,5 @@ else
     run_in_session ./tst_w8_storage_palette
     run_in_session ./tst_w8_passage_quant
     run_in_session ./tst_w8_mcp_cli
+    run_in_session ./tst_scanner_flatpak
 fi

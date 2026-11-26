@@ -2,6 +2,18 @@
 
 All notable changes to Clothbound are documented in this file.
 
+## [0.5.2] — 2026-11-26
+
+Linux & Flatpak reliability and reading-layout polish release introducing drag-resizable library and reader side panels, a pruning cycle-safe library scanner built for Flatpak document-portal mounts, and a Flatpak folder-picker fix.
+
+### Added
+- **Resizable Library Sidebar & Reader Side Panels**: Added tactile 8 px drag-resize sashes with subtle accent hover/drag hairlines, responsive viewport clamping, double-click reset to defaults, and `QSettings` width persistence for `LibrarySidebar` (`[184..380]` px) and reader side panels (`Contents`, `Highlights & notes`, `Appearance`, `[296..680]` px), unified with `CompanionPanel` so the floating `ListenBar` and jump-back pill track live drags 1:1.
+
+### Fixed
+- **Flatpak-Safe Pruning Library Scanner**: Replaced unpruned `QDirIterator` traversal with an explicit cycle-safe directory walk that prunes hidden folders, `node_modules`/`__pycache__`/`venv`, virtual filesystems (`/proc`, `/sys`, `/dev`), nested portal mounts, and symlink loops with a 32-level depth cap, skips non-book files before `canonicalFilePath()` over FUSE, and prioritizes explicitly picked loose files ahead of watched folders.
+- **Flatpak File & Folder Picker Initial Directory**: Omitted `current_folder` in `PortalFilePicker` inside Flatpak sandboxes when `~/Documents` is unmounted or resolves to `$HOME`, allowing `xdg-desktop-portal` to open at the user's real desktop Documents or last-used folder instead of `$HOME`.
+- **Flatpak Installer Runtime & Decorations**: Ensured the one-line installer installs `org.kde.Platform//6.10` and GNOME Adwaita decorations before installing the Flatpak bundle, and defaulted Linux visitors on `clothbound.app` to the universal Linux (Auto) install tab.
+
 ## [0.5.1] — 2026-11-25
 
 Universal Linux Flatpak release (`app.clothbound.Reader`) bringing Clothbound to Ubuntu, Fedora, Debian, Linux Mint, Pop!_OS, openSUSE, and SteamOS alongside Arch Linux and Omarchy, with live XDG Desktop Portal light/dark theming, enriched bug-report diagnostics, Qt 6.10 compatibility, and zero `qmllint` warnings.
