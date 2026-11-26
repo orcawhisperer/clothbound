@@ -86,7 +86,8 @@ QString BookResourceStore::registerBook(const QString &path, std::shared_ptr<Epu
 QString BookResourceStore::registerBook(std::shared_ptr<EpubBook> book) {
     if (!book)
         return {};
-    return registerBook(book->filePath(), std::move(book));
+    const QString path = book->filePath();
+    return registerBook(path, std::move(book));
 }
 
 void BookResourceStore::unregisterBook(const QString &token) {

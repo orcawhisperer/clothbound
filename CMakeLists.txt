@@ -282,11 +282,11 @@ if(APPLE AND CLOTHBOUND_BUILD_MAC_FRAMEWORK)
 
     add_custom_command(TARGET ClothboundCore POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory
-            "$<TARGET_BUNDLE_CONTENT_DIR:ClothboundCore>/Modules"
+            "$<TARGET_BUNDLE_DIR:ClothboundCore>/Versions/A/Modules"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${_clothbound_fw_modulemap}"
-            "$<TARGET_BUNDLE_CONTENT_DIR:ClothboundCore>/Modules/module.modulemap"
-        COMMAND "${CMAKE_COMMAND}" -E rm -f
+            "$<TARGET_BUNDLE_DIR:ClothboundCore>/Versions/A/Modules/module.modulemap"
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf
             "$<TARGET_BUNDLE_DIR:ClothboundCore>/Modules"
         COMMAND "${CMAKE_COMMAND}" -E create_symlink
             "Versions/Current/Modules"

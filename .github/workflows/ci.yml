@@ -378,12 +378,13 @@ jobs:
         run: |
           STAGE="dist/ClothboundCore-macos-arm64"
           rm -rf "$STAGE" ClothboundCore-macos-arm64.tar.gz
-          mkdir -p "$STAGE/Frameworks" "$STAGE/PlugIns" "$STAGE/bin" "$STAGE/reader" "$STAGE/i18n"
+          mkdir -p "$STAGE/Frameworks" "$STAGE/PlugIns" "$STAGE/bin" "$STAGE/reader" "$STAGE/fonts" "$STAGE/i18n"
 
           cp -a build-macos-core/ClothboundCore.framework "$STAGE/Frameworks/"
           cp -p build-macos-core/clothbound-mcp "$STAGE/bin/"
           cp -p build-macos-core/clothbound-tts "$STAGE/bin/"
           cp -R src/reader/. "$STAGE/reader/"
+          cp -p src/fonts/*.ttf "$STAGE/fonts/"
           cp -p src/i18n/*.json "$STAGE/i18n/"
 
           for qt_fw in QtCore QtGui QtPdf QtNetwork QtSql QtConcurrent; do
@@ -397,13 +398,21 @@ jobs:
             fi
           done
 
-          for plugin_dir in sqldrivers tls imageformats; do
-            if [ -d "$QT_DIR/plugins/${plugin_dir}" ]; then
-              mkdir -p "$STAGE/PlugIns/${plugin_dir}"
-              find "$QT_DIR/plugins/${plugin_dir}" -maxdepth 1 -name '*.dylib' ! -name '*_debug.dylib' \
-                -exec cp -p {} "$STAGE/PlugIns/${plugin_dir}/" \;
-            fi
-          done
+          mkdir -p "$STAGE/PlugIns/sqldrivers" "$STAGE/PlugIns/tls" "$STAGE/PlugIns/imageformats"
+          if [ -f "$QT_DIR/plugins/sqldrivers/libqsqlite.dylib" ]; then
+            cp -p "$QT_DIR/plugins/sqldrivers/libqsqlite.dylib" "$STAGE/PlugIns/sqldrivers/"
+          fi
+          if [ -d "$QT_DIR/plugins/tls" ]; then
+            find "$QT_DIR/plugins/tls" -maxdepth 1 -name '*.dylib' ! -name '*_debug.dylib' \
+              -exec cp -p {} "$STAGE/PlugIns/tls/" \;
+          fi
+          if [ -d "$QT_DIR/plugins/imageformats" ]; then
+            for img in libqjpeg.dylib libqgif.dylib libqico.dylib libqwebp.dylib; do
+              if [ -f "$QT_DIR/plugins/imageformats/$img" ]; then
+                cp -p "$QT_DIR/plugins/imageformats/$img" "$STAGE/PlugIns/imageformats/"
+              fi
+            done
+          fi
 
           test ! -e "$STAGE/PlugIns/platforms"
           tar -czf ClothboundCore-macos-arm64.tar.gz -C dist ClothboundCore-macos-arm64
