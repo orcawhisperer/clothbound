@@ -2,11 +2,11 @@
 
 #include <QCryptographicHash>
 #include <QDir>
-#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QImageWriter>
 #include <QSaveFile>
+#include <QSet>
 #include <QThread>
 #include <QtConcurrentRun>
 
@@ -17,19 +17,56 @@ struct Listing {
     QStringList folders;
 };
 
+constexpr int maxScanDepth = 32;
+
 QString canonicalPath(const QFileInfo &info) {
     const QString resolved = info.canonicalFilePath();
     return resolved.isEmpty() ? info.absoluteFilePath() : resolved;
 }
 
-// Book files under the folders, skipping hidden files and directories (such as
-// caches, trash, and macOS AppleDouble "._*" files) and canonicalizing paths.
+bool isSkippedDirectoryName(const QString &name) {
+    return name.startsWith(QLatin1Char('.')) ||
+           name == QLatin1StringView("node_modules") ||
+           name == QLatin1StringView("__pycache__") ||
+           name == QLatin1StringView("venv");
+}
+
+bool isVirtualFilesystemPath(const QString &path) {
+    return path == QLatin1StringView("/proc") || path.startsWith(QLatin1StringView("/proc/")) ||
+           path == QLatin1StringView("/sys") || path.startsWith(QLatin1StringView("/sys/")) ||
+           path == QLatin1StringView("/dev") || path.startsWith(QLatin1StringView("/dev/"));
+}
+
+bool isPortalDocPath(const QString &path) {
+    // Flatpak's xdg-document-portal FUSE mount lives at /run/user/<uid>/doc[/...].
+    static constexpr QLatin1StringView prefix("/run/user/");
+    if (!path.startsWith(prefix))
+        return false;
+    const qsizetype uidStart = prefix.size();
+    const qsizetype slash = path.indexOf(QLatin1Char('/'), uidStart);
+    if (slash <= uidStart)
+        return false;
+    for (qsizetype i = uidStart; i < slash; ++i) {
+        if (!path.at(i).isDigit())
+            return false;
+    }
+    const QStringView tail = QStringView(path).mid(slash + 1);
+    return tail == QLatin1StringView("doc") || tail.startsWith(QLatin1StringView("doc/"));
+}
+
+// Book files under the folders, pruning hidden directories, dependency trees,
+// virtual/portal traps, and symlink cycles before descending, and placing
+// explicitly picked loose files first in the scan queue.
 Listing list(const QStringList &folders, const QStringList &files, const QHash<QString, QPair<qint64, qint64>> &known,
              const std::shared_ptr<std::atomic<bool>> &cancelled) {
     Listing listing;
     QSet<QString> seen;
     auto consider = [&](const QFileInfo &info) {
         if (info.fileName().startsWith(QLatin1Char('.')))
+            return;
+        // Skip non-book regular files before canonicalizing to avoid unnecessary
+        // realpath() syscalls over FUSE mounts such as xdg-document-portal.
+        if (!info.isSymLink() && !BookFiles::isBook(info.fileName()))
             return;
         const QString path = canonicalPath(info);
         if (seen.contains(path) || !BookFiles::isBook(path))
@@ -41,30 +78,77 @@ Listing list(const QStringList &folders, const QStringList &files, const QHash<Q
             stored->second != info.lastModified().toSecsSinceEpoch())
             listing.toRead.append(path);
     };
+
+    // Process explicit loose files first so single added books appear at the
+    // front of listing.toRead instead of waiting behind watched folder crawls.
+    for (const QString &file : files) {
+        if (*cancelled)
+            break;
+        const QFileInfo info(file);
+        if (info.isFile())
+            consider(info);
+    }
+
+    struct WalkFrame {
+        QString dirPath;
+        int depth = 0;
+    };
+
     for (const QString &folder : folders) {
         if (*cancelled)
             break;
         // Skip unmounted or missing folders so unplugged drives don't mark an
         // entire library as missing on startup.
-        if (!QFileInfo(folder).isDir())
+        const QFileInfo rootInfo(folder);
+        if (!rootInfo.isDir())
             continue;
         listing.folders.append(folder);
-        // Symlink loops are detected and skipped by the iterator itself.
-        QDirIterator it(folder, QDir::Files | QDir::Readable, QDirIterator::Subdirectories | QDirIterator::FollowSymlinks);
-        const QDir root(folder);
-        while (it.hasNext() && !*cancelled) {
-            const QFileInfo info = it.nextFileInfo();
-            if (info.fileName().startsWith(QLatin1Char('.')))
-                continue;
-            const QString relative = root.relativeFilePath(info.absolutePath());
-            if (relative != "." && (relative.startsWith('.') || relative.contains(QStringLiteral("/."))))
-                continue;
-            consider(info);
+
+        const QString rootCanonical = QDir::cleanPath(canonicalPath(rootInfo));
+        if (isVirtualFilesystemPath(rootCanonical))
+            continue;
+        const bool rootInPortalDoc = isPortalDocPath(rootCanonical);
+
+        QSet<QString> visitedDirs;
+        visitedDirs.insert(rootCanonical);
+
+        QList<WalkFrame> stack;
+        stack.append({rootCanonical, 0});
+
+        while (!stack.isEmpty() && !*cancelled) {
+            const WalkFrame frame = stack.takeLast();
+            const QDir dir(frame.dirPath);
+            // Omitting QDir::Hidden avoids stating dot-entries on Unix; we also
+            // check leading '.' explicitly before descending or considering files.
+            const QFileInfoList entries =
+                dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot | QDir::Readable);
+            for (const QFileInfo &entry : entries) {
+                if (*cancelled)
+                    break;
+                if (entry.isDir()) {
+                    if (frame.depth >= maxScanDepth)
+                        continue;
+                    const QString name = entry.fileName();
+                    if (isSkippedDirectoryName(name))
+                        continue;
+                    const QString entryPath = entry.absoluteFilePath();
+                    if (isVirtualFilesystemPath(entryPath))
+                        continue;
+                    const QString subCanonical = entry.canonicalFilePath();
+                    if (subCanonical.isEmpty() || isVirtualFilesystemPath(subCanonical))
+                        continue;
+                    if (!rootInPortalDoc && isPortalDocPath(subCanonical))
+                        continue;
+                    if (visitedDirs.contains(subCanonical))
+                        continue;
+                    visitedDirs.insert(subCanonical);
+                    stack.append({subCanonical, frame.depth + 1});
+                } else if (entry.isFile()) {
+                    consider(entry);
+                }
+            }
         }
     }
-    for (const QString &file : files)
-        if (!*cancelled && QFileInfo::exists(file))
-            consider(QFileInfo(file));
     return listing;
 }
 

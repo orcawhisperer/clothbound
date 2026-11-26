@@ -102,7 +102,19 @@ QByteArray portalPathBytes(const QString &path) {
 
 QString openFolder() {
     const QString documents = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
-    return QDir(documents).exists() ? documents : QDir::homePath();
+    const bool inFlatpak = !qEnvironmentVariableIsEmpty("FLATPAK_ID");
+    if (!documents.isEmpty() && QDir(documents).exists()) {
+        // Inside a Flatpak sandbox, if xdg-user-dirs points Documents at $HOME itself,
+        // avoid forcing the portal chooser onto $HOME.
+        if (!inFlatpak || QDir::cleanPath(documents) != QDir::cleanPath(QDir::homePath()))
+            return documents;
+    }
+    // Inside a Flatpak sandbox, ~/Documents is typically not mounted directly.
+    // Returning an empty path omits current_folder so xdg-desktop-portal opens
+    // at the user's real desktop Documents or last-used folder instead of $HOME.
+    if (inFlatpak)
+        return {};
+    return QDir::homePath();
 }
 }  // namespace
 
@@ -121,7 +133,8 @@ void PortalFilePicker::chooseFolders() {
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("multiple"), true);
     options.insert(QStringLiteral("directory"), true);
-    options.insert(QStringLiteral("current_folder"), portalPathBytes(openFolder()));
+    if (const QString folder = openFolder(); !folder.isEmpty())
+        options.insert(QStringLiteral("current_folder"), portalPathBytes(folder));
     requestFile(QStringLiteral("OpenFile"), tr("Add Folders of Books"), options, Action::Open);
 }
 
@@ -130,7 +143,8 @@ void PortalFilePicker::chooseBooks() {
     options.insert(QStringLiteral("accept_label"), tr("Add"));
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("multiple"), true);
-    options.insert(QStringLiteral("current_folder"), portalPathBytes(openFolder()));
+    if (const QString folder = openFolder(); !folder.isEmpty())
+        options.insert(QStringLiteral("current_folder"), portalPathBytes(folder));
     options.insert(QStringLiteral("filters"), QVariant::fromValue(bookFilters()));
     options.insert(QStringLiteral("current_filter"), QVariant::fromValue(bookFilter()));
     requestFile(QStringLiteral("OpenFile"), tr("Add Books"), options, Action::Open);
