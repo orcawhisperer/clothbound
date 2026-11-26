@@ -2,65 +2,6 @@
 # Kept in tests/ so Qt6::Test sets QT_TESTCASE_SOURCEDIR to tests/ cleanly.
 
 if(CLOTHBOUND_BUILD_TESTS)
-    add_executable(clothbound_tests
-        clothbound_tests.h
-        tst_test_main.cpp
-        tst_core_formats.cpp
-        tst_library_marks.cpp
-        tst_reader_ui.cpp
-        tst_audio_narration.cpp
-        tst_ai_companion.cpp
-        tst_mcp_cli_waves.cpp
-        tst_online_ingest.cpp
-        tst_opds.cpp
-        fakeserver.h
-        testbooks.h
-        "${CMAKE_SOURCE_DIR}/src/prompts.qrc"
-    )
-
-    qt_add_resources(clothbound_tests "clothbound_tests_i18n_fallback"
-        PREFIX "/i18n"
-        BASE "${CMAKE_SOURCE_DIR}/src/i18n"
-        FILES "${CMAKE_SOURCE_DIR}/src/i18n/en.json"
-    )
-
-    set_target_properties(clothbound_tests PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
-    target_include_directories(clothbound_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_compile_definitions(clothbound_tests PRIVATE
-        CLOTHBOUND_UNIFIED_TESTS
-        QT_FORCE_ASSERTS
-    )
-    target_link_libraries(clothbound_tests
-        PRIVATE
-            clothbound_app
-            Qt6::Test
-    )
-
-    add_test(NAME clothbound_tests COMMAND clothbound_tests)
-    set_tests_properties(clothbound_tests PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic"
-        TIMEOUT 180
-    )
-
-    add_executable(tst_concurrency
-        tst_concurrency.cpp
-        fakeserver.h
-        testbooks.h
-        tsan_shims.h
-    )
-    set_target_properties(tst_concurrency PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
-    target_include_directories(tst_concurrency PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_compile_definitions(tst_concurrency PRIVATE QT_FORCE_ASSERTS)
-    target_link_libraries(tst_concurrency
-        PRIVATE
-            clothbound_app
-            Qt6::Test
-    )
-    add_test(NAME tst_concurrency COMMAND tst_concurrency)
     set(_tsan_test_env
         "QT_QPA_PLATFORM=offscreen"
         "QT_QPA_PLATFORMTHEME=generic"
@@ -70,51 +11,183 @@ if(CLOTHBOUND_BUILD_TESTS)
             "TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan.supp:ignore_noninstrumented_modules=1:report_thread_leaks=0:halt_on_error=1"
         )
     endif()
-    set_tests_properties(tst_concurrency PROPERTIES
-        ENVIRONMENT "${_tsan_test_env}"
+
+    if(CLOTHBOUND_BUILD_QT_GUI)
+        add_executable(clothbound_tests
+            clothbound_tests.h
+            tst_test_main.cpp
+            tst_core_formats.cpp
+            tst_library_marks.cpp
+            tst_reader_ui.cpp
+            tst_audio_narration.cpp
+            tst_ai_companion.cpp
+            tst_mcp_cli_waves.cpp
+            tst_online_ingest.cpp
+            tst_opds.cpp
+            fakeserver.h
+            testbooks.h
+            "${CMAKE_SOURCE_DIR}/src/prompts.qrc"
+        )
+
+        qt_add_resources(clothbound_tests "clothbound_tests_i18n_fallback"
+            PREFIX "/i18n"
+            BASE "${CMAKE_SOURCE_DIR}/src/i18n"
+            FILES "${CMAKE_SOURCE_DIR}/src/i18n/en.json"
+        )
+
+        set_target_properties(clothbound_tests PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        )
+        target_include_directories(clothbound_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(clothbound_tests PRIVATE
+            CLOTHBOUND_UNIFIED_TESTS
+            QT_FORCE_ASSERTS
+        )
+        target_link_libraries(clothbound_tests
+            PRIVATE
+                clothbound_app
+                Qt6::Test
+        )
+
+        add_test(NAME clothbound_tests COMMAND clothbound_tests)
+        set_tests_properties(clothbound_tests PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic"
+            TIMEOUT 180
+        )
+
+        add_executable(tst_concurrency
+            tst_concurrency.cpp
+            fakeserver.h
+            testbooks.h
+            tsan_shims.h
+        )
+        set_target_properties(tst_concurrency PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        )
+        target_include_directories(tst_concurrency PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(tst_concurrency PRIVATE QT_FORCE_ASSERTS)
+        target_link_libraries(tst_concurrency
+            PRIVATE
+                clothbound_app
+                Qt6::Test
+        )
+        add_test(NAME tst_concurrency COMMAND tst_concurrency)
+        set_tests_properties(tst_concurrency PROPERTIES
+            ENVIRONMENT "${_tsan_test_env}"
+            TIMEOUT 180
+        )
+
+        add_executable(tst_webengine_e2e
+            tst_webengine_e2e.cpp
+            fakeserver.h
+            testbooks.h
+            "${CMAKE_SOURCE_DIR}/src/resources.qrc"
+        )
+        set_target_properties(tst_webengine_e2e PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        )
+        target_include_directories(tst_webengine_e2e PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(tst_webengine_e2e PRIVATE QT_FORCE_ASSERTS)
+        target_link_libraries(tst_webengine_e2e
+            PRIVATE
+                clothbound_app
+                Qt6::Test
+        )
+        add_test(NAME tst_webengine_e2e COMMAND tst_webengine_e2e)
+        set_tests_properties(tst_webengine_e2e PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic;QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --disable-gpu --disable-dev-shm-usage"
+            TIMEOUT 180
+        )
+
+        add_executable(tst_w8_storage_palette
+            tst_w8_storage_palette.cpp
+            testbooks.h
+            tsan_shims.h
+        )
+        set_target_properties(tst_w8_storage_palette PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        )
+        target_include_directories(tst_w8_storage_palette PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(tst_w8_storage_palette PRIVATE QT_FORCE_ASSERTS)
+        target_link_libraries(tst_w8_storage_palette
+            PRIVATE
+                clothbound_app
+                Qt6::Test
+        )
+        add_test(NAME tst_w8_storage_palette COMMAND tst_w8_storage_palette)
+        set_tests_properties(tst_w8_storage_palette PROPERTIES
+            ENVIRONMENT "${_tsan_test_env}"
+            TIMEOUT 180
+        )
+
+        add_executable(tst_p0_book_session
+            tst_p0_book_session.cpp
+            testbooks.h
+        )
+        set_target_properties(tst_p0_book_session PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+        )
+        target_include_directories(tst_p0_book_session PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(tst_p0_book_session PRIVATE QT_FORCE_ASSERTS)
+        target_link_libraries(tst_p0_book_session
+            PRIVATE
+                clothbound_app
+                Qt6::Test
+        )
+        add_test(NAME tst_p0_book_session COMMAND tst_p0_book_session)
+        set_tests_properties(tst_p0_book_session PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic"
+            TIMEOUT 180
+        )
+    endif() # CLOTHBOUND_BUILD_QT_GUI
+
+    # Headless tests: built & run cleanly even with -DCLOTHBOUND_BUILD_QT_GUI=OFF
+    # (strictly ZERO QtWebEngine / QtQuick / QtQml / QtMultimedia dependency).
+    add_executable(tst_p0_headless_core
+        tst_p0_headless_core.cpp
+        testbooks.h
+        "${CMAKE_SOURCE_DIR}/src/audio/audiooutput.h"
+        "${CMAKE_SOURCE_DIR}/src/audio/speechplayer.h"
+        "${CMAKE_SOURCE_DIR}/src/audio/speechplayer.cpp"
+        "${CMAKE_SOURCE_DIR}/src/audio/speech.h"
+        "${CMAKE_SOURCE_DIR}/src/audio/speech.cpp"
+    )
+    set_target_properties(tst_p0_headless_core PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    )
+    target_include_directories(tst_p0_headless_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(tst_p0_headless_core PRIVATE
+        QT_FORCE_ASSERTS
+        CLOTHBOUND_NO_MULTIMEDIA=1
+    )
+    target_link_libraries(tst_p0_headless_core
+        PRIVATE
+            clothbound_headless
+            Qt6::Test
+    )
+    add_test(NAME tst_p0_headless_core COMMAND tst_p0_headless_core)
+    set_tests_properties(tst_p0_headless_core PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic"
         TIMEOUT 180
     )
 
-    add_executable(tst_webengine_e2e
-        tst_webengine_e2e.cpp
-        fakeserver.h
+    add_executable(tst_p0_bridge_tts
+        tst_p0_bridge_tts.cpp
         testbooks.h
-        "${CMAKE_SOURCE_DIR}/src/resources.qrc"
     )
-    set_target_properties(tst_webengine_e2e PROPERTIES
+    set_target_properties(tst_p0_bridge_tts PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     )
-    target_include_directories(tst_webengine_e2e PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_compile_definitions(tst_webengine_e2e PRIVATE QT_FORCE_ASSERTS)
-    target_link_libraries(tst_webengine_e2e
+    target_include_directories(tst_p0_bridge_tts PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+    target_compile_definitions(tst_p0_bridge_tts PRIVATE QT_FORCE_ASSERTS)
+    target_link_libraries(tst_p0_bridge_tts
         PRIVATE
-            clothbound_app
-            Qt6::Test
+            clothbound_bridge
     )
-    add_test(NAME tst_webengine_e2e COMMAND tst_webengine_e2e)
-    set_tests_properties(tst_webengine_e2e PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic;QTWEBENGINE_CHROMIUM_FLAGS=--no-sandbox --disable-gpu --disable-dev-shm-usage"
-        TIMEOUT 180
-    )
-
-    add_executable(tst_w8_storage_palette
-        tst_w8_storage_palette.cpp
-        testbooks.h
-        tsan_shims.h
-    )
-    set_target_properties(tst_w8_storage_palette PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-    )
-    target_include_directories(tst_w8_storage_palette PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-    target_compile_definitions(tst_w8_storage_palette PRIVATE QT_FORCE_ASSERTS)
-    target_link_libraries(tst_w8_storage_palette
-        PRIVATE
-            clothbound_app
-            Qt6::Test
-    )
-    add_test(NAME tst_w8_storage_palette COMMAND tst_w8_storage_palette)
-    set_tests_properties(tst_w8_storage_palette PROPERTIES
-        ENVIRONMENT "${_tsan_test_env}"
+    add_dependencies(tst_p0_bridge_tts clothbound-tts)
+    add_test(NAME tst_p0_bridge_tts COMMAND tst_p0_bridge_tts)
+    set_tests_properties(tst_p0_bridge_tts PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=generic;CLOTHBOUND_TTS_BIN=$<TARGET_FILE:clothbound-tts>"
         TIMEOUT 180
     )
 
@@ -181,6 +254,9 @@ if(CLOTHBOUND_BUILD_TESTS)
 endif()
 
 if(CLOTHBOUND_BUILD_BENCH)
+    if(NOT CLOTHBOUND_BUILD_QT_GUI)
+        message(FATAL_ERROR "CLOTHBOUND_BUILD_BENCH=ON requires CLOTHBOUND_BUILD_QT_GUI=ON.")
+    endif()
     add_executable(clothbound_bench
         bench.cpp
         testbooks.h

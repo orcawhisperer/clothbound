@@ -29,6 +29,9 @@ public:
     Audiobook(AudioCache *cache, Download *download, Reader *reader, Library *library, QObject *parent = nullptr);
     ~Audiobook() override;
 
+    void setReader(Reader *reader);
+    Reader *reader() const;
+
     bool busy() const { return m_busy; }
     double progress() const { return m_progress; }
     QString problem() const { return m_problem; }
@@ -74,7 +77,7 @@ private:
 
     AudioCache *m_cache;
     Download *m_download;
-    Reader *m_reader;
+    QPointer<Reader> m_reader;
     Library *m_library;
     bool m_busy = false;
     double m_progress = 0;

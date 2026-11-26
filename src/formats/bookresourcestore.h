@@ -43,6 +43,7 @@ public:
     QString registerBook(const QString &path, std::shared_ptr<EpubBook> book);
     QString registerBook(std::shared_ptr<EpubBook> book);
     void unregisterBook(const QString &token);
+    void clear();
     bool contains(const QString &token) const;
     std::shared_ptr<EpubBook> bookForToken(const QString &token) const;
 

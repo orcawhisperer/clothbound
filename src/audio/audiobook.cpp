@@ -73,7 +73,18 @@ QPair<int, int> wavFormat(const QString &path) {
 }  // namespace
 
 Audiobook::Audiobook(AudioCache *cache, Download *download, Reader *reader, Library *library, QObject *parent)
-    : QObject(parent), m_cache(cache), m_download(download), m_reader(reader), m_library(library) {
+    : QObject(parent), m_cache(cache), m_download(download), m_library(library) {
+    setReader(reader);
+}
+
+Reader *Audiobook::reader() const { return m_reader; }
+
+void Audiobook::setReader(Reader *reader) {
+    if (m_reader == reader)
+        return;
+    if (m_reader)
+        disconnect(m_reader, nullptr, this, nullptr);
+    m_reader = reader;
     if (m_reader) {
         connect(m_reader, &Reader::bookChanged, this, [this] {
             if (m_busy)
@@ -265,7 +276,7 @@ void Audiobook::save() {
 
     for (auto it = planned.cbegin(); it != planned.cend(); ++it) {
         Chapter chapter;
-        chapter.title = m_reader->titleOfChapter(it.key());
+        chapter.title = m_reader ? m_reader->titleOfChapter(it.key()) : QString();
         if (chapter.title.isEmpty())
             chapter.title = tr("Chapter %1").arg(it.key() + 1);
         chapter.startMs = qint64(std::llround(atSec * 1000.0));
@@ -385,13 +396,13 @@ void Audiobook::save() {
 
     // Append chapter range on partial exports (e.g. "Book (Ch 3–5).m4b") so
     // exporting one chapter or a subset never clobbers a full-book .m4b.
-    const QVariantList spine = m_reader->manifest().value(QStringLiteral("spine")).toList();
+    const QVariantList spine = m_reader ? m_reader->manifest().value(QStringLiteral("spine")).toList() : QVariantList{};
     QList<int> allLinear;
     QList<int> allLinearRaw;
     for (int i = 0; i < spine.size(); ++i) {
         if (spine[i].toMap().value(QStringLiteral("linear")).toBool()) {
             allLinearRaw.append(i);
-            if (m_reader->charactersIn(i) > 0)
+            if (m_reader && m_reader->charactersIn(i) > 0)
                 allLinear.append(i);
         }
     }

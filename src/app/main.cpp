@@ -40,6 +40,7 @@
 #include "app/trayicon.h"
 #include "mcp/mcpserver.h"
 #include "online/opdsclient.h"
+#include "online/opdscoverprovider.h"
 #include "online/webimporter.h"
 
 #include <QCommandLineParser>

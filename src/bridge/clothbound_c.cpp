@@ -1,8 +1,8 @@
 #include "bridge/clothbound_c.h"
 
 #include "formats/bookinfo.h"
+#include "formats/bookresourcestore.h"
 #include "formats/epubbook.h"
-#include "formats/htmltokenizer.h"
 #include "formats/pdfbook.h"
 #include "library/library.h"
 #include "library/libraryindex.h"
@@ -34,11 +34,8 @@
 #include <QTimer>
 #include <QTranslator>
 #include <QUrl>
-#include <QUuid>
 #include <QVariantList>
 #include <QVariantMap>
-#include <QXmlStreamEntityResolver>
-#include <QXmlStreamReader>
 
 #include <algorithm>
 #include <atomic>
@@ -349,230 +346,6 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Headless clothbound://local resource resolver (mirrors BookScheme /
-// BookResourceStore; in Phase 1 this can delegate directly to BookResourceStore)
-// ---------------------------------------------------------------------------
-
-class XhtmlEntityResolver final : public QXmlStreamEntityResolver {
-public:
-    QString resolveUndeclaredEntity(const QString &name) override {
-        const QString decoded = HtmlTokenizer::decodeEntities(QLatin1Char('&') + name + QLatin1Char(';'));
-        return decoded.startsWith(QLatin1Char('&')) ? QString() : decoded;
-    }
-};
-
-class BridgeResourceStore {
-public:
-    struct Resolved {
-        int status = 404;
-        QByteArray mimeType;
-        QByteArray body;
-        QList<QPair<QByteArray, QByteArray>> headers;
-    };
-
-    QString registerBook(const std::shared_ptr<EpubBook> &book) {
-        if (!book)
-            return {};
-        const QString token = QUuid::createUuid().toString(QUuid::Id128);
-        QMutexLocker lock(&m_mutex);
-        m_books.insert(token, book);
-        return token;
-    }
-
-    void unregisterBook(const QString &token) {
-        if (token.isEmpty())
-            return;
-        QMutexLocker lock(&m_mutex);
-        m_books.remove(token);
-        const QString prefix = token + QLatin1Char('/');
-        for (auto it = m_wellFormed.begin(); it != m_wellFormed.end();)
-            it = it.key().startsWith(prefix) ? m_wellFormed.erase(it) : std::next(it);
-    }
-
-    void clear() {
-        QMutexLocker lock(&m_mutex);
-        m_books.clear();
-        m_wellFormed.clear();
-    }
-
-    static QString baseUrl(const QString &token) {
-        return QStringLiteral("clothbound://local/book/%1/").arg(token);
-    }
-
-    Resolved resolve(const QUrl &url, const QByteArray &referer, const QString &fallbackToken) {
-        Resolved result;
-        if (!url.isValid() || url.scheme() != QLatin1String("clothbound") || url.host() != QLatin1String("local")) {
-            result.status = 400;
-            return result;
-        }
-        const QString path = url.path(QUrl::FullyDecoded);
-        if (path.startsWith(QLatin1String("/app/")))
-            return resolveAppRequest(path);
-
-        QString token;
-        QString entry;
-        if (path.startsWith(QLatin1String("/book/"))) {
-            const QString rest = path.mid(6);
-            const qsizetype slash = rest.indexOf(QLatin1Char('/'));
-            token = slash < 0 ? rest : rest.left(slash);
-            entry = slash < 0 ? QString() : rest.mid(slash + 1);
-        } else if (path.startsWith(QLatin1Char('/'))) {
-            // Root-relative links inside an EPUB (e.g. "/images/cover.jpg") resolve
-            // against clothbound://local/. WebKit strips Referer on WKURLSchemeHandler
-            // subresources, so fall back to `fallbackToken` when Referer is absent.
-            token = tokenFromReferer(referer);
-            if (token.isEmpty())
-                token = fallbackToken.trimmed();
-            entry = EpubBook::resolve(QString(), path.mid(1));
-        }
-        if (token.isEmpty() || entry.isEmpty()) {
-            result.status = 404;
-            return result;
-        }
-
-        std::shared_ptr<EpubBook> book;
-        {
-            QMutexLocker lock(&m_mutex);
-            book = m_books.value(token);
-        }
-        if (!book) {
-            result.status = 404;
-            return result;
-        }
-
-        QString type;
-        QString error;
-        QByteArray data = book->resource(entry, &type, &error);
-        if (data.isNull() && !error.isEmpty()) {
-            const QString normalized = EpubBook::resolve(QString(), entry);
-            if (!normalized.isEmpty() && normalized != entry) {
-                error.clear();
-                data = book->resource(normalized, &type, &error);
-                if (!data.isNull() || error.isEmpty())
-                    entry = normalized;
-            }
-        }
-        if (data.isNull() && !error.isEmpty()) {
-            result.status = 404;
-            return result;
-        }
-
-        result.status = 200;
-        result.body = std::move(data);
-        result.headers = bookHeaders();
-        if (type == QLatin1String("application/xhtml+xml") || type == QLatin1String("text/html")) {
-            const QString key = token + QLatin1Char('/') + entry;
-            bool cached = false;
-            bool xml = false;
-            {
-                QMutexLocker lock(&m_mutex);
-                const auto it = m_wellFormed.constFind(key);
-                if (it != m_wellFormed.cend()) {
-                    xml = *it;
-                    cached = true;
-                }
-            }
-            if (!cached) {
-                xml = isWellFormed(result.body);
-                QMutexLocker lock(&m_mutex);
-                if (m_books.contains(token))
-                    m_wellFormed.insert(key, xml);
-            }
-            result.mimeType = xml ? QByteArrayLiteral("application/xhtml+xml") : QByteArrayLiteral("text/html");
-        } else {
-            result.mimeType = type.toUtf8();
-        }
-        return result;
-    }
-
-private:
-    static QString tokenFromReferer(const QByteArray &refererHeader) {
-        if (refererHeader.isEmpty())
-            return {};
-        const QUrl referer(QString::fromUtf8(refererHeader));
-        if (referer.scheme() != QLatin1String("clothbound") || referer.host() != QLatin1String("local"))
-            return {};
-        const QString refPath = referer.path(QUrl::FullyDecoded);
-        if (!refPath.startsWith(QLatin1String("/book/")))
-            return {};
-        const QString rest = refPath.mid(6);
-        const qsizetype slash = rest.indexOf(QLatin1Char('/'));
-        return slash > 0 ? rest.left(slash) : QString();
-    }
-
-    static bool isWellFormed(const QByteArray &document) {
-        QXmlStreamReader xml(document);
-        XhtmlEntityResolver resolver;
-        const QByteArray head = document.left(2048).toLower();
-        if (head.contains("<!doctype") && (head.contains("xhtml") || head.contains("dtd")))
-            xml.setEntityResolver(&resolver);
-        while (!xml.atEnd()) {
-            xml.readNext();
-            if (xml.hasError())
-                return false;
-        }
-        return true;
-    }
-
-    static const QList<QPair<QByteArray, QByteArray>> &bookHeaders() {
-        static const QList<QPair<QByteArray, QByteArray>> headers{
-            {"X-Content-Type-Options", "nosniff"},
-            {"Cache-Control", "private, max-age=3600"},
-            {"Content-Security-Policy",
-             "default-src 'self' data: blob:; script-src 'none'; object-src 'none'; "
-             "base-uri 'self'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'; "
-             "style-src 'self' 'unsafe-inline' data: blob:; img-src 'self' data: blob:; "
-             "font-src 'self' data: blob:; media-src 'self' data: blob:"},
-        };
-        return headers;
-    }
-
-    static const QList<QPair<QByteArray, QByteArray>> &appHeaders() {
-        static const QList<QPair<QByteArray, QByteArray>> headers{
-            {"X-Content-Type-Options", "nosniff"},
-            {"Cache-Control", "private, max-age=86400"},
-            {"Content-Security-Policy",
-             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-             "img-src 'self' clothbound: data: blob:; font-src 'self' clothbound: data:; "
-             "connect-src 'self' clothbound:; frame-src 'self' clothbound:; "
-             "object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'"},
-        };
-        return headers;
-    }
-
-    static Resolved resolveAppRequest(const QString &path) {
-        static const QHash<QString, QPair<QString, QByteArray>> files{
-            {"reader.html", {":/reader.html", "text/html"}},
-            {"reader.js", {":/reader.js", "text/javascript"}},
-            {"reader.css", {":/reader.css", "text/css"}},
-            {"hyphenation.js", {":/hyphenation.js", "text/javascript"}},
-            {"dropcap.js", {":/dropcap.js", "text/javascript"}},
-            {"hyph-en-us.pat.txt", {":/hyphenation/hyph-en-us.pat.txt", "text/plain"}},
-            {"hyph-en-us.hyp.txt", {":/hyphenation/hyph-en-us.hyp.txt", "text/plain"}},
-            {"fonts/Literata.ttf", {":/fonts/Literata.ttf", "font/ttf"}},
-            {"fonts/Literata-Italic.ttf", {":/fonts/Literata-Italic.ttf", "font/ttf"}},
-            {"fonts/Inter.ttf", {":/fonts/Inter.ttf", "font/ttf"}},
-        };
-        Resolved result;
-        const auto file = files.value(path.mid(5));
-        QFile source(file.first);
-        if (file.first.isEmpty() || !source.open(QIODevice::ReadOnly)) {
-            result.status = 404;
-            return result;
-        }
-        result.status = 200;
-        result.mimeType = file.second;
-        result.body = source.readAll();
-        result.headers = appHeaders();
-        return result;
-    }
-
-    QMutex m_mutex;
-    QHash<QString, std::shared_ptr<EpubBook>> m_books;
-    QHash<QString, bool> m_wellFormed;
-};
-
-// ---------------------------------------------------------------------------
 // Palette search normalization & scoring (zero nested event loops)
 // ---------------------------------------------------------------------------
 
@@ -666,7 +439,7 @@ struct cb_engine {
     bool ownsQCoreApplication = false;
     EngineActor *actor = nullptr;
     std::atomic<QThread *> actorQThread{nullptr};
-    BridgeResourceStore resources;
+    BookResourceStore resources;
     std::atomic_bool shuttingDown{false};
 };
 
@@ -1476,17 +1249,21 @@ bool cb_engine_resolve_resource(cb_engine_t *engine,
     }
 
     const QUrl parsedUrl(QString::fromUtf8(url));
+    if (!parsedUrl.isValid()) {
+        out->status = 400;
+        return false;
+    }
     const QByteArray refBytes = referer ? QByteArray(referer) : QByteArray();
-    const QString fallback = fallback_token ? QString::fromUtf8(fallback_token) : QString();
+    const QString fallback = fallback_token ? QString::fromUtf8(fallback_token).trimmed() : QString();
 
-    // BridgeResourceStore is mutex-protected and EpubBook is thread-safe read-only once opened,
+    // BookResourceStore is mutex-protected and EpubBook is thread-safe read-only once opened,
     // so WKURLSchemeHandler callers can resolve directly without blocking on the actor thread.
-    const BridgeResourceStore::Resolved resolved = engine->resources.resolve(parsedUrl, refBytes, fallback);
+    const BookResourceStore::ResolvedResource resolved = engine->resources.resolve(parsedUrl, refBytes, fallback);
     out->status = resolved.status;
     if (resolved.status < 200 || resolved.status >= 300)
         return false;
 
-    out->mime_type = allocCString(resolved.mimeType);
+    out->mime_type = allocCString(resolved.contentType);
     out->body = allocBytes(resolved.body);
     if (!resolved.headers.isEmpty()) {
         const size_t n = static_cast<size_t>(resolved.headers.size());
@@ -1626,7 +1403,7 @@ char *cb_session_metadata_json(cb_session_t *session) {
             {QStringLiteral("progress"), rec.progress},
             {QStringLiteral("resourceToken"), session->resourceToken},
             {QStringLiteral("baseUrl"),
-             session->resourceToken.isEmpty() ? QString() : BridgeResourceStore::baseUrl(session->resourceToken)},
+             session->resourceToken.isEmpty() ? QString() : BookResourceStore::baseUrl(session->resourceToken)},
         };
 
         if (!rec.position.isEmpty()) {

@@ -97,6 +97,12 @@ void BookResourceStore::unregisterBook(const QString &token) {
         it = it.key().startsWith(prefix) ? m_wellFormed.erase(it) : std::next(it);
 }
 
+void BookResourceStore::clear() {
+    QMutexLocker lock(&m_mutex);
+    m_books.clear();
+    m_wellFormed.clear();
+}
+
 bool BookResourceStore::contains(const QString &token) const {
     QMutexLocker lock(&m_mutex);
     return m_books.contains(token);
