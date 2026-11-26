@@ -143,7 +143,8 @@ public:
 
     // Reading state, written by the reader as it goes.
     Q_INVOKABLE void markOpened(int id);
-    void savePosition(int id, const QString &position, double progress);
+    void savePosition(int id, const QString &position, double progress, QObject *sourceSession = nullptr);
+    void notifyMarksChanged(int bookId, QObject *sourceSession = nullptr);
     void addReadingTime(int id, int seconds, qint64 charsRead);
     QList<int> chapterLengths(int id) const;
     // Small per-book choices, such as the narrator's voice.
@@ -163,6 +164,8 @@ signals:
     void booksChanged();
     void bookChanged(int id);
     void bookUpdated(int id);
+    void bookPositionChanged(int bookId, int chapter, double progress, QObject *sourceSession = nullptr);
+    void marksChanged(int bookId, QObject *sourceSession = nullptr);
     void continueReadingChanged();
     void foldersChanged();
     void collectionsChanged();

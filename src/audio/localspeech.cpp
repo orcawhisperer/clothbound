@@ -6,13 +6,18 @@
 #include "audio/speech.h"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QFileInfo>
 #include <QPointer>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTimer>
 #include <cmath>
 #include <cstring>
+#ifdef Q_OS_MACOS
+#include <dlfcn.h>
+#endif
 
 namespace {
 constexpr int outputRate = 24000;
@@ -209,6 +214,26 @@ void SherpaEngine::unload() {
 QString SherpaEngine::load() {
     if (m_loaded)
         return {};
+#ifdef Q_OS_MACOS
+    QString libPath = m_library.fileName();
+    if (!QFileInfo::exists(libPath) && libPath.endsWith(QLatin1String(".so"))) {
+        const QString dylibPath = libPath.chopped(3) + QStringLiteral(".dylib");
+        if (QFileInfo::exists(dylibPath)) {
+            m_library.setFileName(dylibPath);
+            libPath = dylibPath;
+        }
+    }
+    // Preload companion libonnxruntime*.dylib from the engine's lib/ directory
+    // with RTLD_GLOBAL so dyld resolves @rpath/libonnxruntime.dylib cleanly
+    // when loading libsherpa-onnx-c-api.dylib from a downloaded pack path.
+    const QDir libDir(QFileInfo(libPath).absolutePath());
+    const QStringList companions =
+        libDir.entryList({QStringLiteral("libonnxruntime*.dylib")}, QDir::Files | QDir::Readable, QDir::Name);
+    for (const QString &name : companions) {
+        const QByteArray nativePath = QFile::encodeName(libDir.filePath(name));
+        (void)::dlopen(nativePath.constData(), RTLD_NOW | RTLD_GLOBAL);
+    }
+#endif
     if (!m_library.load())
         return QCoreApplication::translate("LocalSpeech", "The speech engine couldn't be loaded: %1").arg(m_library.errorString());
     // The declarations Clothbound uses are this version's; another one is refused

@@ -36,12 +36,14 @@ QString instructions(const QString &task, bool spoilerFree = true, bool allowHea
 
 }  // namespace
 
-Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent)
+Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConnection, QObject *parent,
+                     PassageIndex *sharedIndex)
     : QObject(parent),
       m_ai(ai),
       m_reader(reader),
       m_store(databaseConnection),
-      m_index(ai, databaseConnection),
+      m_index(sharedIndex ? sharedIndex : new PassageIndex(ai, databaseConnection, this)),
+      m_ownsIndex(sharedIndex == nullptr),
       m_dictionary(this) {
     m_targetLanguage = companionSettings().value(QStringLiteral("companion/translateLanguage")).toString().trimmed();
     m_streamFlush.setSingleShot(true);
@@ -51,7 +53,10 @@ Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConn
     if (m_reader && m_reader->bookId() > 0)
         loadBookState(m_reader->bookId());
 
-    connect(reader, &Reader::bookChanged, this, [this] {
+    if (!m_reader)
+        return;
+
+    connect(m_reader, &Reader::bookChanged, this, [this] {
         stop();
         m_feature.clear();
         m_subject.clear();
@@ -84,7 +89,7 @@ Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConn
         emit pendingSnipChanged();
     });
 
-    connect(reader, &Reader::locationChanged, this, [this] {
+    connect(m_reader, &Reader::locationChanged, this, [this] {
         if (!m_reader || m_reader->bookId() <= 0 || wholeBookStudyActive())
             return;
         const int bookId = m_reader->bookId();
@@ -171,6 +176,20 @@ Companion::Companion(AiServices *ai, Reader *reader, const QString &databaseConn
 }
 
 Companion::~Companion() { stop(); }
+
+void Companion::setPassageIndex(PassageIndex *sharedIndex) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (sharedIndex == m_index.data())
+        return;
+    if (m_index && (m_ownsIndex || m_indexOpActive)) {
+        m_indexOpActive = false;
+        m_index->cancel();
+    }
+    if (m_ownsIndex && m_index)
+        delete m_index.data();
+    m_index = sharedIndex;
+    m_ownsIndex = false;
+}
 
 void Companion::resetPeopleState() {
     m_people.clear();
@@ -540,10 +559,12 @@ QString Companion::joined(const QList<Chapter> &chapters, qint64 limit) {
 QStringList Companion::dictionary(const QString &word) { return LocalDictionary::lookupSync(word); }
 
 QString Companion::bookLine() const {
-    return QStringLiteral("Book: %1, by %2.").arg(m_reader->title(), m_reader->author());
+    return m_reader ? QStringLiteral("Book: %1, by %2.").arg(m_reader->title(), m_reader->author()) : QString();
 }
 
 QString Companion::placeTitle(int chapter) const {
+    if (!m_reader)
+        return tr("Chapter %1").arg(chapter + 1);
     const QString title = m_reader->titleOfChapter(chapter);
     if (!title.isEmpty())
         return title;
@@ -726,7 +747,8 @@ void Companion::rollbackPendingTurn() {
                                stamp ? m_requestChapter : -1, stamp ? m_requestOffset : -1});
         m_answer.clear();
         m_currentSources.clear();
-        m_store.saveConversation(m_reader->bookId(), m_conversation);
+        if (m_reader && m_reader->bookId() > 0)
+            m_store.saveConversation(m_reader->bookId(), m_conversation);
         emit conversationChanged();
         emit answerChanged();
     } else if (!m_conversation.isEmpty() && m_conversation.last().fromUser) {
@@ -812,7 +834,10 @@ void Companion::stop() {
         m_readCancel.reset();
     }
     m_dictionary.cancel();
-    m_index.cancel();
+    if (m_index && (m_ownsIndex || m_indexOpActive)) {
+        m_indexOpActive = false;
+        m_index->cancel();
+    }
     if (m_reply) {
         QPointer<Ai::Reply> active = m_reply;
         m_reply.clear();
@@ -846,6 +871,10 @@ void Companion::finishCachedSnapshot(const QString &where, bool whereLocal) {
 
 void Companion::readChapters(bool wholeBook, int chapter, qint64 offset, qint64 limit,
                              std::function<void(const QList<Chapter> &)> then) {
+    if (!m_reader) {
+        then({});
+        return;
+    }
     const QString path = m_reader->bookPath();
     const QString format = m_reader->format();
     const int generation = m_generation;
@@ -860,7 +889,7 @@ void Companion::readChapters(bool wholeBook, int chapter, qint64 offset, qint64 
         QMetaObject::invokeMethod(
             qApp,
             [self, chapters, generation, then] {
-                if (!self || self->m_generation != generation)
+                if (!self || self->m_generation != generation || !self->m_reader)
                     return;
                 QList<Chapter> titled = chapters;
                 for (Chapter &ch : titled)
@@ -1465,8 +1494,9 @@ void Companion::ask(const QString &question) {
                 BookContextReader::buildLocalAskContext(hits, chapters, format, wholeBook, currentChapter, localBudget);
             send(built.context, built.how, built.sources);
         };
-        if (m_ai->embedder()) {
-            m_index.build(
+        if (m_index && m_ai->embedder()) {
+            m_indexOpActive = true;
+            m_index->build(
                 bookId, passages,
                 [self, generation](double share) {
                     if (self && self->m_generation == generation)
@@ -1477,12 +1507,33 @@ void Companion::ask(const QString &question) {
                 [self, bookId, passages, asked, answer, generation](const QString &) {
                     if (!self || self->m_generation != generation)
                         return;
+                    if (!self->m_index) {
+                        self->m_indexOpActive = false;
+                        answer(PassageIndex::byWords(passages, asked, 8), false);
+                        return;
+                    }
                     self->setStatus(tr("Finding the passages that matter…"));
-                    self->m_index.search(bookId, passages, asked, 8, answer);
+                    self->m_index->search(
+                        bookId, passages, asked, 8,
+                        [self, answer](const QList<PassageIndex::Hit> &hits, bool byMeaning) {
+                            if (self)
+                                self->m_indexOpActive = false;
+                            answer(hits, byMeaning);
+                        });
                 });
             return;
         }
-        m_index.search(bookId, passages, asked, 8, answer);
+        if (m_index) {
+            m_indexOpActive = true;
+            m_index->search(bookId, passages, asked, 8,
+                            [self, answer](const QList<PassageIndex::Hit> &hits, bool byMeaning) {
+                                if (self)
+                                    self->m_indexOpActive = false;
+                                answer(hits, byMeaning);
+                            });
+        } else {
+            answer(PassageIndex::byWords(passages, asked, 8), false);
+        }
     };
 
     if (wholeBook)
@@ -1587,7 +1638,19 @@ void Companion::askShelf(const QString &asked) {
         });
     };
 
-    m_index.searchLibrary(asked, 10, resolvePassages, shelfIds);
+    if (m_index) {
+        m_indexOpActive = true;
+        m_index->searchLibrary(
+            asked, 10,
+            [self, resolvePassages](const QList<PassageIndex::LibraryHit> &libHits) {
+                if (self)
+                    self->m_indexOpActive = false;
+                resolvePassages(libHits);
+            },
+            shelfIds);
+    } else {
+        resolvePassages({});
+    }
 }
 
 // --- Previously…, Who's who --------------------------------------------------

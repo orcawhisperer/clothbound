@@ -37,7 +37,7 @@ constexpr qint64 timeEmitIntervalMs = 250;
 }  // namespace
 
 Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library *library, QObject *parent)
-    : QObject(parent), m_ai(ai), m_cache(cache), m_reader(reader), m_library(library),
+    : QObject(parent), m_ai(ai), m_cache(cache), m_library(library),
       m_director(new Director(ai, cache, reader, this)), m_player(new SpeechPlayer(sampleRate, this)),
       m_sleep(new SleepController(m_player, this)), m_response(new ResponseSpeech(ai, cache, m_player, this)),
       m_sleepAt(m_sleep->deadlineRef()), m_sleepFading(m_sleep->fadingRef()),
@@ -52,11 +52,11 @@ Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library 
         [this] {
             if (!m_voice.isEmpty())
                 return m_voice;
-            if (m_library && m_reader && m_reader->bookId() > 0)
-                return m_library->bookSetting(m_reader->bookId(), QStringLiteral("voice"));
+            if (m_library && m_boundReader && m_boundReader->bookId() > 0)
+                return m_library->bookSetting(m_boundReader->bookId(), QStringLiteral("voice"));
             return QString();
         },
-        [this] { return m_reader ? m_reader->language() : QString(); },
+        [this] { return m_boundReader ? m_boundReader->language() : QString(); },
         [this] { return m_economy; },
         [this] {
             if (playing())
@@ -64,8 +64,10 @@ Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library 
             setProblem({});
             if (m_active)
                 m_bookPlayerDirty = true;
-            if (m_reader && m_reader->bookId() > 0)
-                m_bookId = m_reader->bookId();
+            if (m_boundReader && m_boundReader->bookId() > 0) {
+                m_bookId = m_boundReader->bookId();
+                m_boundBookId = m_bookId;
+            }
         },
         [this](const QString &msg) { setProblem(msg); },
     });
@@ -113,18 +115,15 @@ Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library 
         if (m_active && m_wanted)
             pump();
     });
-    connect(m_reader, &Reader::speakable, this, &Narration::addBlocks);
-    connect(m_reader, &Reader::bookChanged, this, [this] {
-        m_pendingStart = false;
-        if (speakingResponse() && (m_reader->bookId() <= 0 || m_reader->bookId() != m_bookId))
-            stopResponse();
-        if (m_active && m_reader->bookId() != m_bookId)
-            stop();
-        if (!m_active && m_reader->bookId() > 0) {
-            m_bookId = m_reader->bookId();
-            loadVoice();
-        }
-    });
+    if (reader) {
+        m_boundReader = reader;
+        m_boundReaderRaw = reader;
+        m_boundBookId = reader->bookId();
+        m_bookId = m_boundBookId;
+        m_speakableConn = connect(reader, &Reader::speakable, this, &Narration::addBlocks);
+        m_bookChangedConn = connect(reader, &Reader::bookChanged, this, &Narration::handleBoundReaderBookChanged);
+        m_destroyedConn = connect(reader, &QObject::destroyed, this, &Narration::handleBoundReaderDestroyed);
+    }
 
     QSettings s = settings();
     m_rate = std::clamp(s.value(QStringLiteral("listen/rate"), 1.0).toDouble(), 0.75, 2.0);
@@ -132,7 +131,130 @@ Narration::Narration(AiServices *ai, AudioCache *cache, Reader *reader, Library 
     m_player->setRate(m_rate);
 }
 
-Narration::~Narration() { stop(); }
+Narration::~Narration() {
+    disconnect(m_speakableConn);
+    disconnect(m_bookChangedConn);
+    disconnect(m_destroyedConn);
+    stop();
+}
+
+void Narration::resetDirector(Reader *reader) {
+    if (m_director) {
+        m_director->cancel();
+        delete m_director;
+    }
+    m_director = new Director(m_ai, m_cache, reader, this);
+}
+
+void Narration::bindReader(Reader *reader) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (reader == m_boundReader.data()) {
+        if (!m_active && m_boundReader) {
+            const int curId = m_boundReader->bookId();
+            if (curId != m_boundBookId) {
+                m_boundBookId = curId;
+                m_bookId = curId;
+                if (curId > 0 && m_library)
+                    loadVoice();
+                emit boundReaderChanged();
+            }
+        }
+        return;
+    }
+    if (m_active)
+        stop();
+    if (speakingResponse())
+        stopResponse();
+    m_pendingStart = false;
+    disconnect(m_speakableConn);
+    disconnect(m_bookChangedConn);
+    disconnect(m_destroyedConn);
+    m_boundReader = reader;
+    m_boundReaderRaw = reader;
+    resetDirector(reader);
+    if (m_boundReader) {
+        m_speakableConn = connect(m_boundReader, &Reader::speakable, this, &Narration::addBlocks);
+        m_bookChangedConn = connect(m_boundReader, &Reader::bookChanged, this, &Narration::handleBoundReaderBookChanged);
+        m_destroyedConn = connect(m_boundReader, &QObject::destroyed, this, &Narration::handleBoundReaderDestroyed);
+        m_boundBookId = m_boundReader->bookId();
+        m_bookId = m_boundBookId;
+        if (m_boundBookId > 0 && m_library)
+            loadVoice();
+    } else {
+        m_boundBookId = 0;
+        m_bookId = 0;
+    }
+    emit boundReaderChanged();
+}
+
+void Narration::unbindReader(Reader *reader) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (reader && reader != m_boundReader.data())
+        return;
+    if (!m_boundReader && m_boundReaderRaw == nullptr && m_boundBookId == 0)
+        return;
+    if (m_active)
+        stop();
+    if (speakingResponse())
+        stopResponse();
+    m_pendingStart = false;
+    disconnect(m_speakableConn);
+    disconnect(m_bookChangedConn);
+    disconnect(m_destroyedConn);
+    m_boundReader = nullptr;
+    m_boundReaderRaw = nullptr;
+    m_boundBookId = 0;
+    m_bookId = 0;
+    resetDirector(nullptr);
+    emit boundReaderChanged();
+}
+
+void Narration::startFor(Reader *reader, int chapter, qint64 offset) {
+    Q_ASSERT(QThread::currentThread() == thread());
+    if (!reader)
+        return;
+    bindReader(reader);
+    if (m_cast && m_cast->reader() != reader)
+        m_cast->setReader(reader);
+    start(chapter, offset);
+}
+
+void Narration::handleBoundReaderBookChanged() {
+    m_pendingStart = false;
+    const int curId = m_boundReader ? m_boundReader->bookId() : 0;
+    if (speakingResponse() && (curId <= 0 || curId != m_bookId))
+        stopResponse();
+    if (m_active && curId != m_bookId)
+        stop();
+    if (!m_active) {
+        const bool idChanged = (curId != m_boundBookId);
+        m_boundBookId = curId;
+        m_bookId = curId;
+        if (curId > 0 && m_library)
+            loadVoice();
+        if (idChanged)
+            emit boundReaderChanged();
+    }
+}
+
+void Narration::handleBoundReaderDestroyed(QObject *destroyedReader) {
+    if (destroyedReader != m_boundReaderRaw)
+        return;
+    disconnect(m_speakableConn);
+    disconnect(m_bookChangedConn);
+    disconnect(m_destroyedConn);
+    m_boundReader = nullptr;
+    m_boundReaderRaw = nullptr;
+    m_pendingStart = false;
+    if (m_active)
+        stop();
+    if (speakingResponse())
+        stopResponse();
+    m_boundBookId = 0;
+    m_bookId = 0;
+    resetDirector(nullptr);
+    emit boundReaderChanged();
+}
 
 double Narration::volume() const { return m_player->volume(); }
 
@@ -204,7 +326,7 @@ void Narration::adoptLocalVoice(const QString &id, const QString &name, const QS
 
 void Narration::loadVoice() {
     QSettings s = settings();
-    const QString performance = m_library->bookSetting(m_bookId, QStringLiteral("performance"));
+    const QString performance = m_library ? m_library->bookSetting(m_bookId, QStringLiteral("performance")) : QString();
     const QString chosen = performance.isEmpty()
                                ? s.value(QStringLiteral("listen/performance"), QStringLiteral("natural")).toString()
                                : performance;
@@ -212,7 +334,7 @@ void Narration::loadVoice() {
         m_performance = chosen;
         emit settingsChanged();
     }
-    const QString bookVoice = m_library->bookSetting(m_bookId, QStringLiteral("voice"));
+    const QString bookVoice = m_library ? m_library->bookSetting(m_bookId, QStringLiteral("voice")) : QString();
     if (!bookVoice.isEmpty()) {
         m_voice = bookVoice;
         m_voiceName = m_library->bookSetting(m_bookId, QStringLiteral("voiceName"));
@@ -256,8 +378,9 @@ void Narration::setPerformance(const QString &performance) {
         return;
     m_performance = performance;
     settings().setValue(QStringLiteral("listen/performance"), performance);
-    if (m_reader->bookId() > 0)
-        m_library->setBookSetting(m_reader->bookId(), QStringLiteral("performance"), performance);
+    const int targetBookId = m_boundReader ? m_boundReader->bookId() : m_boundBookId;
+    if (m_library && targetBookId > 0)
+        m_library->setBookSetting(targetBookId, QStringLiteral("performance"), performance);
     emit settingsChanged();
     restartAtCurrentPosition();
 }
@@ -282,9 +405,10 @@ void Narration::setVoice(const QString &id, const QString &name) {
     QSettings s = settings();
     s.setValue(QStringLiteral("listen/voice"), m_voice);
     s.setValue(QStringLiteral("listen/voiceName"), m_voiceName);
-    if (m_reader->bookId() > 0) {
-        m_library->setBookSetting(m_reader->bookId(), QStringLiteral("voice"), m_voice);
-        m_library->setBookSetting(m_reader->bookId(), QStringLiteral("voiceName"), m_voiceName);
+    const int targetBookId = m_boundReader ? m_boundReader->bookId() : m_boundBookId;
+    if (m_library && targetBookId > 0) {
+        m_library->setBookSetting(targetBookId, QStringLiteral("voice"), m_voice);
+        m_library->setBookSetting(targetBookId, QStringLiteral("voiceName"), m_voiceName);
     }
     if (m_cast)
         m_cast->setNarrator(m_voice);
@@ -341,7 +465,7 @@ void Narration::setProblem(const QString &problem) {
 }
 
 QPair<QString, QString> Narration::bestLocalVoice() const {
-    return ResponseSpeech::bestLocalVoice(m_ai, m_reader ? m_reader->language() : QString(), false);
+    return ResponseSpeech::bestLocalVoice(m_ai, m_boundReader ? m_boundReader->language() : QString(), false);
 }
 
 void Narration::updateFallbackOffer() {
@@ -413,9 +537,9 @@ bool Narration::fallbackToLocalMidSession(int fromIndex, const QString &reason) 
 }
 
 int Narration::nextChapterAfter(int chapter) const {
-    if (chapter < 0)
+    if (chapter < 0 || !m_boundReader)
         return -1;
-    const QVariantList spine = m_reader->manifest().value(QStringLiteral("spine")).toList();
+    const QVariantList spine = m_boundReader->manifest().value(QStringLiteral("spine")).toList();
     const bool fromLinear = spine.value(chapter).toMap().value(QStringLiteral("linear")).toBool();
     for (int i = chapter + 1; i < spine.size(); ++i)
         if (!fromLinear || spine[i].toMap().value(QStringLiteral("linear")).toBool())
@@ -430,7 +554,13 @@ void Narration::start(int chapter, qint64 offset) {
     clearFallbackOffer();
     setFallbackNotice({});
     m_pendingStart = false;
-    m_bookId = m_reader->bookId();
+    if (!m_boundReader)
+        return;
+    m_bookId = m_boundReader->bookId();
+    const bool boundChanged = (m_boundBookId != m_bookId);
+    m_boundBookId = m_bookId;
+    if (boundChanged)
+        emit boundReaderChanged();
     if (m_bookId <= 0)
         return;
     loadVoice();
@@ -1411,7 +1541,8 @@ void Narration::requestCast(int chapter) {
     const int bookId = m_bookId;
     m_cast->askChapterOrBatch(chapter, m_blocks.value(chapter), this,
                               [this, session, bookId, first, last](const QHash<int, QMap<int, Cast::Line>> &byChapter) {
-                                  if (!m_active || session != m_session || m_reader->bookId() != bookId || !m_cast)
+                                  if (!m_active || session != m_session || !m_boundReader ||
+                                      m_boundReader->bookId() != bookId || !m_cast)
                                       return;
                                   m_castBatchesAsked.remove(first);
                                   for (int p = first; p <= last; ++p) {
@@ -1425,6 +1556,8 @@ void Narration::requestCast(int chapter) {
 }
 
 void Narration::requestDirections(int chapter) {
+    if (!m_boundReader)
+        return;
     const auto [first, last] = m_director->chapterRange(chapter);
     if (m_directorBatchesAsked.contains(first))
         return;
@@ -1437,7 +1570,7 @@ void Narration::requestDirections(int chapter) {
     m_director->askChapterOrBatch(
         chapter, m_blocks.value(chapter), m_performance, this,
         [this, session, bookId, first, last](const QHash<int, QMap<int, QString>> &byChapter) {
-            if (!m_active || session != m_session || m_reader->bookId() != bookId)
+            if (!m_active || session != m_session || !m_boundReader || m_boundReader->bookId() != bookId)
                 return;
             m_directorBatchesAsked.remove(first);
             bool anyRecut = false;

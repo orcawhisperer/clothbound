@@ -26,6 +26,7 @@
 #include "app/translator.h"
 #include "library/library.h"
 #include "online/opdsclient.h"
+#include "online/opdscoverprovider.h"
 #include "online/opdsparser.h"
 #include "online/urlguard.h"
 #include "testbooks.h"

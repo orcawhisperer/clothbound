@@ -73,6 +73,22 @@ public:
     ~VoicePacks() override;
 
     static QString currentArchitecture();
+#ifdef Q_OS_MACOS
+    static constexpr bool kIsMacOs = true;
+#else
+    static constexpr bool kIsMacOs = false;
+#endif
+    // Platform key used to look up the sherpa-onnx engine archive in packs.json
+    // ("x86_64" / "aarch64" on Linux, "macos-universal2" on macOS).
+    static QString enginePlatformKey(const QString &architecture = currentArchitecture(), bool isMacOs = kIsMacOs);
+    // Kokoro model variant key ("x86_64" for int8, "aarch64" for fp32).
+    static QString kokoroVariantKey(const QString &architecture = currentArchitecture());
+    // Shared library basename for the engine C API (".dylib" on macOS, ".so" on Linux).
+    static QString engineLibraryFileName(const QString &enginePlatform = {}, bool isMacOs = kIsMacOs);
+    // Platform-safe tar extraction flags (bsdtar-compatible on macOS, GNU tar on Linux).
+    static QStringList tarExtractArguments(const QString &archive, const QString &destination, bool isMacOs = kIsMacOs);
+    // Verifies no symlink inside an extracted pack escapes rootDir.
+    static bool isSafeExtractedTree(const QString &rootDir);
     // Human-friendly regional accent label for a BCP-47 language tag and voice id.
     static QString accentFor(const QString &language, const QString &voiceId = {});
     bool supported() const { return !m_engine.url.isEmpty(); }
@@ -174,6 +190,7 @@ private:
 
     QString m_directory;
     QString m_architecture;
+    QString m_enginePlatform;
     Pack m_engine;
     QHash<QString, Pack> m_packs;
     QList<Voice> m_voices;

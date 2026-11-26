@@ -1,3 +1,7 @@
+#include <QtGlobal>
+
+#if !defined(Q_OS_MACOS)
+
 // libsecret pulls in GLib, whose headers use "signals" as a name; Qt's macro
 // of that name must not be defined while they're read.
 #pragma push_macro("signals")
@@ -137,3 +141,5 @@ QFuture<bool> SecretKeyStore::removeLater(const QString &provider) {
 }
 
 QString SecretKeyStore::where() const { return QCoreApplication::translate("KeyStore", "your keyring"); }
+
+#endif  // !defined(Q_OS_MACOS)

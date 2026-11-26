@@ -991,17 +991,28 @@ void ServerFinder::probe(const QUrl &origin, int generation) {
                     const QJsonArray data = models.object().value(QStringLiteral("data")).toArray();
                     const QJsonObject first = data.at(0).toObject();
                     const QString owner = first.value(QStringLiteral("owned_by")).toString();
-                    const QString firstId = first.value(QStringLiteral("id")).toString();
+                    bool hasMlxHint = false;
+                    for (const QJsonValue &entryVal : data) {
+                        const QJsonObject entry = entryVal.toObject();
+                        if (entry.value(QStringLiteral("id")).toString().contains(QLatin1String("mlx"), Qt::CaseInsensitive) ||
+                            entry.value(QStringLiteral("owned_by")).toString().contains(QLatin1String("mlx"), Qt::CaseInsensitive)) {
+                            hasMlxHint = true;
+                            break;
+                        }
+                    }
                     LocalModels::Kind kind = LocalModels::Generic;
                     if (llama || owner == QLatin1String("llamacpp"))
                         kind = LocalModels::LlamaCpp;
                     else if (owner == QLatin1String("vllm"))
                         kind = LocalModels::Vllm;
-                    else if (firstId.contains(QLatin1String("mlx"), Qt::CaseInsensitive) ||
-                             owner.contains(QLatin1String("mlx"), Qt::CaseInsensitive))
+                    else if (hasMlxHint)
                         kind = LocalModels::Mlx;
 #ifdef Q_OS_MACOS
-                    else if (origin.port() == 8080 && owner.isEmpty())
+                    // Apple mlx_lm.server defaults to port 8080 and reports owned_by
+                    // as "system", "default_owner", or empty (and does not answer /props).
+                    else if (origin.port() == 8080 &&
+                             (owner.isEmpty() || owner == QLatin1String("system") ||
+                              owner == QLatin1String("default_owner")))
                         kind = LocalModels::Mlx;
 #endif
                     found(kind, ids(models), llamaCtx);

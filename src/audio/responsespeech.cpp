@@ -7,8 +7,10 @@
 #include "audio/speechcleaner.h"
 #include "audio/speechplayer.h"
 
+#if !defined(CLOTHBOUND_NO_MULTIMEDIA)
 #include <QAudioDevice>
 #include <QMediaDevices>
+#endif
 #include <QSettings>
 #include <QStandardPaths>
 #include <QThread>
@@ -206,10 +208,17 @@ void ResponseSpeech::speak(const QString &markdownOrText, const QString &itemId)
         return;
     }
     const bool headless = m_player->isHeadless();
-    if (!headless && QMediaDevices::defaultAudioOutput().isNull()) {
+#if !defined(CLOTHBOUND_NO_MULTIMEDIA)
+    if (!headless && !m_player->hasCustomOutputBackend() && QMediaDevices::defaultAudioOutput().isNull()) {
         fail(SpeechPlayer::tr("No audio output device is available."));
         return;
     }
+#else
+    if (!headless && !m_player->hasAudioOutputDevice()) {
+        fail(SpeechPlayer::tr("No audio output device is available."));
+        return;
+    }
+#endif
 
     // Never play two voices simultaneously: hand off focus cleanly from book or preview.
     if (m_callbacks.onBeforeStart)

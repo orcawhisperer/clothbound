@@ -1,7 +1,15 @@
 #pragma once
 
+#include <QtGlobal>
+
+#if !defined(CLOTHBOUND_HAS_DBUS) && defined(Q_OS_LINUX) && !defined(CLOTHBOUND_NO_DBUS)
+#define CLOTHBOUND_HAS_DBUS 1
+#endif
+
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 #include <QDBusAbstractAdaptor>
 #include <QDBusObjectPath>
+#endif
 #include <QObject>
 #include <QStringList>
 #include <QVariantMap>
@@ -14,6 +22,7 @@ class Reader;
 // keys, Omarchy's bar, and anything else that speaks MPRIS see the chapter,
 // the book, its author and cover, and can play, pause, and move a paragraph
 // either way. Clothbound is a player only while it's reading aloud.
+// (On macOS, Swift owns MPNowPlayingInfoCenter / MPRemoteCommandCenter.)
 class Mpris : public QObject {
     Q_OBJECT
 
@@ -24,6 +33,8 @@ public:
     QString playbackStatus() const;
     QVariantMap metadata() const;
     Narration *narration() const { return m_narration; }
+    Reader *reader() const { return m_reader; }
+    Library *library() const { return m_library; }
 
 signals:
     // The window is wanted in front.
@@ -31,19 +42,24 @@ signals:
 
 private:
     void update();
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     void announce(const QVariantMap &changed);
+#endif
 
     Narration *m_narration;
     Reader *m_reader;
     Library *m_library;
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     QString m_service;
     bool m_registered = false;
     QString m_status;
     QVariantMap m_metadata;
     double m_rate = 1.0;
     double m_volume = 1.0;
+#endif
 };
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 class MprisRoot : public QDBusAbstractAdaptor {
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.mpris.MediaPlayer2")
@@ -119,3 +135,4 @@ signals:
 private:
     Mpris *m_mpris;
 };
+#endif

@@ -23,6 +23,6 @@ if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
 fi
 
 cmake -S "$ROOT" -B "$BUILD_DIR" -G "$GENERATOR" -DCMAKE_BUILD_TYPE=Release "$@"
-cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target clothbound clothbound-mcp
+cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target clothbound clothbound-mcp clothbound-tts
 
-echo "Built $BUILD_DIR/clothbound and $BUILD_DIR/clothbound-mcp"
+echo "Built $BUILD_DIR/clothbound, $BUILD_DIR/clothbound-mcp, and $BUILD_DIR/clothbound-tts"

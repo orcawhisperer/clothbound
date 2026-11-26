@@ -3753,3 +3753,354 @@ void ClothboundTests::uxPolishSleepIconSmoothDockTopEdgeAndLibraryMiniPlayer() {
         QVERIFY(pdfQml.contains(QStringLiteral("Qt.AltModifier")));
     }
 }
+
+void ClothboundTests::readerJsWebKitBridgeDropCapMetaCopyAndRtlScroll() {
+    const QString node = QStandardPaths::findExecutable(QStringLiteral("node"));
+    if (node.isEmpty())
+        QSKIP("node executable not available");
+
+    const QString readerJsPath = QFINDTESTDATA("../src/reader/reader.js");
+    const QString bridgeJsPath = QFINDTESTDATA("../src/reader/bridge-webkit.js");
+    QVERIFY(QFileInfo::exists(readerJsPath));
+    QVERIFY(QFileInfo::exists(bridgeJsPath));
+
+    const QString harness = QStringLiteral(R"JS(
+const fs = require('fs');
+const vm = require('vm');
+const assert = require('assert');
+
+const readerSrc = fs.readFileSync(process.argv[1], 'utf8');
+const bridgeSrc = fs.readFileSync(process.argv[2], 'utf8');
+const plain = v => JSON.parse(JSON.stringify(v));
+
+// 1. bridge-webkit.js must be a strict no-op when window.webkit is absent (Linux QtWebEngine).
+{
+    const linuxWin = {};
+    vm.runInNewContext(bridgeSrc, { window: linuxWin, console });
+    assert.strictEqual(linuxWin.clothboundBridge, undefined, 'bridge-webkit.js must no-op without webkit handler');
+}
+
+// 2. bridge-webkit.js translates calls into postMessage({ method, args }), supports
+//    WKScriptMessageHandlerWithReply Promises + trailing callbacks, and is never a thenable.
+async function testBridgeUnit() {
+    const posted = [];
+    const macWin = {
+        webkit: {
+            messageHandlers: {
+                clothbound: {
+                    postMessage(msg) {
+                        posted.push(plain(msg));
+                        if (msg.method === 'echoReply')
+                            return Promise.resolve({ echoed: msg.args[0] });
+                        return undefined;
+                    },
+                },
+            },
+        },
+    };
+    vm.runInNewContext(bridgeSrc, { window: macWin, console, Promise });
+    const b = macWin.clothboundBridge;
+    assert.ok(b, 'window.clothboundBridge installed');
+    assert.strictEqual(b.then, undefined, 'bridge must not be a thenable');
+    b.surfaceLoaded();
+    b.relocated({ chapter: 0, page: 1 });
+    b.keyPressed('ArrowRight', 0);
+    assert.deepStrictEqual(posted[0], { method: 'surfaceLoaded', args: [] });
+    assert.deepStrictEqual(posted[1], { method: 'relocated', args: [{ chapter: 0, page: 1 }] });
+    assert.deepStrictEqual(posted[2], { method: 'keyPressed', args: ['ArrowRight', 0] });
+
+    let cbVal = null;
+    const p = b.echoReply('hello', v => { cbVal = v; });
+    assert.ok(p && typeof p.then === 'function', 'Promise reply forwarded');
+    const res = await p;
+    assert.deepStrictEqual(plain(res), { echoed: 'hello' });
+    assert.deepStrictEqual(plain(cbVal), { echoed: 'hello' });
+    assert.deepStrictEqual(posted[3], { method: 'echoReply', args: ['hello'] });
+}
+
+// 3. Full reader.js + bridge-webkit.js integration:
+//    - Initializes without QWebChannel / qt.webChannelTransport
+//    - Emits -webkit-initial-letter: 3; initial-letter: 3;
+//    - Lets both Ctrl+C and Meta+C (Cmd+C) pass through while forwarding bare 'c'
+//    - Detects & scrolls RTL spreads cleanly across "negative", "reverse", and "default" conventions
+async function runRtlConvention(convention) {
+    const posted = [];
+    let domReady = null;
+    const docListeners = new Map();
+    const styleNodes = new Map();
+
+    function makeStyle() {
+        return {
+            cssText: '', opacity: '', transform: '', backgroundColor: '',
+            left: '', top: '', width: '', height: '',
+            setProperty(k, v) { this[k] = v; },
+        };
+    }
+
+    const stageEl = {
+        clientWidth: 1000,
+        clientHeight: 700,
+        addEventListener() {},
+        getBoundingClientRect() { return { left: 0, top: 0, width: 1000, height: 700 }; },
+    };
+
+    const textNode = { nodeType: 3, data: 'RTL multi-column sample text.', parentElement: null };
+    const appended = [];
+    let probeCount = 0;
+
+    const bodyEl = {
+        childNodes: [textNode],
+        appendChild(el) {
+            appended.push(el);
+            return el;
+        },
+        removeChild(el) {
+            const idx = appended.indexOf(el);
+            if (idx >= 0) appended.splice(idx, 1);
+        },
+        lastElementChild: {
+            getClientRects() { return [{ left: -1200, right: 600, top: 0, bottom: 24, width: 1800, height: 24 }]; },
+            getBoundingClientRect() { return { left: -1200, right: 600, top: 0, bottom: 24, width: 1800, height: 24 }; },
+        },
+    };
+    textNode.parentElement = bodyEl;
+
+    const pageWidth = 600;
+    const maxScroll = pageWidth * 2; // 3 pages: 0, 1, 2
+    let currentScrollLeft = convention === 'default' ? maxScroll : 0;
+    const chapterDocEl = {
+        style: makeStyle(),
+        clientWidth: pageWidth,
+        clientHeight: 600,
+        scrollWidth: pageWidth * 3,
+        scrollHeight: 600,
+        get scrollLeft() { return currentScrollLeft; },
+        set scrollLeft(v) { currentScrollLeft = v; },
+        scrollTop: 0,
+        scrollTo(opts) {
+            if (opts && typeof opts.left === 'number') this.scrollLeft = opts.left;
+            if (opts && typeof opts.top === 'number') this.scrollTop = opts.top;
+        },
+        appendChild() {},
+    };
+
+    const chapterDoc = {
+        URL: 'clothbound://local/book/tok/ch1.xhtml',
+        documentElement: chapterDocEl,
+        head: { appendChild(el) { styleNodes.set(el.id, el); } },
+        body: bodyEl,
+        scrollingElement: chapterDocEl,
+        fonts: { ready: Promise.resolve() },
+        images: [],
+        defaultView: {
+            getComputedStyle() { return { writingMode: 'horizontal-tb', direction: 'rtl', textAlign: 'start' }; },
+            CSS: { highlights: new Map() },
+            Highlight: class {},
+        },
+        getElementById(id) { return styleNodes.get(id) || null; },
+        createElementNS(_ns, tag) {
+            if (tag === 'div') {
+                ++probeCount;
+                let probeVal = convention === 'default' ? 1 : 0;
+                const el = {
+                    localName: 'div',
+                    style: makeStyle(),
+                    appendChild() {},
+                    remove() { bodyEl.removeChild(el); },
+                    get scrollLeft() { return probeVal; },
+                    set scrollLeft(v) {
+                        if (convention === 'negative')
+                            probeVal = Math.max(-1, Math.min(0, v));
+                        else
+                            probeVal = Math.max(0, Math.min(1, v));
+                    },
+                };
+                return el;
+            }
+            return { localName: tag, id: '', textContent: '', style: makeStyle() };
+        },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        addEventListener(type, fn) {
+            if (!docListeners.has(type)) docListeners.set(type, []);
+            docListeners.get(type).push(fn);
+        },
+        removeEventListener() {},
+        createTreeWalker() {
+            let done = false;
+            return { nextNode() { if (done) return null; done = true; return textNode; } };
+        },
+        createRange() {
+            return {
+                selectNodeContents() {},
+                setStart() {},
+                setEnd() {},
+                getClientRects() { return [{ left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }]; },
+                getBoundingClientRect() { return { left: 10, right: 200, top: 10, bottom: 28, width: 190, height: 18 }; },
+            };
+        },
+        getSelection() { return { isCollapsed: true, removeAllRanges() {} }; },
+    };
+
+    const classes = new Set();
+    const frameEl = {
+        style: makeStyle(),
+        classList: {
+            add(c) { classes.add(c); },
+            remove(c) { classes.delete(c); },
+            contains(c) { return classes.has(c); },
+        },
+        contentDocument: chapterDoc,
+        contentWindow: chapterDoc.defaultView,
+        onload: null,
+        _src: '',
+        set src(v) {
+            this._src = v;
+            if (typeof this.onload === 'function') queueMicrotask(() => this.onload());
+        },
+        get src() { return this._src; },
+        getBoundingClientRect() { return { left: 0, top: 50, width: pageWidth, height: 600 }; },
+    };
+
+    const documentMock = {
+        documentElement: { style: makeStyle() },
+        body: { appendChild() {} },
+        getElementById(id) {
+            if (id === 'stage') return stageEl;
+            if (id === 'book') return frameEl;
+            if (id === 'overlay') return { appendChild() {} };
+            return null;
+        },
+        addEventListener(type, fn) {
+            if (type === 'DOMContentLoaded') domReady = fn;
+            else {
+                if (!docListeners.has(type)) docListeners.set(type, []);
+                docListeners.get(type).push(fn);
+            }
+        },
+    };
+
+    const winObj = {
+        innerWidth: 1000,
+        innerHeight: 700,
+        webkit: {
+            messageHandlers: {
+                clothbound: {
+                    postMessage(msg) { posted.push(plain(msg)); },
+                },
+            },
+        },
+    };
+
+    const sandbox = {
+        console, setTimeout, clearTimeout, performance, Promise, URL,
+        Node: { TEXT_NODE: 3 },
+        NodeFilter: { SHOW_TEXT: 4, SHOW_CDATA_SECTION: 8, FILTER_ACCEPT: 1, FILTER_REJECT: 2 },
+        CSS: { escape: s => s },
+        Hyphenation: { load: async () => false, node() {} },
+        document: documentMock,
+        window: winObj,
+        ResizeObserver: class { observe() {} },
+        matchMedia: () => ({ matches: false }),
+        requestAnimationFrame: fn => { queueMicrotask(() => fn(performance.now())); return 1; },
+        cancelAnimationFrame() {},
+        fetch: async () => ({ ok: true, text: async () => '', headers: { get: () => '' } }),
+    };
+    sandbox.globalThis = sandbox;
+    const ctx = vm.createContext(sandbox);
+    vm.runInContext(bridgeSrc, ctx);
+    const clothbound = vm.runInContext(readerSrc + '\n;clothbound;', ctx);
+    domReady();
+
+    assert.strictEqual(posted[0].method, 'surfaceLoaded', 'WebKit bridge fires surfaceLoaded on DOMContentLoaded');
+
+    const book = {
+        session: 1, base: 'clothbound://local/book/tok/', language: 'ar', rtl: true,
+        spine: [{ href: 'ch1.xhtml', linear: true }], pageTargets: [],
+    };
+    const style = {
+        theme: { bg: '#fbfaf6', fg: '#23221f', link: '#3e5f99', muted: '#6f6b63', popover: '#fff',
+                 border: 'rgba(0,0,0,0.12)', selection: '#cde', markYellow: '#ff0', markGreen: '#0f0',
+                 markBlue: '#00f', markPink: '#f0f', speaking: '#eef', dark: false },
+        font: 'Literata', fontScale: 1.0, fontWeight: 400, lineHeight: 1.5, paragraphSpacing: 0.4,
+        margin: 0.06, measure: 34, justify: false, hyphenate: false, layout: 'single', singleColumn: true,
+        animate: false, publisher: false, marginTop: 50, marginBottom: 50, radius: 0,
+        listening: false, strings: { goToNote: 'Go', listenFromHere: 'Listen' },
+    };
+    await clothbound.open(book, { chapter: 0, offset: 0 }, style);
+
+    const typoCss = styleNodes.get('cb-typography').textContent;
+    assert.ok(typoCss.includes('-webkit-initial-letter: 3; initial-letter: 3;'), 'drop cap emits webkit + standard initial-letter');
+
+    // Verify step width & RTL scrolling across pages 0 -> 1 -> 2 -> 1!
+    const dbg0 = JSON.parse(clothbound.debug());
+    const step = dbg0.geometry.step;
+    chapterDocEl.clientWidth = step;
+    chapterDocEl.scrollWidth = step * 3;
+    const expectedScroll = page => {
+        if (convention === 'negative') return -(page * step);
+        if (convention === 'reverse') return page * step;
+        return Math.max(0, (step * 2) - (page * step));
+    };
+    currentScrollLeft = expectedScroll(0);
+
+    await clothbound.next();
+    assert.strictEqual(JSON.parse(clothbound.debug()).page, 1, convention + ' next() -> page 1');
+    assert.strictEqual(chapterDocEl.scrollLeft, expectedScroll(1), convention + ' page 1 scrollLeft');
+
+    await clothbound.next();
+    assert.strictEqual(JSON.parse(clothbound.debug()).page, 2, convention + ' next() -> page 2');
+    assert.strictEqual(chapterDocEl.scrollLeft, expectedScroll(2), convention + ' page 2 scrollLeft');
+
+    await clothbound.prev();
+    assert.strictEqual(JSON.parse(clothbound.debug()).page, 1, convention + ' prev() -> page 1');
+    assert.strictEqual(chapterDocEl.scrollLeft, expectedScroll(1), convention + ' back to page 1 scrollLeft');
+
+    // Probe must be cached once per document (2 div elements: outer probe + inner spacer) and cleaned up!
+    assert.strictEqual(probeCount, 2, convention + ' RTL probe cached once per document');
+    assert.strictEqual(appended.length, 0, convention + ' RTL probe removed from body');
+
+    // Keyboard copy passthrough check (Ctrl+C and Meta+C both pass through; bare 'c' forwards to bridge).
+    const keyHandlers = docListeners.get('keydown') || [];
+    assert.ok(keyHandlers.length > 0, 'keydown listener attached');
+    const keyCountBefore = posted.filter(m => m.method === 'keyPressed').length;
+    for (const ev of [
+        { key: 'c', ctrlKey: true, metaKey: false, altKey: false, shiftKey: false },
+        { key: 'C', ctrlKey: false, metaKey: true, altKey: false, shiftKey: false },
+    ]) {
+        let prevented = false;
+        ev.preventDefault = () => { prevented = true; };
+        ev.stopPropagation = () => {};
+        keyHandlers[0](ev);
+        assert.strictEqual(prevented, false, 'copy chord must not be prevented');
+    }
+    assert.strictEqual(posted.filter(m => m.method === 'keyPressed').length, keyCountBefore, 'copy chords not forwarded');
+
+    let barePrevented = false;
+    keyHandlers[0]({
+        key: 'c', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false,
+        preventDefault() { barePrevented = true; },
+        stopPropagation() {},
+    });
+    assert.strictEqual(barePrevented, true, 'bare c prevented and forwarded');
+    const lastKey = posted.filter(m => m.method === 'keyPressed').pop();
+    assert.deepStrictEqual(lastKey.args, ['c', 0]);
+}
+
+(async () => {
+    await testBridgeUnit();
+    await runRtlConvention('negative');
+    await runRtlConvention('reverse');
+    await runRtlConvention('default');
+    console.log('ok');
+})().catch(err => { console.error(err); process.exit(1); });
+)JS");
+
+    QProcess proc;
+    proc.start(node, {QStringLiteral("-e"), harness, readerJsPath, bridgeJsPath});
+    QVERIFY2(proc.waitForFinished(15000), "node WebKit reader.js harness timed out");
+    const QByteArray stderrOut = proc.readAllStandardError();
+    QVERIFY2(proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0,
+             stderrOut.isEmpty() ? "node WebKit reader.js harness failed" : stderrOut.constData());
+    QCOMPARE(proc.readAllStandardOutput().trimmed(), QByteArray("ok"));
+}

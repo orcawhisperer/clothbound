@@ -25,7 +25,8 @@ public:
     virtual QString where() const = 0;
 };
 
-// The Secret Service (GNOME Keyring, KWallet) through libsecret.
+// The desktop's secure credential store: Secret Service (GNOME Keyring, KWallet)
+// through libsecret on Linux, or Keychain (Security.framework) on macOS.
 class SecretKeyStore : public KeyStore {
 public:
     QString load(const QString &provider) override { return lookup(provider); }

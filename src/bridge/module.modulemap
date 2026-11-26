@@ -1,0 +1,4 @@
+module ClothboundCore {
+    header "clothbound_c.h"
+    export *
+}

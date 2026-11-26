@@ -1,5 +1,6 @@
 #include "audio/audiocache.h"
 
+#include "audio/audiobook.h"
 #include "audio/speech.h"
 
 #include <QCoreApplication>
@@ -107,7 +108,7 @@ bool decodeWavPcm(const QByteArray &bytes, int targetSampleRate, QByteArray &out
 
 AudioCache::AudioCache(const QString &directory, const QString &databaseConnection, QObject *parent, qint64 capBytes)
     : QObject(parent), m_directory(directory), m_connection(databaseConnection), m_cap(capBytes),
-      m_ffmpeg(QStandardPaths::findExecutable(QStringLiteral("ffmpeg"))) {
+      m_ffmpeg(Audiobook::findFfmpeg()) {
     m_touchTimer.setSingleShot(true);
     m_touchTimer.setInterval(touchFlushMs);
     connect(&m_touchTimer, &QTimer::timeout, this, &AudioCache::flushTouches);
@@ -599,7 +600,9 @@ void AudioCache::refreshStats() {
 }
 
 QString AudioCache::audiobookFolder() const {
-    QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    QString music = qEnvironmentVariable("CLOTHBOUND_MUSIC_DIR").trimmed();
+    if (music.isEmpty())
+        music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
     if (music.isEmpty())
         music = QDir::homePath() + QStringLiteral("/Music");
     return music + QStringLiteral("/Clothbound");

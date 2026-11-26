@@ -1,6 +1,7 @@
 #include "app/trayicon.h"
 
 #include <QCoreApplication>
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 #include <QDBusAbstractAdaptor>
 #include <QDBusConnection>
 #include <QDBusMessage>
@@ -266,8 +267,10 @@ const QDBusArgument &operator>>(const QDBusArgument &arg, TrayMenuRemovedProps &
     arg.endStructure();
     return arg;
 }
+#endif
 
 TrayIcon::TrayIcon(QObject *parent) : QObject(parent) {
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     registerTrayMetaTypes();
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (!bus.isConnected())
@@ -288,9 +291,14 @@ TrayIcon::TrayIcon(QObject *parent) : QObject(parent) {
                 QString::fromLatin1(kWatcherInterface), QStringLiteral("StatusNotifierHostRegistered"), this,
                 SLOT(refreshAvailability()));
     refreshAvailability();
+#endif
 }
 
-TrayIcon::~TrayIcon() { unregisterItem(); }
+TrayIcon::~TrayIcon() {
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
+    unregisterItem();
+#endif
+}
 
 TrayPixmapList TrayIcon::iconPixmaps() const { return m_pixmaps; }
 
@@ -298,6 +306,7 @@ void TrayIcon::setVisible(bool visible) {
     if (visible == m_visible)
         return;
     m_visible = visible;
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     if (m_visible) {
         if (m_pixmaps.isEmpty()) {
             for (const int sz : {22, 32}) {
@@ -310,6 +319,7 @@ void TrayIcon::setVisible(bool visible) {
     } else {
         unregisterItem();
     }
+#endif
     emit visibleChanged();
 }
 
@@ -318,7 +328,11 @@ void TrayIcon::setPlaying(bool playing) {
         return;
     m_playing = playing;
     emit playingChanged();
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     notifyMenuChanged();
+#else
+    ++m_menuRevision;
+#endif
 }
 
 void TrayIcon::setTooltip(const QString &tooltip) {
@@ -326,8 +340,10 @@ void TrayIcon::setTooltip(const QString &tooltip) {
         return;
     m_tooltip = tooltip;
     emit tooltipChanged();
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     if (m_registered)
         emitSniSignal("NewToolTip");
+#endif
 }
 
 TrayMenuLayoutItem TrayIcon::buildMenuLayout(int parentId, int recursionDepth) const {
@@ -365,7 +381,7 @@ TrayMenuLayoutItem TrayIcon::buildMenuLayout(int parentId, int recursionDepth) c
     root.properties.insert(QStringLiteral("children-display"), QStringLiteral("submenu"));
     if (recursionDepth != 0) {
         for (const TrayMenuLayoutItem &entry : entries)
-            root.children.append(QDBusVariant(QVariant::fromValue(entry)));
+            root.children.append(TrayMenuVariant(QVariant::fromValue(entry)));
     }
     return root;
 }
@@ -399,6 +415,7 @@ void TrayIcon::handleActivate() { emit activated(); }
 void TrayIcon::handleSecondaryActivate() { emit togglePlayRequested(); }
 
 void TrayIcon::refreshAvailability() {
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (!bus.isConnected())
         return;
@@ -418,8 +435,10 @@ void TrayIcon::refreshAvailability() {
         if (m_available && m_visible)
             registerItem();
     });
+#endif
 }
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 void TrayIcon::registerItem() {
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (!bus.isConnected())
@@ -508,3 +527,4 @@ void TrayIcon::emitSniSignal(const char *name, const QVariantList &args) {
 }
 
 #include "trayicon.moc"
+#endif

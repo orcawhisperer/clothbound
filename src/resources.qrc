@@ -2,6 +2,7 @@
     <qresource prefix="/">
         <file alias="reader.html">reader/reader.html</file>
         <file alias="reader.js">reader/reader.js</file>
+        <file alias="bridge-webkit.js">reader/bridge-webkit.js</file>
         <file alias="reader.css">reader/reader.css</file>
         <file alias="hyphenation.js">reader/hyphenation.js</file>
         <file alias="dropcap.js">reader/dropcap.js</file>

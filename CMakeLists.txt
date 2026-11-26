@@ -4,7 +4,18 @@ cmake_minimum_required(VERSION 3.24)
 # honoring caller-supplied -DCMAKE_CXX_FLAGS_RELEASE=... or CXXFLAGS.
 set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG" CACHE STRING "Flags used by the CXX compiler during RELEASE builds.")
 
+if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS deployment target")
+endif()
+
 project(clothbound VERSION 0.5.2 LANGUAGES CXX)
+
+if(APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CMAKE_OBJCXX_EXTENSIONS OFF)
+endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -22,6 +33,8 @@ include(CheckPIESupported)
 check_pie_supported(OUTPUT_VARIABLE _pie_output LANGUAGES CXX)
 include(GNUInstallDirs)
 
+option(CLOTHBOUND_BUILD_QT_GUI "Build the Qt Quick/WebEngine desktop GUI" ON)
+option(CLOTHBOUND_BUILD_MAC_FRAMEWORK "Build dynamic ClothboundCore.framework on macOS" ON)
 option(CLOTHBOUND_BUILD_TESTS "Build the Clothbound unit and QML smoke test suite" OFF)
 option(CLOTHBOUND_BUILD_BENCH "Build the Clothbound C++ micro-benchmark suite" OFF)
 option(CLOTHBOUND_FORCE_ASSERTS "Force Q_ASSERT checks on across Clothbound targets" OFF)
@@ -63,32 +76,43 @@ endif()
 # ---------------------------------------------------------------------------
 # Dependencies
 # ---------------------------------------------------------------------------
+find_package(Threads REQUIRED)
 find_package(ZLIB REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(LIBSECRET REQUIRED IMPORTED_TARGET libsecret-1)
+if(UNIX AND NOT APPLE)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(LIBSECRET REQUIRED IMPORTED_TARGET libsecret-1)
+endif()
 
 set(_qt6_components
     Core
     Gui
-    DBus
     Sql
     Concurrent
     Network
     Pdf
-    Qml
-    Quick
-    QuickControls2
-    Multimedia
-    WebEngineCore
-    WebEngineQuick
-    WebChannel
 )
+if(UNIX AND NOT APPLE)
+    list(APPEND _qt6_components DBus)
+endif()
+if(CLOTHBOUND_BUILD_QT_GUI)
+    list(APPEND _qt6_components
+        Qml
+        Quick
+        QuickControls2
+        WebEngineCore
+        WebEngineQuick
+        WebChannel
+    )
+    if(NOT APPLE)
+        list(APPEND _qt6_components Multimedia)
+    endif()
+endif()
 if(CLOTHBOUND_BUILD_TESTS)
     list(APPEND _qt6_components Test)
 endif()
 find_package(Qt6 REQUIRED COMPONENTS ${_qt6_components})
 
-if(COMMAND qt_policy)
+if(CLOTHBOUND_BUILD_QT_GUI AND COMMAND qt_policy)
     if(Qt6_VERSION VERSION_GREATER_EQUAL "6.5.0")
         qt_policy(SET QTP0001 NEW)
     endif()
@@ -106,10 +130,27 @@ target_compile_definitions(clothbound_common_config INTERFACE
     CLOTHBOUND_SOURCE_I18N_DIR="${CMAKE_CURRENT_SOURCE_DIR}/src/i18n"
     $<$<BOOL:${CLOTHBOUND_FORCE_ASSERTS}>:QT_FORCE_ASSERTS>
 )
+if(APPLE)
+    target_compile_definitions(clothbound_common_config INTERFACE
+        CLOTHBOUND_NO_DBUS=1
+        CLOTHBOUND_NO_MULTIMEDIA=1
+    )
+elseif(UNIX)
+    target_compile_definitions(clothbound_common_config INTERFACE
+        CLOTHBOUND_HAS_DBUS=1
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # Layer 1: clothbound_headless (strictly ZERO WebEngine / Quick / Qml / Multimedia)
 # ---------------------------------------------------------------------------
+if(APPLE)
+    set(_clothbound_keystore_sources src/ai/keystore_mac.mm)
+    set_source_files_properties(src/ai/keystore_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+else()
+    set(_clothbound_keystore_sources src/ai/keystore.cpp)
+endif()
+
 add_library(clothbound_headless STATIC
     # Formats (headless)
     src/formats/audiopcm.h
@@ -119,12 +160,16 @@ add_library(clothbound_headless STATIC
     src/formats/bookname.h
     src/formats/bookname.cpp
     src/formats/bookrecord.h
+    src/formats/bookresourcestore.h
+    src/formats/bookresourcestore.cpp
     src/formats/epubbook.h
     src/formats/epubbook.cpp
     src/formats/htmltokenizer.h
     src/formats/htmltokenizer.cpp
     src/formats/pdfbook.h
     src/formats/pdfbook.cpp
+    src/formats/pdfrecolor.h
+    src/formats/pdfrecolor.cpp
     src/formats/tsanhandoff.h
     src/formats/ziparchive.h
     src/formats/ziparchive.cpp
@@ -154,7 +199,7 @@ add_library(clothbound_headless STATIC
     src/ai/aiusage.h
     src/ai/aiusage.cpp
     src/ai/keystore.h
-    src/ai/keystore.cpp
+    ${_clothbound_keystore_sources}
     src/ai/localmodels.h
     src/ai/localmodels.cpp
     src/ai/passageindex.h
@@ -168,13 +213,103 @@ target_link_libraries(clothbound_headless
         clothbound_common_config
         Qt6::Core
         Qt6::Gui
-        Qt6::DBus
         Qt6::Sql
         Qt6::Concurrent
         Qt6::Network
         Qt6::Pdf
         ZLIB::ZLIB
-        PkgConfig::LIBSECRET
+)
+if(APPLE)
+    target_link_libraries(clothbound_headless
+        PUBLIC
+            "-framework Security"
+            "-framework Foundation"
+    )
+elseif(UNIX)
+    target_link_libraries(clothbound_headless
+        PUBLIC
+            Qt6::DBus
+            PkgConfig::LIBSECRET
+    )
+endif()
+
+# ---------------------------------------------------------------------------
+# Layer 1b: clothbound_bridge (C11 actor-thread core ABI + out-of-process TTS client)
+# ---------------------------------------------------------------------------
+add_library(clothbound_bridge STATIC
+    src/bridge/clothbound_c.h
+    src/bridge/clothbound_c.cpp
+    src/tts/tts_protocol.h
+    src/tts/tts_process_client.h
+    src/tts/tts_process_client.cpp
+)
+target_link_libraries(clothbound_bridge PUBLIC clothbound_headless)
+
+if(APPLE AND CLOTHBOUND_BUILD_MAC_FRAMEWORK)
+    # -----------------------------------------------------------------------
+    # macOS dynamic framework: ClothboundCore.framework (Swift 6 Clang module)
+    # -----------------------------------------------------------------------
+    add_library(ClothboundCore SHARED
+        src/bridge/clothbound_c.h
+        src/bridge/clothbound_c.cpp
+        src/tts/tts_protocol.h
+        src/tts/tts_process_client.h
+        src/tts/tts_process_client.cpp
+    )
+    target_link_libraries(ClothboundCore PRIVATE clothbound_headless)
+    set_target_properties(ClothboundCore PROPERTIES
+        FRAMEWORK TRUE
+        FRAMEWORK_VERSION A
+        MACOSX_FRAMEWORK_IDENTIFIER "app.clothbound.Core"
+        MACOSX_FRAMEWORK_BUNDLE_VERSION "${PROJECT_VERSION}"
+        MACOSX_FRAMEWORK_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+        PUBLIC_HEADER "${CMAKE_CURRENT_SOURCE_DIR}/src/bridge/clothbound_c.h"
+        INSTALL_NAME_DIR "@rpath"
+        BUILD_WITH_INSTALL_RPATH ON
+        INSTALL_RPATH "@loader_path/..;@loader_path/Frameworks;@loader_path/../../..;@executable_path/../Frameworks"
+        C_VISIBILITY_PRESET default
+        CXX_VISIBILITY_PRESET default
+        VISIBILITY_INLINES_HIDDEN OFF
+    )
+
+    # Qualify src/bridge/module.modulemap with `framework module` so Clang/Swift
+    # resolves clothbound_c.h inside ClothboundCore.framework/Versions/A/Headers/.
+    set(_clothbound_fw_modulemap "${CMAKE_CURRENT_BINARY_DIR}/ClothboundCore.framework.modulemap")
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/bridge/module.modulemap" _clothbound_modulemap_raw)
+    string(REGEX REPLACE "(^|\n)module[ \t]+ClothboundCore" "\\1framework module ClothboundCore"
+        _clothbound_fw_modulemap_content "${_clothbound_modulemap_raw}")
+    file(GENERATE OUTPUT "${_clothbound_fw_modulemap}" CONTENT "${_clothbound_fw_modulemap_content}")
+
+    add_custom_command(TARGET ClothboundCore POST_BUILD
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+            "$<TARGET_BUNDLE_DIR:ClothboundCore>/Versions/A/Modules"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${_clothbound_fw_modulemap}"
+            "$<TARGET_BUNDLE_DIR:ClothboundCore>/Versions/A/Modules/module.modulemap"
+        COMMAND "${CMAKE_COMMAND}" -E rm -rf
+            "$<TARGET_BUNDLE_DIR:ClothboundCore>/Modules"
+        COMMAND "${CMAKE_COMMAND}" -E create_symlink
+            "Versions/Current/Modules"
+            "$<TARGET_BUNDLE_DIR:ClothboundCore>/Modules"
+        COMMENT "Installing ClothboundCore.framework Modules/module.modulemap"
+    )
+endif()
+
+# ---------------------------------------------------------------------------
+# Standalone zero-Qt out-of-process sherpa-onnx TTS helper: clothbound-tts
+# ---------------------------------------------------------------------------
+add_executable(clothbound-tts
+    src/tts/clothbound_tts_main.cpp
+)
+set_target_properties(clothbound-tts PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+)
+target_include_directories(clothbound-tts PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+target_link_libraries(clothbound-tts
+    PRIVATE
+        ${CMAKE_DL_LIBS}
+        Threads::Threads
 )
 
 # Isolated headless MCP library layered strictly on top of clothbound_headless
@@ -197,6 +332,7 @@ add_executable(clothbound-mcp
 )
 target_link_libraries(clothbound-mcp PRIVATE clothbound_mcp)
 
+if(CLOTHBOUND_BUILD_QT_GUI)
 # ---------------------------------------------------------------------------
 # Layer 2: clothbound_app (full GUI / Reader / Audio / AI / Online core)
 # ---------------------------------------------------------------------------
@@ -242,6 +378,7 @@ add_library(clothbound_app STATIC
     src/audio/audiobook.cpp
     src/audio/audiocache.h
     src/audio/audiocache.cpp
+    src/audio/audiooutput.h
     src/audio/cast.h
     src/audio/cast.cpp
     src/audio/director.h
@@ -275,6 +412,8 @@ add_library(clothbound_app STATIC
     src/ai/bookcontextreader.cpp
     src/ai/booksearch.h
     src/ai/booksearch.cpp
+    src/ai/booksession.h
+    src/ai/booksession.cpp
     src/ai/companion.h
     src/ai/companion.cpp
     src/ai/companionstore.h
@@ -297,6 +436,8 @@ add_library(clothbound_app STATIC
     src/online/epubwriter.cpp
     src/online/opdsclient.h
     src/online/opdsclient.cpp
+    src/online/opdscoverprovider.h
+    src/online/opdscoverprovider.cpp
     src/online/opdsparser.h
     src/online/opdsparser.cpp
     src/online/urlguard.h
@@ -311,11 +452,24 @@ target_link_libraries(clothbound_app
         Qt6::Qml
         Qt6::Quick
         Qt6::QuickControls2
-        Qt6::Multimedia
         Qt6::WebEngineCore
         Qt6::WebEngineQuick
         Qt6::WebChannel
 )
+if(APPLE)
+    target_sources(clothbound_app PRIVATE src/app/systemcheck_mac.mm)
+    set_source_files_properties(src/app/systemcheck_mac.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+    target_link_libraries(clothbound_app
+        PUBLIC
+            "-framework Metal"
+            "-framework Foundation"
+    )
+else()
+    target_link_libraries(clothbound_app
+        PUBLIC
+            Qt6::Multimedia
+    )
+endif()
 
 # ---------------------------------------------------------------------------
 # AOT-compiled Qt Quick Controls style module: qrc:/ui/style/Clothbound/*
@@ -461,6 +615,7 @@ target_link_libraries(clothbound
         clothbound_app
         $<LINK_LIBRARY:WHOLE_ARCHIVE,clothbound_style>
 )
+endif() # CLOTHBOUND_BUILD_QT_GUI
 
 # ---------------------------------------------------------------------------
 # Unit & QML smoke test suite + C++ micro-benchmarks (tests/CMakeLists.txt)
@@ -475,37 +630,63 @@ endif()
 # ---------------------------------------------------------------------------
 # Install rules
 # ---------------------------------------------------------------------------
-install(TARGETS clothbound clothbound-mcp
-    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
-)
+if(CLOTHBOUND_BUILD_QT_GUI)
+    install(TARGETS clothbound clothbound-mcp clothbound-tts
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+else()
+    install(TARGETS clothbound-mcp clothbound-tts
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    )
+    install(FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/bridge/clothbound_c.h"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/bridge/module.modulemap"
+        DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/clothbound"
+    )
+endif()
+if(APPLE AND CLOTHBOUND_BUILD_MAC_FRAMEWORK)
+    install(TARGETS ClothboundCore
+        FRAMEWORK DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    )
+    install(FILES "${_clothbound_fw_modulemap}"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/ClothboundCore.framework/Versions/A/Modules"
+        RENAME "module.modulemap"
+    )
+    install(CODE
+        "execute_process(COMMAND \"${CMAKE_COMMAND}\" -E rm -f \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/ClothboundCore.framework/Modules\")
+         execute_process(COMMAND \"${CMAKE_COMMAND}\" -E create_symlink \"Versions/Current/Modules\" \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/ClothboundCore.framework/Modules\")"
+    )
+endif()
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/src/i18n/"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/clothbound/i18n"
     FILES_MATCHING PATTERN "*.json"
 )
-if(CLOTHBOUND_APP_ID STREQUAL "clothbound")
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.desktop"
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
-    )
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.svg"
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
-    )
-else()
-    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.desktop" _clothbound_desktop_in)
-    string(REPLACE "Icon=clothbound" "Icon=${CLOTHBOUND_APP_ID}" _clothbound_desktop_out "${_clothbound_desktop_in}")
-    string(REPLACE "StartupWMClass=clothbound" "StartupWMClass=${CLOTHBOUND_APP_ID}" _clothbound_desktop_out "${_clothbound_desktop_out}")
-    set(_clothbound_desktop_gen "${CMAKE_CURRENT_BINARY_DIR}/${CLOTHBOUND_APP_ID}.desktop")
-    file(WRITE "${_clothbound_desktop_gen}" "${_clothbound_desktop_out}")
-    install(FILES "${_clothbound_desktop_gen}"
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
-    )
-    install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.svg"
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
-        RENAME "${CLOTHBOUND_APP_ID}.svg"
-    )
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/flatpak/${CLOTHBOUND_APP_ID}.metainfo.xml")
-        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/flatpak/${CLOTHBOUND_APP_ID}.metainfo.xml"
-            DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo"
+if(CLOTHBOUND_BUILD_QT_GUI)
+    if(CLOTHBOUND_APP_ID STREQUAL "clothbound")
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.desktop"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
         )
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.svg"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
+        )
+    else()
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.desktop" _clothbound_desktop_in)
+        string(REPLACE "Icon=clothbound" "Icon=${CLOTHBOUND_APP_ID}" _clothbound_desktop_out "${_clothbound_desktop_in}")
+        string(REPLACE "StartupWMClass=clothbound" "StartupWMClass=${CLOTHBOUND_APP_ID}" _clothbound_desktop_out "${_clothbound_desktop_out}")
+        set(_clothbound_desktop_gen "${CMAKE_CURRENT_BINARY_DIR}/${CLOTHBOUND_APP_ID}.desktop")
+        file(WRITE "${_clothbound_desktop_gen}" "${_clothbound_desktop_out}")
+        install(FILES "${_clothbound_desktop_gen}"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+        )
+        install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/pkgbuild/clothbound.svg"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
+            RENAME "${CLOTHBOUND_APP_ID}.svg"
+        )
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/flatpak/${CLOTHBOUND_APP_ID}.metainfo.xml")
+            install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/flatpak/${CLOTHBOUND_APP_ID}.metainfo.xml"
+                DESTINATION "${CMAKE_INSTALL_DATADIR}/metainfo"
+            )
+        endif()
     endif()
 endif()
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE"

@@ -63,6 +63,9 @@ public:
     bool open();
     QString errorString() const { return m_error; }
     QString filePath() const { return m_zip.path(); }
+    // True when opened from an unzipped `.epub/` directory bundle (e.g. Apple Books).
+    bool isDirectoryPackage() const { return m_isDirectory; }
+    static bool isUnzippedPackage(const QString &path);
     // Content encrypted by a store (Adobe, Kindle, Kobo) rather than the
     // font obfuscation every reader undoes.
     bool isDrmProtected() const { return m_drm; }
@@ -105,6 +108,13 @@ public:
 
 private:
     bool fail(const QString &message);
+    bool openDirectory(const QString &dirPath);
+    bool containerContains(const QString &name) const;
+    QString containerResolve(const QString &name) const;
+    QStringList containerNames() const;
+    qint64 containerSize(const QString &name) const;
+    bool containerEncrypted(const QString &name) const;
+    QByteArray containerRead(const QString &name, QString *error = nullptr) const;
     bool readPackage(const QString &opfPath);
     void readEncryption();
     void readNavigation(const QString &navPath);
@@ -114,6 +124,12 @@ private:
     QByteArray deobfuscate(const QString &path, QByteArray data) const;
 
     ZipArchive m_zip;
+    bool m_isDirectory = false;
+    QString m_dirRoot;
+    QString m_dirRootPrefix;
+    QStringList m_dirNames;
+    QHash<QString, QString> m_dirFolded;
+    QHash<QString, qint64> m_dirSizes;
     QString m_error;
     QString m_opfPath;
     QString m_version;

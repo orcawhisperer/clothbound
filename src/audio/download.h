@@ -2,6 +2,7 @@
 
 #include "ai/ai.h"
 #include "audio/speech.h"
+#include "reader/reader.h"
 
 #include <QElapsedTimer>
 #include <QHash>
@@ -43,6 +44,10 @@ class Download : public QObject {
 public:
     Download(AiServices *ai, AudioCache *cache, Reader *reader, Narration *narration, QObject *parent = nullptr);
     ~Download() override;
+
+    Reader *reader() const { return m_reader.data(); }
+    void setReader(Reader *reader);
+    Q_INVOKABLE void startFor(Reader *reader, int first, int last);
 
     bool active() const { return m_active; }
     bool running() const { return m_active && !m_paused; }
@@ -102,10 +107,17 @@ private:
     void stopWith(const QString &problem);
     void checkFinished();
     void setProblem(const QString &problem);
+    void handleReaderBookChanged();
+    void handleReaderDestroyed(QObject *destroyedReader);
+    void resetDirector(Reader *reader);
 
     AiServices *m_ai;
     AudioCache *m_cache;
-    Reader *m_reader;
+    QPointer<Reader> m_reader;
+    const Reader *m_readerRaw = nullptr;
+    QMetaObject::Connection m_speakableConn;
+    QMetaObject::Connection m_bookChangedConn;
+    QMetaObject::Connection m_destroyedConn;
     Narration *m_narration;
     Director *m_director;
     QPointer<Cast> m_cast;

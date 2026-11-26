@@ -72,6 +72,10 @@ public:
     int booksPrepared() const;
 
     void setMeaning(AiServices *ai, const QString &databaseConnection);
+    // Shares a single PassageIndex across multiple BookSession instances so
+    // vector memory is never duplicated across open windows/tabs.
+    void setMeaning(AiServices *ai, PassageIndex *sharedIndex);
+    PassageIndex *passageIndex() const { return m_index.data(); }
     bool byMeaning() const { return m_byMeaning; }
     void setByMeaning(bool byMeaning);
     bool canSearchByMeaning() const;
@@ -112,8 +116,10 @@ private:
 
     QPointer<QObject> m_reader;
     QPointer<Library> m_library;
-    AiServices *m_ai = nullptr;
-    PassageIndex *m_index = nullptr;
+    QPointer<AiServices> m_ai;
+    QPointer<PassageIndex> m_index;
+    bool m_ownsIndex = false;
+    bool m_indexOpActive = false;
     QVariantList m_libraryResults;
     int m_libraryRun = 0;
     bool m_byMeaning = false;

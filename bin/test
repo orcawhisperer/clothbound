@@ -118,7 +118,8 @@ else
     cmake --build "$BUILD_DIR" --parallel "$(nproc)" --target \
         clothbound_tests tst_concurrency tst_webengine_e2e \
         tst_w8_storage_palette tst_w8_passage_quant tst_w8_mcp_cli \
-        tst_scanner_flatpak clothbound-mcp
+        tst_scanner_flatpak tst_p0_headless_core tst_p0_book_session \
+        tst_p0_bridge_tts clothbound-mcp clothbound-tts
 fi
 
 TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/clothbound-test.XXXXXX")"
@@ -132,6 +133,7 @@ export QT_QPA_PLATFORM=offscreen
 export QT_QPA_PLATFORMTHEME=generic
 export QTWEBENGINE_CHROMIUM_FLAGS="${QTWEBENGINE_CHROMIUM_FLAGS:---no-sandbox --disable-gpu --disable-dev-shm-usage}"
 export CLOTHBOUND_MCP_BIN="$BUILD_DIR/clothbound-mcp"
+export CLOTHBOUND_TTS_BIN="$BUILD_DIR/clothbound-tts"
 
 if [ "$SANITIZER" = "asan" ]; then
     export ASAN_OPTIONS="${ASAN_OPTIONS:-detect_leaks=0}"
@@ -174,4 +176,7 @@ else
     run_in_session ./tst_w8_passage_quant
     run_in_session ./tst_w8_mcp_cli
     run_in_session ./tst_scanner_flatpak
+    run_in_session ./tst_p0_headless_core
+    run_in_session ./tst_p0_book_session
+    run_in_session ./tst_p0_bridge_tts
 fi

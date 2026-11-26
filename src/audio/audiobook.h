@@ -29,6 +29,9 @@ public:
     Audiobook(AudioCache *cache, Download *download, Reader *reader, Library *library, QObject *parent = nullptr);
     ~Audiobook() override;
 
+    void setReader(Reader *reader);
+    Reader *reader() const;
+
     bool busy() const { return m_busy; }
     double progress() const { return m_progress; }
     QString problem() const { return m_problem; }
@@ -50,6 +53,12 @@ public:
     static QString metadata(const QString &title, const QString &author, const QList<Chapter> &chapters);
     // ffmpeg's concat list of files.
     static QString concatList(const QStringList &files);
+    // macOS GUI apps launched from Finder/Dock do not inherit Homebrew/MacPorts
+    // paths in PATH, so check standard macOS binary directories as fallbacks.
+    static QStringList macExecutableSearchDirs();
+    static QString findExecutableInPaths(const QString &name, const QStringList &fallbackDirs = {},
+                                         bool searchSystemPath = true);
+    static QString findFfmpeg();
 
 signals:
     void changed();
@@ -68,7 +77,7 @@ private:
 
     AudioCache *m_cache;
     Download *m_download;
-    Reader *m_reader;
+    QPointer<Reader> m_reader;
     Library *m_library;
     bool m_busy = false;
     double m_progress = 0;

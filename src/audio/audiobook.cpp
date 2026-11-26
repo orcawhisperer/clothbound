@@ -6,10 +6,18 @@
 #include "reader/reader.h"
 #include "audio/speech.h"
 
+#include <QtGlobal>
+
+#if !defined(CLOTHBOUND_HAS_DBUS) && defined(Q_OS_LINUX) && !defined(CLOTHBOUND_NO_DBUS)
+#define CLOTHBOUND_HAS_DBUS 1
+#endif
+
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#endif
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
@@ -65,7 +73,18 @@ QPair<int, int> wavFormat(const QString &path) {
 }  // namespace
 
 Audiobook::Audiobook(AudioCache *cache, Download *download, Reader *reader, Library *library, QObject *parent)
-    : QObject(parent), m_cache(cache), m_download(download), m_reader(reader), m_library(library) {
+    : QObject(parent), m_cache(cache), m_download(download), m_library(library) {
+    setReader(reader);
+}
+
+Reader *Audiobook::reader() const { return m_reader; }
+
+void Audiobook::setReader(Reader *reader) {
+    if (m_reader == reader)
+        return;
+    if (m_reader)
+        disconnect(m_reader, nullptr, this, nullptr);
+    m_reader = reader;
     if (m_reader) {
         connect(m_reader, &Reader::bookChanged, this, [this] {
             if (m_busy)
@@ -131,6 +150,35 @@ QString Audiobook::concatList(const QStringList &files) {
     return out;
 }
 
+QStringList Audiobook::macExecutableSearchDirs() {
+    return {
+        QStringLiteral("/opt/homebrew/bin"),
+        QStringLiteral("/usr/local/bin"),
+        QStringLiteral("/opt/local/bin"),
+    };
+}
+
+QString Audiobook::findExecutableInPaths(const QString &name, const QStringList &fallbackDirs, bool searchSystemPath) {
+    if (name.isEmpty())
+        return {};
+    if (searchSystemPath) {
+        const QString found = QStandardPaths::findExecutable(name);
+        if (!found.isEmpty())
+            return found;
+    }
+    if (!fallbackDirs.isEmpty())
+        return QStandardPaths::findExecutable(name, fallbackDirs);
+    return {};
+}
+
+QString Audiobook::findFfmpeg() {
+#ifdef Q_OS_MACOS
+    return findExecutableInPaths(QStringLiteral("ffmpeg"), macExecutableSearchDirs(), true);
+#else
+    return findExecutableInPaths(QStringLiteral("ffmpeg"), {}, true);
+#endif
+}
+
 void Audiobook::fail(const QString &problem) {
     cleanupWork();
     m_problem = problem;
@@ -152,6 +200,7 @@ void Audiobook::revealSaved() const {
         return;
     const QString savedPath = m_saved;
     const QString folderPath = QFileInfo(savedPath).absolutePath();
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (bus.isConnected()) {
         QDBusMessage call = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.FileManager1"),
@@ -168,6 +217,10 @@ void Audiobook::revealSaved() const {
         });
         return;
     }
+#elif defined(Q_OS_MACOS)
+    if (QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), savedPath}))
+        return;
+#endif
     QDesktopServices::openUrl(QUrl::fromLocalFile(folderPath));
 }
 
@@ -178,9 +231,13 @@ void Audiobook::save() {
     m_problem.clear();
     m_saved.clear();
     m_cancelled = false;
-    const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffmpeg = findFfmpeg();
     if (ffmpeg.isEmpty()) {
+#ifdef Q_OS_MACOS
+        fail(QStringLiteral("Saving an audiobook needs ffmpeg: install it with brew install ffmpeg."));
+#else
         fail(tr("Saving an audiobook needs ffmpeg: install it with omarchy-pkg-add ffmpeg."));
+#endif
         return;
     }
     // Snapshot book identity and metadata before any async prep runs so
@@ -219,7 +276,7 @@ void Audiobook::save() {
 
     for (auto it = planned.cbegin(); it != planned.cend(); ++it) {
         Chapter chapter;
-        chapter.title = m_reader->titleOfChapter(it.key());
+        chapter.title = m_reader ? m_reader->titleOfChapter(it.key()) : QString();
         if (chapter.title.isEmpty())
             chapter.title = tr("Chapter %1").arg(it.key() + 1);
         chapter.startMs = qint64(std::llround(atSec * 1000.0));
@@ -317,7 +374,9 @@ void Audiobook::save() {
         }
     }
 
-    QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    QString music = qEnvironmentVariable("CLOTHBOUND_MUSIC_DIR").trimmed();
+    if (music.isEmpty())
+        music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
     if (music.isEmpty())
         music = QDir::homePath() + QStringLiteral("/Music");
     const QString folder = music + QStringLiteral("/Clothbound");
@@ -337,13 +396,13 @@ void Audiobook::save() {
 
     // Append chapter range on partial exports (e.g. "Book (Ch 3–5).m4b") so
     // exporting one chapter or a subset never clobbers a full-book .m4b.
-    const QVariantList spine = m_reader->manifest().value(QStringLiteral("spine")).toList();
+    const QVariantList spine = m_reader ? m_reader->manifest().value(QStringLiteral("spine")).toList() : QVariantList{};
     QList<int> allLinear;
     QList<int> allLinearRaw;
     for (int i = 0; i < spine.size(); ++i) {
         if (spine[i].toMap().value(QStringLiteral("linear")).toBool()) {
             allLinearRaw.append(i);
-            if (m_reader->charactersIn(i) > 0)
+            if (m_reader && m_reader->charactersIn(i) > 0)
                 allLinear.append(i);
         }
     }

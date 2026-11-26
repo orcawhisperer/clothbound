@@ -1,8 +1,8 @@
 #pragma once
 
-#include <QHash>
+#include "formats/bookresourcestore.h"
+
 #include <QMultiMap>
-#include <QMutex>
 #include <QPointer>
 #include <QThreadPool>
 #include <QUrl>
@@ -17,11 +17,11 @@
 class EpubBook;
 class QQuickWebEngineProfile;
 
-// Serves the reading surface and the open books to the web view, all from
-// one origin, clothbound://local, so the surface can lay out and annotate the
-// chapters it shows:
+// Thin QWebEngineUrlSchemeHandler delegating to the WebEngine-free
+// BookResourceStore so the reading surface and open books are served from one
+// origin (clothbound://local):
 //   clothbound://local/app/…              the surface itself, from the binary
-//   clothbound://local/book/<token>/<path> a file inside an open book's ZIP
+//   clothbound://local/book/<token>/<path> a file inside an open book
 // A book's token is random and dies with the book, so a page can only
 // reach books that are open.
 class BookScheme : public QWebEngineUrlSchemeHandler {
@@ -34,6 +34,9 @@ public:
     QString add(const std::shared_ptr<EpubBook> &book);
     void remove(const QString &token);
     static QString baseUrl(const QString &token);
+
+    BookResourceStore &store() { return m_store; }
+    const BookResourceStore &store() const { return m_store; }
 
     void requestStarted(QWebEngineUrlRequestJob *job) override;
 
@@ -68,14 +71,10 @@ private:
         ResolvedResource result;
     };
 
-    static ResolvedResource resolveAppRequest(const QString &path);
-    ResolvedResource resolveBookResource(const std::shared_ptr<EpubBook> &book, const QString &token, QString entry,
-                                         const std::atomic_bool *cancelled = nullptr);
+    static ResolvedResource fromStoreResult(BookResourceStore::ResolvedResource res);
     void drainDeliveries();
 
-    QMutex m_mutex;
-    QHash<QString, std::shared_ptr<EpubBook>> m_books;
-    QHash<QString, bool> m_wellFormed;
+    BookResourceStore m_store;
     QThreadPool m_pool;
     std::atomic_bool m_shuttingDown{false};
     std::mutex m_deliveryMutex;

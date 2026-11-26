@@ -6,12 +6,14 @@
 
 #include <QBuffer>
 #include <QCoreApplication>
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusObjectPath>
 #include <QDBusPendingCall>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#endif
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -30,11 +32,13 @@
 namespace {
 constexpr qint64 maxImageBytes = 20 * 1024 * 1024;
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 QByteArray portalPathBytes(const QString &path) {
     QByteArray bytes = path.toUtf8();
     bytes.append('\0');
     return bytes;
 }
+#endif
 
 QSettings illustratorSettings() {
     return QSettings(QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini"),
@@ -83,14 +87,16 @@ Illustrator::Illustrator(AiServices *ai, Reader *reader, const QString &database
     : QObject(parent), m_ai(ai), m_reader(reader), m_store(databaseConnection), m_folder(folder) {
     m_style = normalizeStyle(illustratorSettings().value(QStringLiteral("illustrator/style"), QStringLiteral("auto")).toString());
     m_store.ensurePictureTable();
-    connect(reader, &Reader::bookChanged, this, [this] {
-        stop();
-        m_problem.clear();
-        m_problemIsConfig = false;
-        m_hasLastRequest = false;
-        emit changed();
-        emit picturesChanged();
-    });
+    if (m_reader) {
+        connect(m_reader, &Reader::bookChanged, this, [this] {
+            stop();
+            m_problem.clear();
+            m_problemIsConfig = false;
+            m_hasLastRequest = false;
+            emit changed();
+            emit picturesChanged();
+        });
+    }
     connect(ai, &AiServices::changed, this, &Illustrator::changed);
     connect(ai, &AiServices::routingChanged, this, &Illustrator::changed);
     connect(ai, &AiServices::usageChanged, this, &Illustrator::changed);
@@ -143,6 +149,8 @@ QVariantList Illustrator::styles() const {
 
 QVariantList Illustrator::pictures() const {
     QVariantList out;
+    if (!m_reader)
+        return out;
     for (const CompanionStore::PictureRecord &rec : m_store.loadPictures(m_reader->bookId())) {
         const QString styleId = normalizeStyle(rec.style);
         out.append(QVariantMap{{"id", rec.id},
@@ -238,6 +246,8 @@ void Illustrator::stop() {
 
 void Illustrator::regenerate(int id) {
     Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_reader)
+        return;
     CompanionStore::PictureRecord rec;
     if (!m_store.findPicture(id, m_reader->bookId(), &rec))
         return;
@@ -246,6 +256,8 @@ void Illustrator::regenerate(int id) {
 
 void Illustrator::illustrate(const QString &text, int chapter, qint64 end) {
     Q_ASSERT(QThread::currentThread() == thread());
+    if (!m_reader)
+        return;
     stop();
     m_problem.clear();
     m_problemIsConfig = false;
@@ -378,7 +390,7 @@ void Illustrator::draw(const QString &prompt, const QString &caption, int chapte
     m_ai->track(reply, false, imgCost);
     m_reply = reply;
     const int generation = m_generation;
-    const int bookId = m_reader->bookId();
+    const int bookId = m_reader ? m_reader->bookId() : 0;
     connect(reply, &Ai::Reply::finished, this,
             [this, reply, prompt, caption, chapter, offset, styleId, passage, generation, bookId] {
                 reply->deleteLater();
@@ -507,7 +519,10 @@ QString Illustrator::saveCopy(int id) {
     return QFile::copy(source, target) ? target : QString();
 }
 
+void Illustrator::setSaveFileChooser(SaveFileChooser chooser) { m_saveFileChooser = std::move(chooser); }
+
 void Illustrator::clearPendingSave() {
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     if (m_saveWatcher) {
         m_saveWatcher->deleteLater();
         m_saveWatcher = nullptr;
@@ -519,6 +534,7 @@ void Illustrator::clearPendingSave() {
             this, SLOT(handleSaveResponse(uint,QVariantMap)));
         m_pendingSavePath.clear();
     }
+#endif
     m_pendingSaveId = 0;
 }
 
@@ -538,6 +554,40 @@ void Illustrator::chooseSaveCopy(int id) {
             emit saveFailed(tr("Couldn't save a copy of this picture"));
     };
 
+    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Clothbound");
+
+    if (m_saveFileChooser) {
+        clearPendingSave();
+        QDir().mkpath(folder);
+        m_pendingSaveId = id;
+        const int generation = ++m_saveGeneration;
+        QPointer<Illustrator> self(this);
+        m_saveFileChooser(tr("Save Illustration"), fileName, folder,
+                          [self, generation, id](const QString &selectedPath, bool cancelled) {
+                              if (!self)
+                                  return;
+                              QMetaObject::invokeMethod(
+                                  self.data(),
+                                  [self, generation, id, selectedPath, cancelled] {
+                                      if (!self || generation != self->m_saveGeneration || self->m_pendingSaveId != id)
+                                          return;
+                                      self->clearPendingSave();
+                                      if (cancelled)
+                                          return;
+                                      const QString saved = selectedPath.isEmpty()
+                                                                ? self->saveCopy(id)
+                                                                : self->saveCopyTo(id, selectedPath);
+                                      if (!saved.isEmpty())
+                                          emit self->savedCopy(saved);
+                                      else
+                                          emit self->saveFailed(tr("Couldn't save a copy of this picture"));
+                                  },
+                                  Qt::AutoConnection);
+                          });
+        return;
+    }
+
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (!bus.isConnected()) {
         fallbackDirect();
@@ -545,7 +595,6 @@ void Illustrator::chooseSaveCopy(int id) {
     }
 
     clearPendingSave();
-    const QString folder = QStandardPaths::writableLocation(QStandardPaths::PicturesLocation) + QStringLiteral("/Clothbound");
     QDir().mkpath(folder);
     const QString token = QStringLiteral("clothbound_save_%1").arg(QRandomGenerator::global()->generate());
     QString sender = bus.baseService().mid(1);
@@ -608,8 +657,12 @@ void Illustrator::chooseSaveCopy(int id) {
                 this, SLOT(handleSaveResponse(uint,QVariantMap)));
         }
     });
+#else
+    fallbackDirect();
+#endif
 }
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 void Illustrator::handleSaveResponse(uint response, const QVariantMap &results) {
     const int id = m_pendingSaveId;
     clearPendingSave();
@@ -632,3 +685,4 @@ void Illustrator::handleSaveResponse(uint response, const QVariantMap &results) 
     else
         emit saveFailed(tr("Couldn't save a copy of this picture"));
 }
+#endif

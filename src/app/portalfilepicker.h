@@ -7,7 +7,13 @@
 
 #include "app/filepicker.h"
 
+#if !defined(CLOTHBOUND_HAS_DBUS) && (defined(Q_OS_LINUX) || defined(__linux__)) && !defined(CLOTHBOUND_NO_DBUS)
+#define CLOTHBOUND_HAS_DBUS 1
+#endif
+
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 class QDBusPendingCallWatcher;
+#endif
 
 class PortalFilePicker : public FilePicker {
     Q_OBJECT
@@ -19,6 +25,7 @@ public:
     void chooseFolders() override;
     void chooseBooks() override;
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 private slots:
     void handleResponse(uint response, const QVariantMap &results);
 
@@ -40,4 +47,5 @@ private:
     // Bumped per request, so a late reply for a replaced request is ignored.
     int m_pendingGeneration = 0;
     QDBusPendingCallWatcher *m_pendingWatcher = nullptr;
+#endif
 };
