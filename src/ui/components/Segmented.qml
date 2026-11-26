@@ -122,8 +122,12 @@ FocusScope {
                 readonly property bool itemEnabled: control.enabledAt(index)
 
                 enabled: itemEnabled
-                width: control.width > control.naturalWidth + 4
-                       ? (control.width - 4) / control.count : implicitWidth
+                width: control.count <= 0 ? 0
+                     : control.width > control.naturalWidth + 4
+                       ? (control.width - 4) / control.count
+                       : (control.naturalWidth > 0 && control.width > 4
+                          ? implicitWidth * ((control.width - 4) / control.naturalWidth)
+                          : implicitWidth)
                 implicitWidth: glyph !== "" ? (control.compact ? 30 : 34)
                              : subtitle !== "" ? Math.max(twoLineTitle.implicitWidth, twoLineSub.implicitWidth) + 22
                              : label.implicitWidth + (control.compact ? 18 : 24)

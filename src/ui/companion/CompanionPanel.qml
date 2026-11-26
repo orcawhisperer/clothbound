@@ -29,7 +29,7 @@ FocusScope {
 
     readonly property int defaultWidth: 384
     readonly property int minWidth: 320
-    readonly property int maxWidth: Math.max(minWidth, Math.min(760, Math.floor((parent ? parent.width : 1280) * 0.56)))
+    readonly property int maxWidth: Math.max(minWidth, Math.min(760, Math.floor((parent && parent.width > 0 ? parent.width : 1280) * 0.56)))
     property real preferredWidth: uiSettings.companionWidth
     readonly property bool resizing: resizeDrag.active
 
@@ -579,15 +579,16 @@ FocusScope {
         onWheel: (wheel) => wheel.accepted = true
     }
 
-    // Invisible 6px left-edge resize sash with a quiet 2px accent hairline on hover/drag.
+    // Invisible 8px left-edge resize sash with a quiet 2px accent hairline on hover/drag.
     MouseArea {
         id: resizeDrag
         property bool active: false
+        property bool moved: false
         property real startParentX: 0
         property real startWidth: 384
-        x: -3
+        x: -4
         y: 0
-        width: 6
+        width: 8
         height: parent.height
         z: 20
         enabled: panel.open
@@ -602,6 +603,7 @@ FocusScope {
             const pt = mapToItem(panel.parent, mouse.x, mouse.y)
             startParentX = pt.x
             startWidth = panel.width
+            moved = false
             active = true
         }
         onPositionChanged: (mouse) => {
@@ -609,23 +611,33 @@ FocusScope {
                 return
             const pt = mapToItem(panel.parent, mouse.x, mouse.y)
             const delta = startParentX - pt.x
+            if (!moved && Math.abs(delta) < 1)
+                return
+            moved = true
             const clamped = Math.max(panel.minWidth, Math.min(panel.maxWidth, Math.round(startWidth + delta)))
             panel.preferredWidth = clamped
         }
         onReleased: {
             if (!active)
                 return
+            const didMove = moved
             active = false
-            uiSettings.companionWidth = Math.round(panel.width)
+            moved = false
+            if (didMove)
+                uiSettings.companionWidth = Math.round(panel.width)
         }
         onCanceled: {
             if (!active)
                 return
+            const didMove = moved
             active = false
-            uiSettings.companionWidth = Math.round(panel.width)
+            moved = false
+            if (didMove)
+                uiSettings.companionWidth = Math.round(panel.width)
         }
         onDoubleClicked: {
             active = false
+            moved = false
             const target = Math.max(panel.minWidth, Math.min(panel.maxWidth, panel.defaultWidth))
             if (theme.reducedMotion) {
                 panel.preferredWidth = target
@@ -639,12 +651,12 @@ FocusScope {
         }
 
         Rectangle {
-            x: 2
+            x: 3
             y: 0
             width: 2
             height: parent.height
             color: theme.accent
-            opacity: resizeDrag.active ? 0.85 : (resizeDrag.containsMouse ? 0.55 : 0)
+            opacity: resizeDrag.active ? 0.8 : (resizeDrag.containsMouse ? 0.45 : 0)
             Behavior on opacity {
                 enabled: !theme.reducedMotion
                 NumberAnimation { duration: 120; easing.type: Easing.OutCubic }

@@ -308,6 +308,7 @@ FocusScope {
     // --- Sidebar ---------------------------------------------------------
     LibrarySidebar {
         id: sidebar
+        z: 2
         anchors.top: parent.top
         anchors.bottom: parent.bottom
         anchors.left: parent.left

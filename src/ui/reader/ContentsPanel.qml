@@ -11,6 +11,7 @@ SidePanel {
     id: panel
 
     leftEdge: true
+    persistKey: "contentsWidth"
     title: qsTr("Contents")
     glyph: Icons.contents
 

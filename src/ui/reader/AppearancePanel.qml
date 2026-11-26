@@ -12,6 +12,7 @@ import "../components/Ui.js" as Ui
 SidePanel {
     id: panel
 
+    persistKey: "appearanceWidth"
     title: qsTr("Appearance")
 
     property var settings

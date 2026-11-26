@@ -1,3 +1,5 @@
+import QtCore
+import QtQml
 import QtQuick
 import QtQuick.Controls
 import ".."
@@ -9,13 +11,21 @@ import "../components/Ui.js" as Ui
 // The library sidebar: Clothbound brand mark, core shelves, Listening (Downloaded &
 // Audiobooks), color-swatched Collections, Online catalogs & URLs, transient J2
 // watching card, and the Settings entry (with live intelligence status) at the foot.
-// Ctrl+B folds it to a 60 px icon rail on a damped 350 ms transition.
+// Ctrl+B folds it to a 60 px icon rail on a damped 350 ms transition; dragging the
+// right border resizes it smoothly across [184..380] px and double-clicking resets.
 Rectangle {
     id: side
 
     property bool collapsed: false
-    readonly property real expandedWidth: 232
+    readonly property real defaultExpandedWidth: 232
+    readonly property real minExpandedWidth: 184
+    readonly property real maxExpandedWidth: Math.min(380, parent && parent.width > 0 ? Math.max(240, Math.floor(parent.width * 0.42)) : 380)
+    property real preferredExpandedWidth: defaultExpandedWidth
+    readonly property real expandedWidth: Math.max(minExpandedWidth, Math.min(maxExpandedWidth, Math.round(preferredExpandedWidth)))
     readonly property real railWidth: 60
+    readonly property bool resizing: resizeHandle.active
+    property bool widthAnimReady: false
+    property Settings persistedSettings: null
 
     signal toggleRequested()
     signal createCollection()
@@ -26,6 +36,46 @@ Rectangle {
     signal settingsRequested()
     signal catalogsRequested()
     signal addUrlRequested()
+
+    function loadPersistedWidth() {
+        if (!persistedSettings)
+            return
+        const raw = persistedSettings.value("sidebarWidth", defaultExpandedWidth)
+        const saved = Number(raw)
+        if (isFinite(saved) && saved > 0)
+            preferredExpandedWidth = Math.max(minExpandedWidth, Math.min(380, Math.round(saved)))
+    }
+    function persistWidth(w) {
+        if (!persistedSettings)
+            return
+        persistedSettings.setValue("sidebarWidth", Math.round(w))
+        persistedSettings.sync()
+    }
+
+    Instantiator {
+        active: typeof settingsUrl !== "undefined" && String(settingsUrl) !== ""
+        delegate: Settings {
+            id: sidebarSettings
+            location: settingsUrl
+            category: "library"
+            Component.onCompleted: {
+                side.persistedSettings = sidebarSettings
+                side.loadPersistedWidth()
+            }
+            Component.onDestruction: {
+                if (side.persistedSettings === sidebarSettings)
+                    side.persistedSettings = null
+            }
+        }
+    }
+
+    Component.onCompleted: Qt.callLater(() => { side.widthAnimReady = true })
+    onCollapsedChanged: {
+        if (collapsed) {
+            resizeHandle.active = false
+            resizeHandle.moved = false
+        }
+    }
 
     readonly property var works: library.works
     readonly property var counts: library.shelfCounts
@@ -74,17 +124,97 @@ Rectangle {
 
     width: collapsed ? railWidth : expandedWidth
     Behavior on width {
-        enabled: !theme.reducedMotion
+        enabled: side.widthAnimReady && !side.resizing && !theme.reducedMotion
         NumberAnimation { duration: 350; easing.type: Easing.OutQuart }
     }
     color: theme.sidebar
-    clip: true
 
     Rectangle {
         anchors.right: parent.right
         width: 1
         height: parent.height
         color: theme.hairline
+    }
+
+    // Subtle 8 px drag-resize sash straddling the right divider border; invisible
+    // at rest, softly illuminates on hover/drag, double-click resets to default.
+    MouseArea {
+        id: resizeHandle
+        property bool active: false
+        property bool moved: false
+        property real startParentX: 0
+        property real startWidth: side.defaultExpandedWidth
+
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+        anchors.rightMargin: -4
+        width: 8
+        z: 20
+        visible: !side.collapsed
+        enabled: !side.collapsed
+        hoverEnabled: true
+        acceptedButtons: Qt.LeftButton
+        cursorShape: Qt.SizeHorCursor
+
+        onPressed: (mouse) => {
+            if (!side.parent || side.collapsed)
+                return
+            const pt = mapToItem(side.parent, mouse.x, mouse.y)
+            startParentX = pt.x
+            startWidth = Math.max(side.minExpandedWidth, Math.min(side.maxExpandedWidth, side.width))
+            moved = false
+            active = true
+        }
+        onPositionChanged: (mouse) => {
+            if (!active || !pressed || !side.parent || side.collapsed)
+                return
+            const pt = mapToItem(side.parent, mouse.x, mouse.y)
+            const delta = side.LayoutMirroring.enabled ? (startParentX - pt.x) : (pt.x - startParentX)
+            if (!moved && Math.abs(delta) < 1)
+                return
+            moved = true
+            const clamped = Math.max(side.minExpandedWidth, Math.min(side.maxExpandedWidth, Math.round(startWidth + delta)))
+            side.preferredExpandedWidth = clamped
+        }
+        onReleased: {
+            if (!active)
+                return
+            const didMove = moved
+            active = false
+            moved = false
+            if (didMove)
+                side.persistWidth(side.expandedWidth)
+        }
+        onCanceled: {
+            if (!active)
+                return
+            const didMove = moved
+            active = false
+            moved = false
+            if (didMove)
+                side.persistWidth(side.expandedWidth)
+        }
+        onDoubleClicked: {
+            active = false
+            moved = false
+            const target = Math.max(side.minExpandedWidth, Math.min(side.maxExpandedWidth, side.defaultExpandedWidth))
+            side.preferredExpandedWidth = target
+            side.persistWidth(target)
+        }
+
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 0
+            width: 2
+            height: parent.height
+            color: theme.accent
+            opacity: resizeHandle.active ? 0.8 : (resizeHandle.containsMouse ? 0.45 : 0)
+            Behavior on opacity {
+                enabled: !theme.reducedMotion
+                NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+            }
+        }
     }
 
     // One row of the sidebar: a glyph (or 10×10 color swatch), a label, and an
@@ -186,6 +316,8 @@ Rectangle {
             id: label
             anchors.left: parent.left
             anchors.leftMargin: 20
+            anchors.right: parent.right
+            anchors.rightMargin: 16
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 6
             visible: !side.collapsed
@@ -193,6 +325,7 @@ Rectangle {
             font.pixelSize: 11
             font.weight: Font.DemiBold
             font.letterSpacing: 0.22
+            elide: Text.ElideRight
         }
         Rectangle {
             visible: side.collapsed && !parent.compact
@@ -208,6 +341,7 @@ Rectangle {
         id: header
         width: parent.width
         height: 54
+        clip: true
 
         Row {
             anchors.left: parent.left
@@ -223,11 +357,13 @@ Rectangle {
             }
             Label {
                 anchors.verticalCenter: parent.verticalCenter
+                width: Math.min(implicitWidth, Math.max(0, header.width - 18 - 20 - 9 - 28 - 18))
                 text: "Clothbound"
                 color: theme.ink1
                 font.pixelSize: 14
                 font.weight: Font.DemiBold
                 font.letterSpacing: -0.14
+                elide: Text.ElideRight
             }
         }
 
@@ -467,6 +603,7 @@ Rectangle {
         x: 10
         width: side.width - 20
         spacing: 8
+        clip: true
 
         // J2 transient watching card while books arrive.
         Rectangle {

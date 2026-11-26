@@ -24,6 +24,7 @@ Item {
     property bool pdfZoomedIn: false
     property bool contentsOpen: false
     property real contentsWidth: 0
+    property bool contentsResizing: false
     property bool citeMenuOpened: false
     property bool firstBookTipsActive: false
     property var firstBookTipsModel: []
@@ -648,7 +649,7 @@ Item {
         anchors.left: parent.left
         anchors.leftMargin: 24 + (root.contentsOpen ? root.contentsWidth : 0)
         Behavior on anchors.leftMargin {
-            enabled: !theme.reducedMotion
+            enabled: !theme.reducedMotion && !root.contentsResizing
             NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
         }
         readonly property bool shown: root.jumpPillVisible && reader.canGoBack && root.jumpPillLabel !== ""

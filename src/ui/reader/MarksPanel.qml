@@ -13,6 +13,7 @@ import "../components/Themes.js" as Themes
 SidePanel {
     id: panel
 
+    persistKey: "marksWidth"
     title: qsTr("Highlights & notes")
     glyph: Icons.bookmark
 
@@ -261,13 +262,15 @@ SidePanel {
             spacing: 6
             Label {
                 Layout.fillWidth: true
+                Layout.minimumWidth: 0
                 text: qsTr("%Ln marks", "", marks.count)
                 color: panel.look.muted
                 font.pixelSize: 12
                 font.features: ({ "tnum": 1 })
+                elide: Text.ElideRight
             }
             TextButton {
-                size: "normal"
+                size: panel.width < 340 ? "compact" : "normal"
                 ghost: true
                 look: panel.look
                 text: qsTr("Export .md")
@@ -280,7 +283,7 @@ SidePanel {
                 }
             }
             TextButton {
-                size: "normal"
+                size: panel.width < 340 ? "compact" : "normal"
                 look: panel.look
                 text: qsTr("Copy as Markdown")
                 onClicked: {

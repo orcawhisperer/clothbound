@@ -38,6 +38,7 @@ Item {
         active: false
         readonly property var loaded: item
         readonly property bool open: loaded ? !!loaded.open : false
+        readonly property bool resizing: loaded ? Boolean(loaded["resizing"]) : false
         width: loaded ? loaded.width : 0
         function show() {
             active = true
@@ -96,6 +97,7 @@ Item {
         active: false
         readonly property var loaded: item
         readonly property bool open: loaded ? !!loaded.open : false
+        readonly property bool resizing: loaded ? Boolean(loaded["resizing"]) : false
         width: loaded ? loaded.width : 0
         function show() {
             active = true
@@ -198,6 +200,7 @@ Item {
         active: false
         readonly property var loaded: item
         readonly property bool open: loaded ? !!loaded.open : false
+        readonly property bool resizing: loaded ? Boolean(loaded["resizing"]) : false
         width: loaded ? loaded.width : 0
         function show() {
             active = true

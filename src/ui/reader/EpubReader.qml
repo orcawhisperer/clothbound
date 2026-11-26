@@ -70,6 +70,8 @@ FocusScope {
     readonly property bool companionDocked: companionPanel.settledOpen && view.width >= 860
     readonly property bool companionSliding: companionPanel.sliding && view.width >= 860
     readonly property bool companionResizing: Boolean(companionPanel["resizing"])
+    readonly property bool panelResizing: companionResizing || Boolean(contents["resizing"])
+                                          || Boolean(marksPanel["resizing"]) || Boolean(appearance["resizing"])
     readonly property real companionTargetWidth: view.width >= 860
                                                  ? Math.max(0, Math.min(Math.max(0, view.width - 320), companionPanel.width))
                                                  : 0
@@ -1405,6 +1407,7 @@ FocusScope {
             pdfZoomedIn: !!(view.pdf && pdfSurface && pdfSurface.zoomedIn)
             contentsOpen: contents.open
             contentsWidth: contents.width
+            contentsResizing: Boolean(contents["resizing"])
             citeMenuOpened: citeMenu.opened
             firstBookTipsActive: view.firstBookTipsActive
             firstBookTipsModel: view.firstBookTipsModel
@@ -1752,15 +1755,15 @@ FocusScope {
                                              : companionPanel.open ? companionPanel.width
                                              : appearance.open ? appearance.width : 0
             availableWidth: Math.max(320, view.width - leftInset - rightInset)
-            animateSize: !view.companionResizing
+            animateSize: !view.panelResizing
 
             // Animate horizontal center for panel open/close (paused during live
-            // Companion resize) and slide progress for narration start/stop, so
+            // side-panel resize) and slide progress for narration start/stop, so
             // the pill's own width/height morph expands symmetrically upward with
             // its bottom edge locked 14 px above the viewport floor.
             property real centerX: leftInset + (view.width - leftInset - rightInset) / 2
             Behavior on centerX {
-                enabled: !theme.reducedMotion && !view.companionResizing
+                enabled: !theme.reducedMotion && !view.panelResizing
                 NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
             }
             property real showProgress: narration.active ? 1 : 0
