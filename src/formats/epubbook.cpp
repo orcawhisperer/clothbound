@@ -3,6 +3,9 @@
 #include "formats/htmltokenizer.h"
 
 #include <QCryptographicHash>
+#include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QUrl>
@@ -40,9 +43,46 @@ bool isFont(const QString &path, const QString &mediaType) {
 }
 
 QStringList tokens(const QString &text) { return text.split(' ', Qt::SkipEmptyParts); }
+
+bool isSafeRelativeEntryPath(const QString &name) {
+    if (name.isEmpty() || name.contains(QChar('\0')) || name.startsWith(QLatin1Char('/')) ||
+        name.startsWith(QLatin1Char('\\')) || name.contains(QLatin1Char('\\')))
+        return false;
+    if (name.size() >= 2 && name.at(1) == QLatin1Char(':'))
+        return false;
+    const QStringList segments = name.split(QLatin1Char('/'));
+    for (const QString &seg : segments) {
+        if (seg.isEmpty() || seg == QLatin1String(".") || seg == QLatin1String(".."))
+            return false;
+    }
+    return true;
+}
+
+QString canonicalDirectoryPrefix(const QString &canonicalRoot) {
+    if (canonicalRoot.isEmpty())
+        return {};
+    return canonicalRoot.endsWith(QLatin1Char('/')) ? canonicalRoot : canonicalRoot + QLatin1Char('/');
+}
 }
 
 EpubBook::EpubBook(const QString &filePath) : m_zip(filePath) {}
+
+bool EpubBook::isUnzippedPackage(const QString &path) {
+    if (path.isEmpty())
+        return false;
+    const QFileInfo dirInfo(path);
+    if (!dirInfo.exists() || !dirInfo.isDir())
+        return false;
+    const QString root = dirInfo.canonicalFilePath();
+    if (root.isEmpty())
+        return false;
+    const QString prefix = canonicalDirectoryPrefix(root);
+    const QFileInfo containerInfo(QDir(root).filePath(QStringLiteral("META-INF/container.xml")));
+    if (!containerInfo.exists() || !containerInfo.isFile() || !containerInfo.isReadable())
+        return false;
+    const QString canonicalContainer = containerInfo.canonicalFilePath();
+    return !canonicalContainer.isEmpty() && canonicalContainer.startsWith(prefix);
+}
 
 bool EpubBook::fail(const QString &message) {
     m_error = message;
@@ -54,28 +94,158 @@ const EpubItem *EpubBook::item(const QString &path) const {
     return it == m_manifest.cend() ? nullptr : &*it;
 }
 
+bool EpubBook::openDirectory(const QString &dirPath) {
+    m_isDirectory = false;
+    m_dirRoot.clear();
+    m_dirRootPrefix.clear();
+    m_dirNames.clear();
+    m_dirFolded.clear();
+    m_dirSizes.clear();
+
+    const QFileInfo rootInfo(dirPath);
+    const QString canonicalRoot = rootInfo.canonicalFilePath();
+    if (canonicalRoot.isEmpty() || !rootInfo.isDir())
+        return fail(QStringLiteral("This isn't a readable EPUB (directory cannot be opened)."));
+    const QString prefix = canonicalDirectoryPrefix(canonicalRoot);
+
+    const QFileInfo containerInfo(QDir(canonicalRoot).filePath(QStringLiteral("META-INF/container.xml")));
+    const QString canonicalContainer = containerInfo.canonicalFilePath();
+    if (!containerInfo.exists() || !containerInfo.isFile() || !containerInfo.isReadable() ||
+        canonicalContainer.isEmpty() || !canonicalContainer.startsWith(prefix)) {
+        return fail(QStringLiteral("This isn't a readable EPUB (missing META-INF/container.xml)."));
+    }
+
+    QDir rootDir(canonicalRoot);
+    QDirIterator it(canonicalRoot, QDir::Files | QDir::Readable | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+    quint64 count = 0;
+    while (it.hasNext()) {
+        const QFileInfo fi = it.nextFileInfo();
+        if (!fi.isFile())
+            continue;
+        const QString canonicalFile = fi.canonicalFilePath();
+        // Reject symlinks or entries resolving outside the bundle root.
+        if (canonicalFile.isEmpty() || !canonicalFile.startsWith(prefix))
+            continue;
+        const QString rel = QDir::fromNativeSeparators(rootDir.relativeFilePath(fi.absoluteFilePath()));
+        if (!isSafeRelativeEntryPath(rel))
+            continue;
+        if (++count > ZipArchive::kMaxEntryCount)
+            return fail(QStringLiteral("This isn't a readable EPUB (too many files in package)."));
+        if (!m_dirSizes.contains(rel)) {
+            m_dirNames.append(rel);
+            m_dirSizes.insert(rel, fi.size());
+            const QString folded = rel.toLower();
+            if (!m_dirFolded.contains(folded))
+                m_dirFolded.insert(folded, rel);
+        }
+    }
+
+    m_dirRoot = canonicalRoot;
+    m_dirRootPrefix = prefix;
+    m_isDirectory = true;
+    return true;
+}
+
+bool EpubBook::containerContains(const QString &name) const {
+    if (!m_isDirectory)
+        return m_zip.contains(name);
+    if (!isSafeRelativeEntryPath(name))
+        return false;
+    return m_dirSizes.contains(name);
+}
+
+QString EpubBook::containerResolve(const QString &name) const {
+    if (!m_isDirectory)
+        return m_zip.resolve(name);
+    if (!isSafeRelativeEntryPath(name))
+        return {};
+    if (m_dirSizes.contains(name))
+        return name;
+    return m_dirFolded.value(name.toLower());
+}
+
+QStringList EpubBook::containerNames() const {
+    return m_isDirectory ? m_dirNames : m_zip.names();
+}
+
+qint64 EpubBook::containerSize(const QString &name) const {
+    if (!m_isDirectory)
+        return m_zip.size(name);
+    const QString stored = containerResolve(name);
+    if (stored.isEmpty())
+        return -1;
+    return m_dirSizes.value(stored, -1);
+}
+
+bool EpubBook::containerEncrypted(const QString &name) const {
+    return m_isDirectory ? false : m_zip.encrypted(name);
+}
+
+QByteArray EpubBook::containerRead(const QString &name, QString *error) const {
+    if (!m_isDirectory)
+        return m_zip.read(name, error);
+    if (!isSafeRelativeEntryPath(name)) {
+        if (error)
+            *error = QStringLiteral("Invalid EPUB entry path.");
+        return {};
+    }
+    const QString stored = containerResolve(name);
+    if (stored.isEmpty()) {
+        if (error)
+            *error = QStringLiteral("Entry not found in EPUB package.");
+        return {};
+    }
+    const QString fullPath = QDir(m_dirRoot).filePath(stored);
+    const QFileInfo fi(fullPath);
+    const QString canonical = fi.canonicalFilePath();
+    if (canonical.isEmpty() || !canonical.startsWith(m_dirRootPrefix) || !fi.isFile()) {
+        if (error)
+            *error = QStringLiteral("Entry escapes EPUB package directory.");
+        return {};
+    }
+    if (fi.size() < 0 || quint64(fi.size()) > ZipArchive::kMaxEntrySize) {
+        if (error)
+            *error = QStringLiteral("EPUB entry exceeds size limit.");
+        return {};
+    }
+    QFile file(canonical);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error)
+            *error = file.errorString();
+        return {};
+    }
+    return file.readAll();
+}
+
 bool EpubBook::open() {
-    if (!m_zip.open())
-        return fail(QStringLiteral("This isn't a readable EPUB (%1).").arg(m_zip.errorString()));
+    const QFileInfo sourceInfo(m_zip.path());
+    if (sourceInfo.exists() && sourceInfo.isDir()) {
+        if (!openDirectory(m_zip.path()))
+            return false;
+    } else {
+        m_isDirectory = false;
+        if (!m_zip.open())
+            return fail(QStringLiteral("This isn't a readable EPUB (%1).").arg(m_zip.errorString()));
+    }
 
     // The container names the package; a book without one still usually has
     // a single .opf somewhere.
     QString opfPath;
-    const QByteArray container = m_zip.read(QStringLiteral("META-INF/container.xml"));
+    const QByteArray container = containerRead(QStringLiteral("META-INF/container.xml"));
     if (!container.isEmpty()) {
         const auto doc = Html::parse(container);
         for (const HtmlNode *rootfile : doc->elements("rootfile")) {
             const QString type = rootfile->attribute("media-type");
             if (type.isEmpty() || type == "application/oebps-package+xml") {
                 const QString normalized = resolve(QString(), rootfile->attribute("full-path"));
-                opfPath = m_zip.resolve(normalized.isEmpty() ? rootfile->attribute("full-path") : normalized);
+                opfPath = containerResolve(normalized.isEmpty() ? rootfile->attribute("full-path") : normalized);
                 if (!opfPath.isEmpty())
                     break;
             }
         }
     }
     if (opfPath.isEmpty())
-        for (const QString &name : m_zip.names())
+        for (const QString &name : containerNames())
             if (name.endsWith(QStringLiteral(".opf"), Qt::CaseInsensitive)) {
                 opfPath = name;
                 break;
@@ -96,13 +266,13 @@ bool EpubBook::open() {
             m_drm = true;
     }
     for (const auto &item : std::as_const(m_spine))
-        if (m_zip.encrypted(item.path))
+        if (containerEncrypted(item.path))
             m_drm = true;
     return true;
 }
 
 void EpubBook::readEncryption() {
-    const QByteArray bytes = m_zip.read(QStringLiteral("META-INF/encryption.xml"));
+    const QByteArray bytes = containerRead(QStringLiteral("META-INF/encryption.xml"));
     if (bytes.isEmpty())
         return;
     const auto doc = Html::parse(bytes);
@@ -113,14 +283,14 @@ void EpubBook::readEncryption() {
             continue;
         // References are relative to the root of the container.
         const QString path = resolve(QString(), reference->attribute("uri"));
-        const QString stored = m_zip.resolve(path);
+        const QString stored = containerResolve(path);
         m_encryption.insert(stored.isEmpty() ? path : stored, method->attribute("algorithm"));
     }
 }
 
 bool EpubBook::readPackage(const QString &opfPath) {
     QString error;
-    const QByteArray bytes = m_zip.read(opfPath, &error);
+    const QByteArray bytes = containerRead(opfPath, &error);
     if (bytes.isEmpty())
         return fail(QStringLiteral("The book's package file can't be read (%1).").arg(error));
     m_opfPath = opfPath;
@@ -245,7 +415,7 @@ bool EpubBook::readPackage(const QString &opfPath) {
             const QString path = resolve(opfPath, rawHref);
             if (path.isEmpty())
                 continue;
-            const QString stored = m_zip.resolve(path);
+            const QString stored = containerResolve(path);
             item.path = stored.isEmpty() ? path : stored;
             item.mediaType = node->attribute("media-type").trimmed().toLower();
             item.properties = node->attribute("properties");
@@ -260,7 +430,7 @@ bool EpubBook::readPackage(const QString &opfPath) {
         m_rightToLeft = spine->attribute("page-progression-direction").trimmed().compare(QLatin1String("rtl"), Qt::CaseInsensitive) == 0;
         for (const HtmlNode *ref : spine->childElements("itemref")) {
             const QString path = m_idToPath.value(ref->attribute("idref"));
-            if (path.isEmpty() || !m_zip.contains(path))
+            if (path.isEmpty() || !containerContains(path))
                 continue;
             EpubSpineItem item;
             item.id = ref->attribute("idref");
@@ -278,7 +448,7 @@ bool EpubBook::readPackage(const QString &opfPath) {
     if (const HtmlNode *guide = package->first("guide"))
         for (const HtmlNode *reference : guide->childElements("reference"))
             if (reference->attribute("type").toLower() == "cover") {
-                guideCover = m_zip.resolve(resolve(opfPath, reference->attribute("href")));
+                guideCover = containerResolve(resolve(opfPath, reference->attribute("href")));
                 break;
             }
 
@@ -362,7 +532,7 @@ bool EpubBook::readPackage(const QString &opfPath) {
 void EpubBook::readNavigation(const QString &navPath) {
     // EPUB 3 navigation documents are HTML5; parse with HTML void elements so
     // unclosed <br>, <img> or <hr> don't swallow following <li> entries.
-    const auto doc = Html::parse(m_zip.read(navPath), true);
+    const auto doc = Html::parse(containerRead(navPath), true);
     // A list item's label is its own link or span, never one of a nested list.
     auto label = [](const HtmlNode *root) -> const HtmlNode * {
         std::vector<const HtmlNode *> stack;
@@ -398,7 +568,7 @@ void EpubBook::readNavigation(const QString &navPath) {
                 entry.depth = depth;
                 if (anchor->is("a")) {
                     const QString path = resolve(navPath, anchor->attribute("href"), &entry.fragment);
-                    const QString stored = m_zip.resolve(path);
+                    const QString stored = containerResolve(path);
                     entry.path = stored.isEmpty() ? path : stored;
                 }
                 if (!entry.title.isEmpty())
@@ -432,7 +602,7 @@ void EpubBook::readNavigation(const QString &navPath) {
                 EpubPageTarget target;
                 target.label = a->simplifiedText();
                 const QString path = resolve(navPath, a->attribute("href"), &target.fragment);
-                const QString stored = m_zip.resolve(path);
+                const QString stored = containerResolve(path);
                 target.path = stored.isEmpty() ? path : stored;
                 if (!target.label.isEmpty() && !target.path.isEmpty())
                     m_pageList.append(target);
@@ -442,7 +612,7 @@ void EpubBook::readNavigation(const QString &navPath) {
 }
 
 void EpubBook::readNcx(const QString &ncxPath) {
-    const auto doc = Html::parse(m_zip.read(ncxPath));
+    const auto doc = Html::parse(containerRead(ncxPath));
     auto labelOf = [](const HtmlNode *node) {
         const HtmlNode *label = node->childElements("navlabel").value(0);
         const HtmlNode *text = label ? label->first("text") : nullptr;
@@ -453,7 +623,7 @@ void EpubBook::readNcx(const QString &ncxPath) {
         if (!content)
             return QString();
         const QString path = resolve(ncxPath, content->attribute("src"), fragment);
-        const QString stored = m_zip.resolve(path);
+        const QString stored = containerResolve(path);
         return stored.isEmpty() ? path : stored;
     };
     if (m_toc.isEmpty())
@@ -488,7 +658,7 @@ void EpubBook::readNcx(const QString &ncxPath) {
 }
 
 QString EpubBook::firstImageIn(const QString &documentPath) const {
-    const QByteArray bytes = m_zip.read(documentPath);
+    const QByteArray bytes = containerRead(documentPath);
     if (bytes.isEmpty())
         return {};
     HtmlTokenizer tokens(HtmlTokenizer::decodeDocument(bytes));
@@ -502,7 +672,7 @@ QString EpubBook::firstImageIn(const QString &documentPath) const {
             source = token.attribute("xlink:href").isEmpty() ? token.attribute("href") : token.attribute("xlink:href");
         if (source.isEmpty())
             continue;
-        const QString path = m_zip.resolve(resolve(documentPath, source));
+        const QString path = containerResolve(resolve(documentPath, source));
         if (!path.isEmpty())
             return path;
     }
@@ -534,10 +704,10 @@ QString EpubBook::mediaTypeForPath(const QString &path) {
 }
 
 QByteArray EpubBook::resource(const QString &path, QString *type, QString *error) const {
-    const QString stored = m_zip.resolve(path);
+    const QString stored = containerResolve(path);
     if (type)
         *type = mediaType(stored.isEmpty() ? path : stored);
-    QByteArray data = m_zip.read(stored.isEmpty() ? path : stored, error);
+    QByteArray data = containerRead(stored.isEmpty() ? path : stored, error);
     if (!data.isEmpty() && m_encryption.contains(stored))
         data = deobfuscate(stored, data);
     return data;
@@ -593,7 +763,7 @@ QString EpubBook::chapterText(int index) const {
         type.startsWith(QLatin1String("audio/")) || type.startsWith(QLatin1String("video/")) ||
         type == QLatin1String("application/octet-stream"))
         return {};
-    return extractText(m_zip.read(m_spine[index].path));
+    return extractText(containerRead(m_spine[index].path));
 }
 
 qint64 EpubBook::chapterUncompressedBytes(int index) const {
@@ -604,7 +774,7 @@ qint64 EpubBook::chapterUncompressedBytes(int index) const {
         type.startsWith(QLatin1String("audio/")) || type.startsWith(QLatin1String("video/")) ||
         type == QLatin1String("application/octet-stream"))
         return 0;
-    return qMax<qint64>(0, m_zip.size(m_spine[index].path));
+    return qMax<qint64>(0, containerSize(m_spine[index].path));
 }
 
 int EpubBook::estimatedChapterLength(int index) const {

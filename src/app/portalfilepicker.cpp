@@ -2,6 +2,8 @@
 // response handling use async D-Bus calls without blocking Introspect.
 #include "app/portalfilepicker.h"
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
+
 #include <QCoreApplication>
 #include <QDBusArgument>
 #include <QDBusConnection>
@@ -290,3 +292,19 @@ void PortalFilePicker::clearPending() {
     m_pendingPath.clear();
     m_pendingAction = Action::None;
 }
+
+#else
+
+PortalFilePicker::PortalFilePicker(QObject *parent) : FilePicker(parent) {}
+
+PortalFilePicker::~PortalFilePicker() = default;
+
+void PortalFilePicker::chooseFolders() {
+    emit failed(tr("The XDG desktop portal file chooser is not available."));
+}
+
+void PortalFilePicker::chooseBooks() {
+    emit failed(tr("The XDG desktop portal file chooser is not available."));
+}
+
+#endif  // CLOTHBOUND_HAS_DBUS

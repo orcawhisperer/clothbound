@@ -1,5 +1,7 @@
 #pragma once
 
+#include "audio/audiooutput.h"
+
 #include <QByteArray>
 #include <QList>
 #include <QObject>
@@ -84,6 +86,13 @@ public:
     bool drainedOut() const;
     int sampleRate() const { return m_sampleRate; }
 
+    // Injects an AudioOutputBackend factory (e.g. CoreAudio / AVAudioEngine on
+    // macOS or a fake backend in tests) without coupling SpeechPlayer to QtMultimedia.
+    void setOutputBackendFactory(AudioOutputBackendFactory factory);
+    static void setDefaultOutputBackendFactory(AudioOutputBackendFactory factory);
+    bool hasCustomOutputBackend() const;
+    bool hasAudioOutputDevice() const;
+
 signals:
     // The audible track and the sample of it being heard.
     void position(int track, qint64 sample);
@@ -137,10 +146,11 @@ private:
 
     const int m_sampleRate;
 
-    // Dedicated high-priority thread owning QAudioSink, QMediaDevices, and the
+    // Dedicated high-priority thread owning the AudioOutputBackend and the
     // 15 ms feed/report timer (started lazily on first non-headless play()).
     QThread m_audioThread;
     AudioOutputPump *m_pump = nullptr;  // guarded by m_mutex
+    AudioOutputBackendFactory m_backendFactory;  // guarded by m_mutex
 
     // Shared between the GUI thread, WSOLA worker thread, and audio output thread.
     mutable std::mutex m_mutex;

@@ -83,6 +83,9 @@ signals:
     void changed();
 
 private:
+#ifdef Q_OS_MACOS
+    static Machine inspectMacHardware();
+#endif
     void rebuildSummary();
     void startBenchmark(int generation);
     void measureModel(int generation);

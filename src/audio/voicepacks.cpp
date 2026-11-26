@@ -145,8 +145,13 @@ VoicePacks::DirStamp VoicePacks::readDirStamp() const {
         return {};
     DirStamp stamp;
     stamp.valid = true;
+#ifdef Q_OS_MACOS
+    stamp.mtimeSec = qint64(st.st_mtimespec.tv_sec);
+    stamp.mtimeNsec = qint64(st.st_mtimespec.tv_nsec);
+#else
     stamp.mtimeSec = qint64(st.st_mtim.tv_sec);
     stamp.mtimeNsec = qint64(st.st_mtim.tv_nsec);
+#endif
     stamp.nlink = quint64(st.st_nlink);
     stamp.ino = quint64(st.st_ino);
     return stamp;
@@ -275,6 +280,61 @@ QString VoicePacks::currentArchitecture() {
     return arch == QStringLiteral("arm64") ? QStringLiteral("aarch64") : arch;
 }
 
+QString VoicePacks::enginePlatformKey(const QString &architecture, bool isMacOs) {
+    const QString norm = architecture == QLatin1String("arm64") ? QStringLiteral("aarch64") : architecture;
+    if (norm == QLatin1String("macos-universal2") || norm == QLatin1String("osx-universal2"))
+        return QStringLiteral("macos-universal2");
+    if (isMacOs && (norm == QLatin1String("aarch64") || norm == QLatin1String("x86_64")))
+        return QStringLiteral("macos-universal2");
+    return norm;
+}
+
+QString VoicePacks::kokoroVariantKey(const QString &architecture) {
+    if (architecture == QLatin1String("arm64"))
+        return QStringLiteral("aarch64");
+    if (architecture == QLatin1String("macos-universal2") || architecture == QLatin1String("osx-universal2"))
+        return currentArchitecture();
+    return architecture;
+}
+
+QString VoicePacks::engineLibraryFileName(const QString &enginePlatform, bool isMacOs) {
+    const bool useDylib = enginePlatform == QLatin1String("macos-universal2") ||
+                          enginePlatform == QLatin1String("osx-universal2") ||
+                          (enginePlatform.isEmpty() && isMacOs);
+    return useDylib ? QStringLiteral("libsherpa-onnx-c-api.dylib") : QStringLiteral("libsherpa-onnx-c-api.so");
+}
+
+QStringList VoicePacks::tarExtractArguments(const QString &archive, const QString &destination, bool isMacOs) {
+    if (isMacOs) {
+        // macOS /usr/bin/tar is bsdtar (libarchive), which rejects GNU-only flags
+        // like --no-same-permissions. -o drops ownership restoration, and omitting
+        // -p applies the process umask cleanly without GNU extensions.
+        return {QStringLiteral("-x"), QStringLiteral("-j"), QStringLiteral("-o"),
+                QStringLiteral("-f"), archive, QStringLiteral("-C"), destination};
+    }
+    return {QStringLiteral("--no-same-owner"), QStringLiteral("--no-same-permissions"),
+            QStringLiteral("-xjf"), archive, QStringLiteral("-C"), destination, QStringLiteral("--")};
+}
+
+bool VoicePacks::isSafeExtractedTree(const QString &rootDir) {
+    const QString canonicalRoot = QFileInfo(rootDir).canonicalFilePath();
+    if (canonicalRoot.isEmpty())
+        return false;
+    const QString prefix = canonicalRoot.endsWith(QLatin1Char('/')) ? canonicalRoot : canonicalRoot + QLatin1Char('/');
+    QDirIterator it(canonicalRoot, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot,
+                    QDirIterator::Subdirectories);
+    while (it.hasNext()) {
+        const QFileInfo fi = it.nextFileInfo();
+        if (fi.isSymLink()) {
+            const QString target = fi.symLinkTarget();
+            const QString canonicalTarget = QFileInfo(target).canonicalFilePath();
+            if (canonicalTarget.isEmpty() || (canonicalTarget != canonicalRoot && !canonicalTarget.startsWith(prefix)))
+                return false;
+        }
+    }
+    return true;
+}
+
 QString VoicePacks::accentFor(const QString &language, const QString &voiceId) {
     if (voiceId.contains(QLatin1String("alba"), Qt::CaseInsensitive) ||
         language.contains(QLatin1String("scotland"), Qt::CaseInsensitive))
@@ -309,7 +369,15 @@ QString VoicePacks::accentFor(const QString &language, const QString &voiceId) {
 void VoicePacks::load(const QByteArray &manifest) {
     const QJsonObject root = QJsonDocument::fromJson(manifest).object();
     const QJsonObject engine = root.value("engine").toObject();
-    const QJsonObject forHere = engine.value(m_architecture).toObject();
+    const QString requestedPlatform = enginePlatformKey(m_architecture);
+    QJsonObject forHere = engine.value(requestedPlatform).toObject();
+    if (!forHere.isEmpty()) {
+        m_enginePlatform = requestedPlatform;
+    } else if (requestedPlatform != m_architecture) {
+        forHere = engine.value(m_architecture).toObject();
+        if (!forHere.isEmpty())
+            m_enginePlatform = m_architecture;
+    }
     if (!forHere.isEmpty())
         m_engine = {QStringLiteral("engine"), QStringLiteral("engine"), tr("Speech engine"),
                     QUrl(forHere.value("url").toString()), forHere.value("size").toInteger(),
@@ -318,7 +386,11 @@ void VoicePacks::load(const QByteArray &manifest) {
 
     const QJsonObject kokoro = root.value("kokoro").toObject();
     // Kokoro comes in the build that's quickest on this processor.
-    const QJsonObject variant = kokoro.value("variants").toObject().value(m_architecture).toObject();
+    const QJsonObject variants = kokoro.value("variants").toObject();
+    QJsonObject variant = variants.value(kokoroVariantKey(m_architecture)).toObject();
+    if (variant.isEmpty() && (m_architecture == QLatin1String("macos-universal2") ||
+                              m_architecture == QLatin1String("osx-universal2")))
+        variant = variants.value(QStringLiteral("aarch64")).toObject();
     if (!kokoro.isEmpty() && !variant.isEmpty()) {
         const Pack pack{kokoro.value("id").toString(), QStringLiteral("kokoro"), kokoro.value("title").toString(),
                         QUrl(variant.value("url").toString()), variant.value("size").toInteger(),
@@ -413,7 +485,16 @@ QString VoicePacks::engineLibrary() const {
     Q_ASSERT(QThread::currentThread() == thread());
     if (!engineInstalled())
         return {};
-    return QDir(m_directory).filePath(m_engine.dir + QStringLiteral("/lib/libsherpa-onnx-c-api.so"));
+    const QDir libDir(QDir(m_directory).filePath(m_engine.dir + QStringLiteral("/lib")));
+    const QString primary = libDir.filePath(engineLibraryFileName(m_enginePlatform));
+#ifdef Q_OS_MACOS
+    if (QFileInfo::exists(primary))
+        return primary;
+    const QString dylib = libDir.filePath(QStringLiteral("libsherpa-onnx-c-api.dylib"));
+    if (QFileInfo::exists(dylib))
+        return dylib;
+#endif
+    return primary;
 }
 
 const VoicePacks::Voice *VoicePacks::findVoice(const QString &id) const {
@@ -880,10 +961,16 @@ void VoicePacks::verifyAndUnpack(const Pack &pack, const QString &archive) {
                     m_unpacking = false;
                     const QString extracted = QDir(aside).filePath(pack.dir);
                     const QString target = QDir(m_directory).filePath(pack.dir);
-                    if (code != 0 || status != QProcess::NormalExit || !QFileInfo::exists(extracted)) {
+                    const QString asideCanon = QFileInfo(aside).canonicalFilePath();
+                    const QString extractedCanon = QFileInfo(extracted).canonicalFilePath();
+                    const bool safeTree = !asideCanon.isEmpty() &&
+                                          extractedCanon.startsWith(asideCanon + QLatin1Char('/')) &&
+                                          isSafeExtractedTree(extracted);
+                    if (code != 0 || status != QProcess::NormalExit || !QFileInfo::exists(extracted) || !safeTree) {
                         scheduleTrashRemoval(aside);
+                        const QString errText = QString::fromLocal8Bit(tar->readAllStandardError()).trimmed();
                         fail(tr("%1 couldn't be unpacked: %2")
-                                 .arg(pack.title, QString::fromLocal8Bit(tar->readAllStandardError()).trimmed()));
+                                 .arg(pack.title, errText.isEmpty() ? QStringLiteral("invalid archive layout") : errText));
                         return;
                     }
                     // Write the sentinel before swapping into place so target is never half-installed.
@@ -936,9 +1023,7 @@ void VoicePacks::verifyAndUnpack(const Pack &pack, const QString &archive) {
                     emit changed();
                     next();
                 });
-        tar->start(QStringLiteral("tar"),
-                   {QStringLiteral("--no-same-owner"), QStringLiteral("--no-same-permissions"),
-                    QStringLiteral("-xjf"), archive, QStringLiteral("-C"), aside, QStringLiteral("--")});
+        tar->start(QStringLiteral("tar"), tarExtractArguments(archive, aside));
     });
     watcher->setFuture(QtConcurrent::run([archive] {
         QFile file(archive);

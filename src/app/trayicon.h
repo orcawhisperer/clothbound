@@ -1,17 +1,37 @@
 #pragma once
 
+#include <QtGlobal>
+
+#if !defined(CLOTHBOUND_HAS_DBUS) && defined(Q_OS_LINUX) && !defined(CLOTHBOUND_NO_DBUS)
+#define CLOTHBOUND_HAS_DBUS 1
+#endif
+
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 #include <QDBusArgument>
 #include <QDBusObjectPath>
 #include <QDBusVariant>
+#endif
 #include <QList>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QVariantMap>
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 class QDBusServiceWatcher;
+using TrayMenuVariant = QDBusVariant;
+#else
+struct TrayMenuVariant {
+    QVariant value;
+    TrayMenuVariant() = default;
+    explicit TrayMenuVariant(QVariant v) : value(std::move(v)) {}
+    QVariant variant() const { return value; }
+};
+#endif
 
-// D-Bus wire types for org.kde.StatusNotifierItem and com.canonical.dbusmenu.
+// Wire types for org.kde.StatusNotifierItem and com.canonical.dbusmenu
+// (shared by buildMenuLayout() and cross-platform unit tests).
 struct TrayPixmap {
     int width = 0;
     int height = 0;
@@ -29,7 +49,7 @@ struct TrayToolTip {
 struct TrayMenuLayoutItem {
     int id = 0;
     QVariantMap properties;
-    QList<QDBusVariant> children;
+    QList<TrayMenuVariant> children;
 };
 
 struct TrayMenuItemProps {
@@ -61,6 +81,7 @@ Q_DECLARE_METATYPE(TrayMenuUpdatedPropsList)
 Q_DECLARE_METATYPE(TrayMenuRemovedProps)
 Q_DECLARE_METATYPE(TrayMenuRemovedPropsList)
 
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 QDBusArgument &operator<<(QDBusArgument &arg, const TrayPixmap &p);
 const QDBusArgument &operator>>(const QDBusArgument &arg, TrayPixmap &p);
 QDBusArgument &operator<<(QDBusArgument &arg, const TrayToolTip &t);
@@ -73,10 +94,12 @@ QDBusArgument &operator<<(QDBusArgument &arg, const TrayMenuUpdatedProps &item);
 const QDBusArgument &operator>>(const QDBusArgument &arg, TrayMenuUpdatedProps &item);
 QDBusArgument &operator<<(QDBusArgument &arg, const TrayMenuRemovedProps &item);
 const QDBusArgument &operator>>(const QDBusArgument &arg, TrayMenuRemovedProps &item);
+#endif
 
 // Native Linux system tray icon over D-Bus (org.kde.StatusNotifierItem +
 // com.canonical.dbusmenu) for Waybar, Hyprland, KDE, and AppIndicator hosts —
 // works directly in QGuiApplication without QtWidgets or Qt.labs.platform.
+// (On non-D-Bus platforms such as macOS, this is a lightweight no-op stub.)
 class TrayIcon : public QObject {
     Q_OBJECT
     Q_PROPERTY(bool available READ available NOTIFY availableChanged)
@@ -120,6 +143,7 @@ private slots:
     void refreshAvailability();
 
 private:
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     void registerItem();
     void unregisterItem();
     void notifyMenuChanged();
@@ -129,6 +153,7 @@ private:
     QObject *m_itemObject = nullptr;
     QObject *m_menuObject = nullptr;
     QString m_serviceName;
+#endif
     QString m_tooltip = QStringLiteral("Clothbound");
     TrayPixmapList m_pixmaps;
     uint m_menuRevision = 1;

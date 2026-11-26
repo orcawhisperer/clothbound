@@ -6,10 +6,18 @@
 #include "reader/reader.h"
 #include "audio/speech.h"
 
+#include <QtGlobal>
+
+#if !defined(CLOTHBOUND_HAS_DBUS) && defined(Q_OS_LINUX) && !defined(CLOTHBOUND_NO_DBUS)
+#define CLOTHBOUND_HAS_DBUS 1
+#endif
+
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#endif
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
@@ -131,6 +139,35 @@ QString Audiobook::concatList(const QStringList &files) {
     return out;
 }
 
+QStringList Audiobook::macExecutableSearchDirs() {
+    return {
+        QStringLiteral("/opt/homebrew/bin"),
+        QStringLiteral("/usr/local/bin"),
+        QStringLiteral("/opt/local/bin"),
+    };
+}
+
+QString Audiobook::findExecutableInPaths(const QString &name, const QStringList &fallbackDirs, bool searchSystemPath) {
+    if (name.isEmpty())
+        return {};
+    if (searchSystemPath) {
+        const QString found = QStandardPaths::findExecutable(name);
+        if (!found.isEmpty())
+            return found;
+    }
+    if (!fallbackDirs.isEmpty())
+        return QStandardPaths::findExecutable(name, fallbackDirs);
+    return {};
+}
+
+QString Audiobook::findFfmpeg() {
+#ifdef Q_OS_MACOS
+    return findExecutableInPaths(QStringLiteral("ffmpeg"), macExecutableSearchDirs(), true);
+#else
+    return findExecutableInPaths(QStringLiteral("ffmpeg"), {}, true);
+#endif
+}
+
 void Audiobook::fail(const QString &problem) {
     cleanupWork();
     m_problem = problem;
@@ -152,6 +189,7 @@ void Audiobook::revealSaved() const {
         return;
     const QString savedPath = m_saved;
     const QString folderPath = QFileInfo(savedPath).absolutePath();
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     QDBusConnection bus = QDBusConnection::sessionBus();
     if (bus.isConnected()) {
         QDBusMessage call = QDBusMessage::createMethodCall(QStringLiteral("org.freedesktop.FileManager1"),
@@ -168,6 +206,10 @@ void Audiobook::revealSaved() const {
         });
         return;
     }
+#elif defined(Q_OS_MACOS)
+    if (QProcess::startDetached(QStringLiteral("/usr/bin/open"), {QStringLiteral("-R"), savedPath}))
+        return;
+#endif
     QDesktopServices::openUrl(QUrl::fromLocalFile(folderPath));
 }
 
@@ -178,9 +220,13 @@ void Audiobook::save() {
     m_problem.clear();
     m_saved.clear();
     m_cancelled = false;
-    const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    const QString ffmpeg = findFfmpeg();
     if (ffmpeg.isEmpty()) {
+#ifdef Q_OS_MACOS
+        fail(QStringLiteral("Saving an audiobook needs ffmpeg: install it with brew install ffmpeg."));
+#else
         fail(tr("Saving an audiobook needs ffmpeg: install it with omarchy-pkg-add ffmpeg."));
+#endif
         return;
     }
     // Snapshot book identity and metadata before any async prep runs so
@@ -317,7 +363,9 @@ void Audiobook::save() {
         }
     }
 
-    QString music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
+    QString music = qEnvironmentVariable("CLOTHBOUND_MUSIC_DIR").trimmed();
+    if (music.isEmpty())
+        music = QStandardPaths::writableLocation(QStandardPaths::MusicLocation);
     if (music.isEmpty())
         music = QDir::homePath() + QStringLiteral("/Music");
     const QString folder = music + QStringLiteral("/Clothbound");

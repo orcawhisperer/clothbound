@@ -23,6 +23,7 @@ QString readFile(const QString &path) {
 }
 
 QString prettyOsName() {
+#ifdef Q_OS_LINUX
     if (!qEnvironmentVariable("FLATPAK_ID").trimmed().isEmpty()) {
         const QString hostRelease = readFile(QStringLiteral("/run/host/os-release"));
         static const QRegularExpression prettyRx(QStringLiteral("^PRETTY_NAME=(?:\"([^\"]+)\"|'([^']+)'|([^\\r\\n]+))$"),
@@ -36,7 +37,13 @@ QString prettyOsName() {
                 return name;
         }
     }
+#endif
     return QSysInfo::prettyProductName();
+}
+
+bool isAppleGraphics(const QString &graphics) {
+    return graphics == QLatin1String("Apple") ||
+           graphics.startsWith(QLatin1String("Apple "), Qt::CaseInsensitive);
 }
 
 double meminfoGb(const QString &meminfo, const QString &field) {
@@ -135,7 +142,7 @@ void SystemCheck::rebuildSummary() {
 
     // 3. Ask the whole book
     const bool wholeBookLocal = m_machine.memoryGb >= 30 || m_machine.graphicsMemoryGb >= 16 ||
-                                (m_machine.graphics == QLatin1String("Apple") && m_machine.memoryGb >= 23);
+                                (isAppleGraphics(m_machine.graphics) && m_machine.memoryGb >= 23);
     if (wholeBookLocal)
         add(tr("Ask the whole book"), hasLocal ? tr("runs on this computer") : tr("ready with a 9B+ model"),
             QStringLiteral("good"));
@@ -177,8 +184,10 @@ void SystemCheck::cancel() {
     }
 }
 
-SystemCheck::Machine SystemCheck::inspect(const QString &root) {
-    Machine machine;
+namespace {
+
+SystemCheck::Machine inspectLinuxTree(const QString &root) {
+    SystemCheck::Machine machine;
     const QString base = QDir(root).absolutePath();
     const QString meminfo = readFile(base + QStringLiteral("/proc/meminfo"));
     machine.memoryGb = meminfoGb(meminfo, QStringLiteral("MemTotal"));
@@ -250,6 +259,7 @@ SystemCheck::Machine SystemCheck::inspect(const QString &root) {
             machine.graphicsMemoryGb = vramGb;
         }
     }
+#ifdef Q_OS_LINUX
     if (root == QLatin1String("/") && hasNvidia && !QStandardPaths::findExecutable(QStringLiteral("nvidia-smi")).isEmpty()) {
         QProcess smi;
         smi.start(QStringLiteral("nvidia-smi"), {QStringLiteral("--query-gpu=name,memory.total"), QStringLiteral("--format=csv,noheader,nounits")});
@@ -278,9 +288,32 @@ SystemCheck::Machine SystemCheck::inspect(const QString &root) {
             }
         }
     }
+#else
+    Q_UNUSED(hasNvidia);
+#endif
     if (machine.graphics == QLatin1String("Apple") && machine.processor.isEmpty())
         machine.processor = QStringLiteral("Apple Silicon");
     return machine;
+}
+
+}  // namespace
+
+SystemCheck::Machine SystemCheck::inspect(const QString &root) {
+#ifdef Q_OS_MACOS
+    if (root == QLatin1String("/"))
+        return inspectMacHardware();
+#endif
+#ifdef Q_OS_LINUX
+    return inspectLinuxTree(root);
+#else
+    // Synthetic /proc and /sys fixture roots passed explicitly by unit tests.
+    if (root != QLatin1String("/"))
+        return inspectLinuxTree(root);
+    Machine machine;
+    machine.cores = qMax(1, QThread::idealThreadCount());
+    machine.architecture = QSysInfo::currentCpuArchitecture();
+    return machine;
+#endif
 }
 
 double SystemCheck::billionsIn(const QString &model) {
@@ -293,8 +326,10 @@ double SystemCheck::billionsIn(const QString &model) {
 
 QString SystemCheck::tierFor(const Machine &machine) {
     const double memory = machine.memoryGb;
-    const bool appleLarge = machine.graphics == QLatin1String("Apple") && memory >= 23;
-    if (machine.graphicsMemoryGb >= 16 && memory >= 30)
+    const bool apple = isAppleGraphics(machine.graphics);
+    const bool appleFull = apple && memory >= 30 && (machine.graphicsMemoryGb >= 16 || !machine.discreteGraphics);
+    const bool appleLarge = apple && memory >= 23;
+    if (appleFull || (machine.graphicsMemoryGb >= 16 && memory >= 30))
         return tr("Local Full");
     if (memory >= 30 || appleLarge || machine.graphicsMemoryGb >= 10 || (memory >= 15 && machine.graphicsMemoryGb >= 8))
         return tr("Local Standard");
@@ -307,7 +342,7 @@ QString SystemCheck::tierFor(const Machine &machine) {
 
 QString SystemCheck::suggestedModel(const Machine &machine) {
     // Aligned with tierFor() and LocalSetup::modelsFor().
-    const bool appleLarge = machine.graphics == QLatin1String("Apple") && machine.memoryGb >= 23;
+    const bool appleLarge = isAppleGraphics(machine.graphics) && machine.memoryGb >= 23;
     if (machine.memoryGb >= 30 || appleLarge || machine.graphicsMemoryGb >= 10 ||
         (machine.memoryGb >= 15 && machine.graphicsMemoryGb >= 8))
         return QStringLiteral("Qwen3.5 9B");

@@ -13,6 +13,12 @@
    "size": 12595068,
    "sha256": "fb98b80628a383909bf83626daca2e0d0ffc93bf1f7d222eaaa4282b388f072f",
    "dir": "sherpa-onnx-v1.13.8-linux-aarch64-shared-cpu-lib"
+  },
+  "macos-universal2": {
+   "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-v1.13.8-osx-universal2-shared-lib.tar.bz2",
+   "size": 18819320,
+   "sha256": "c1cca5b4a1867543e27d42fbea513983e73f629d0aa53b43b51555a71d2108d9",
+   "dir": "sherpa-onnx-v1.13.8-osx-universal2-shared-lib"
   }
  },
  "kokoro": {

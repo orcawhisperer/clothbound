@@ -428,15 +428,24 @@ LibraryQueryService::~LibraryQueryService() {
 }
 
 QString LibraryQueryService::defaultSettingsFile() {
-    return QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) + QStringLiteral("/settings.ini");
+    const QString overrideDir = qEnvironmentVariable("CLOTHBOUND_CONFIG_DIR").trimmed();
+    const QString base =
+        overrideDir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation) : overrideDir;
+    return base + QStringLiteral("/settings.ini");
 }
 
 QString LibraryQueryService::defaultIndexFile() {
-    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation) + QStringLiteral("/index.sqlite");
+    const QString overrideDir = qEnvironmentVariable("CLOTHBOUND_CACHE_DIR").trimmed();
+    const QString base =
+        overrideDir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation) : overrideDir;
+    return base + QStringLiteral("/index.sqlite");
 }
 
 QString LibraryQueryService::defaultLibraryFile() {
-    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + QStringLiteral("/library.sqlite");
+    const QString overrideDir = qEnvironmentVariable("CLOTHBOUND_DATA_DIR").trimmed();
+    const QString base =
+        overrideDir.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) : overrideDir;
+    return base + QStringLiteral("/library.sqlite");
 }
 
 bool LibraryQueryService::openSqliteReadOnly(const QString &dbPath,

@@ -1,22 +1,32 @@
 #pragma once
 
+#include <QtGlobal>
+
+#if !defined(CLOTHBOUND_HAS_DBUS) && defined(Q_OS_LINUX) && !defined(CLOTHBOUND_NO_DBUS)
+#define CLOTHBOUND_HAS_DBUS 1
+#endif
+
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCall>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#endif
 #include <QHash>
 #include <QObject>
 #include <QSet>
 #include <QStringList>
 #include <QVariantMap>
 
-// A note to the desktop's notifications (Omarchy's shell shows them), for
-// what happens out of the window's sight, like reading on in the background.
+// A note to the desktop's notifications (Omarchy's shell on Linux; Swift owns
+// native macOS notifications), for what happens out of the window's sight, like
+// reading on in the background.
 class Notifier : public QObject {
     Q_OBJECT
 
 public:
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     explicit Notifier(QObject *parent = nullptr) : QObject(parent) {
         QDBusConnection bus = QDBusConnection::sessionBus();
         if (!bus.isConnected())
@@ -28,6 +38,7 @@ public:
         bus.connect(service(), path(), interface(), QStringLiteral("NotificationClosed"), this,
                     SLOT(onNotificationClosed(uint, uint)));
     }
+    ~Notifier() override = default;
 
     // A clickable note emits clicked() when it's clicked.
     Q_INVOKABLE void notify(const QString &summary, const QString &body, bool clickable = false) {
@@ -50,6 +61,16 @@ public:
             call->deleteLater();
         });
     }
+#else
+    explicit Notifier(QObject *parent = nullptr) : QObject(parent) {}
+    ~Notifier() override = default;
+
+    Q_INVOKABLE void notify(const QString &summary, const QString &body, bool clickable = false) {
+        Q_UNUSED(summary);
+        Q_UNUSED(body);
+        Q_UNUSED(clickable);
+    }
+#endif
 
     int pendingCount() const { return int(m_clickable.size()); }
 
@@ -73,9 +94,11 @@ public slots:
     }
 
 private:
+#if defined(CLOTHBOUND_HAS_DBUS) && CLOTHBOUND_HAS_DBUS
     static QString service() { return QStringLiteral("org.freedesktop.Notifications"); }
     static QString path() { return QStringLiteral("/org/freedesktop/Notifications"); }
     static QString interface() { return QStringLiteral("org.freedesktop.Notifications"); }
+#endif
 
     QSet<uint> m_clickable;
     QHash<uint, QString> m_tokens;

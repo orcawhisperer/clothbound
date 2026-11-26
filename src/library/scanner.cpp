@@ -1,7 +1,10 @@
 #include "library/scanner.h"
 
+#include "formats/epubbook.h"
+
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QImageWriter>
@@ -29,6 +32,15 @@ bool isSkippedDirectoryName(const QString &name) {
            name == QLatin1StringView("node_modules") ||
            name == QLatin1StringView("__pycache__") ||
            name == QLatin1StringView("venv");
+}
+
+bool isUnzippedEpubBundle(const QFileInfo &info) {
+    if (!info.isDir())
+        return false;
+    const QString name = info.fileName();
+    if (name.startsWith(QLatin1Char('.')) || !name.endsWith(QLatin1String(".epub"), Qt::CaseInsensitive))
+        return false;
+    return EpubBook::isUnzippedPackage(info.absoluteFilePath());
 }
 
 bool isVirtualFilesystemPath(const QString &path) {
@@ -85,7 +97,7 @@ Listing list(const QStringList &folders, const QStringList &files, const QHash<Q
         if (*cancelled)
             break;
         const QFileInfo info(file);
-        if (info.isFile())
+        if (info.isFile() || isUnzippedEpubBundle(info))
             consider(info);
     }
 
@@ -126,8 +138,6 @@ Listing list(const QStringList &folders, const QStringList &files, const QHash<Q
                 if (*cancelled)
                     break;
                 if (entry.isDir()) {
-                    if (frame.depth >= maxScanDepth)
-                        continue;
                     const QString name = entry.fileName();
                     if (isSkippedDirectoryName(name))
                         continue;
@@ -138,6 +148,17 @@ Listing list(const QStringList &folders, const QStringList &files, const QHash<Q
                     if (subCanonical.isEmpty() || isVirtualFilesystemPath(subCanonical))
                         continue;
                     if (!rootInPortalDoc && isPortalDocPath(subCanonical))
+                        continue;
+                    // Apple Books stores EPUBs as unzipped `.epub/` package directories.
+                    // Treat any `.epub` directory containing `META-INF/container.xml` as a
+                    // single book leaf without descending into its internal files.
+                    if ((name.endsWith(QLatin1String(".epub"), Qt::CaseInsensitive) ||
+                         QFileInfo(subCanonical).fileName().endsWith(QLatin1String(".epub"), Qt::CaseInsensitive)) &&
+                        EpubBook::isUnzippedPackage(subCanonical)) {
+                        consider(QFileInfo(subCanonical));
+                        continue;
+                    }
+                    if (frame.depth >= maxScanDepth)
                         continue;
                     if (visitedDirs.contains(subCanonical))
                         continue;
@@ -162,6 +183,45 @@ ScannedBook readWithCancel(const QString &path, const QString &coverDirectory,
 }
 
 QString Scanner::fingerprintFor(const QString &bookPath) {
+    const QFileInfo rootInfo(bookPath);
+    if (rootInfo.isDir() && EpubBook::isUnzippedPackage(bookPath)) {
+        const QString root = rootInfo.canonicalFilePath();
+        const QString prefix = root.endsWith(QLatin1Char('/')) ? root : root + QLatin1Char('/');
+        QCryptographicHash hash(QCryptographicHash::Sha256);
+        hash.addData(QByteArrayView("epub-dir\0", 9));
+        QFile container(QDir(root).filePath(QStringLiteral("META-INF/container.xml")));
+        if (container.open(QIODevice::ReadOnly))
+            hash.addData(container.read(64 * 1024));
+        QStringList rels;
+        QHash<QString, qint64> sizes;
+        QString firstOpf;
+        QDir rootDir(root);
+        QDirIterator it(root, QDir::Files | QDir::Readable | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+        while (it.hasNext() && rels.size() < 256) {
+            const QFileInfo fi = it.nextFileInfo();
+            const QString canon = fi.canonicalFilePath();
+            if (canon.isEmpty() || !canon.startsWith(prefix))
+                continue;
+            const QString rel = QDir::fromNativeSeparators(rootDir.relativeFilePath(fi.absoluteFilePath()));
+            rels.append(rel);
+            sizes.insert(rel, fi.size());
+        }
+        rels.sort();
+        for (const QString &rel : std::as_const(rels)) {
+            hash.addData(rel.toUtf8());
+            hash.addData(QByteArrayView("\0", 1));
+            hash.addData(QByteArray::number(sizes.value(rel)));
+            hash.addData(QByteArrayView("\0", 1));
+            if (firstOpf.isEmpty() && rel.endsWith(QLatin1String(".opf"), Qt::CaseInsensitive))
+                firstOpf = QDir(root).filePath(rel);
+        }
+        if (!firstOpf.isEmpty()) {
+            QFile opf(firstOpf);
+            if (opf.open(QIODevice::ReadOnly))
+                hash.addData(opf.read(64 * 1024));
+        }
+        return QString::fromLatin1(hash.result().toHex());
+    }
     QFile file(bookPath);
     if (!file.open(QIODevice::ReadOnly))
         return {};

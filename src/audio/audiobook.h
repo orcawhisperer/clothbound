@@ -50,6 +50,12 @@ public:
     static QString metadata(const QString &title, const QString &author, const QList<Chapter> &chapters);
     // ffmpeg's concat list of files.
     static QString concatList(const QStringList &files);
+    // macOS GUI apps launched from Finder/Dock do not inherit Homebrew/MacPorts
+    // paths in PATH, so check standard macOS binary directories as fallbacks.
+    static QStringList macExecutableSearchDirs();
+    static QString findExecutableInPaths(const QString &name, const QStringList &fallbackDirs = {},
+                                         bool searchSystemPath = true);
+    static QString findFfmpeg();
 
 signals:
     void changed();
